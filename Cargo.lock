@@ -1032,6 +1032,7 @@ dependencies = [
  "lz4_flex",
  "png",
  "rustvr-asset",
+ "rustvr-audio",
  "serde",
  "toml 1.1.8+spec-1.1.0",
 ]
