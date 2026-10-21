@@ -249,6 +249,9 @@ impl Session {
                 }
                 EV_RUMBLE => rumble = Some(ev.f[0]),
                 EV_RECENTER => self.mech.recenter(),
+                // The game's explosions and hits push what the rig simulates (on its next step).
+                EV_BLAST => self.rig.blast(Vec3::new(ev.f[0], ev.f[1], ev.f[2]), ev.f[3], ev.f[4]),
+                EV_IMPULSE => self.rig.impulse(ev.a, Vec3::new(ev.f[0], ev.f[1], ev.f[2]), Vec3::new(ev.f[3], ev.f[4], ev.f[5])),
                 _ => {}
             }
         }
@@ -829,11 +832,21 @@ fn sound_of(c: feedback::Cue) -> Option<rustvr_audio::Sound> {
         C::ShotRifle => S::ShotRifle,
         C::ShotShotgun => S::ShotShotgun,
         C::Melee => S::Melee,
+        // The throwables' cues fall back on the nearest synthesized sounds until a sound pack
+        // gives them their own (by `Cue::name`).
+        C::GrenadePin => S::SlideBack,
+        C::GrenadeArm => S::LastRound,
+        C::GrenadeTick => S::ZoneTick,
+        C::GrenadeThrow | C::KnifeThrow => S::GloveFlick,
+        C::Explosion => S::ShotShotgun,
+        C::ExplosionRumble => return None,
+        C::KnifeStick => S::Impact,
     })
 }
 
+/// Sounds the game usually makes itself (gunshots, explosions): the `shots` setting.
 fn is_shot(c: feedback::Cue) -> bool {
-    matches!(c, feedback::Cue::ShotPistol | feedback::Cue::ShotRifle | feedback::Cue::ShotShotgun)
+    matches!(c, feedback::Cue::ShotPistol | feedback::Cue::ShotRifle | feedback::Cue::ShotShotgun | feedback::Cue::Explosion)
 }
 
 fn quat(a: [f32; 4]) -> Quat {

@@ -8,7 +8,7 @@ use rustvr_gpu::{EguiPainter, Gpu, TexDesc, Texture};
 use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB};
 
-use crate::settings::{BodyVisibility, Hand, MoveRelative, ReloadStyle, Settings, TurnMode};
+use crate::settings::{BodyVisibility, GrenadeArming, Hand, MoveRelative, ReloadStyle, Settings, TurnMode};
 
 const WIDTH_PX: u32 = 1024;
 const HEIGHT_PX: u32 = 1280;
@@ -318,7 +318,7 @@ fn help(ui: &mut egui::Ui) {
         ("Point your hand or palm at something far", "it glows (gravity gloves, up to 10 m)"),
         ("Hold grip on it", "it locks on and hops towards you"),
         ("Flick your wrist back (or yank)", "it flies to you: keep the grip to catch it"),
-        ("Let go while moving", "throw"),
+        ("Let go while moving", "throw (the speed at your swing's peak counts, not the release)"),
         ("Walls and tables", "stop your hands; a blue ghost shows the real one"),
     ]);
     section(ui, "Guns", &[
@@ -330,6 +330,13 @@ fn help(ui: &mut egui::Ui) {
         ("Grab the charging handle / slide, pull back", "chamber a round (needed after a fresh magazine)"),
         ("B on the gun hand", "drop a locked-back slide"),
         ("Hold B, empty hand", "weapon wheel (games that have one)"),
+    ]);
+    section(ui, "Grenades and knives", &[
+        ("Grip at either side of your chest, or the belt", "a grenade or knife from its pouch"),
+        ("Other hand on the pin + pull", "pull the pin (Hands tab: or the trigger arms it)"),
+        ("Let go / B on the grenade hand", "the lever flies and the fuse starts / cook it in your hand"),
+        ("Trigger or A on the grenade hand", "arm it one-handed while the other hand holds a gun"),
+        ("Throw a knife", "it flies blade first and sticks; grab it to pull it out"),
     ]);
     section(ui, "Holsters", &[
         ("Let go of a gun at a hip", "holster it there"),
@@ -369,6 +376,12 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
     slider(ui, "Grab reach", &mut h.grab_radius, 0.03, 0.15, " m", 2);
     slider(ui, "Weight (heavy things lag)", &mut h.weight, 0.0, 1.0, "", 2);
     slider(ui, "Throw strength", &mut h.throw_scale, 0.6, 2.0, "x", 2);
+    ui.horizontal(|ui| {
+        ui.label("Grenades");
+        ui.selectable_value(&mut h.grenade_arming, GrenadeArming::Pin, "Pull the pin with the other hand");
+        ui.selectable_value(&mut h.grenade_arming, GrenadeArming::Button, "Trigger arms it");
+    });
+    ui.checkbox(&mut h.knife_assist, "Forgiving knife throws (they stick more)");
     ui.separator();
     ui.checkbox(&mut s.sound.enabled, "Interaction sounds");
     if s.sound.enabled {

@@ -705,6 +705,13 @@ pub const EV_HAPTIC: u32 = 1;
 pub const EV_RUMBLE: u32 = 2;
 /// Ask the runtime to recentre (e.g. after a level load).
 pub const EV_RECENTER: u32 = 3;
+/// The game's explosion pushes what the runtime simulates (its loose objects): f0..f2 the blast's
+/// world position (metres), f3 its radius, f4 the impulse (N s) an object at the centre gets,
+/// falling off to nothing at the radius.
+pub const EV_BLAST: u32 = 4;
+/// A push on one object the runtime simulates (a bullet hitting it): `a` its id, f0..f2 the world
+/// impulse (N s), f3..f5 the world point it acts at.
+pub const EV_IMPULSE: u32 = 5;
 
 pub const HAPTIC_LEFT: u32 = 0;
 pub const HAPTIC_RIGHT: u32 = 1;
@@ -784,6 +791,13 @@ pub mod range_stats {
     pub const F_SCOPE_FRAMES: usize = 6;
     /// Rounds in a full magazine of the held weapon.
     pub const F_MAG_SIZE: usize = 7;
+    /// Physical mode: grenades that went off, the target plates their blasts reached, and knives
+    /// stuck in a target plate.
+    pub const F_EXPLOSIONS: usize = 8;
+    pub const F_BLAST_HITS: usize = 9;
+    pub const F_KNIFE_HITS: usize = 10;
+    /// Visual effects alive (muzzle flashes, smoke, tracers, bullet holes, casings, debris).
+    pub const F_FX_LIVE: usize = 11;
 }
 
 /// Reads a NUL-terminated UTF-8 name field.

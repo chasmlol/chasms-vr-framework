@@ -270,6 +270,26 @@ impl Physics {
         self.world.cast_ray(&ray, max, true, filter).map(|(_, t)| t)
     }
 
+    /// First hit along a ray against the world and loose objects (not the hands or what they
+    /// hold), leaving out collider `skip`: (distance, collider, surface normal).
+    pub fn ray_cast(&self, origin: V3, dir: V3, max: f32, skip: ColliderHandle) -> Option<(f32, ColliderHandle, V3)> {
+        let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
+        let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD | G_OBJECT, InteractionTestMode::And)).exclude_collider(skip);
+        self.world.cast_ray_and_get_normal(&ray, max, true, filter).map(|(c, hit)| (hit.time_of_impact, c, from_v(hit.normal)))
+    }
+
+    /// The collider belongs to the static world.
+    pub fn is_world(&self, c: ColliderHandle) -> bool {
+        self.meshes.values().chain(self.boxes.values()).any(|(_, h)| *h == c)
+    }
+
+    /// A push on a dynamic body at a world point (N s).
+    pub fn apply_impulse(&mut self, b: RigidBodyHandle, impulse: V3, at: V3) {
+        if let Some(rb) = self.world.bodies.get_mut(b) {
+            rb.apply_impulse_at_point(to_v(impulse), to_v(at), true);
+        }
+    }
+
     /// How far a sphere at `p` sinks into the static world (0 when clear).
     pub fn sphere_penetration(&self, p: V3, radius: f32) -> f32 {
         let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD, InteractionTestMode::And));

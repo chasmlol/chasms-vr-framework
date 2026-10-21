@@ -1,5 +1,7 @@
-//! Body-relative zones: holsters (both hips, both shoulders behind the head) and the magazine
-//! pouches (chest and belt front, plus any empty slot).
+//! Body-relative zones: holsters (both hips, both shoulders behind the head), the grenade pouches
+//! (either side of the sternum and on the belt, torso-anchored as the research recommends: Pavlov's
+//! vest, a Resident Evil VR mod's chest zone, HL:A's wrist pockets) and the magazine pouches
+//! (chest and belt front, plus any empty slot).
 //!
 //! The zones hang off a body anchor whose yaw follows the head with a 0.5 s lag and freezes while
 //! a hand is in or approaching a zone, so a slot never slides away mid-reach (the shock2quest fix
@@ -35,15 +37,32 @@ fn belt(eye_height: f32) -> f32 {
 }
 
 /// Holster slots, indexed by `SLOT_*`.
-pub fn slot_zones(eye_height: f32, _dominant: usize) -> [Zone; SLOT_COUNT_BODY] {
+pub fn slot_zones(eye_height: f32, dominant: usize) -> [Zone; SLOT_COUNT_BODY] {
     let belt = belt(eye_height);
     let back = |side: f32| Zone { offset: Vec3::new(0.17 * side, -0.08, -0.12), radius: 0.2, behind: Some(-0.03) };
+    // Grenade pouches high on the chest either side of the sternum (clear of the magazine pouch
+    // in its middle), and one on the belt front on the weapon hand's side (the magazine belt
+    // pouch is on the other).
+    let chest = |side: f32| Zone::new(Vec3::new(0.125 * side, -0.29 * (eye_height / 1.70).clamp(0.6, 1.3), 0.11), 0.085);
+    let dom = if dominant == 0 { -1.0 } else { 1.0 };
     [
         Zone::new(Vec3::new(0.19, belt, 0.0), 0.13),  // right hip
         Zone::new(Vec3::new(-0.19, belt, 0.0), 0.13), // left hip
         back(1.0),                                     // over the right shoulder
         back(-1.0),                                    // over the left shoulder
+        chest(-1.0),                                   // chest pouch, left
+        chest(1.0),                                    // chest pouch, right
+        Zone::new(Vec3::new(0.1 * dom, belt + 0.03, 0.15), 0.085), // belt pouch
     ]
+}
+
+/// The pouches only take small things (grenades, knives); the hips and the back take anything
+/// holsterable.
+pub fn slot_fits(slot: u32, d: &ObjectDesc) -> bool {
+    match slot {
+        SLOT_CHEST_LEFT | SLOT_CHEST_RIGHT | SLOT_BELT => d.kind == OBJ_THROWABLE || d.half_extents.iter().fold(0.0f32, |a, b| a.max(*b)) <= 0.08,
+        _ => true,
+    }
 }
 
 /// Magazine pouches: the chest and the belt front on the off-hand side (empty slots count too, see
@@ -103,13 +122,16 @@ impl BodyAnchor {
     }
 
     /// How a holstered object sits in a slot (tracking space): on the hips barrel down, on the
-    /// back diagonally behind the shoulder, barrel up.
+    /// back diagonally behind the shoulder, barrel up; upright in a chest pouch; point down on the
+    /// belt.
     pub fn slot_pose(&self, slot: u32, zone: &Zone) -> (Vec3, Quat) {
         let c = self.zone_center(zone);
         let r = self.rot();
         let local = match slot {
             SLOT_BACK_RIGHT => Quat::from_rotation_z(0.5) * Quat::from_rotation_x(-1.25),
             SLOT_BACK_LEFT => Quat::from_rotation_z(-0.5) * Quat::from_rotation_x(-1.25),
+            SLOT_CHEST_LEFT | SLOT_CHEST_RIGHT => Quat::IDENTITY,
+            SLOT_BELT => Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
             _ => Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 * 0.9),
         };
         (c, r * local)
@@ -152,6 +174,31 @@ mod tests {
         let z = slot_zones(1.7, 1)[SLOT_BACK_RIGHT as usize];
         assert!(a.contains(&z, Vec3::new(0.18, 1.62, -0.15)), "over the shoulder, behind the head");
         assert!(!a.contains(&z, Vec3::new(0.2, 1.62, 0.05)), "beside the head in front isn't the back");
+    }
+
+    #[test]
+    fn grenade_pouches_sit_on_the_torso_clear_of_the_magazines_and_holsters() {
+        let mut a = BodyAnchor::default();
+        a.update(Vec3::new(0.0, 1.7, 0.0), Quat::IDENTITY, 0.011, false);
+        let z = slot_zones(1.7, 1);
+        let ammo = ammo_zones(1.7, 1);
+        let (l, r) = (&z[SLOT_CHEST_LEFT as usize], &z[SLOT_CHEST_RIGHT as usize]);
+        assert!(a.contains(l, Vec3::new(-0.125, 1.41, 0.11)) && a.contains(r, Vec3::new(0.125, 1.41, 0.11)));
+        assert!(!a.contains(l, Vec3::new(0.0, 1.36, 0.13)) && !a.contains(r, Vec3::new(0.0, 1.36, 0.13)), "the sternum is the magazine pouch's");
+        assert!(a.contains(&ammo[0], Vec3::new(0.0, 1.36, 0.13)));
+        let belt = &z[SLOT_BELT as usize];
+        assert!(belt.offset.x > 0.0, "on the weapon hand's side");
+        assert!(slot_zones(1.7, 0)[SLOT_BELT as usize].offset.x < 0.0, "left-handed: the left");
+        let hip = a.zone_center(&z[SLOT_HIP_RIGHT as usize]);
+        assert!(!a.contains(belt, hip) && !a.contains(&z[SLOT_HIP_RIGHT as usize], a.zone_center(belt)), "apart from the hip holster");
+        // Only small things go in the pouches.
+        let mut d = bytemuck::Zeroable::zeroed();
+        let small: &mut ObjectDesc = &mut d;
+        small.kind = OBJ_WEAPON;
+        small.half_extents = [0.02, 0.07, 0.12];
+        assert!(!slot_fits(SLOT_CHEST_LEFT, small) && slot_fits(SLOT_HIP_RIGHT, small), "a pistol goes on the hip");
+        small.kind = OBJ_THROWABLE;
+        assert!(slot_fits(SLOT_BELT, small), "a knife goes in the belt");
     }
 
     #[test]

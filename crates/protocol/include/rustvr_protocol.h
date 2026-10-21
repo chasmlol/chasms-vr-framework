@@ -255,6 +255,19 @@
  */
 #define RVR_EV_RECENTER 3
 
+/**
+ * The game's explosion pushes what the runtime simulates (its loose objects): f0..f2 the blast's
+ * world position (metres), f3 its radius, f4 the impulse (N s) an object at the centre gets,
+ * falling off to nothing at the radius.
+ */
+#define RVR_EV_BLAST 4
+
+/**
+ * A push on one object the runtime simulates (a bullet hitting it): `a` its id, f0..f2 the world
+ * impulse (N s), f3..f5 the world point it acts at.
+ */
+#define RVR_EV_IMPULSE 5
+
 #define RVR_HAPTIC_LEFT 0
 
 #define RVR_HAPTIC_RIGHT 1
@@ -363,6 +376,46 @@
 #define RVR_WPN_STOCK (1 << 4)
 
 /**
+ * [`ObjectDesc::throw_flags`]: a grenade. The runtime arms it, times its fuse (or waits for its
+ * impact) and tells the game when it goes off ([`ObjectState::shots`], [`OS_SPENT`]); the game
+ * does the explosion.
+ */
+#define RVR_THROW_GRENADE (1 << 0)
+
+/**
+ * It has a pin (at `handle`) the other hand pulls. Without one, a button on the holding hand arms it.
+ */
+#define RVR_THROW_PIN (1 << 1)
+
+/**
+ * A lever (spoon) holds the fuse until the grenade is let go of (or cooked): the fuse starts then,
+ * not when the pin comes out.
+ */
+#define RVR_THROW_LEVER (1 << 2)
+
+/**
+ * Goes off on a hard impact once armed and thrown (after `impact_delay`), rather than on a timer
+ * (or as well as one, if `fuse` is set).
+ */
+#define RVR_THROW_IMPACT (1 << 3)
+
+/**
+ * The game times the fuse: the runtime only reports it armed, and the game removes or respawns it.
+ */
+#define RVR_THROW_GAME_FUSE (1 << 4)
+
+/**
+ * A throwing knife: flies blade first (the blade from `grip` to the tip at `muzzle`) and sticks
+ * in what it hits tip first ([`OS_STUCK`]).
+ */
+#define RVR_THROW_KNIFE (1 << 5)
+
+/**
+ * Sticks to whatever it hits once thrown (sticky bombs).
+ */
+#define RVR_THROW_STICKY (1 << 6)
+
+/**
  * The runtime is moving it: draw it at `pose`.
  */
 #define RVR_OS_SIMULATED (1 << 0)
@@ -403,6 +456,31 @@
  */
 #define RVR_OS_SLIDE_LOCKED (1 << 9)
 
+/**
+ * Grenades: the fuse is burning (the game may show it lit, and its AI flee it).
+ */
+#define RVR_OS_ARMED (1 << 10)
+
+/**
+ * Grenades: the pin is out (draw it without one).
+ */
+#define RVR_OS_PIN_PULLED (1 << 11)
+
+/**
+ * Thrown, and still in the air or rolling.
+ */
+#define RVR_OS_THROWN (1 << 12)
+
+/**
+ * Stuck in something (a knife's blade, a sticky bomb): `parent` is what (0: the world).
+ */
+#define RVR_OS_STUCK (1 << 13)
+
+/**
+ * Went off: inert, the game hides it until it respawns it (`spawn_seq`) or removes it.
+ */
+#define RVR_OS_SPENT (1 << 14)
+
 #define RVR_SLOT_HIP_RIGHT 0
 
 #define RVR_SLOT_HIP_LEFT 1
@@ -414,7 +492,17 @@
 
 #define RVR_SLOT_BACK_LEFT 3
 
-#define RVR_SLOT_COUNT_BODY 4
+/**
+ * Grenade pouches either side of the sternum, and a belt pouch on the weapon hand's side (small
+ * throwables: grenades, knives).
+ */
+#define RVR_SLOT_CHEST_LEFT 4
+
+#define RVR_SLOT_CHEST_RIGHT 5
+
+#define RVR_SLOT_BELT 6
+
+#define RVR_SLOT_COUNT_BODY 7
 
 /**
  * The index finger rests on a trigger and curls to `index_pulled` as it's pulled.
@@ -581,6 +669,21 @@
  * Rounds in a full magazine of the held weapon.
  */
 #define RVR_F_MAG_SIZE 7
+
+/**
+ * Physical mode: grenades that went off, the target plates their blasts reached, and knives
+ * stuck in a target plate.
+ */
+#define RVR_F_EXPLOSIONS 8
+
+#define RVR_F_BLAST_HITS 9
+
+#define RVR_F_KNIFE_HITS 10
+
+/**
+ * Visual effects alive (muzzle flashes, smoke, tracers, bullet holes, casings, debris).
+ */
+#define RVR_F_FX_LIVE 11
 
 enum RVR_TexKind
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L

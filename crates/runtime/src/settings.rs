@@ -174,8 +174,12 @@ pub struct Interaction {
     pub mag_slam_release: bool,
     /// 0 = everything moves with the hand, 1 = heavy things lag (the Boneworks feel).
     pub weight: f32,
-    /// Multiplies throw speed.
+    /// Multiplies throw speed (on top of the speed-dependent gain every throw gets).
     pub throw_scale: f32,
+    /// How grenades arm: the other hand pulls the pin, or a button on the hand holding it.
+    pub grenade_arming: GrenadeArming,
+    /// Throwing knives stick more forgivingly (the blade within 72 degrees of its flight, not 60).
+    pub knife_assist: bool,
     /// Shoulder the gun: its stock rests at the shoulder when held near the face.
     pub virtual_stock: bool,
     /// Draw a laser from held guns.
@@ -189,6 +193,17 @@ pub struct Interaction {
     /// in one hand, and with both hands but off the shoulder.
     pub recoil_one_hand: f32,
     pub recoil_unbraced: f32,
+}
+
+/// How a grenade arms (see `rig::throwable`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrenadeArming {
+    /// The other hand pulls the pin; a lever holds the fuse until you let go (or press B to cook).
+    /// One-handed anyway while the other hand holds a gun, or for grenades without a pin.
+    Pin,
+    /// The trigger or A on the hand holding it arms it and starts the fuse.
+    Button,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -310,7 +325,9 @@ impl Default for Interaction {
             easy_mag: true,
             mag_slam_release: true,
             weight: 0.5,
-            throw_scale: 1.1,
+            throw_scale: 1.0,
+            grenade_arming: GrenadeArming::Pin,
+            knife_assist: true,
             virtual_stock: false,
             laser_sight: false,
             game_recoil: true,
