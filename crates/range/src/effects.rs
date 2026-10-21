@@ -115,6 +115,8 @@ pub struct GunFx {
     pub casing: Casing,
     /// The flash's size (1: a rifle's).
     pub flash: f32,
+    /// Worked by hand (a bolt, a pump): its cases come out when it's worked, not at the shot.
+    pub manual: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,14 +158,16 @@ pub fn gun_fx(w: &crate::content::Weapon, assets: &std::path::Path) -> GunFx {
     } else {
         Some(Vec3::new(0.027, 0.05, 0.12))
     };
-    let casing = if w.key.contains("saiga") || w.key.contains("shot") {
+    let casing = if w.key.contains("saiga") || w.key.contains("shot") || w.caliber.contains("gauge") {
         Casing::Shell
     } else if w.pistol {
         Casing::Pistol
     } else {
         Casing::Rifle
     };
-    GunFx { muzzle: Vec3::from_array(w.rig.muzzle), port, casing, flash: if w.pistol { 0.7 } else { 1.0 } }
+    // A bolt or a pump throws its case out when it's worked, not when it fires.
+    let manual = matches!(w.action.kind, rustvr_protocol::ACTION_BOLT | rustvr_protocol::ACTION_PUMP);
+    GunFx { muzzle: Vec3::from_array(w.rig.muzzle), port, casing, flash: if w.pistol { 0.7 } else { 1.0 }, manual }
 }
 
 /// A casing's mesh: a brass tube along +Z (a shotgun shell's red, with a brass head).
@@ -374,24 +378,46 @@ impl Effects {
         };
         self.tracers.push(Tracer { from: muzzle + tdir * 0.1, dir: tdir, dist: (dist - 0.1).max(0.0), t: 0.0 });
         self.stats.tracers += 1;
-        // The casing.
-        if let Some(port) = fx.port {
-            let (len, r) = fx.casing.size();
-            let out = q * Vec3::new(self.range(1.8, 2.6), self.range(1.1, 1.7), self.range(-0.7, -0.3));
-            let spin = q * Vec3::new(self.range(-8.0, 8.0), self.range(18.0, 34.0), self.range(-6.0, 6.0));
-            // Lying across the port, its mouth forward.
-            let rot = (q * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)).normalize();
-            if self.bits.iter().filter(|b| matches!(b.kind, BitKind::Casing(_))).count() >= MAX_CASINGS
-                && let Some(i) = self.bits.iter().position(|b| matches!(b.kind, BitKind::Casing(_)))
-            {
-                self.bits.remove(i);
-            }
-            self.bits.push(Bit { pos: p + q * port, rot, vel: vel + out, spin, t: 0.0, life: CASING_LIFE, radius: r.max(len * 0.25), resting: false, kind: BitKind::Casing(fx.casing) });
-            self.stats.casings += 1;
+        // The casing (a gun worked by hand keeps it until the bolt or the pump throws it out).
+        if fx.port.is_some() && !fx.manual {
+            self.eject_from_port(fx, gun, vel);
         }
         if let Some(h) = hit {
             self.impact(h, fwd);
         }
+    }
+
+    /// A case out of the ejection port, to the right and up (a shot, or a bolt worked).
+    pub fn eject_from_port(&mut self, fx: &GunFx, gun: (Vec3, Quat), vel: Vec3) {
+        let Some(port) = fx.port else { return };
+        let (p, q) = gun;
+        let out = q * Vec3::new(self.range(1.8, 2.6), self.range(1.1, 1.7), self.range(-0.7, -0.3));
+        let spin = q * Vec3::new(self.range(-8.0, 8.0), self.range(18.0, 34.0), self.range(-6.0, 6.0));
+        // Lying across the port, its mouth forward.
+        let rot = (q * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)).normalize();
+        self.casing(fx.casing, p + q * port, rot, vel + out, spin);
+    }
+
+    /// A case thrown out of an open chamber (a break action's extractor): from its mouth at `at`
+    /// (world), lying along the chamber (`along`, the way it points), out backwards and up.
+    pub fn eject_from_chamber(&mut self, kind: Casing, at: Vec3, along: Vec3, vel: Vec3) {
+        let along = along.normalize_or(Vec3::Z);
+        let rot = Quat::from_rotation_arc(Vec3::Z, along);
+        let out = -along * self.range(1.6, 2.4) + Vec3::Y * self.range(0.8, 1.4);
+        let spin = rot * Vec3::new(self.range(-12.0, 12.0), self.range(-12.0, 12.0), 0.0);
+        let (len, _) = kind.size();
+        self.casing(kind, at - along * len * 0.5, rot, vel + out, spin);
+    }
+
+    fn casing(&mut self, kind: Casing, pos: Vec3, rot: Quat, vel: Vec3, spin: Vec3) {
+        let (len, r) = kind.size();
+        if self.bits.iter().filter(|b| matches!(b.kind, BitKind::Casing(_))).count() >= MAX_CASINGS
+            && let Some(i) = self.bits.iter().position(|b| matches!(b.kind, BitKind::Casing(_)))
+        {
+            self.bits.remove(i);
+        }
+        self.bits.push(Bit { pos, rot, vel, spin, t: 0.0, life: CASING_LIFE, radius: r.max(len * 0.25), resting: false, kind: BitKind::Casing(kind) });
+        self.stats.casings += 1;
     }
 
     /// A bullet hit something: a hole, and sparks or dust.
@@ -727,7 +753,7 @@ mod tests {
     }
 
     fn rifle() -> GunFx {
-        GunFx { muzzle: Vec3::new(0.0, 0.03, 0.66), port: Some(Vec3::new(0.026, 0.05, 0.12)), casing: Casing::Rifle, flash: 1.0 }
+        GunFx { muzzle: Vec3::new(0.0, 0.03, 0.66), port: Some(Vec3::new(0.026, 0.05, 0.12)), casing: Casing::Rifle, flash: 1.0, manual: false }
     }
 
     fn none(_: u32) -> Option<(Vec3, Quat)> {

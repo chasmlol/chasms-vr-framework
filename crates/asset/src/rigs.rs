@@ -172,6 +172,10 @@ pub struct GunRig {
     /// the shells of barrels the stock gun doesn't have).
     #[serde(default)]
     pub hidden_bones: Vec<String>,
+    /// Meshes (their index in the model) not drawn: glass the test range can't draw see-through
+    /// (a gauge's, over its needle).
+    #[serde(default)]
+    pub hidden_meshes: Vec<usize>,
     /// The runtime's own recoil, for when the game's isn't loaded: muzzle climb (deg), sideways
     /// scatter (deg), push back (m); and its character: climb kept on full auto, return (1/s),
     /// lean (deg).

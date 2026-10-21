@@ -51,6 +51,15 @@ pub struct Shot {
     pub vel: Vec3,
 }
 
+/// A case (or a round) the runtime threw out of a gun: out of an open chamber (its mouth and the
+/// way it points, world) or, without one, out of the ejection port.
+pub struct Ejection {
+    pub weapon: usize,
+    pub gun: (Vec3, Quat),
+    pub vel: Vec3,
+    pub chamber: Option<(Vec3, Vec3)>,
+}
+
 pub struct Armory {
     pub table: Box<ObjectTable>,
     /// The guns' own recoil (see `kick_descs`).
@@ -63,6 +72,8 @@ pub struct Armory {
     descs: HashMap<u32, ObjectDesc>,
     pub states: Box<ObjectStates>,
     shots_seen: HashMap<u32, u32>,
+    /// What each gun's chambers held last time (`ObjectState::chambered`).
+    chambers_seen: HashMap<u32, u32>,
     collision: Vec<ColBox>,
     /// How many of `collision` the runtime has (the ring can fill up mid-way).
     sent: usize,
@@ -103,11 +114,6 @@ fn weapon_bounds(w: &Weapon) -> (Vec3, Vec3) {
 /// Weapon-space bounds of a gun with its magazine in (what it covers lying on a table).
 fn drawn_bounds(w: &Weapon) -> (Vec3, Vec3) {
     parts_bounds(w, |_| true).unwrap_or_else(|| weapon_bounds(w))
-}
-
-/// Weapon-space bounds of a gun's magazine.
-fn mag_bounds(w: &Weapon) -> Option<(Vec3, Vec3)> {
-    parts_bounds(w, |i| w.mag_parts.contains(&i))
 }
 
 /// The rotation of a gun lying on its side with the barrel along `barrel`: its right side up, or
@@ -224,10 +230,34 @@ pub fn weapon_desc(i: usize, w: &Weapon, spawn: Pose, start_slot: u32) -> Object
     }
     d.ammo_type = i as u32 + 1;
     d.capacity = w.mag_size;
+    // How it's worked: a self-loading gun with a handle (not an air gun's pump) or a bolt or pump
+    // action needs a fresh magazine racked in.
+    let a = &w.action;
+    let racks = w.handle.is_some() && a.air.is_none() && matches!(a.kind, ACTION_SELF_LOADING | ACTION_BOLT | ACTION_PUMP);
     d.weapon_flags = if w.automatic { WPN_AUTOMATIC } else { 0 }
         | if w.slide_locks { WPN_SLIDE_LOCKS } else { 0 }
-        | if w.handle.is_some() { WPN_NEEDS_RACK } else { 0 }
+        | if racks { WPN_NEEDS_RACK } else { 0 }
+        | if a.air.is_some() { WPN_PNEUMATIC } else { 0 }
+        | if a.chambers.is_empty() { 0 } else { WPN_LOADS_CHAMBERS }
         | if w.pistol { WPN_PISTOL } else if w.stock { WPN_STOCK } else { 0 };
+    d.action = a.kind;
+    match a.kind {
+        ACTION_BREAK | ACTION_SWING => {
+            d.handle = a.hinge.to_array();
+            d.handle_travel = 0.0;
+            d.action_angle = a.open;
+        }
+        ACTION_BOLT => d.action_angle = a.bolt_turn.map_or(0.0, |[closed, open]| open - closed),
+        _ => {}
+    }
+    if !a.chambers.is_empty() {
+        d.capacity = a.chambers.len() as u32;
+        d.mag_well = a.chambers[0].to_array();
+        d.chamber_step = a.chambers.get(1).map_or(0.0, |c1| c1.x - a.chambers[0].x);
+    }
+    if let Some([pump, shot, min]) = a.air {
+        [d.pump_pressure, d.shot_pressure, d.min_pressure] = [pump, shot, min];
+    }
     d.fire_rate = w.rounds_per_second;
     [d.recoil_pitch, d.recoil_yaw, d.recoil_back] = w.recoil;
     [d.recoil_climb, d.recoil_return, d.recoil_angle] = w.recoil_feel;
@@ -381,9 +411,11 @@ pub fn ammo_types(weapons: &[&Weapon]) -> Vec<u32> {
 }
 
 /// Magazine space is the gun's own space: seated, a magazine sits exactly where the gun's model
-/// has it, so its part draws in place. Its collider is the magazine mesh's box.
+/// has it, so its part draws in place. Its collider is the magazine mesh's box. A gun loaded round
+/// by round gets one round (its first chamber's), its base at that chamber's mouth.
 fn mag_desc(i: usize, w: &Weapon) -> ObjectDesc {
-    let (min, max) = mag_bounds(w).unwrap_or((w.mag_center - Vec3::new(0.016, 0.07, 0.03), w.mag_center + Vec3::new(0.016, 0.07, 0.03)));
+    let round = !w.action.chambers.is_empty();
+    let (min, max) = parts_bounds(w, |p| w.round_parts().contains(&p)).unwrap_or((w.mag_center - Vec3::new(0.016, 0.07, 0.03), w.mag_center + Vec3::new(0.016, 0.07, 0.03)));
     let mut d = ObjectDesc::zeroed();
     d.id = MAG_BASE + i as u32;
     d.kind = OBJ_MAGAZINE;
@@ -392,11 +424,11 @@ fn mag_desc(i: usize, w: &Weapon) -> ObjectDesc {
     d.mass = w.mag_mass;
     d.half_extents = ((max - min) * 0.5).to_array();
     d.center = ((max + min) * 0.5).to_array();
-    d.mag_well = w.rig.mag_well;
+    d.mag_well = if round { w.action.chambers[0].to_array() } else { w.rig.mag_well };
     d.ammo_type = i as u32 + 1;
-    d.capacity = w.mag_size;
-    d.rounds = w.mag_size;
-    set_name(&mut d.name, &format!("{} magazine", w.name));
+    d.capacity = if round { 1 } else { w.mag_size };
+    d.rounds = d.capacity;
+    set_name(&mut d.name, &format!("{} {}", w.name, if round { "round" } else { "magazine" }));
     d
 }
 
@@ -511,7 +543,7 @@ impl Armory {
             kinds.insert(WEAPON_BASE + i as u32, Kind::Weapon(i));
             // One magazine template per kind of magazine, from the first gun laid out that takes it.
             // (A gun without one, the flamethrower, holds its rounds itself.)
-            if !templates.contains(&ammo[i]) && !w.mag_parts.is_empty() {
+            if !templates.contains(&ammo[i]) && !w.round_parts().is_empty() {
                 templates.push(ammo[i]);
                 let mut m = mag_desc(i, w);
                 m.ammo_type = ammo[i];
@@ -584,6 +616,7 @@ impl Armory {
             descs: descs.iter().map(|d| (d.id, *d)).collect(),
             states: bytemuck::zeroed_box(),
             shots_seen: HashMap::new(),
+            chambers_seen: HashMap::new(),
             collision,
             sent: 0,
             registered: false,
@@ -653,6 +686,7 @@ impl Armory {
             if written && adapter.set_sound_pack(&self.sounds) {
                 self.registered = true;
                 self.shots_seen.clear();
+                self.chambers_seen.clear();
                 tracing::info!("range: registered {} objects, {} hand poses and {} recoil kicks", self.table.count, self.poses.count, self.kicks.count);
                 match self.sounds.path() {
                     "" => tracing::info!("range: no sound pack (run metro-extract): the runtime's own sounds"),
@@ -670,6 +704,7 @@ impl Armory {
         self.registered = false;
         self.sent = 0;
         self.shots_seen.clear();
+        self.chambers_seen.clear();
         self.states.count = 0;
     }
 
@@ -711,12 +746,45 @@ impl Armory {
         out
     }
 
+    /// Cases (and rounds) the runtime threw out of the guns' chambers since the last call: a break
+    /// action's spent cases as it opens, whatever a bolt or a pump takes out at the back of its
+    /// stroke. (A live round pulled out of an open chamber by hand is in the hand: not one of them.)
+    pub fn ejections(&mut self, v: &View, weapons: &[&Weapon]) -> Vec<Ejection> {
+        let mut out = Vec::new();
+        for s in &self.states.states[..(self.states.count as usize).min(MAX_OBJECTS)] {
+            let Some(&Kind::Weapon(weapon)) = self.kinds.get(&s.desc) else { continue };
+            let was = self.chambers_seen.insert(s.id, s.chambered).unwrap_or(s.chambered);
+            if s.flags & OS_ACTION_OPEN == 0 || was == s.chambered {
+                continue;
+            }
+            let w = weapons[weapon];
+            let (p, q) = Self::world_pose(s, v);
+            let vel = Vec3::from_array(s.lin_vel);
+            let vel = if s.flags & OS_TRACKING != 0 { v.dir(vel) } else { vel };
+            let a = &w.action;
+            if !a.chambers.is_empty() {
+                let turn = if a.hinged() { a.hinge_matrix(s.slide) } else { Mat4::IDENTITY };
+                for (k, mouth) in a.chambers.iter().enumerate() {
+                    let spent = 1u32 << (k as u32 + CHAMBER_SPENT_SHIFT);
+                    if was & spent != 0 && s.chambered & (spent | 1 << k) == 0 {
+                        let at = p + q * turn.transform_point3(*mouth);
+                        let along = q * turn.transform_vector3(Vec3::Z);
+                        out.push(Ejection { weapon, gun: (p, q), vel, chamber: Some((at, along)) });
+                    }
+                }
+            } else if matches!(a.kind, ACTION_BOLT | ACTION_PUMP) && was & (1 | 1 << CHAMBER_SPENT_SHIFT) != 0 && s.chambered & (1 | 1 << CHAMBER_SPENT_SHIFT) == 0 {
+                out.push(Ejection { weapon, gun: (p, q), vel, chamber: None });
+            }
+        }
+        out
+    }
+
     /// The gun in a hand (dominant first): weapon index, rounds in the magazine, chambered.
     pub fn held_gun(&self, dominant: usize) -> Option<(usize, u32, bool)> {
         let flag = |h: usize| if h == 0 { OS_HELD_LEFT } else { OS_HELD_RIGHT };
         [dominant, dominant ^ 1].into_iter().find_map(|h| {
             self.states().iter().find(|s| s.flags & flag(h) != 0).and_then(|s| match self.kinds.get(&s.desc) {
-                Some(Kind::Weapon(i)) => Some((*i, s.rounds, s.chambered != 0)),
+                Some(Kind::Weapon(i)) => Some((*i, s.rounds, s.chambered & CHAMBER_LIVE_MASK != 0)),
                 _ => None,
             })
         })
@@ -734,36 +802,26 @@ impl Armory {
             match *kind {
                 Kind::Weapon(i) => {
                     let w = &weapons[i];
-                    // The bolt, slide or charging handle rides back as the runtime racks it.
-                    let slide = if s.slide.is_finite() { s.slide.clamp(0.0, 1.0) } else { 0.0 };
-                    let back = w.handle.map(|(_, travel)| travel).unwrap_or(0.0) * slide;
-                    let bolt = model * Mat4::from_translation(Vec3::new(0.0, 0.0, -back)) * w.fix;
-                    // The trigger swings back under the finger pulling it.
+                    // The parts the runtime moves: the bolt, slide or handle riding back (a bolt
+                    // turned up first, a lever swung), the barrels or cylinder open on their hinge
+                    // with the rounds in the chambers, the gauge showing the pressure, and the
+                    // trigger swung back under the finger pulling it.
                     let pull = match s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) {
                         OS_HELD_LEFT => triggers[0],
                         OS_HELD_RIGHT => triggers[1],
                         _ => 0.0,
                     };
-                    let pull = if pull.is_finite() { pull.clamp(0.0, 1.0) } else { 0.0 };
-                    let trigger = match w.trigger_pivot {
-                        Some((at, angle)) => model * Mat4::from_translation(at) * Mat4::from_rotation_x(angle * pull) * Mat4::from_translation(-at) * w.fix,
-                        None => model * w.fix,
-                    };
-                    for part in (0..w.parts.len()).filter(|p| !w.mag_parts.contains(p)) {
-                        let m = if w.bolt_parts.contains(&part) {
-                            bolt
-                        } else if w.trigger_parts.contains(&part) {
-                            trigger
-                        } else {
-                            model * w.fix
-                        };
-                        out.push((part_id(i, part), m, [1.0; 4], glow, w.from_game));
+                    let state = content::PartsState { slide: s.slide, chambered: s.chambered, fuse: s.fuse, trigger: pull };
+                    for (part, m) in w.part_matrices(&state).into_iter().enumerate() {
+                        if let Some(m) = m {
+                            out.push((part_id(i, part), model * m, [1.0; 4], glow, w.from_game));
+                        }
                     }
                 }
                 Kind::Mag(i) => {
                     let w = &weapons[i];
-                    if !w.mag_parts.is_empty() {
-                        for &part in &w.mag_parts {
+                    if !w.round_parts().is_empty() {
+                        for &part in w.round_parts() {
                             out.push((part_id(i, part), model * w.fix, [1.0; 4], glow, w.from_game));
                         }
                     } else if s.flags & OS_IN_WEAPON == 0 {
@@ -864,7 +922,7 @@ mod tests {
         // Each kind of magazine the laid-out guns take has one template, and nothing else is
         // registered.
         let templates: Vec<u32> = a.table.descs[..a.table.count as usize].iter().filter(|d| d.flags & OBJF_TEMPLATE != 0).map(|d| d.ammo_type).collect();
-        let mut kinds: Vec<u32> = weapon_descs(&a).iter().filter(|d| !refs[(d.id - WEAPON_BASE) as usize].mag_parts.is_empty()).map(|d| d.ammo_type).collect();
+        let mut kinds: Vec<u32> = weapon_descs(&a).iter().filter(|d| !refs[(d.id - WEAPON_BASE) as usize].round_parts().is_empty()).map(|d| d.ammo_type).collect();
         kinds.sort();
         kinds.dedup();
         assert_eq!(templates.len(), kinds.len(), "one template per magazine: {templates:x?} for {kinds:x?}");
@@ -970,13 +1028,23 @@ mod tests {
         let weapons = everything();
         let refs: Vec<&Weapon> = weapons.iter().collect();
         let a = Armory::new(&refs);
+        let mag_bounds = |w: &Weapon| parts_bounds(w, |i| w.mag_parts.contains(&i));
         for d in weapon_descs(&a) {
             let i = (d.id - WEAPON_BASE) as usize;
             let w = refs[i];
-            if w.mag_parts.is_empty() {
+            if w.round_parts().is_empty() {
                 continue;
             }
             let t = a.descs.values().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type).unwrap_or_else(|| panic!("{}: no magazine", w.key));
+            if !w.action.chambers.is_empty() {
+                // Loaded round by round: the pouch hands one round, its base at the first
+                // chamber's mouth; the gun has a chamber per round.
+                assert_eq!((t.capacity, t.rounds), (1, 1), "{}: one round", w.key);
+                assert_eq!(t.mag_well, d.mag_well, "{}", w.key);
+                assert_eq!(d.capacity as usize, w.action.chambers.len(), "{}", w.key);
+                assert!(d.weapon_flags & WPN_LOADS_CHAMBERS != 0, "{}", w.key);
+                continue;
+            }
             let Some(Kind::Mag(j)) = a.kinds.get(&t.id) else { panic!("{}: its magazine draws as nothing", w.key) };
             let from = refs[*j];
             assert_eq!(from.magazine, w.magazine, "{}: takes {}'s magazine", w.key, from.key);
@@ -1040,14 +1108,28 @@ mod tests {
                 assert!((0.003..=0.06).contains(&d.recoil_back), "{}", w.key);
             }
             // A gun with something to rack needs racking after a fresh magazine; one without
-            // (a revolver, a break action) chambers as the magazine goes in.
-            assert_eq!(d.weapon_flags & WPN_NEEDS_RACK != 0, w.handle.is_some(), "{}", w.key);
+            // (a revolver, a break action) or whose handle is an air pump chambers as the magazine
+            // goes in.
+            assert_eq!(d.weapon_flags & WPN_NEEDS_RACK != 0, w.handle.is_some() && w.action.air.is_none(), "{}", w.key);
             if w.handle.is_some() {
                 assert!(d.handle_travel >= 0.015, "{}: handle travel {}", w.key, d.handle_travel);
             }
+            // How it's worked: a hinged action's hinge is where `handle` points, with nothing to
+            // pull; a bolt lifts; an air gun's pressures are its rig's.
+            match d.action {
+                ACTION_BREAK | ACTION_SWING => {
+                    assert!(w.handle.is_none() && d.handle_travel == 0.0 && d.action_angle.abs() > 1.0, "{}: {:?}", w.key, w.action);
+                    assert_eq!(Vec3::from_array(d.handle), w.action.hinge, "{}", w.key);
+                }
+                ACTION_BOLT => assert!(d.action_angle > 0.5 && d.weapon_flags & WPN_NEEDS_RACK != 0, "{}", w.key),
+                _ => {}
+            }
+            if let Some([pump, shot, min]) = w.action.air {
+                assert!(d.weapon_flags & WPN_PNEUMATIC != 0 && [d.pump_pressure, d.shot_pressure, d.min_pressure] == [pump, shot, min], "{}", w.key);
+            }
             // The magazine template's box is the magazine (a box, a drum, a speed loader, a pair
             // of shells), a small part of the gun. (A gun without one holds its rounds.)
-            if w.mag_parts.is_empty() {
+            if w.round_parts().is_empty() {
                 assert!(w.from_game && a.descs.values().all(|m| m.flags & OBJF_TEMPLATE == 0 || m.ammo_type != d.ammo_type), "{}", w.key);
                 continue;
             }

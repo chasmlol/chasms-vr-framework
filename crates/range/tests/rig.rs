@@ -101,7 +101,15 @@ struct Held {
 
 /// What the runtime draws for a player holding `w` at `gun`.
 fn hold(w: &Weapon, gun: Mat4) -> Held {
-    let grips = grips(w, gun);
+    hold_with(w, gun, true)
+}
+
+/// [`hold`], with the support hand on the foregrip or (`support` false) the gun in one hand.
+fn hold_with(w: &Weapon, gun: Mat4, support: bool) -> Held {
+    let mut grips = grips(w, gun);
+    if !support {
+        grips[0] = None;
+    }
     let mut solver = BodySolver::new(BodyParams::default(), Calibration::default());
     let head = IkPose { pos: EYE, rot: Quat::IDENTITY };
     let mut out = None;
@@ -162,8 +170,12 @@ struct View {
     /// Draw the gun (off: only the markers and a block where the pistol grip is, to see the fist
     /// round it).
     gun: bool,
-    /// Tint the gun's moving parts: the magazine red, the bolt or handle cyan, the trigger yellow.
+    /// Tint the gun's moving parts: the magazine red, the bolt or handle cyan, the trigger yellow,
+    /// the barrels (or cylinder) on their hinge orange, the chambers' rounds green, a gauge blue.
     parts: bool,
+    /// Where the moving parts are (the runtime's `slide`, `chambered`, `fuse`): at rest, or a
+    /// break action open, a bolt worked back, a pump lever down, a gauge full.
+    state: Option<content::PartsState>,
 }
 
 const SIZE: (u32, u32) = (900, 700);
@@ -177,16 +189,37 @@ impl Scene<'_> {
         let depth = Texture::new(gpu, &TexDesc::target(width, height, DXGI_FORMAT_R32_FLOAT)).unwrap();
         let (cam, rot) = view.cam;
         let vp = projection(&view.fov, 0.02, 50.0) * view_matrix(cam, rot);
-        let model = gun_at * w.fix;
+        // Each part where the runtime's state puts it (the seated magazine where the model has it).
+        let state = view.state.unwrap_or_else(|| content::PartsState::at_rest(w));
+        let mats = w.part_matrices(&state);
+        let a = &w.action;
+        let chamber = |i: usize| a.chamber_parts.iter().any(|c| c.contains(&i));
+        let gauge = |i: usize| a.gauge.as_ref().is_some_and(|g| g.parts.contains(&i));
         let tint = |i: usize| match () {
             _ if !view.parts => [1.0; 4],
             _ if w.mag_parts.contains(&i) => [1.0, 0.25, 0.25, 1.0],
             _ if w.bolt_parts.contains(&i) => [0.25, 1.0, 1.0, 1.0],
             _ if w.trigger_parts.contains(&i) => [1.0, 1.0, 0.2, 1.0],
+            _ if a.barrel_parts.contains(&i) => [1.0, 0.6, 0.15, 1.0],
+            _ if chamber(i) => [0.3, 1.0, 0.3, 1.0],
+            _ if gauge(i) => [0.3, 0.45, 1.0, 1.0],
             _ => [0.6, 0.6, 0.6, 1.0],
         };
-        let moving = |i: usize| w.mag_parts.contains(&i) || w.bolt_parts.contains(&i) || w.trigger_parts.contains(&i);
-        let mut draws: Vec<Draw> = if view.gun { gun.iter().enumerate().map(|(i, (m, two))| Draw { mesh: m, model, tint: tint(i), emissive: if view.parts && moving(i) { 0.6 } else { 0.0 }, two_sided: *two }).collect() } else { Vec::new() };
+        let moving = |i: usize| w.mag_parts.contains(&i) || w.bolt_parts.contains(&i) || w.trigger_parts.contains(&i) || a.barrel_parts.contains(&i) || chamber(i) || gauge(i);
+        let mut draws: Vec<Draw> = if view.gun {
+            gun.iter()
+                .enumerate()
+                .filter_map(|(i, (m, two))| {
+                    // (The seated magazine, as the runtime puts it: in a swung-out cylinder it swings
+                    // out with it.)
+                    let seated = if a.hinged() { a.hinge_matrix(state.slide) } else { Mat4::IDENTITY } * w.fix;
+                    let at = mats[i].or_else(|| w.mag_parts.contains(&i).then_some(seated))?;
+                    Some(Draw { mesh: m, model: gun_at * at, tint: tint(i), emissive: if view.parts && moving(i) { 0.6 } else { 0.0 }, two_sided: *two })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         if !view.gun {
             // The pistol grip's cross-section (measured), as a block along its axis.
             let (centre, half) = w.grip_block.unwrap();
@@ -434,6 +467,8 @@ fn renders() {
         let gun_meshes: Vec<(Mesh, bool)> = w.parts.iter().map(|p| (scene.renderer.upload(&gpu, p).unwrap(), w.from_game)).collect();
         let gun = aimed(w);
         let held = hold(w, gun);
+        // The action views: the firing hand alone (the support hand would hold the shut barrels).
+        let held_one = hold_with(w, gun, false);
         let at = |p: [f32; 3]| gun.transform_point3(Vec3::from_array(p));
         let grip = at(w.rig.grip);
         let tube = w.grip_rot.unwrap() * Vec3::Z;
@@ -444,7 +479,7 @@ fn renders() {
         let close = fov(0.17, SIZE.0 as f32 / SIZE.1 as f32);
         let aspect = SIZE.0 as f32 / SIZE.1 as f32;
         let all_markers = std::env::var("RIG_MARKERS").is_ok();
-        let view = |name: &'static str, cam: (Vec3, Quat), fov: Fov, visibility: u32| View { name, cam, fov, visibility, first_person: false, markers: all_markers, runtime_bias: false, gun: true, parts: false };
+        let view = |name: &'static str, cam: (Vec3, Quat), fov: Fov, visibility: u32| View { name, cam, fov, visibility, first_person: false, markers: all_markers, runtime_bias: false, gun: true, parts: false, state: None };
         let side = mid + Vec3::new(span * 1.9 + 0.3, 0.06, 0.0);
         let mut shots = vec![
             view("side", look_at(side, mid, Vec3::Y), wide, BODYVIS_ARMS),
@@ -470,8 +505,56 @@ fn renders() {
             shots.push(view("support", look_at(fore + Vec3::new(-0.3, -0.28, -0.05), fore, Vec3::Y), close, BODYVIS_HANDS));
             shots.push(view("support_right", look_at(fore + Vec3::new(0.32, -0.12, 0.08), fore, Vec3::Y), close, BODYVIS_HANDS));
         }
+        // The action worked (`rustvr::rig::actions`): the parts the runtime moves, where it puts them.
+        let a = &w.action;
+        let rest = content::PartsState::at_rest(w);
+        let parts_view = |name, cam, state: content::PartsState| View { parts: true, state: Some(state), ..view(name, cam, wide, BODYVIS_HANDS) };
+        if a.hinged() {
+            // Open half way and all the way, from the right (a break action) or from above and
+            // behind (a swing-out barrel or cylinder goes left), loaded and with its cases thrown out.
+            let from = if a.kind == ACTION_SWING { mid + Vec3::new(-0.35, span * 0.9 + 0.35, -0.6) } else { side };
+            let cam = look_at(from, mid, Vec3::Y);
+            shots.push(View { state: Some(content::PartsState { slide: 0.5, ..rest }), ..view("half_open", cam, wide, BODYVIS_HANDS) });
+            shots.push(View { state: Some(content::PartsState { slide: 1.0, ..rest }), ..view("open", cam, wide, BODYVIS_HANDS) });
+            shots.push(parts_view("open_parts", cam, content::PartsState { slide: 1.0, ..rest }));
+            shots.push(View { state: Some(content::PartsState { slide: 1.0, chambered: 0, ..rest }), ..view("open_empty", cam, wide, BODYVIS_HANDS) });
+            // Close up on the open breech: the chambers' mouths.
+            let breech = gun.transform_point3(a.hinge_matrix(1.0).transform_point3(a.chambers.first().copied().unwrap_or(a.hinge)));
+            let close_from = if a.kind == ACTION_SWING { breech + Vec3::new(-0.05, 0.3, -0.25) } else { breech + Vec3::new(0.32, 0.18, -0.12) };
+            shots.push(View { state: Some(content::PartsState { slide: 1.0, ..rest }), ..view("breech", look_at(close_from, breech, Vec3::Y), close, BODYVIS_HANDS) });
+        }
+        if a.kind == ACTION_BOLT || a.lever.is_some() || w.handle.is_some() && matches!(a.kind, ACTION_PUMP) {
+            // A bolt turned up, then back; a lever (a pump) down: from the right, behind and above,
+            // the knob's whole path in view.
+            let knob = w.handle.map_or(mid, |(h, t)| gun.transform_point3(h - Vec3::Z * t * 0.5));
+            let cam = look_at(knob + Vec3::new(0.5, 0.3, -0.35), knob, Vec3::Y);
+            if a.kind == ACTION_BOLT {
+                shots.push(View { state: Some(content::PartsState { fuse: 1.0, ..rest }), ..view("bolt_up", cam, wide, BODYVIS_HANDS) });
+                shots.push(View { state: Some(content::PartsState { fuse: 1.0, slide: 1.0, chambered: 0, ..rest }), ..view("bolt_back", cam, wide, BODYVIS_HANDS) });
+                shots.push(View { state: Some(rest), ..view("bolt_closed", cam, wide, BODYVIS_HANDS) });
+            } else if let Some((pivot, _)) = a.lever {
+                let at = gun.transform_point3(pivot);
+                let cam = look_at(at + Vec3::new(0.55, 0.05, 0.0), at, Vec3::Y);
+                for (name, slide) in [("pump_home", 0.0), ("half_pumped", 0.5), ("pumped", 1.0)] {
+                    shots.push(View { state: Some(content::PartsState { slide, ..rest }), ..view(name, cam, wide, BODYVIS_HANDS) });
+                }
+            }
+        }
+        if let Some(g) = &a.gauge {
+            // The gauge empty, half and full, looking at its face (the side its parts are thinnest
+            // across, the shooter's).
+            let at = gun.transform_point3(g.at);
+            let (lo, hi) = content::parts_bounds(&w.parts, &g.parts, w.fix).unwrap_or((g.at, g.at));
+            let size = hi - lo;
+            let face = if size.z <= size.x && size.z <= size.y { -Vec3::Z } else if size.x <= size.y { Vec3::X } else { Vec3::Y };
+            let from = at + face * 0.1 + Vec3::Y * 0.005;
+            let dial = fov(0.12, aspect);
+            for (name, p) in [("gauge_empty", 0.0), ("gauge_half", 0.5), ("gauge_full", 1.0)] {
+                shots.push(View { state: Some(content::PartsState { fuse: p, ..rest }), ..view(name, look_at(from, at, Vec3::Y), dial, BODYVIS_HANDS) });
+            }
+        }
         for v in &shots {
-            let px = scene.shot(&gun_meshes, gun, w, &held, v);
+            let px = scene.shot(&gun_meshes, gun, w, if v.state.is_some() { &held_one } else { &held }, v);
             let path = out_dir().join(format!("{}_{}.png", w.key, v.name));
             rustvr_gpu::save_png(&path, SIZE.0, SIZE.1, &px).unwrap();
         }

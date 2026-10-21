@@ -418,6 +418,17 @@ impl Game {
                 self.shot_fx(shot.weapon, shot.gun, shot.vel, shot.origin, shot.dir.normalize(), v);
             }
         }
+        // The cases a break action throws out as it opens, and the ones a bolt or a pump does.
+        if let Some(a) = &mut self.armory {
+            let guns: Vec<&Weapon> = self.scene.weapons.iter().map(|g| &g.w).collect();
+            for e in a.ejections(v, &guns) {
+                let Some(fx) = self.gun_fx.get(e.weapon).copied() else { continue };
+                match e.chamber {
+                    Some((at, along)) => self.effects.eject_from_chamber(fx.casing, at, along, e.vel),
+                    None => self.effects.eject_from_port(&fx, e.gun, e.vel),
+                }
+            }
+        }
         // Weapons.
         let n = self.scene.weapons.len();
         let switch = |game: &mut Game, to: usize| {

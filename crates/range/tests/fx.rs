@@ -105,7 +105,7 @@ fn hot(a: &[u8]) -> usize {
 }
 
 fn rifle() -> GunFx {
-    GunFx { muzzle: Vec3::new(0.0, 0.03, 0.66), port: Some(Vec3::new(0.027, 0.05, 0.12)), casing: Casing::Rifle, flash: 1.0 }
+    GunFx { muzzle: Vec3::new(0.0, 0.03, 0.66), port: Some(Vec3::new(0.027, 0.05, 0.12)), casing: Casing::Rifle, flash: 1.0, manual: false }
 }
 
 /// A rifle at the hip of a player at the origin, aimed at the plate 10 m ahead.
