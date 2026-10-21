@@ -30,11 +30,11 @@ See [docs/DESIGN.md](docs/DESIGN.md) for how it fits together.
 | `crates/gpu` | Direct3D 11 helpers: devices, shared textures, shaders, PNGs, egui painting |
 | `crates/range` | `rustvr-range.exe`: a fake game for testing (an empty range with targets and guns) |
 | `crates/metro-adapter` | The Metro 2033 Redux adapter (`dinput8.dll`) |
-| `crates/metro-assets` | `metro-extract`: copies Metro's guns, hands and props from your install into `local_assets/` |
+| `crates/metro-assets` | `metro-extract`: copies Metro's guns, hands, props and sounds from your install into `local_assets/` |
 | `crates/asset` | The format of `local_assets/` |
 | `crates/ik` | Full-body IK from the head and hands |
 | `crates/avatar` | Draws the player's body and hands over the game's picture |
-| `crates/audio` | Procedural, spatial interaction sounds |
+| `crates/audio` | Spatial interaction sounds: a game's own (its sound pack), or procedural ones |
 
 ## Building
 
@@ -70,7 +70,10 @@ target\debug\metro-extract
 ```
 
 This reads your install and writes into `local_assets/`, which is git-ignored. Never commit or share
-those files: they're the game's.
+those files: they're the game's. It includes a sound pack (`local_assets/metro2033/sounds`): the range
+hands it to the runtime, which then plays Metro's own sounds (each gun's shots and their echo,
+its reload, the casings landing, grabs and holsters) instead of its synthesised ones.
+`metro-extract --sounds` writes just the sound pack.
 
 ## Running with a headset
 

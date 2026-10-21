@@ -51,14 +51,15 @@ Supporting crates:
 
 - `crates/gpu`: D3D11 device, shared textures, shader compile, PNG readback, egui painter.
 - `crates/asset`: the cache format for models and textures extracted from installed games.
-- `crates/audio`: the runtime's interaction sounds: a procedural library (24 sounds, four
-  variations each, no sample files) and a small spatial mixer on WASAPI.
+- `crates/audio`: the runtime's interaction sounds and a small spatial mixer on WASAPI. A game's
+  own sounds come first: its **sound pack** (§6c), decoded in the background; a procedural library
+  (24 sounds, four variations each, no sample files) is the fallback.
 - `crates/ik`: full-body IK from the head and hands (torso, spine, arms with elbow prediction,
   stepping legs), calibration and grip-to-hand offsets.
 - `crates/avatar`: draws the player's body and hands over the game's picture, hidden behind the
   game's geometry using its depth.
-- `crates/metro-assets`: reads Metro 2033 Redux's archives (`metro-extract`). Local test content
-  only, never committed.
+- `crates/metro-assets`: reads Metro 2033 Redux's archives (`metro-extract`): models, textures,
+  recoil, and its sound pack (`sounds.bin`, §6c). Local test content only, never committed.
 
 ## 3. Spaces
 
@@ -101,6 +102,7 @@ adapters (`tests/header.rs` keeps the two in step).
 | Collision ring: static collision (boxes, triangle meshes) for the runtime's physics | adapter -> runtime | SPSC byte ring |
 | `HandPoseTable`: the game's own hands on its guns (every finger joint) | adapter -> runtime | seqlock |
 | `KickTable`: the guns' recoil as the game authored it (per-shot kicks, keyframed) | adapter -> runtime | seqlock |
+| `SoundPack`: where the game's sound pack is, each object's sound set, which sounds the game plays itself | adapter -> runtime | seqlock |
 
 - **Shared memory** is only touched through 32-bit atomics, so concurrent access is defined
   behaviour.
@@ -189,7 +191,7 @@ the hands while walking.
 | Shooting | Semi or full auto from the gun's state; each shot increments `ObjectState::shots` for the game to fire. **The game's own recoil** when the adapter gives it (`KickTable`, `rig/kick.rs`): each shot plays one of the gun's view kicks and one of its gun kicks, picked for how it was fired (hip or aimed, standing or crouched, first shot / follow-up / long burst). View kicks overlap and add up, so a burst holds the muzzle up and shakes it and it settles when you stop; a gun kick replaces the one playing. The head never moves: on a flat screen the camera's turn takes the gun with it, here it turns the gun about the eye. Metro's come from its camera tracks and fire motions (see `metro-assets/src/recoil.rs`; Kalash: 2.5 degrees and 16 mm a hip shot, about 3 degrees held through aimed full auto). The game's numbers are for its player's hold, a long gun in both hands at the shoulder: off the shoulder it kicks 1.7 times as hard, in one hand 3 times (twice with the stock at the shoulder); a pistol in two hands 0.75 times (the push grows half as much as the turn). The shoulder is generous: the back of the gun within 20 cm of it is fully braced, fading out by 38 cm. Hands tab: on/off, turn and push scales (1 = the game's), the one-handed and off-the-shoulder scales. **Otherwise** recoil follows Escape from Tarkov's (`rig/recoil.rs`): a fast snap and push back, then EFT's hand-rotation process. Each kick leans a random angle off vertical, the first shot of a burst hits hardest, and the return spring is weak while firing, so full auto climbs; from the 4th shot it plateaus and wanders (stable mode). When you stop it returns on a curved, sideways path and settles a little up and off (the after-recoil offset), so you pull it back on target; the offset fades over a few seconds. Per-gun character: `recoil_climb`, `recoil_return`, `recoil_angle`. Two hands give 55% of the rotation and a faster return; a shouldered stock 40%. Fixed 240 Hz springs with seeded randomness |
 | Throwing | Release velocity is the peak of the last five frames (x1.1) plus the wrist's spin, so throws keep their speed even if the hand slows before letting go |
 | Gravity gloves | Half-Life: Alyx's, with its own numbers (`vr_hand_pull_*` / `vr_gg_*` from its `server.dll`, see `rig::alyx`): point the hand (its aim or its palm) at something within 10 m (a 15° cone from 25 cm behind the hand, held to 20°; nothing nearer than 30 cm); 0.1 s pointed at it takes it (it glows). Grip locks it on: it hops and strains towards you; pointing 60° away, or 0.25 s with the grip let go, drops the lock. A flick (the hand yanked back at 1.2 m/s, or the wrist flicked back at 5 rad/s) throws it on Alyx's arc: 0.6 s in flight out to 2.5 m, 0.8 s at 10 m, launched 20° above the line near and 10° far, gravity eased to as little as half; it steers after your moving hand from 0.6 s out to 0.05 s before arriving (up to 12.7 m/s^2). Caught within 0.5 m with the grip held (a 0.125 s pulse) |
-| Feedback | Every interaction is one cue: a haptic pulse and a spatial sound on the same frame. Impacts scale with speed |
+| Feedback | Every interaction is one cue: a haptic pulse and a spatial sound on the same frame. Impacts scale with speed. A cue names its object (the gun, for its magazine, bolt and shots), so the sound is that object's own from the game's sound pack (§6c); the same cue twice in a frame (both hands' pulses for one shot) is one sound |
 | Fingers | Curls from the trigger, grip and thumb-rest touch, wrapped round whatever the hand holds (pistol grip, foregrip, magazine, small or large object) |
 | Full body | `crates/ik` solves 22 joints every frame from the head and the hands the rig drew (VRIK/FRIK-style: torso yaw from the hands, spine pitch from the head drop, stepping legs, elbow prediction, hands pinned exactly). The avatar (Metro's Miller when extracted, else a mannequin) is drawn between the game's picture and the overlays, hidden behind the game's geometry using its linear depth; the head is cut away in first person. Hands only, arms or full body. The body stands on the game's floor (the game puts your eyes at its own eye height, so the real floor would leave it floating or crouched), its proportions follow your height (set, measured, or the game character's), and its arms follow your arm span: set, measured in a T-pose, or automatic (it grows whenever your real arms reach further). Seated mode draws it standing |
 | Comfort | A vignette eases in while the stick moves or smooth-turns you (strength 0.5, 0.3 s); the view fades out when the head pushes into the game's collision; snap turn 45° (0.75 press, 0.25 re-arm, 0.5 s repeat); seated mode; play at your real height or the character's |
@@ -198,6 +200,43 @@ the hands while walking.
 In rig mode the mechanics leave grabbing and gun buttons to the rig and map the rest the way most
 VR shooters do: left stick move, right stick turn (flick down to crouch), A/X jump with an empty
 hand, Y flashlight, empty-hand trigger use, hold B for the weapon wheel, menu to pause.
+
+## 6c. Sound packs
+
+The runtime plays a sound for every interaction, and **the game's own sounds come first**. A game
+that has them hands the runtime a sound pack; the runtime's synthesised library (`crates/audio`) is
+only the fallback, for events the pack doesn't have and until it has loaded.
+
+- **The pack** is a folder with a `sounds.toml` and the files it names (Ogg Vorbis or WAV). It maps
+  *events* (`grab`, `release`, `holster_in`/`out`, `mag_out`, `mag_in`, `bolt_back`,
+  `bolt_forward`, `dry_fire`, `fire`, `fire_tail`, `casing`, `impact`, `pouch`, `zone_tick`,
+  `ui_click`, `melee`, `grenade_throw`, `explosion`, ...; `rustvr_audio::Event`) to sounds, in
+  `[defaults]` and per **sound set** (`[sets.wpn_ak]`, one per gun, say; a set can `extends`
+  another). An event is layers that play together (a shot's close crack and its body), each a
+  choice of files picked at random, never the same twice running. A layer can be `spatial = false`
+  (the unspatialised stereo bed: a shot's echo fills the head) or wait (`delay`: the casing lands
+  half a second later). The format is documented in `crates/audio/src/pack.rs`.
+- **The adapter publishes it** (`SoundPack` region, `Adapter::set_sound_pack`): the folder, each
+  object's set, and what the game plays itself. `SND_GAME_SHOTS`: the game plays the gunshots of
+  the shots it fires (Metro does), so the runtime plays no shot, tail or casing; `SND_GAME_HANDLING`:
+  it plays its own reload sounds. Per object or for the whole pack. The test range plays nothing
+  itself, so it sets neither and the runtime plays Metro's shots for it. The region is additive: an
+  adapter that never writes it gets the runtime's own sounds.
+- **The runtime** loads the pack on a background thread when the path (or its `revision`) changes,
+  decoding and resampling everything to the mixer's rate, and unloads it when the game goes. The
+  audio thread still never allocates, blocks or frees: a new pack arrives through a `try_lock`ed
+  slot, the old one stays while its voices finish, and packs are freed on the game thread. Each
+  cue then plays the object's set's event (its own, inherited, or the pack's defaults) or the
+  synthesised sound. Settings: sound on/off, volume, gunshots, and "the game's own sounds".
+- **Metro's pack** comes from `metro-extract` (`metro-assets/src/sound_pack.rs`), from the game's
+  own data: `sounds.bin` (its sound items: files, random choices, numbered groups, two items
+  layered) and each gun's config, which names its shot, echo, casings and dry fire. The Kalash's
+  shot is `ak_close_shot_*` layered with `ak_boom_shot_*`, its tail `generic_ar_echo`, its casings
+  `cc_545_concrete_*`. Reloads are Redux's split reloads (`weapons\split_reloads`: the AK's magazine
+  out, magazine in and bolt), which suit a reload made by hand; a table there says which part is
+  which. Grabs and holsters are the player's cloth and gear, a dropped gun Metro's weapon-fall
+  sounds, the pouch its ammo pickup. Events are levelled to where the runtime's own sounds sit,
+  except shots, which share one gain so the guns keep their loudness relative to each other.
 
 ## 7. Adapters
 
@@ -218,6 +257,10 @@ An adapter is small because the SDK does the shared work. Per game it:
    where `read_object_states` says they are, fires a shot for each increment of a gun's `shots`,
    and writes linear depth (`TGT_DEPTH`) so the player's body is hidden behind its world. Games
    that don't fall back to the gun glued to the firing hand (`Intents`).
+7. **Optionally hands over its own sounds** (§6c): writes a sound pack from the game's files (an
+   extractor, like `metro-extract`) and publishes it with `Adapter::set_sound_pack`: the folder,
+   each object's sound set, and `SND_GAME_SHOTS` / `SND_GAME_HANDLING` for what the game already
+   plays itself.
 
 Adapters can be written in any language: Rust (hook-and-offset games like Metro, using
 `retour`), C++ (games with C++ SDKs, using the generated header), or C# (Unity).
@@ -264,7 +307,10 @@ Adapters can be written in any language: Rust (hook-and-offset games like Metro,
     - `seated`: a seated player is drawn standing and never crouches;
     - `vignette`: walking closes the vignette in, stopping opens it;
     - `wall_fade`: the head inside the table fades the view out;
-    - `wall_hand`: a hand pushed into the table stops at its surface (ghost hand).
+    - `wall_hand`: a hand pushed into the table stops at its surface (ghost hand);
+    - `game_sounds`: the range hands over Metro's sound pack; picking up the Kalash, its three
+      shots (each with its tail and a casing) and dropping its magazine play Metro's own sounds
+      (the mixer runs offline in scenarios, so the checks see which sounds played).
 - **Nothing opens a window.** Nothing launches a game, Steam, SteamVR or Virtual Desktop. The
   range renders offscreen, and builds and child processes run at below-normal priority.
 
@@ -277,8 +323,10 @@ the old behaviour (the current gun glued to the firing hand, driven by intents),
 original scenarios still test.
 
 `metro-extract` reads the user's own Metro 2033 Redux install (read-only) and writes first-person
-guns, hands, a body and props into `local_assets/metro2033/` (`crates/asset` format). The test range
-loads them when present, and uses built-in guns otherwise. **`local_assets/` is git-ignored and never
+guns, hands, a body and props into `local_assets/metro2033/` (`crates/asset` format), and its sound
+pack into `local_assets/metro2033/sounds/` (`--sounds` for just that). The test range loads them
+when present, and uses built-in guns and the runtime's own sounds otherwise; its built-in guns
+borrow Metro's sets (the rifles the Kalash's, the pistol the revolver's). **`local_assets/` is git-ignored and never
 committed or redistributed.**
 
 ## 10. Phased plan
