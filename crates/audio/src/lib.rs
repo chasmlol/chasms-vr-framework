@@ -155,12 +155,19 @@ pub enum Event {
     Casing,
     Melee,
     GrenadePin,
+    /// The grenade lit (the spoon flying off, a fuse catching).
+    GrenadeArm,
+    /// Its fuse ticking in the hand.
+    GrenadeTick,
     GrenadeThrow,
     Explosion,
+    KnifeThrow,
+    /// A thrown knife sinking in.
+    KnifeStick,
 }
 
 impl Event {
-    pub const COUNT: usize = 28;
+    pub const COUNT: usize = 32;
     pub const ALL: [Event; Event::COUNT] = [
         Event::Grab,
         Event::Release,
@@ -188,8 +195,12 @@ impl Event {
         Event::Casing,
         Event::Melee,
         Event::GrenadePin,
+        Event::GrenadeArm,
+        Event::GrenadeTick,
         Event::GrenadeThrow,
         Event::Explosion,
+        Event::KnifeThrow,
+        Event::KnifeStick,
     ];
 
     /// Its key in `sounds.toml`.
@@ -221,8 +232,12 @@ impl Event {
             Event::Casing => "casing",
             Event::Melee => "melee",
             Event::GrenadePin => "grenade_pin",
+            Event::GrenadeArm => "grenade_arm",
+            Event::GrenadeTick => "grenade_tick",
             Event::GrenadeThrow => "grenade_throw",
             Event::Explosion => "explosion",
+            Event::KnifeThrow => "knife_throw",
+            Event::KnifeStick => "knife_stick",
         }
     }
 
@@ -256,7 +271,14 @@ impl Event {
             Event::ZoneTick | Event::Pouch => Sound::ZoneTick,
             Event::Fire => Sound::ShotRifle,
             Event::Melee => Sound::Melee,
-            Event::FireTail | Event::Casing | Event::GrenadePin | Event::GrenadeThrow | Event::Explosion => return None,
+            // The throwables' fall back on the nearest synthesised sounds.
+            Event::GrenadePin => Sound::SlideBack,
+            Event::GrenadeArm => Sound::LastRound,
+            Event::GrenadeTick => Sound::ZoneTick,
+            Event::GrenadeThrow | Event::KnifeThrow => Sound::GloveFlick,
+            Event::Explosion => Sound::ShotShotgun,
+            Event::KnifeStick => Sound::Impact,
+            Event::FireTail | Event::Casing => return None,
         })
     }
 
@@ -271,7 +293,10 @@ impl Event {
             Event::Release => 0.22,
             Event::UiClick => 0.25,
             Event::GloveLock => 0.26,
-            Event::Pouch | Event::LastRound | Event::GrenadePin => 0.3,
+            Event::GrenadeTick => 0.15,
+            Event::Pouch | Event::LastRound | Event::GrenadePin | Event::GrenadeArm => 0.3,
+            Event::KnifeThrow => 0.32,
+            Event::KnifeStick => 0.45,
             Event::Grab | Event::GloveFlick => 0.32,
             Event::HolsterOut | Event::DryFire => 0.34,
             Event::HolsterIn | Event::GloveCatch => 0.36,

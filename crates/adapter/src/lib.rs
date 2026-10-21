@@ -437,6 +437,17 @@ impl Adapter {
     pub fn rumble(&self, strength: f32) -> bool {
         self.push_event(Event { kind: EV_RUMBLE, a: 0, f: [strength, 0.0, 0.0, 0.0, 0.0, 0.0] })
     }
+
+    /// The game's explosion at `pos` (world metres) pushes the objects the runtime simulates:
+    /// `impulse` (N s) at the centre, nothing past `radius` ([`EV_BLAST`]).
+    pub fn blast(&self, pos: [f32; 3], radius: f32, impulse: f32) -> bool {
+        self.push_event(Event { kind: EV_BLAST, a: 0, f: [pos[0], pos[1], pos[2], radius, impulse, 0.0] })
+    }
+
+    /// Pushes one simulated object (`impulse` N s at world point `at`, [`EV_IMPULSE`]).
+    pub fn impulse(&self, object: u32, impulse: [f32; 3], at: [f32; 3]) -> bool {
+        self.push_event(Event { kind: EV_IMPULSE, a: object, f: [impulse[0], impulse[1], impulse[2], at[0], at[1], at[2]] })
+    }
 }
 
 impl Drop for Adapter {

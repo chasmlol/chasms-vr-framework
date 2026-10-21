@@ -147,6 +147,42 @@ fn gun_held_right(c: &Ctx) -> bool {
     c.objects.iter().any(|o| o.kind == OBJ_WEAPON && o.flags & OS_HELD_RIGHT != 0)
 }
 
+/// The frag grenade in the right chest pouch.
+fn pouch_grenade(objs: &[ObjSnap]) -> Option<ObjSnap> {
+    objs.iter().find(|o| o.kind == OBJ_THROWABLE && o.throw_flags & THROW_PIN != 0 && o.flags & OS_HOLSTERED != 0 && o.pos.x > 0.0).copied()
+}
+
+/// The throwing knife nearest you on the throwables' table (at your left hand).
+fn table_knife(objs: &[ObjSnap]) -> Option<ObjSnap> {
+    objs.iter()
+        .filter(|o| o.kind == OBJ_THROWABLE && o.throw_flags & THROW_KNIFE != 0 && o.flags & OS_HOLSTERED == 0 && o.pos.x < -0.4 && o.pos.z > 0.8)
+        .max_by(|a, b| a.pos.x.total_cmp(&b.pos.x))
+        .copied()
+}
+
+/// The thrown object, in the live snapshot.
+fn live(see: &See, id: u32) -> Option<ObjSnap> {
+    see.world.objects.iter().find(|o| o.id == id).copied()
+}
+
+fn throwable<'a>(c: &Ctx<'a>, flag: u32) -> Option<&'a ObjSnap> {
+    c.objects.iter().find(|o| o.kind == OBJ_THROWABLE && o.throw_flags & flag != 0 && o.flags & (OS_THROWN | OS_ARMED | OS_STUCK | OS_SPENT | OS_HELD_LEFT | OS_HELD_RIGHT) != 0)
+}
+
+/// A throwing swing: from rest at `t0` the hand speeds up along `dir` over `accel` seconds to
+/// `speed`, passing `at` (where it lets go) `hold` seconds into the steady part. Its position at `t`.
+fn swing(t: f64, t0: f64, at: Vec3, dir: Vec3, speed: f32, accel: f32, hold: f32) -> Vec3 {
+    let dir = dir.normalize();
+    let along = |tau: f32| if tau <= 0.0 { 0.0 } else if tau < accel { 0.5 * speed / accel * tau * tau } else { 0.5 * speed * accel + speed * (tau - accel) };
+    let start = at - dir * along(accel + hold);
+    start + dir * along((t - t0) as f32)
+}
+
+/// The rig's speed gain for a throw this fast (for a script to aim with): see `rig::throwing`.
+fn throw_gain(class: crate::rig::throwing::ThrowClass, speed: f32) -> f32 {
+    crate::rig::throwing::gain(class, speed)
+}
+
 pub fn all() -> Vec<Scenario> {
     vec![
         Scenario {
@@ -191,6 +227,49 @@ pub fn all() -> Vec<Scenario> {
                 check(3.3, "the range sees a gun in hand", |c| ensure(c.stat(rs::HELD) > 0, || "no gun held".into())),
             ],
             captures: vec![(0.62, "reach"), (1.2, "lifted"), (1.95, "aim")],
+        },
+        Scenario {
+            name: "gun_fx",
+            about: "physical: the range shows the rifle's shots as a game does: muzzle flash and light, smoke, tracers, holes and sparks on the target, casings out of the port onto the floor",
+            duration: 4.4,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(rifle) = near_rifle(objs) else { return b };
+                    b.head_rot = Quat::from_rotation_x(0.5 * (1.0 - ramp(t, 1.0, 1.4)));
+                    // Fired from the hip, so the eye sees the flash, the tracers and the port from the side.
+                    let aim = aim_gun(&rifle, Vec3::new(0.22, 1.34, 0.3), TARGET_AHEAD, 0.0);
+                    let (p, r) = take_rifle(t, &rifle);
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0)]) };
+                    b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1)]) };
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    b.hands[1].trigger = on(t, &[(1.9, 1.98), (2.4, 2.48), (2.9, 2.98)]);
+                    // Look down to the right at the brass on the floor at the end.
+                    let brass = look_rot(Vec3::new(1.1, 0.0, 0.25) - Body::rest().head_pos);
+                    b.head_rot = b.head_rot.slerp(brass, ramp(t, 3.4, 3.8));
+                    b
+                })
+            },
+            checks: vec![
+                check(1.88, "nothing yet", |c| ensure(c.stat(rs::SHOTS) == 0, || format!("{} shots", c.stat(rs::SHOTS)))),
+                check(1.95, "the first shot: flash, light, smoke, tracer, casing, a hole", |c| {
+                    ensure(c.stat(rs::SHOTS) == 1 && c.stat_f(rs::F_FX_LIVE) >= 9.0, || format!("{} shots, {} effects", c.stat(rs::SHOTS), c.stat_f(rs::F_FX_LIVE)))
+                }),
+                check(3.3, "three shots from the hip, holes where they hit and three casings down", |c| {
+                    ensure(c.stat(rs::SHOTS) >= 3 && c.stat(rs::HITS) >= 2 && c.stat_f(rs::F_FX_LIVE) >= 6.0, || format!("shots {} hits {}, {} effects", c.stat(rs::SHOTS), c.stat(rs::HITS), c.stat_f(rs::F_FX_LIVE)))
+                }),
+                check(3.3, "the flash lit the view up", |c| {
+                    let (before, flash) = (c.capture("fx_before").ok_or("no capture")?, c.capture("fx_flash").ok_or("no capture")?);
+                    ensure(flash.mean > before.mean + 0.002, || format!("mean {:.4} -> {:.4}", before.mean, flash.mean))
+                }),
+            ],
+            captures: vec![(1.85, "fx_before"), (1.92, "fx_flash"), (1.94, "fx_flash_2"), (1.96, "fx_flash_3"), (2.2, "fx_after"), (2.95, "fx_third"), (4.3, "fx_casings")],
         },
         Scenario {
             name: "game_sounds",
@@ -432,6 +511,140 @@ pub fn all() -> Vec<Scenario> {
                 }),
             ],
             captures: vec![(0.65, "grab"), (1.42, "swing")],
+        },
+        Scenario {
+            name: "grenade",
+            about: "physical: a frag grenade from the chest pouch, the other hand pulls its pin, a throw down range: it goes off after its 4 s fuse near the target",
+            duration: 8.0,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(g) = pouch_grenade(objs) else { return b };
+                    let rest = Body::rest().hands;
+                    let pouch = g.at(g.grip);
+                    let hold = Vec3::new(0.18, 1.32, 0.35);
+                    // The throw: back by the shoulder, then forward and up at 6.5 m/s, letting go at
+                    // 2.8 s.
+                    let dir = Vec3::new(0.0, 0.5, 1.0).normalize();
+                    let (release, speed, accel, steady) = (Vec3::new(0.3, 1.62, 0.2), 6.5, 0.12, 0.05);
+                    let t0 = 2.8 - (accel + steady) as f64;
+                    let start = swing(t0, t0, release, dir, speed, accel, steady);
+                    // After the throw the arm comes back down, out of the way of the view.
+                    let follow = swing(2.9, t0, release, dir, speed, accel, steady);
+                    b.hands[1].pos = if t < t0 {
+                        keys(t, &[(0.0, rest[1].pos), (0.45, pouch), (0.62, pouch), (1.0, hold), (2.2, hold), (2.55, start)])
+                    } else if t < 2.9 {
+                        swing(t, t0, release, dir, speed, accel, steady)
+                    } else {
+                        keys(t, &[(2.9, follow), (3.5, rest[1].pos)])
+                    };
+                    b.hands[1].squeeze = on(t, &[(0.55, 2.8)]);
+                    // The left hand takes the ring where the held grenade has it and pulls it out.
+                    let ring = live(see, g.id).filter(|o| o.flags & OS_HELD_RIGHT != 0).map(|o| o.at(o.handle)).unwrap_or(hold);
+                    b.hands[0].pos = keys(t, &[(1.15, rest[0].pos), (1.5, ring), (1.6, ring), (1.8, ring - Vec3::X * 0.1), (2.1, rest[0].pos)]);
+                    b.hands[0].squeeze = on(t, &[(1.55, 1.95)]);
+                    b.head_rot = Quat::from_rotation_x(0.45 * ramp(t, 0.8, 1.1) * (1.0 - ramp(t, 2.1, 2.4)));
+                    b
+                })
+            },
+            checks: vec![
+                check(0.75, "drawn from the chest pouch", |c| {
+                    let held = c.objects.iter().any(|o| o.kind == OBJ_THROWABLE && o.throw_flags & THROW_PIN != 0 && o.flags & OS_HELD_RIGHT != 0);
+                    ensure(held && c.rig.drawn >= 1, || format!("held {held}, drawn {}", c.rig.drawn))
+                }),
+                check(2.0, "the other hand pulled the pin; the lever holds the fuse", |c| {
+                    let g = throwable(c, THROW_PIN).ok_or("no grenade")?;
+                    ensure(c.rig.pins == 1 && g.flags & OS_PIN_PULLED != 0 && g.flags & OS_ARMED == 0, || format!("pins {}, flags {:#x}", c.rig.pins, g.flags))
+                }),
+                check(2.95, "thrown hard down range, the fuse burning", |c| {
+                    let g = throwable(c, THROW_PIN).ok_or("no grenade")?;
+                    let lit = g.flags & (OS_ARMED | OS_THROWN) == OS_ARMED | OS_THROWN;
+                    ensure(c.rig.throws >= 1 && c.rig.last_throw_speed > 6.0 && lit && (3.7..4.0).contains(&g.fuse), || format!("throws {} at {:.1} m/s (gain {:.2}), flags {:#x}, fuse {:.2}", c.rig.throws, c.rig.last_throw_speed, c.rig.last_throw_gain, g.flags, g.fuse))
+                }),
+                check(6.6, "not before its fuse", |c| ensure(c.rig.detonations == 0, || format!("{} went off", c.rig.detonations))),
+                check(7.2, "it went off down range near the target, and the range made the explosion", |c| {
+                    let at = c.rig.last_detonation.ok_or("no detonation")?;
+                    let near = at.distance(TARGET_AHEAD) < 5.0;
+                    ensure(c.rig.detonations == 1 && at.z > 4.0 && near && c.stat_f(rs::F_EXPLOSIONS) >= 1.0 && c.stat_f(rs::F_BLAST_HITS) >= 1.0, || {
+                        format!("detonations {} at {at:?}; range: explosions {}, plates hit {}", c.rig.detonations, c.stat_f(rs::F_EXPLOSIONS), c.stat_f(rs::F_BLAST_HITS))
+                    })
+                }),
+                check(7.9, "its smoke and debris are still about", |c| ensure(c.stat_f(rs::F_FX_LIVE) > 20.0, || format!("{} effects", c.stat_f(rs::F_FX_LIVE)))),
+            ],
+            captures: vec![(1.75, "pin"), (2.82, "throw"), (3.3, "flight"), (6.84, "explosion"), (7.4, "smoke")],
+        },
+        Scenario {
+            name: "knife",
+            about: "physical: a throwing knife from the table at your left hand, thrown at the target 5 m away: it flies blade first and sticks in it",
+            duration: 3.0,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(k) = table_knife(objs) else { return b };
+                    let target = Vec3::new(-1.5, 1.4, 5.0);
+                    // Where the hand lets go, and the throw that carries the knife's tip into the
+                    // plate (held by its handle, the blade along the hand, dart-aligned in flight).
+                    let hand = Vec3::new(-0.35, 1.55, 0.45);
+                    let aim = target - Vec3::Z * 0.12;
+                    let mut dir = (aim - hand).normalize();
+                    let mut v = Vec3::ZERO;
+                    for _ in 0..4 {
+                        let centre = hand - look_rot(dir) * k.grip;
+                        let tf = centre.distance(aim) / 10.0;
+                        v = (aim - centre) / tf + Vec3::Y * (0.5 * 9.81 * tf);
+                        dir = v.normalize();
+                    }
+                    // The hand's speed for that, after the rig's gain (a knife's weight barely counts).
+                    let speed = v.length() / (throw_gain(crate::rig::throwing::ThrowClass::Knife, 8.0) * 0.99);
+                    let (accel, steady, t0) = (0.08, 0.04, 1.2);
+                    let start = swing(t0, t0, hand, dir, speed, accel, steady);
+                    let above = k.at(k.grip) + Vec3::Y * 0.04;
+                    let rest = Body::rest().hands[0].pos;
+                    let follow = swing(1.4, t0, hand, dir, speed, accel, steady);
+                    b.hands[0].pos = if t < t0 {
+                        keys(t, &[(0.0, rest), (0.4, above), (0.55, above), (1.0, start)])
+                    } else if t < 1.4 {
+                        swing(t, t0, hand, dir, speed, accel, steady)
+                    } else {
+                        keys(t, &[(1.4, follow), (1.9, rest)])
+                    };
+                    b.hands[0].rot = qkeys(t, &[(0.55, Quat::IDENTITY), (1.0, look_rot(dir))]);
+                    b.hands[0].squeeze = on(t, &[(0.48, t0 + (accel + steady) as f64)]);
+                    // Then a step to the right to see it in the plate.
+                    b.head_pos = keys(t, &[(1.9, Body::rest().head_pos), (2.3, Body::rest().head_pos + Vec3::new(0.7, 0.0, 0.3))]);
+                    b.head_rot = qkeys(t, &[(0.0, look_rot(above - Body::rest().head_pos)), (1.0, look_rot(target - Body::rest().head_pos)), (1.9, look_rot(target - Body::rest().head_pos)), (2.3, look_rot(target - b.head_pos))]);
+                    b
+                })
+            },
+            checks: vec![
+                check(0.65, "the knife is in the left hand", |c| {
+                    ensure(c.objects.iter().any(|o| o.kind == OBJ_THROWABLE && o.throw_flags & THROW_KNIFE != 0 && o.flags & OS_HELD_LEFT != 0), || "not held".into())
+                }),
+                check(1.4, "thrown", |c| ensure(c.rig.knife_throws == 1 && c.rig.last_throw_speed > 8.0, || format!("knife throws {} at {:.1} m/s", c.rig.knife_throws, c.rig.last_throw_speed))),
+                check(2.4, "it stuck in the target, blade first", |c| {
+                    let k = throwable(c, THROW_KNIFE).ok_or("no knife in flight or stuck")?;
+                    let tip = c.rig.last_stick.ok_or("it never stuck")?;
+                    let off = (tip - Vec3::new(-1.5, 1.4, 5.0)).truncate().length();
+                    let blade = k.rot * (k.muzzle - k.grip).normalize();
+                    ensure(k.flags & OS_STUCK != 0 && c.rig.sticks == 1 && off < 0.3 && blade.z > 0.5 && c.stat_f(rs::F_KNIFE_HITS) >= 1.0, || {
+                        format!("flags {:#x}, sticks {}, tip {tip:?} ({off:.2} m off), blade {blade:?}, range knife hits {}", k.flags, c.rig.sticks, c.stat_f(rs::F_KNIFE_HITS))
+                    })
+                }),
+                check(2.9, "and stays there", |c| ensure(throwable(c, THROW_KNIFE).is_some_and(|k| k.flags & OS_STUCK != 0), || "fell out".into())),
+            ],
+            captures: vec![(1.0, "knife_aim"), (1.5, "knife_flight"), (2.5, "knife_stuck")],
         },
         Scenario {
             name: "gloves",

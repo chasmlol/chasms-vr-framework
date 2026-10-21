@@ -278,6 +278,9 @@ impl Session {
                 }
                 EV_RUMBLE => rumble = Some(ev.f[0]),
                 EV_RECENTER => self.mech.recenter(),
+                // The game's explosions and hits push what the rig simulates (on its next step).
+                EV_BLAST => self.rig.blast(Vec3::new(ev.f[0], ev.f[1], ev.f[2]), ev.f[3], ev.f[4]),
+                EV_IMPULSE => self.rig.impulse(ev.a, Vec3::new(ev.f[0], ev.f[1], ev.f[2]), Vec3::new(ev.f[3], ev.f[4], ev.f[5])),
                 _ => {}
             }
         }
@@ -717,7 +720,7 @@ impl Session {
     /// game plays its own gunshots; reloading sounds likewise when the game plays its own.
     fn play_cue(&mut self, fb: &feedback::Feedback) {
         use rustvr_audio::Event as E;
-        let (event, fallback) = event_of(fb.cue);
+        let Some((event, fallback)) = event_of(fb.cue) else { return };
         let (set, flags) = fb.object.and_then(|id| self.object_sounds.get(&id)).copied().unwrap_or_default();
         if !runtime_plays(event, flags | self.sound_pack.flags, self.settings.current.sound.shots) {
             return;
@@ -952,17 +955,19 @@ impl Drop for Heartbeat {
 fn runtime_plays(event: rustvr_audio::Event, flags: u32, shots: bool) -> bool {
     use rustvr_audio::Event as E;
     match event {
-        E::Fire | E::FireTail | E::Casing => shots && flags & SND_GAME_SHOTS == 0,
+        // An explosion is the game's too (its grenade went off), and it plays with the shots.
+        E::Fire | E::FireTail | E::Casing | E::Explosion => shots && flags & SND_GAME_SHOTS == 0,
         E::MagOut | E::MagIn | E::BoltBack | E::BoltForward | E::DryFire => flags & SND_GAME_HANDLING == 0,
         _ => true,
     }
 }
 
-/// The sound pack event for a cue, and the runtime's own sound for it.
-fn event_of(c: feedback::Cue) -> (rustvr_audio::Event, rustvr_audio::Sound) {
+/// The sound pack event for a cue, and the runtime's own sound for it (None: the cue is felt, not
+/// heard).
+fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Sound)> {
     use feedback::Cue as C;
     use rustvr_audio::{Event as E, Sound as S};
-    match c {
+    Some(match c {
         C::Grab => (E::Grab, S::Grab),
         C::Release => (E::Release, S::Release),
         C::HolsterIn => (E::HolsterIn, S::HolsterIn),
@@ -985,7 +990,15 @@ fn event_of(c: feedback::Cue) -> (rustvr_audio::Event, rustvr_audio::Sound) {
         C::ShotRifle => (E::Fire, S::ShotRifle),
         C::ShotShotgun => (E::Fire, S::ShotShotgun),
         C::Melee => (E::Melee, S::Melee),
-    }
+        C::GrenadePin => (E::GrenadePin, S::SlideBack),
+        C::GrenadeArm => (E::GrenadeArm, S::LastRound),
+        C::GrenadeTick => (E::GrenadeTick, S::ZoneTick),
+        C::GrenadeThrow => (E::GrenadeThrow, S::GloveFlick),
+        C::KnifeThrow => (E::KnifeThrow, S::GloveFlick),
+        C::Explosion => (E::Explosion, S::ShotShotgun),
+        C::KnifeStick => (E::KnifeStick, S::Impact),
+        C::ExplosionRumble => return None,
+    })
 }
 
 fn quat(a: [f32; 4]) -> Quat {
@@ -1023,12 +1036,12 @@ mod tests {
             C::ShotShotgun, C::Melee,
         ];
         for c in cues {
-            let (event, fallback) = event_of(c);
+            let Some((event, fallback)) = event_of(c) else { continue };
             // The fallback is the runtime's own sound for that event (a shot keeps its kind).
             if event != E::Fire && c != C::Pouch {
                 assert_eq!(event.fallback(), Some(fallback), "{c:?}");
             }
         }
-        assert_eq!(event_of(C::ShotPistol), (E::Fire, rustvr_audio::Sound::ShotPistol));
+        assert_eq!(event_of(C::ShotPistol), Some((E::Fire, rustvr_audio::Sound::ShotPistol)));
     }
 }

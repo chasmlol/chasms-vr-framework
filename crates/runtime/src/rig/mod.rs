@@ -1,6 +1,6 @@
 //! The player rig: physics hands and everything they do with the game's objects. Grabbing,
-//! two-handed guns, throwing, holsters, the ammo pouch, physical reloads, recoil and gravity
-//! gloves, simulated with Rapier in the game's world.
+//! two-handed guns, throwing, grenades and throwing knives, holsters and pouches, the ammo pouch,
+//! physical reloads, recoil and gravity gloves, simulated with Rapier in the game's world.
 //!
 //! The research's rule ("pin the hands, cheat everything else") shapes it:
 //!
@@ -10,7 +10,8 @@
 //!   hysteresis, guns snap into the hand the way they're held, and the ammo pouch already knows
 //!   your gun.
 //! * Held objects collide with the world but soften against it instead of fighting it. Throws use
-//!   the peak recent hand speed, not the release frame.
+//!   the hand's speed at its peak before the release, not the release frame (`throwing`), and
+//!   grenades and knives get the help the research recommends (`throwable`).
 //! * Guns keep their own state (magazine, chamber, slide). The game only sees each shot.
 //!
 //! Physics runs in world metres. Held and holstered objects are reported in tracking space, so the
@@ -21,6 +22,8 @@ pub mod filters;
 pub mod kick;
 pub mod physics;
 pub mod recoil;
+pub mod throwable;
+pub mod throwing;
 pub mod weapon;
 pub mod zones;
 
@@ -30,12 +33,14 @@ use rustvr_protocol::*;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::backend::HmdFrame;
-use crate::settings::Settings;
+use crate::settings::{GrenadeArming, Settings};
 use feedback::{Cue, Feedback};
-use filters::{MotionHistory, OneEuro};
+use filters::OneEuro;
 use physics::{Physics, groups_free, groups_hand, groups_held, groups_none};
+use throwable::{Flight, Fuse, KnifeMode, ThrowState};
+use throwing::{ThrowClass, ThrowHistory};
 use weapon::{Fire, HandleGrab, WeaponState};
-use zones::{BodyAnchor, Zone, ammo_zones, slot_zones};
+use zones::{BodyAnchor, Zone, ammo_zones, slot_fits, slot_zones};
 
 /// Tracking space -> world, as the adapter last reported it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,6 +99,11 @@ enum Holder {
     Pulled { hand: usize, t0: f64, dur: f32, gravity: f32 },
     /// Gliding back to its holster after being let go.
     Returning { slot: u32, t0: f64, from: (Vec3, Quat) },
+    /// Stuck in something (a knife's blade, a sticky bomb): this pose relative to object `parent`
+    /// (0: the world, and the pose is the world's).
+    Stuck { parent: u32, rel: (Vec3, Quat) },
+    /// Went off: inert until the game puts it back.
+    Gone,
 }
 
 /// How a held object sits in the hand.
@@ -131,6 +141,8 @@ struct Obj {
     /// A magazine just taken out of a gun can't seat again until it has left the well.
     seat_armed: bool,
     next_impact: f64,
+    /// Grenades, knives and other throwables.
+    throw: Option<ThrowState>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,6 +153,8 @@ enum Hover {
     Ammo(u32),
     Foregrip(u32),
     Handle(u32),
+    /// The other hand's grenade's pin.
+    Pin(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,7 +183,14 @@ struct Hand {
     glove_released: Option<f64>,
     /// When a locked target next strains towards the hand (0: it hasn't yet).
     glove_hop: f64,
-    history: MotionHistory,
+    history: ThrowHistory,
+    /// Pulling the other hand's grenade's pin: which, and where the hand took it.
+    pin: Option<(u32, Vec3)>,
+    trigger_was: f32,
+    /// The hardest squeeze since the grip closed, and whether an easing grip let a throw go (it
+    /// must open past the release threshold before it can grab again).
+    squeeze_peak: f32,
+    eased: bool,
     euro: OneEuro,
     blocked: bool,
     /// Controller grip target in the world, and the aim rotation.
@@ -231,7 +252,25 @@ pub struct RigDebug {
     pub catches: u32,
     pub returns: u32,
     pub last_throw_speed: f32,
+    /// The last throw's gain and how long before the release its peak was (ms).
+    pub last_throw_gain: f32,
+    pub last_throw_peak_ms: f32,
     pub blocked_frames: u32,
+    pub pins: u32,
+    pub arms: u32,
+    pub detonations: u32,
+    pub knife_throws: u32,
+    pub sticks: u32,
+    /// Where the last grenade went off, and where the last knife's tip went in (tracking space).
+    pub last_detonation: Option<Vec3>,
+    pub last_stick: Option<Vec3>,
+}
+
+/// A push from the game (its explosion, a bullet), applied on the next step.
+#[derive(Clone, Copy, Debug)]
+enum Push {
+    Blast { at: Vec3, radius: f32, impulse: f32 },
+    One { id: u32, impulse: Vec3, at: Vec3 },
 }
 
 pub struct RigInput<'a> {
@@ -257,6 +296,10 @@ const FOREGRIP_REACH: f32 = 0.14;
 const FOREGRIP_BREAK: f32 = 0.3;
 /// Letting go of something faster than this throws it rather than holstering it.
 const HOLSTER_MAX_SPEED: f32 = 1.2;
+/// A throw lets go when the grip eases this far off its hardest squeeze while the hand swings
+/// faster than this (m/s).
+const THROW_EASE: f32 = 0.25;
+const THROW_EASE_SPEED: f32 = 1.5;
 const HANDLE_REACH: f32 = 0.09;
 /// A gun fired with its sights this close to the eye is aimed (the game's aimed recoil).
 const AIMED_SIGHT: f32 = 0.15;
@@ -281,6 +324,7 @@ pub struct Rig {
     pub frame_index: u64,
     /// The guns' own recoil (the adapter's kick table), by gun.
     kicks: HashMap<u32, Vec<KickDesc>>,
+    pushes: Vec<Push>,
 }
 
 impl Default for Rig {
@@ -301,6 +345,7 @@ impl Default for Rig {
             now: 0.0,
             frame_index: 0,
             kicks: HashMap::new(),
+            pushes: Vec::new(),
         }
     }
 }
@@ -459,8 +504,15 @@ impl Rig {
             match self.objects.get_mut(&d.id) {
                 Some(o) => {
                     o.desc = *d;
+                    if let Some(t) = &mut o.throw {
+                        t.flags = d.throw_flags;
+                    }
                     if o.spawn_seq != d.spawn_seq {
                         o.spawn_seq = d.spawn_seq;
+                        // Put back by the game (a grenade that went off, say): safe again.
+                        if let Some(t) = &mut o.throw {
+                            t.reset();
+                        }
                         self.place(d.id, v3(d.spawn_pose.pos), q4(d.spawn_pose.rot));
                         self.start_in_slot(d);
                     }
@@ -508,6 +560,7 @@ impl Rig {
                 prev_vel: Vec3::ZERO,
                 next_impact: 0.0,
                 seat_armed: true,
+                throw: ThrowState::new(&d),
             },
         );
         // A gun arrives loaded: a seated magazine from its template, or rounds held internally.
@@ -558,6 +611,9 @@ impl Rig {
                     if h.handle == Some(id) {
                         h.handle = None;
                     }
+                    if h.pin.is_some_and(|(g, _)| g == id) {
+                        h.pin = None;
+                    }
                 }
             }
             if let Some(w) = o.weapon {
@@ -571,6 +627,9 @@ impl Rig {
     fn place(&mut self, id: u32, pos: Vec3, rot: Quat) {
         let Some(o) = self.objects.get(&id) else { return };
         let body = o.body;
+        for s in self.slots.iter_mut().filter(|s| **s == Some(id)) {
+            *s = None;
+        }
         self.free_body(id, groups_free());
         self.physics.set_pose(body, pos, rot);
         self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
@@ -627,7 +686,7 @@ impl Rig {
                 h.target = (map.point(h.grip_t.0), map.rot(h.grip_t.1));
                 h.aim_rot = map.rot(h.aim_t.1);
                 h.trigger = c.trigger;
-                h.history.push(inp.now, h.target.0, map.vel(h.ang_t) / map.world_per_meter);
+                h.history.push(inp.now, h.grip_t.0, Some(h.vel_t), h.ang_t, map);
             }
         }
 
@@ -652,8 +711,17 @@ impl Rig {
                 self.gloves(i, inp);
             }
             self.weapons(inp, dom);
+            self.throwables();
+        } else {
+            // The game is paused: so are the fuses.
+            for t in self.objects.values_mut().filter_map(|o| o.throw.as_mut()) {
+                if let Fuse::Lit { at } = &mut t.fuse {
+                    *at += dt as f64;
+                }
+            }
         }
         self.drive(inp, dt, &zones);
+        self.apply_pushes();
         self.physics.set_dt(dt);
         self.physics.step();
         self.after_step(inp);
@@ -682,7 +750,11 @@ impl Rig {
                 glove_pending: None,
                 glove_released: None,
                 glove_hop: 0.0,
-                history: MotionHistory::default(),
+                history: ThrowHistory::default(),
+                pin: None,
+                trigger_was: 0.0,
+                squeeze_peak: 0.0,
+                eased: false,
                 euro: OneEuro::new(1.0, 8.0, 1.0),
                 blocked: false,
                 target: (Vec3::ZERO, Quat::IDENTITY),
@@ -718,15 +790,25 @@ impl Rig {
     fn update_hover(&mut self, i: usize, s: &Settings, zones: &[Zone; SLOT_COUNT_BODY], ammo: &[Zone; 2]) {
         let hands = self.hands.as_ref().unwrap();
         let h = &hands[i];
-        if h.holding.is_some() || h.support.is_some() || h.handle.is_some() {
+        if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() {
             self.hands.as_mut().unwrap()[i].hover = Hover::None;
             return;
         }
         let palm = h.target.0;
         let palm_t = h.grip_t.0;
         let mut hover = Hover::None;
+        // 0. The other hand's grenade: its pin (the pin scheme).
+        if let Some(gid) = self.hands.as_ref().unwrap()[i ^ 1].holding.filter(|_| s.interaction.grenade_arming == GrenadeArming::Pin) {
+            let o = &self.objects[&gid];
+            if o.throw.as_ref().is_some_and(|t| t.has_pin() && t.fuse == Fuse::Safe) {
+                let (gp, gr) = self.physics.pose(o.body);
+                if palm.distance(gp + gr * v3(o.desc.handle)) < throwable::PIN_REACH {
+                    hover = Hover::Pin(gid);
+                }
+            }
+        }
         // 1. The other hand's gun: its charging handle, then its foregrip (anywhere along it).
-        if let Some(wid) = self.other_weapon(i) {
+        if let (Hover::None, Some(wid)) = (hover, self.other_weapon(i)) {
             let o = &self.objects[&wid];
             let (wp, wr) = self.physics.pose(o.body);
             let handle = wp + wr * v3(o.desc.handle);
@@ -768,7 +850,7 @@ impl Rig {
             };
             let mut best: Option<(u32, f32)> = None;
             for (id, o) in &self.objects {
-                if o.desc.flags & OBJF_GRABBABLE == 0 || !matches!(o.holder, Holder::Free | Holder::Pulled { .. }) {
+                if o.desc.flags & OBJF_GRABBABLE == 0 || !matches!(o.holder, Holder::Free | Holder::Pulled { .. } | Holder::Stuck { .. }) {
                     continue;
                 }
                 let d = self.physics.distance_to(o.collider, palm);
@@ -800,10 +882,29 @@ impl Rig {
     fn hand_input(&mut self, i: usize, inp: &RigInput, zones: &[Zone; SLOT_COUNT_BODY], _dom: usize) {
         let s = &inp.settings.interaction;
         let c = &inp.frame.hands[i];
+        // Something to throw in a swinging hand (not a gun or a magazine, which you hold on to).
+        let throwing = {
+            let h = &self.hands.as_ref().unwrap()[i];
+            h.holding.and_then(|id| self.objects.get(&id)).is_some_and(|o| o.desc.kind != OBJ_WEAPON && o.desc.kind != OBJ_MAGAZINE) && h.history.recent().length() > THROW_EASE_SPEED
+        };
         let (pressed, released) = {
             let h = &mut self.hands.as_mut().unwrap()[i];
             let analog = c.squeeze;
-            let down = if h.grip_down { analog > s.grip_release } else { analog > s.grip_press };
+            let mut down = if h.grip_down { analog > s.grip_release } else { analog > s.grip_press && !h.eased };
+            if analog <= s.grip_release {
+                h.eased = false;
+            }
+            // Deck's release: mid-swing the grip lets go as it eases a quarter off its hardest
+            // squeeze, not only once it's nearly open (a late release is the top throwing complaint).
+            if h.grip_down {
+                h.squeeze_peak = h.squeeze_peak.max(analog);
+                if down && !s.grip_toggle && throwing && analog < h.squeeze_peak * (1.0 - THROW_EASE) {
+                    down = false;
+                    h.eased = true;
+                }
+            } else {
+                h.squeeze_peak = analog;
+            }
             let was = h.grip_down;
             h.grip_down = down;
             let edge_down = down && !was;
@@ -824,12 +925,18 @@ impl Rig {
         let prev = self.hands.as_ref().unwrap()[i].prev_buttons;
         self.hands.as_mut().unwrap()[i].prev_buttons = buttons;
         let tapped = |bit: u32| buttons & bit != 0 && prev & bit == 0;
+        let trigger_was = std::mem::replace(&mut self.hands.as_mut().unwrap()[i].trigger_was, c.trigger);
+        let pulled = c.trigger > 0.8 && trigger_was <= 0.8;
 
         if released {
             self.release(i, inp, zones);
         }
         if pressed {
             self.grab(i, inp);
+        }
+        // A grenade in the hand: the one-handed button arms it, B cooks a held lever.
+        if let Some(id) = self.hands.as_ref().unwrap()[i].holding {
+            self.grenade_buttons(i, id, tapped(CTRL_A) || pulled, tapped(CTRL_B), inp.settings);
         }
         // Buttons on the gun hand: A/X ejects the magazine, B/Y drops a locked slide.
         if let Some(id) = self.hands.as_ref().unwrap()[i].holding {
@@ -893,6 +1000,10 @@ impl Rig {
                 self.hands.as_mut().unwrap()[i].handle = Some(wid);
                 self.emit(Cue::Grab, Some(i), Some(wid), palm, 0.6);
             }
+            Hover::Pin(gid) => {
+                self.hands.as_mut().unwrap()[i].pin = Some((gid, palm));
+                self.emit(Cue::Grab, Some(i), Some(gid), palm, 0.4);
+            }
         }
         let _ = inp;
     }
@@ -908,8 +1019,15 @@ impl Rig {
         let Some(o) = self.objects.get_mut(&id) else { return };
         let (pos, rot) = self.physics.pose(o.body);
         let gun = o.desc.kind == OBJ_WEAPON;
+        let hold = authored(o.desc.grip_rot).filter(|_| o.desc.kind == OBJ_THROWABLE);
         o.attach = if gun {
             Attach::Gun
+        } else if let Some(g) = hold {
+            // A throwable the game rigged sits in the hand the way it's held (a knife by its
+            // handle, a grenade with its pin to the other hand), whichever way it was picked up.
+            let g = if i == 0 { mirror_grip(g) } else { g };
+            let rel = inverse((v3(o.desc.grip), g));
+            Attach::Fixed(rel.0, rel.1)
         } else if snap && o.desc.kind == OBJ_MAGAZINE {
             // A fresh magazine sits in the fist along the grip pose's +Z (the fist's axis, little
             // finger to thumb), its top 6 cm out past the thumb, ready to push into a well.
@@ -926,6 +1044,10 @@ impl Rig {
         }
         o.holder = Holder::Held(i);
         o.hovered = false;
+        if let Some(t) = &mut o.throw {
+            t.flight = None;
+            t.thrown_at = None;
+        }
         self.physics.set_kinematic(o.body, false);
         self.physics.set_gravity(o.body, 1.0);
         self.physics.set_angular_damping(o.body, 0.2);
@@ -942,10 +1064,10 @@ impl Rig {
         let s = &inp.settings.interaction;
         let (palm, _) = self.hands.as_ref().unwrap()[i].target;
         let palm_t = self.hands.as_ref().unwrap()[i].grip_t.0;
-        // Support grip / handle / glove lock end with the grip.
+        // Support grip / handle / pin / glove lock end with the grip.
         {
             let h = &mut self.hands.as_mut().unwrap()[i];
-            if h.support.take().is_some() {
+            if h.support.take().is_some() || h.pin.take().is_some() {
                 return;
             }
             if let Glove::Locked(_) = h.glove {
@@ -969,31 +1091,33 @@ impl Rig {
             return;
         }
         let o = &self.objects[&id];
-        let holsterable = o.desc.flags & OBJF_HOLSTERABLE != 0;
-        let hand_speed = self.hands.as_ref().unwrap()[i].history.throw_velocity().0.length();
-        // Into a holster the hand is in, let go of gently (a swing past the hip throws instead).
+        let (desc, body) = (o.desc, o.body);
+        let class = o.throw.as_ref().map(|t| t.class()).unwrap_or(ThrowClass::Generic);
+        // Never stowed armed (or with the pin out).
+        let stowable = o.throw.as_ref().is_none_or(|t| t.stowable());
+        let holsterable = desc.flags & OBJF_HOLSTERABLE != 0 && stowable;
+        let hand_speed = self.hands.as_ref().unwrap()[i].history.recent().length();
+        // Into a holster or pouch the hand is in, let go of gently (a swing past it throws instead).
         if holsterable && hand_speed < HOLSTER_MAX_SPEED {
             for (slot, z) in zones.iter().enumerate() {
                 let free = self.slots[slot].is_none_or(|s| s == id);
-                if free && self.anchor.contains(z, palm_t) {
+                if free && slot_fits(slot as u32, &desc) && self.anchor.contains(z, palm_t) {
                     self.holster(id, slot as u32);
                     self.emit(Cue::HolsterIn, Some(i), Some(id), palm, 1.0);
                     return;
                 }
             }
         }
-        // Throw (or drop) with the hand's recent motion.
-        let (lin, ang) = self.hands.as_ref().unwrap()[i].history.throw_velocity();
-        let o = self.objects.get_mut(&id).unwrap();
-        let (pos, _) = self.physics.pose(o.body);
-        let r = pos - palm;
-        let lever = ang.cross(r).clamp_length_max(5.0);
+        // Throw (or drop) with the hand's motion at its peak before the release.
+        let rel = self.hands.as_ref().unwrap()[i].history.release(self.now);
+        let (pos, rot) = self.physics.pose(body);
         // Heavy things leave the hand slower: a rifle at about 80% of the hand's speed.
-        let heavy = 1.0 / (1.0 + 0.15 * s.weight * o.desc.mass.max(0.0));
-        let v = (lin * s.throw_scale + lever) * heavy;
-        let speed = v.length();
+        let heavy = 1.0 / (1.0 + 0.15 * s.weight * desc.mass.max(0.0));
+        let l = throwing::launch(&rel, class, pos - palm, heavy, s.throw_scale);
+        let speed = l.lin.length();
         // Guns that came from a holster glide back to it when simply let go (H3VR "harnessing"):
         // the weapon-swapping fix players asked Titanfall 2 VR for.
+        let o = self.objects.get_mut(&id).unwrap();
         if o.desc.kind == OBJ_WEAPON && s.auto_holster && speed < 1.5 {
             let slot = o.home_slot.or_else(|| self.slots.iter().position(|x| x.is_none()).map(|x| x as u32));
             if let Some(slot) = slot.filter(|s| self.slots[*s as usize].is_none_or(|x| x == id)) {
@@ -1008,15 +1132,89 @@ impl Rig {
                 return;
             }
         }
-        o.hands_off_until = self.now + 0.1;
-        let body = o.body;
-        self.free_body(id, groups_held(i)); // no hand contact for the first 0.1 s
-        self.physics.set_velocity(body, v, ang * 0.6);
-        if speed > 1.5 {
+        // A throw leaves from where the object was at the peak, carried along it to now (unless
+        // that's far, or through the world).
+        let mut at = pos;
+        if l.thrown {
+            let p = throwing::backdated(rel.peak_pos + (pos - palm), l.lin, rel.t_peak, self.now);
+            let d = p - pos;
+            if d.length() < 0.35 && (d.length() < 1e-3 || self.physics.ray_world(pos, d, d.length() + 0.05).is_none()) {
+                at = p;
+            }
+        }
+        o.hands_off_until = self.now + if speed > 2.0 { 0.2 } else { 0.1 };
+        let mut rot = rot;
+        let mut ang = l.ang;
+        let mut cue = Cue::Release;
+        let mut lit = false;
+        let mut knife = false;
+        if let Some(t) = &mut o.throw {
+            // A held lever flies off as it leaves the hand: the fuse starts.
+            lit = t.let_go(self.now);
+            if l.thrown {
+                t.thrown_at = Some(self.now);
+                t.flight = Some(Flight { hand: i, t0: self.now, knife: None });
+                if t.is_grenade() {
+                    cue = Cue::GrenadeThrow;
+                }
+            }
+            if t.is_knife() && l.thrown {
+                let (tip, flat) = (rot * t.blade, rot * t.flat);
+                let dir = l.lin / speed.max(1e-4);
+                let mode = match throwable::knife_mode(l.ang, flat) {
+                    KnifeMode::Spin(rate) => {
+                        // Spin only about the flat, nudged so the tip comes round at the target.
+                        let reach = self.physics.ray_world(at + rot * t.tip, dir, 30.0).unwrap_or(8.0);
+                        let f = (dir - flat * dir.dot(flat)).normalize_or(dir);
+                        let tp = (tip - flat * tip.dot(flat)).normalize_or(tip);
+                        let angle = flat.dot(f.cross(tp)).atan2(f.dot(tp));
+                        let rate = throwable::spin_to_land(rate, angle, reach / speed.max(1.0));
+                        ang = flat * rate;
+                        KnifeMode::Spin(rate)
+                    }
+                    KnifeMode::Dart => {
+                        // Tip first, once, then kept on its flight (see `drive`).
+                        rot = (Quat::from_rotation_arc(tip, dir) * rot).normalize();
+                        ang = throwable::dart_spin(rot * t.blade, dir, Vec3::ZERO);
+                        KnifeMode::Dart
+                    }
+                };
+                t.flight = Some(Flight { hand: i, t0: self.now, knife: Some(mode) });
+                cue = Cue::KnifeThrow;
+                knife = true;
+            }
+        }
+        if knife {
+            self.debug.knife_throws += 1;
+        }
+        self.free_body(id, groups_held(i)); // no hand contact for a moment
+        if at != pos || rot != self.physics.pose(body).1 {
+            self.physics.set_pose(body, at, rot);
+        }
+        if knife {
+            // It keeps its spin (or its dart's alignment) in the air.
+            self.physics.set_angular_damping(body, 0.0);
+        }
+        self.physics.set_velocity(body, l.lin, ang);
+        if l.thrown && speed > 1.5 {
             self.debug.throws += 1;
             self.debug.last_throw_speed = speed;
+            self.debug.last_throw_gain = l.gain;
+            self.debug.last_throw_peak_ms = ((self.now - rel.t_peak) * 1000.0) as f32;
+            tracing::debug!(
+                "rig: throw {speed:.2} m/s (peak {:.2}, at release {:.2}, {:.0} ms before it), gain {:.2}, spin {:.1} rad/s",
+                rel.peak_speed,
+                rel.release_speed,
+                self.debug.last_throw_peak_ms,
+                l.gain,
+                ang.length()
+            );
         }
-        self.emit(Cue::Release, Some(i), Some(id), palm, 1.0);
+        self.emit(cue, Some(i), Some(id), palm, if l.thrown { 1.0 } else { 0.7 });
+        if lit {
+            self.debug.arms += 1;
+            self.emit(Cue::GrenadeArm, None, Some(id), at, 0.8);
+        }
     }
 
     fn holster(&mut self, id: u32, slot: u32) {
@@ -1357,6 +1555,235 @@ impl Rig {
         }
     }
 
+    // ---- throwables -----------------------------------------------------------------------------------
+    /// The buttons on a hand holding a grenade: `arm` (A or a trigger pull) arms it one-handed,
+    /// where that's how it arms (the button scheme, no pin, or the other hand busy with a gun);
+    /// `cook` (B) pops a held lever so the fuse burns in the hand.
+    fn grenade_buttons(&mut self, i: usize, id: u32, arm: bool, cook: bool, settings: &Settings) {
+        let other_gun = self.other_weapon(i).is_some();
+        let Some(o) = self.objects.get_mut(&id) else { return };
+        let Some(t) = o.throw.as_mut().filter(|t| t.is_grenade()) else { return };
+        let one_handed = settings.interaction.grenade_arming == GrenadeArming::Button || !t.has_pin() || other_gun;
+        let had_pin = t.has_pin() && t.fuse == Fuse::Safe;
+        let lit = if arm && one_handed && t.fuse == Fuse::Safe {
+            t.arm(self.now)
+        } else if cook && t.fuse == Fuse::PinOut {
+            t.arm(self.now)
+        } else {
+            false
+        };
+        if lit {
+            let p = self.physics.pose(o.body).0;
+            if had_pin {
+                self.debug.pins += 1;
+                self.emit(Cue::GrenadePin, Some(i), Some(id), p, 0.7);
+            }
+            self.debug.arms += 1;
+            self.emit(Cue::GrenadeArm, Some(i), Some(id), p, 1.0);
+        }
+    }
+
+    /// Pins being pulled, fuses burning and ticking.
+    fn throwables(&mut self) {
+        let now = self.now;
+        for i in 0..2 {
+            let Some((gid, start)) = self.hands.as_ref().unwrap()[i].pin else { continue };
+            let safe = self.objects.get(&gid).is_some_and(|o| o.holder == Holder::Held(i ^ 1) && o.throw.as_ref().is_some_and(|t| t.fuse == Fuse::Safe));
+            if !safe {
+                self.hands.as_mut().unwrap()[i].pin = None;
+                continue;
+            }
+            let palm = self.hands.as_ref().unwrap()[i].target.0;
+            let o = self.objects.get_mut(&gid).unwrap();
+            let travel = if o.desc.handle_travel > 0.0 { o.desc.handle_travel } else { throwable::DEFAULT_PIN_TRAVEL };
+            if palm.distance(start) < travel {
+                continue;
+            }
+            // Out it comes: two crisp clicks, in both hands; without a lever the fuse is lit.
+            let lit = o.throw.as_mut().unwrap().pull_pin(now);
+            let p = self.physics.pose(o.body).0;
+            self.hands.as_mut().unwrap()[i].pin = None;
+            self.debug.pins += 1;
+            self.emit(Cue::GrenadePin, Some(i), Some(gid), palm, 1.0);
+            self.emit(Cue::GrenadePin, Some(i ^ 1), Some(gid), p, 0.7);
+            if lit {
+                self.debug.arms += 1;
+                self.emit(Cue::GrenadeArm, Some(i ^ 1), Some(gid), p, 1.0);
+            }
+        }
+        let lit: Vec<u32> = self.objects.iter().filter(|(_, o)| o.throw.as_ref().is_some_and(|t| t.lit())).map(|(id, _)| *id).collect();
+        for id in lit {
+            let o = self.objects.get_mut(&id).unwrap();
+            let t = o.throw.as_mut().unwrap();
+            if t.due(now) {
+                self.detonate(id);
+                continue;
+            }
+            if let Some(k) = t.tick(now) {
+                let hand = if let Holder::Held(h) = o.holder { Some(h) } else { None };
+                let p = self.physics.pose(o.body).0;
+                self.emit(Cue::GrenadeTick, hand, Some(id), p, k);
+            }
+        }
+    }
+
+    /// A grenade goes off: out of any hand, inert, and the game told (its `shots`).
+    fn detonate(&mut self, id: u32) {
+        let Some(o) = self.objects.get_mut(&id) else { return };
+        let Some(t) = o.throw.as_mut() else { return };
+        t.went_off();
+        o.holder = Holder::Gone;
+        let (body, collider) = (o.body, o.collider);
+        let (p, _) = self.physics.pose(body);
+        self.physics.set_kinematic(body, true);
+        self.physics.set_groups(collider, groups_none());
+        self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
+        for s in self.slots.iter_mut().filter(|s| **s == Some(id)) {
+            *s = None;
+        }
+        let hands = self.hands.as_mut().unwrap();
+        for (i, h) in hands.iter_mut().enumerate() {
+            if h.holding == Some(id) {
+                h.holding = None;
+                self.physics.set_groups(h.collider, groups_hand(i));
+            }
+            if h.pin.is_some_and(|(g, _)| g == id) {
+                h.pin = None;
+            }
+        }
+        self.debug.detonations += 1;
+        self.debug.last_detonation = Some(self.map.inv_point(p));
+        self.emit(Cue::Explosion, None, Some(id), p, 1.0);
+        for i in 0..2 {
+            let d = self.hands.as_ref().unwrap()[i].target.0.distance(p);
+            let k = (1.0 - d / 15.0).clamp(0.0, 1.0);
+            self.emit(Cue::ExplosionRumble, Some(i), Some(id), p, k * k);
+        }
+    }
+
+    /// A thrown knife (tip first) or sticky bomb meets something at `hit` going at `v`: it stays
+    /// there, in the tip-forward pose, riding with what it's in.
+    fn stick(&mut self, id: u32, hit: Vec3, v: Vec3, into: rapier3d::prelude::ColliderHandle, hand: usize) {
+        let parent = if self.physics.is_world(into) { 0 } else { self.objects.iter().find(|(_, o)| o.collider == into).map(|(id, _)| *id).unwrap_or(0) };
+        let Some(o) = self.objects.get(&id) else { return };
+        let Some(t) = o.throw.as_ref() else { return };
+        let (_, q) = self.physics.pose(o.body);
+        let dir = v.normalize_or(Vec3::Z);
+        let (pos, rot, tip) = if t.is_knife() {
+            let rot = (Quat::from_rotation_arc((q * t.blade).normalize(), dir) * q).normalize();
+            let tip = hit + dir * throwable::STICK_DEPTH;
+            (tip - rot * t.tip, rot, tip)
+        } else {
+            // A sticky bomb: against the surface where it touched.
+            let r = o.desc.half_extents.iter().fold(f32::MAX, |a, b| a.min(*b)).max(o.desc.radius).max(0.01);
+            let at = hit - dir * r;
+            (at, q, at)
+        };
+        let rel = match self.obj_pose(parent).filter(|_| parent != 0) {
+            Some(pp) => compose(inverse(pp), (pos, rot)),
+            None => (pos, rot),
+        };
+        let o = self.objects.get_mut(&id).unwrap();
+        o.holder = Holder::Stuck { parent, rel };
+        if let Some(t) = o.throw.as_mut() {
+            t.flight = None;
+            t.thrown_at = None;
+        }
+        let (body, collider) = (o.body, o.collider);
+        self.physics.set_kinematic(body, true);
+        self.physics.set_pose(body, pos, rot);
+        self.physics.move_kinematic(body, pos, rot);
+        self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
+        self.physics.set_groups(collider, groups_free());
+        self.physics.set_angular_damping(body, 0.2);
+        self.debug.sticks += 1;
+        self.debug.last_stick = Some(self.map.inv_point(tip));
+        self.emit(Cue::KnifeStick, Some(hand), Some(id), hit, 1.0);
+    }
+
+    /// A throw in the air: a dart keeps its tip on its flight, a spinner its spin, and a knife or
+    /// sticky bomb sticks when it meets something the right way (swept ahead of the step, so it
+    /// doesn't bounce first).
+    fn fly(&mut self, id: u32, dt: f32, assist: bool) {
+        let o = &self.objects[&id];
+        let Some(t) = o.throw.as_ref() else { return };
+        let Some(fl) = t.flight else { return };
+        let (p, q) = self.physics.pose(o.body);
+        let (v, w) = self.physics.velocity(o.body);
+        let (body, collider) = (o.body, o.collider);
+        let (sticky, knife) = (t.is_sticky(), t.is_knife());
+        let (tip, blade, flat) = (t.tip, t.blade, t.flat);
+        let done = self.now - fl.t0 > throwable::FLIGHT_TIME || (v.length() < 0.5 && self.now - fl.t0 > 0.15);
+        if done {
+            if let Some(t) = self.objects.get_mut(&id).and_then(|o| o.throw.as_mut()) {
+                t.flight = None;
+            }
+            self.physics.set_angular_damping(body, 0.2);
+            return;
+        }
+        if (knife && fl.knife.is_some()) || sticky {
+            let from = if knife { p + q * tip } else { p };
+            let reach = v.length() * dt * 1.25 + 0.02;
+            if let Some((toi, c, _)) = self.physics.ray_cast(from, v, reach, collider) {
+                if sticky || throwable::sticks(q * blade, v, fl.knife, assist) {
+                    self.stick(id, from + v.normalize_or_zero() * toi, v, c, fl.hand);
+                    return;
+                }
+                // It glanced off: no more help, it tumbles.
+                if let Some(t) = self.objects.get_mut(&id).and_then(|o| o.throw.as_mut()) {
+                    t.flight = Some(Flight { knife: None, ..fl });
+                }
+                self.physics.set_angular_damping(body, 0.2);
+                return;
+            }
+        }
+        match fl.knife {
+            Some(KnifeMode::Dart) if v.length() > 1.0 => self.physics.set_velocity(body, v, throwable::dart_spin(q * blade, v, w)),
+            Some(KnifeMode::Spin(rate)) => self.physics.set_velocity(body, v, q * flat * rate),
+            _ => {}
+        }
+    }
+
+    /// The game's explosion at `at` pushes the loose objects within `radius` (`impulse` N s at
+    /// the centre, falling off linearly), on the next step.
+    pub fn blast(&mut self, at: Vec3, radius: f32, impulse: f32) {
+        if at.is_finite() && radius > 0.0 && impulse.is_finite() {
+            self.pushes.push(Push::Blast { at, radius, impulse });
+        }
+    }
+
+    /// A push on one loose object (N s at world point `at`), on the next step.
+    pub fn impulse(&mut self, id: u32, impulse: Vec3, at: Vec3) {
+        if impulse.is_finite() && at.is_finite() {
+            self.pushes.push(Push::One { id, impulse: impulse.clamp_length_max(50.0), at });
+        }
+    }
+
+    fn apply_pushes(&mut self) {
+        for push in std::mem::take(&mut self.pushes) {
+            match push {
+                Push::Blast { at, radius, impulse } => {
+                    for o in self.objects.values().filter(|o| matches!(o.holder, Holder::Free | Holder::Pulled { .. })) {
+                        let (p, q) = self.physics.pose(o.body);
+                        let c = p + q * v3(o.desc.center);
+                        let d = c - at;
+                        let k = 1.0 - d.length() / radius;
+                        if k > 0.0 {
+                            // Out from the blast and a little up (it's on the ground).
+                            let dir = (d.normalize_or(Vec3::Y) + Vec3::Y * 0.35).normalize();
+                            self.physics.apply_impulse(o.body, dir * impulse * k, c);
+                        }
+                    }
+                }
+                Push::One { id, impulse, at } => {
+                    if let Some(o) = self.objects.get(&id).filter(|o| matches!(o.holder, Holder::Free | Holder::Pulled { .. })) {
+                        self.physics.apply_impulse(o.body, impulse, at);
+                    }
+                }
+            }
+        }
+    }
+
     // ---- gravity gloves (Half-Life: Alyx's) -----------------------------------------------------------
     /// Where a hand can point the gloves: along the controller's aim, or out of the palm (a hand
     /// reaching out, palm towards the thing). OpenXR's grip +X leaves the left palm and enters the
@@ -1469,7 +1896,7 @@ impl Rig {
                 }
                 // The flick: the hand yanks back towards you or up, or the wrist flicks back.
                 let h = &self.hands.as_ref().unwrap()[i];
-                let v = h.history.throw_velocity().0;
+                let v = h.history.recent();
                 let ang = self.map.vel(h.ang_t) / self.map.world_per_meter.max(1e-6);
                 let flat = Vec3::new(to.x, 0.0, to.z).normalize_or_zero();
                 let wrist = ang.dot(flat.cross(Vec3::Y));
@@ -1610,7 +2037,19 @@ impl Rig {
                         self.physics.set_groups(o.collider, groups_free());
                         self.objects.get_mut(id).unwrap().hands_off_until = 0.0;
                     }
+                    if self.objects[id].throw.as_ref().is_some_and(|t| t.flight.is_some()) {
+                        self.fly(*id, dt, s.interaction.knife_assist);
+                    }
                 }
+                // A knife in a loose object rides with it; if that's gone, it falls.
+                Holder::Stuck { parent, rel } if parent != 0 => match self.obj_pose(parent) {
+                    Some(pp) => {
+                        let (p, q) = compose(pp, rel);
+                        self.physics.move_kinematic(self.objects[id].body, p, q);
+                    }
+                    None => self.free_body(*id, groups_free()),
+                },
+                Holder::Stuck { .. } | Holder::Gone => {}
             }
         }
         // Empty hands follow their controllers; past the leash they snap back.
@@ -1661,9 +2100,21 @@ impl Rig {
                 impacts.push((id, hand, pos, strength * (o.desc.mass / 2.0).clamp(0.4, 1.0)));
             }
             let now = self.now;
+            let free = matches!(o.holder, Holder::Free | Holder::Pulled { .. });
+            if free && o.throw.as_ref().is_some_and(|t| t.impact_due(now, change)) {
+                self.detonate(id);
+                continue;
+            }
             let o = self.objects.get_mut(&id).unwrap();
             if hit {
                 o.next_impact = now + 0.12;
+            }
+            // A throw is over once it comes to rest.
+            if let Some(t) = &mut o.throw
+                && t.thrown_at.is_some_and(|t0| now - t0 > 0.3)
+                && vel.length() < 0.25
+            {
+                t.thrown_at = None;
             }
             o.prev_vel = vel;
             o.in_contact = contact;
@@ -1753,13 +2204,16 @@ impl Rig {
             if h.blocked {
                 out.ghosts[i] = Some(pose(h.grip_t.0, h.grip_t.1));
             }
-            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some();
+            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::PistolGrip,
                 Some(o) if o.desc.kind == OBJ_MAGAZINE => rustvr_ik::HoldShape::Magazine,
+                // A knife's handle in the fist.
+                Some(o) if o.throw.as_ref().is_some_and(|t| t.is_knife()) => rustvr_ik::HoldShape::Foregrip,
                 Some(o) if o.desc.half_extents.iter().fold(0.0f32, |a, b| a.max(*b)) < 0.07 => rustvr_ik::HoldShape::Small,
                 Some(_) => rustvr_ik::HoldShape::Large,
                 None if h.support.is_some() || h.handle.is_some() => rustvr_ik::HoldShape::Foregrip,
+                None if h.pin.is_some() => rustvr_ik::HoldShape::Small,
                 None => rustvr_ik::HoldShape::None,
             };
             if let Glove::Flight(id) = h.glove {
@@ -1817,7 +2271,11 @@ impl Rig {
                 Holder::Holstered(_) | Holder::Returning { .. } => flags |= OS_HOLSTERED,
                 Holder::InWeapon(_) => flags |= OS_IN_WEAPON,
                 Holder::Pulled { .. } => flags |= OS_PULLED,
-                Holder::Free => {}
+                Holder::Stuck { .. } => flags |= OS_STUCK,
+                Holder::Free | Holder::Gone => {}
+            }
+            if let Some(t) = &o.throw {
+                flags |= t.flags_out();
             }
             if hovered.contains(id) {
                 flags |= OS_HOVERED;
@@ -1833,13 +2291,17 @@ impl Rig {
                     }
                     (rounds, w.shots, w.chambered as u32, w.slide)
                 }
-                None => (o.rounds, 0, 0, 0.0),
+                None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(0), 0, 0.0),
             };
             let slot = match o.holder {
                 Holder::Holstered(s) | Holder::Returning { slot: s, .. } => s,
                 _ => 0,
             };
-            let parent = if let Holder::InWeapon(w) = o.holder { w } else { 0 };
+            let parent = match o.holder {
+                Holder::InWeapon(w) => w,
+                Holder::Stuck { parent, .. } => parent,
+                _ => 0,
+            };
             out.states[out.count as usize] = ObjectState {
                 id: *id,
                 flags,
@@ -1853,7 +2315,7 @@ impl Rig {
                 chambered,
                 slide,
                 desc: o.draw_desc,
-                _pad: 0,
+                fuse: o.throw.as_ref().map(|t| t.fuse_left(self.now)).unwrap_or(0.0),
             };
             out.count += 1;
         }
@@ -1915,6 +2377,10 @@ pub struct ObjSnap {
     pub support_rot: Option<Quat>,
     /// How many recoil kicks its game gave it (0: the runtime's own recoil).
     pub kicks: usize,
+    /// Throwables: `THROW_*`, the tip (knives, object space) and the seconds left on its fuse.
+    pub throw_flags: u32,
+    pub muzzle: Vec3,
+    pub fuse: f32,
 }
 
 impl ObjSnap {
@@ -1952,6 +2418,9 @@ impl Rig {
                     center: v3(d.center),
                     rounds: s.rounds,
                     kicks: self.kicks(s.id).len(),
+                    throw_flags: d.throw_flags,
+                    muzzle: v3(d.muzzle),
+                    fuse: s.fuse,
                 })
             })
             .collect()

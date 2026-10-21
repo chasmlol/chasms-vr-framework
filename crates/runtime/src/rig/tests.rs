@@ -21,6 +21,8 @@ struct Sim {
     table: Box<ObjectTable>,
     out: RigOutput,
     crouched: bool,
+    /// Every cue the rig emitted, in order.
+    cues: Vec<Cue>,
 }
 
 fn obj(id: u32, kind: u32, pos: Vec3, half: [f32; 3], mass: f32) -> ObjectDesc {
@@ -87,6 +89,11 @@ fn world_box(rig: &mut Rig, id: u32, center: [f32; 3], half: [f32; 3]) {
 
 impl Sim {
     fn new() -> Sim {
+        Sim::with(&[])
+    }
+
+    /// The standard room, plus `extra` objects.
+    fn with(extra: &[ObjectDesc]) -> Sim {
         let mut rig = Rig::default();
         world_box(&mut rig, 1, [0.0, -0.5, 0.0], [20.0, 0.5, 20.0]); // floor
         world_box(&mut rig, 2, [0.0, 0.4, 0.6], [0.6, 0.4, 0.3]); // table, top at 0.8 m
@@ -106,13 +113,13 @@ impl Sim {
             rifle_mag(),
             obj(FAR_BOTTLE, OBJ_PROP, Vec3::new(0.0, 0.1, 3.0), [0.04, 0.1, 0.04], 0.5),
         ];
-        for (i, d) in descs.iter().enumerate() {
+        for (i, d) in descs.iter().chain(extra).enumerate() {
             table.descs[i] = *d;
         }
-        table.count = descs.len() as u32;
+        table.count = (descs.len() + extra.len()) as u32;
         table.seq = 1;
         rig.sync(&table);
-        let mut sim = Sim { rig, s: Settings::default(), f, now: 0.0, map: WorldMap::IDENTITY, table, out: RigOutput::default(), crouched: false };
+        let mut sim = Sim { rig, s: Settings::default(), f, now: 0.0, map: WorldMap::IDENTITY, table, out: RigOutput::default(), crouched: false, cues: Vec::new() };
         sim.step(45); // let everything settle on the table
         sim
     }
@@ -133,6 +140,7 @@ impl Sim {
                 infinite_ammo: false,
             };
             self.out = self.rig.update(&inp);
+            self.cues.extend(self.rig.feedback.iter().map(|f| f.cue));
         }
     }
 
@@ -264,6 +272,41 @@ fn landing_objects_make_impacts() {
     assert!(!impacts.is_empty(), "the bottle hit the floor");
     assert!(impacts.iter().all(|(h, i)| h.is_none() && *i > 0.0 && *i <= 1.0), "{impacts:?}");
     assert!(impacts.len() < 6, "one impact per bounce, not one per frame: {}", impacts.len());
+}
+
+#[test]
+fn a_swing_lets_go_as_the_grip_eases_but_a_still_hand_or_a_gun_holds_on() {
+    let mut s = Sim::new();
+    s.move_hand(0, s.pos(BOTTLE) + Vec3::new(0.0, 0.15, 0.0), 30);
+    s.grip(0, 1.0);
+    s.move_hand(0, Vec3::new(-0.2, 1.3, -0.1), 30);
+    s.step(10);
+    // Still, easing to 0.7 keeps it.
+    s.grip(0, 0.7);
+    assert_eq!(s.rig.held(0), Some(BOTTLE), "a still hand keeps it");
+    s.grip(0, 1.0);
+    // Swinging, easing to 0.7 throws it, and the grip doesn't snatch it back.
+    let mut p = s.hand_pos(0);
+    for k in 0..8 {
+        p.z += 5.0 * DT;
+        s.set_hand(0, p);
+        s.f.hands[0].squeeze = if k < 6 { 1.0 } else { 0.7 };
+        s.step(1);
+    }
+    assert_eq!(s.rig.held(0), None, "let go mid-swing");
+    assert_eq!(s.rig.debug.throws, 1);
+    s.step(5);
+    assert_eq!(s.rig.held(0), None, "not grabbed again until the grip opens");
+    // A gun swung about at 0.7 stays in the hand.
+    s.take_rifle();
+    s.grip(1, 0.7);
+    let mut p = s.hand_pos(1);
+    for _ in 0..8 {
+        p.z += 4.0 * DT;
+        s.set_hand(1, p);
+        s.step(1);
+    }
+    assert_eq!(s.rig.held(1), Some(RIFLE));
 }
 
 #[test]
@@ -755,4 +798,282 @@ fn starting_loadout_goes_into_its_slots() {
     s.step(5);
     let hip = s.rig.anchor().zone_center(&zones::slot_zones(1.7, 1)[SLOT_HIP_RIGHT as usize]);
     assert!(s.pos(50).distance(hip) < 0.2, "on the hip: {:?}", s.pos(50));
+}
+
+// ---- throwables -------------------------------------------------------------------------------------
+const GRENADE: u32 = 6;
+const KNIFE: u32 = 7;
+const MOLOTOV: u32 = 8;
+
+/// A frag grenade on the table's right: a pin (its ring up on the left) and a lever, 3 s fuse.
+fn frag() -> ObjectDesc {
+    let mut d = obj(GRENADE, OBJ_THROWABLE, Vec3::new(0.45, 0.85, 0.75), [0.03, 0.045, 0.03], 0.4);
+    d.flags |= OBJF_HOLSTERABLE | OBJF_PULLABLE;
+    d.throw_flags = THROW_GRENADE | THROW_PIN | THROW_LEVER;
+    d.handle = [-0.035, 0.05, 0.0];
+    d.grip_rot = Quat::IDENTITY.to_array();
+    d.fuse = 3.0;
+    d
+}
+
+/// A throwing knife on the table's left, blade along +Z.
+fn knife() -> ObjectDesc {
+    let mut d = obj(KNIFE, OBJ_THROWABLE, Vec3::new(-0.45, 0.82, 0.75), [0.01, 0.012, 0.12], 0.15);
+    d.flags |= OBJF_HOLSTERABLE;
+    d.throw_flags = THROW_KNIFE;
+    d.grip = [0.0, 0.0, -0.06];
+    d.muzzle = [0.0, 0.0, 0.12];
+    d.grip_rot = Quat::IDENTITY.to_array();
+    d
+}
+
+/// An incendiary that bursts on impact once lit (no pin: a button lights it).
+fn molotov() -> ObjectDesc {
+    let mut d = obj(MOLOTOV, OBJ_THROWABLE, Vec3::new(0.2, 0.9, 0.8), [0.03, 0.09, 0.03], 0.5);
+    d.throw_flags = THROW_GRENADE | THROW_IMPACT;
+    d.impact_delay = 0.1;
+    d.grip_rot = Quat::IDENTITY.to_array();
+    d
+}
+
+impl Sim {
+    fn take(&mut self, hand: usize, id: u32) {
+        let at = self.pos(id);
+        self.move_hand(hand, at + Vec3::new(0.0, 0.06, 0.0), 30);
+        self.grip(hand, 1.0);
+        assert_eq!(self.rig.held(hand), Some(id), "picked up {id}");
+    }
+
+    fn state(&self, id: u32) -> ObjectState {
+        let mut st: Box<ObjectStates> = bytemuck::zeroed_box();
+        self.rig.write_states(&mut st);
+        *st.states[..st.count as usize].iter().find(|x| x.id == id).unwrap()
+    }
+
+    /// Swings hand `i` along `dir`, up to `speed` over a few frames, and lets go at full speed.
+    fn throw(&mut self, i: usize, dir: Vec3, speed: f32) {
+        let mut p = self.hand_pos(i);
+        for k in 0..8 {
+            let v = speed * ((k + 1) as f32 / 4.0).min(1.0);
+            p += dir.normalize() * v * DT;
+            self.set_hand(i, p);
+            self.step(1);
+        }
+        self.f.hands[i].squeeze = 0.0;
+        p += dir.normalize() * speed * DT;
+        self.set_hand(i, p);
+        self.step(1);
+    }
+}
+
+#[test]
+fn the_other_hand_pulls_the_pin_and_the_lever_holds_the_fuse_until_the_throw() {
+    let mut s = Sim::with(&[frag()]);
+    s.take(1, GRENADE);
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.3), 30);
+    s.step(20);
+    assert_eq!(s.out.holds[1], rustvr_ik::HoldShape::Small);
+    // Held by its rig: the ring sits up on the left of the fist.
+    let (gp, gr) = s.rig.object_world_pose(GRENADE).unwrap();
+    let ring = gp + gr * v3(frag().handle);
+    assert!(ring.distance(Vec3::new(0.165, 1.35, 0.3)) < 0.03, "ring at {ring:?}");
+    s.move_hand(0, ring, 30);
+    assert!(s.out.hand_targeting[0], "the left hand is on the pin");
+    s.grip(0, 1.0);
+    s.move_hand(0, ring + Vec3::new(-0.03, 0.0, 0.0), 5);
+    assert_eq!(s.rig.debug.pins, 0, "not out yet");
+    s.move_hand(0, ring + Vec3::new(-0.08, 0.0, 0.0), 5);
+    assert_eq!(s.rig.debug.pins, 1, "pulled");
+    assert!(s.cues.iter().filter(|c| **c == Cue::GrenadePin).count() == 2, "a click in each hand");
+    let st = s.state(GRENADE);
+    assert!(st.flags & OS_PIN_PULLED != 0 && st.flags & OS_ARMED == 0, "the lever holds it: {:#x}", st.flags);
+    s.grip(0, 0.0);
+    s.step(90);
+    assert_eq!(s.rig.debug.detonations, 0, "nothing burns while the lever is held");
+    // Throw it: the lever flies, the fuse starts.
+    s.throw(1, Vec3::new(0.0, 0.5, 1.0), 6.0);
+    let st = s.state(GRENADE);
+    assert!(st.flags & (OS_ARMED | OS_THROWN) == OS_ARMED | OS_THROWN, "{:#x}", st.flags);
+    assert!((st.fuse - 3.0).abs() < 0.05, "the game's 3 s fuse: {}", st.fuse);
+    assert!(s.cues.contains(&Cue::GrenadeThrow) && s.cues.contains(&Cue::GrenadeArm));
+    assert!(s.rig.debug.last_throw_gain > 1.3, "a grenade's gain: {}", s.rig.debug.last_throw_gain);
+    s.step((2.8 * 90.0) as usize);
+    assert!(s.cues.iter().filter(|c| **c == Cue::GrenadeTick).count() >= 5, "it ticks");
+    assert_eq!(s.rig.debug.detonations, 0, "not yet");
+    s.step(30);
+    assert_eq!(s.rig.debug.detonations, 1, "it went off after its fuse");
+    let st = s.state(GRENADE);
+    assert!(st.flags & OS_SPENT != 0 && st.shots == 1, "the game is told: {:#x} shots {}", st.flags, st.shots);
+    assert!(s.cues.contains(&Cue::Explosion) && s.cues.contains(&Cue::ExplosionRumble));
+    let at = s.rig.debug.last_detonation.unwrap();
+    assert!(at.z > 1.5, "down range: {at:?}");
+    // The game puts it back: safe again, the count kept.
+    s.table.descs[5].spawn_seq = 2;
+    s.table.seq += 1;
+    s.rig.sync(&s.table);
+    let st = s.state(GRENADE);
+    assert!(st.flags & (OS_SPENT | OS_ARMED | OS_PIN_PULLED) == 0 && st.shots == 1);
+}
+
+#[test]
+fn pouches_take_safe_grenades_and_never_armed_ones() {
+    let mut s = Sim::with(&[frag()]);
+    s.take(1, GRENADE);
+    let pouch = Vec3::new(0.125, 1.41, 0.11);
+    s.move_hand(1, pouch, 40);
+    s.step(5);
+    s.grip(1, 0.0);
+    assert_eq!(s.rig.holstered(SLOT_CHEST_RIGHT), Some(GRENADE), "in the chest pouch");
+    s.step(10);
+    s.grip(1, 1.0);
+    assert_eq!(s.rig.held(1), Some(GRENADE), "and out again");
+    // Armed (one-handed here), it won't go back in: it drops.
+    s.s.interaction.grenade_arming = GrenadeArming::Button;
+    s.trigger(1, 1.0);
+    assert_eq!(s.rig.debug.arms, 1);
+    s.step(5);
+    s.grip(1, 0.0);
+    assert_eq!(s.rig.holstered(SLOT_CHEST_RIGHT), None, "never stowed armed");
+    assert!(s.rig.is_free(GRENADE));
+}
+
+#[test]
+fn a_button_arms_one_handed_and_a_cooked_grenade_goes_off_in_the_hand() {
+    let mut s = Sim::with(&[frag()]);
+    s.s.interaction.grenade_arming = GrenadeArming::Button;
+    s.take(1, GRENADE);
+    s.trigger(1, 1.0);
+    let st = s.state(GRENADE);
+    assert!(st.flags & OS_ARMED != 0, "the trigger armed it");
+    s.step((3.1 * 90.0) as usize);
+    assert_eq!(s.rig.debug.detonations, 1, "cooked too long");
+    assert_eq!(s.rig.held(1), None, "it's out of the hand");
+    // The pin scheme still arms one-handed while the other hand holds a gun.
+    let mut s = Sim::with(&[frag()]);
+    s.take_rifle();
+    s.take(0, GRENADE);
+    s.tap(0, CTRL_A);
+    assert!(s.state(GRENADE).flags & OS_ARMED != 0, "A armed it with a gun in the other hand");
+}
+
+#[test]
+fn a_cook_pops_the_lever_in_the_hand() {
+    let mut s = Sim::with(&[frag()]);
+    s.take(1, GRENADE);
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.3), 30);
+    let (gp, gr) = s.rig.object_world_pose(GRENADE).unwrap();
+    let ring = gp + gr * v3(frag().handle);
+    s.move_hand(0, ring, 30);
+    s.grip(0, 1.0);
+    s.move_hand(0, ring + Vec3::new(-0.08, 0.0, 0.0), 10);
+    s.tap(1, CTRL_B);
+    let st = s.state(GRENADE);
+    assert!(st.flags & OS_ARMED != 0 && st.fuse < 3.0 && st.fuse > 2.9, "burning in the hand: {}", st.fuse);
+}
+
+#[test]
+fn a_knife_thrown_as_a_dart_sticks_tip_first_and_pulls_back_out() {
+    let mut s = Sim::with(&[knife()]);
+    world_box(&mut s.rig, 9, [0.0, 1.2, 3.0], [2.0, 1.2, 0.05]); // a wall 3 m ahead, face at z 2.95
+    s.take(1, KNIFE);
+    s.move_hand(1, Vec3::new(0.2, 1.4, 0.0), 30);
+    s.step(20);
+    assert_eq!(s.out.holds[1], rustvr_ik::HoldShape::Foregrip);
+    s.throw(1, Vec3::new(0.0, 0.15, 1.0), 8.0);
+    assert_eq!(s.rig.debug.knife_throws, 1);
+    assert!(s.cues.contains(&Cue::KnifeThrow));
+    s.step(60);
+    let st = s.state(KNIFE);
+    assert!(st.flags & OS_STUCK != 0 && st.parent == 0, "stuck in the wall: {:#x}", st.flags);
+    assert_eq!(s.rig.debug.sticks, 1);
+    assert!(s.cues.contains(&Cue::KnifeStick));
+    let (p, q) = s.rig.object_world_pose(KNIFE).unwrap();
+    let tip = p + q * v3(knife().muzzle);
+    assert!(tip.z > 2.95 && tip.z < 3.0, "the tip is in the wall: {tip:?}");
+    assert!((q * Vec3::Z).z > 0.8, "blade first: {:?}", q * Vec3::Z);
+    // It stays put, then the hand pulls it out.
+    s.step(30);
+    assert!(s.rig.object_world_pose(KNIFE).unwrap().0.distance(p) < 1e-3);
+    let handle = p + q * v3(knife().grip);
+    s.move_hand(1, handle, 60);
+    s.grip(1, 1.0);
+    assert_eq!(s.rig.held(1), Some(KNIFE), "pulled out");
+}
+
+#[test]
+fn a_spinning_knife_brings_its_tip_round_and_sticks() {
+    let mut s = Sim::with(&[knife()]);
+    world_box(&mut s.rig, 9, [0.0, 1.2, 3.0], [2.0, 1.2, 0.05]);
+    s.take(1, KNIFE);
+    s.move_hand(1, Vec3::new(0.2, 1.4, 0.0), 30);
+    s.step(20);
+    // A wrist flick: end over end about the blade's flat.
+    s.f.hands[1].ang_vel = [-18.0, 0.0, 0.0];
+    s.throw(1, Vec3::new(0.0, 0.1, 1.0), 9.0);
+    s.f.hands[1].ang_vel = [0.0; 3];
+    s.step(60);
+    assert!(s.state(KNIFE).flags & OS_STUCK != 0, "the tip came round: {:?}", s.rig.object_world_pose(KNIFE));
+}
+
+#[test]
+fn an_impact_grenade_bursts_where_it_lands_but_never_unlit() {
+    let mut s = Sim::with(&[molotov()]);
+    s.take(1, MOLOTOV);
+    s.move_hand(1, Vec3::new(0.2, 1.4, 0.3), 30);
+    s.trigger(1, 1.0); // no pin: the button lights it, whatever the scheme
+    assert_eq!(s.rig.debug.arms, 1);
+    s.throw(1, Vec3::new(0.0, 0.6, 1.0), 5.0);
+    for _ in 0..200 {
+        s.step(1);
+        if s.rig.debug.detonations > 0 {
+            break;
+        }
+    }
+    assert_eq!(s.rig.debug.detonations, 1, "burst on landing");
+    let at = s.rig.debug.last_detonation.unwrap();
+    assert!(at.z > 1.0 && at.y < 0.3, "on the floor down range: {at:?}");
+    // Unlit, a throw does nothing.
+    let mut s = Sim::with(&[molotov()]);
+    s.take(1, MOLOTOV);
+    s.move_hand(1, Vec3::new(0.2, 1.4, 0.3), 30);
+    s.throw(1, Vec3::new(0.0, 0.6, 1.0), 5.0);
+    s.step(180);
+    assert_eq!(s.rig.debug.detonations, 0);
+}
+
+#[test]
+fn the_games_blasts_push_loose_things_not_held_ones() {
+    let mut s = Sim::new();
+    s.take_rifle();
+    let bottle = s.pos(BOTTLE);
+    let rifle = s.pos(RIFLE);
+    s.rig.blast(bottle + Vec3::new(0.0, -0.05, -0.3), 3.0, 4.0);
+    s.step(6);
+    assert!(s.pos(BOTTLE).distance(bottle) > 0.05, "the bottle flew: {:?}", s.pos(BOTTLE));
+    assert!(s.pos(RIFLE).distance(rifle) < 0.05, "the held rifle didn't");
+    // One push on one thing.
+    let far = s.pos(FAR_BOTTLE);
+    s.rig.impulse(FAR_BOTTLE, Vec3::new(0.0, 0.0, 2.0), far);
+    s.step(6);
+    assert!(s.pos(FAR_BOTTLE).z > far.z + 0.05);
+}
+
+#[test]
+fn a_knife_in_a_loose_crate_rides_with_it() {
+    let mut c = obj(9, OBJ_PROP, Vec3::new(0.0, 0.25, 2.2), [0.25, 0.25, 0.25], 4.0);
+    c.flags = OBJF_GRABBABLE;
+    let mut s = Sim::with(&[knife(), c]);
+    s.take(1, KNIFE);
+    s.move_hand(1, Vec3::new(0.1, 1.3, 0.2), 30);
+    s.step(20);
+    s.throw(1, Vec3::new(-0.05, -0.32, 1.0), 8.0);
+    s.step(45);
+    let st = s.state(KNIFE);
+    assert!(st.flags & OS_STUCK != 0 && st.parent == 9, "stuck in the crate: {:#x} parent {}", st.flags, st.parent);
+    let (k0, c0) = (s.pos(KNIFE), s.pos(9));
+    s.rig.impulse(9, Vec3::new(6.0, 0.0, 0.0), c0);
+    s.step(30);
+    let moved = s.pos(9) - c0;
+    assert!(moved.x > 0.05, "the crate moved: {moved:?}");
+    assert!((s.pos(KNIFE) - k0 - moved).length() < 0.03, "and the knife with it");
 }

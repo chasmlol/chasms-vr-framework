@@ -7,7 +7,11 @@
 //! weapon data). The runtime simulates them (Rapier physics: grabbing, throwing, holstering,
 //! reloading, gravity-glove pulls) and publishes where each one is in [`ObjectStates`]; the game
 //! draws them there and applies the outcomes (a weapon's `shots` counter going up means one round
-//! was fired from its muzzle, along its sight line).
+//! was fired from its muzzle, along its sight line; a grenade's means it went off where it is).
+//!
+//! Throwables ([`OBJ_THROWABLE`], `THROW_*`): the runtime owns the hand side (arming, the fuse,
+//! throwing, a knife's flight and where it sticks); the game owns the explosion and the damage.
+//! Its explosions push what the runtime simulates through [`crate::EV_BLAST`].
 //!
 //! An object the player holds (or has holstered) is reported in *tracking space* ([`OS_TRACKING`]),
 //! so the adapter maps it with the same `View` as the hands and it never lags behind them while
@@ -215,15 +219,16 @@ pub struct ObjectDesc {
     pub mass: f32,
     /// Starts in this body slot (`SLOT_*` + 1) instead of at `spawn_pose`; 0 = no.
     pub start_slot: u32,
-    pub _p0: u32,
+    /// Throwables ([`OBJ_THROWABLE`]): what kind, and how it arms (`THROW_*`).
+    pub throw_flags: u32,
     /// Box: half extents. Capsule: `radius` and `half_extents[1]` = half height of the cylinder (Y axis).
     pub half_extents: [f32; 3],
     pub radius: f32,
     /// Collider centre in object space.
     pub center: [f32; 3],
     pub _p1: f32,
-    /// Where the palm holds it (guns: the pistol grip). The held object keeps its +Z along the
-    /// controller's aim.
+    /// Where the palm holds it (guns: the pistol grip; knives: the handle). The held object keeps
+    /// its +Z along the controller's aim.
     pub grip: [f32; 3],
     pub _p2: f32,
     /// Where the other hand holds a two-handed gun.
@@ -232,12 +237,15 @@ pub struct ObjectDesc {
     /// Weapon: where a magazine's top goes in. Magazine: its top (the insertion point).
     pub mag_well: [f32; 3],
     pub _p4: f32,
+    /// Guns: the muzzle. Throwing knives: the blade's tip (the blade runs from `grip` to it).
     pub muzzle: [f32; 3],
     pub _p5: f32,
     /// A point on the line of sight (the line runs along +Z through it).
     pub sight: [f32; 3],
     pub _p6: f32,
     /// Charging handle / slide grab point; pulling it back `handle_travel` metres racks the gun.
+    /// Grenades with [`THROW_PIN`]: the pin's ring (or a fuse's end); pulling it `handle_travel`
+    /// away (0: 5 cm) pulls it.
     pub handle: [f32; 3],
     pub handle_travel: f32,
     /// Weapons and magazines with the same ammo type fit together.
@@ -257,12 +265,17 @@ pub struct ObjectDesc {
     pub name: [u8; 32],
     /// How the hand holds it: the controller's grip-pose rotation in object space, with the grip
     /// pose's origin at `grip` (guns: on the pistol grip, so the barrel points where the hand
-    /// does). All zero: the barrel follows the controller's aim ray.
+    /// does). All zero: the barrel follows the controller's aim ray. Throwables with one snap into
+    /// the hand that way (the left hand takes the mirror image).
     pub grip_rot: [f32; 4],
     /// Two-handed guns: the support hand's controller grip rotation in weapon space while it holds
     /// the foregrip. All zero: palm up under the barrel.
     pub support_rot: [f32; 4],
-    pub _p8: [f32; 2],
+    /// Grenades: seconds from arming to going off (0: the runtime's default, 4 s; an impact
+    /// grenade with 0 waits for its impact). The game's own number when it has one.
+    pub fuse: f32,
+    /// Impact grenades ([`THROW_IMPACT`]): go off on a hard hit at least this long after the throw.
+    pub impact_delay: f32,
     /// Recoil character (EFT-style; 0 = the runtime's default for the gun type):
     /// - `recoil_climb`: how much of each kick stays while firing on full auto (0..1);
     /// - `recoil_return`: how fast the gun comes back down after a shot (1/s);
@@ -305,6 +318,26 @@ pub const WPN_PISTOL: u32 = 1 << 3;
 /// Shoulder-fired: the virtual stock may anchor it.
 pub const WPN_STOCK: u32 = 1 << 4;
 
+/// [`ObjectDesc::throw_flags`]: a grenade. The runtime arms it, times its fuse (or waits for its
+/// impact) and tells the game when it goes off ([`ObjectState::shots`], [`OS_SPENT`]); the game
+/// does the explosion.
+pub const THROW_GRENADE: u32 = 1 << 0;
+/// It has a pin (at `handle`) the other hand pulls. Without one, a button on the holding hand arms it.
+pub const THROW_PIN: u32 = 1 << 1;
+/// A lever (spoon) holds the fuse until the grenade is let go of (or cooked): the fuse starts then,
+/// not when the pin comes out.
+pub const THROW_LEVER: u32 = 1 << 2;
+/// Goes off on a hard impact once armed and thrown (after `impact_delay`), rather than on a timer
+/// (or as well as one, if `fuse` is set).
+pub const THROW_IMPACT: u32 = 1 << 3;
+/// The game times the fuse: the runtime only reports it armed, and the game removes or respawns it.
+pub const THROW_GAME_FUSE: u32 = 1 << 4;
+/// A throwing knife: flies blade first (the blade from `grip` to the tip at `muzzle`) and sticks
+/// in what it hits tip first ([`OS_STUCK`]).
+pub const THROW_KNIFE: u32 = 1 << 5;
+/// Sticks to whatever it hits once thrown (sticky bombs).
+pub const THROW_STICKY: u32 = 1 << 6;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ObjectTable {
@@ -322,14 +355,16 @@ pub struct ObjectState {
     pub flags: u32, // OS_*
     /// Holster slot (OS_HOLSTERED): see `SLOT_*`.
     pub slot: u32,
-    /// The weapon a seated magazine is in (OS_IN_WEAPON).
+    /// The weapon a seated magazine is in (OS_IN_WEAPON), or what a stuck throwable is in
+    /// ([`OS_STUCK`]; 0: the world).
     pub parent: u32,
     pub pose: Pose,
     pub lin_vel: [f32; 3],
     /// Magazines: rounds left. Weapons: rounds in the seated magazine.
     pub rounds: u32,
     pub ang_vel: [f32; 3],
-    /// Weapons: rounds fired so far (each increase is one shot from the muzzle).
+    /// Weapons: rounds fired so far (each increase is one shot from the muzzle). Grenades: times it
+    /// went off (each increase is one explosion at `pose`, for the game to make).
     pub shots: u32,
     /// Weapons: a round is chambered.
     pub chambered: u32,
@@ -337,7 +372,8 @@ pub struct ObjectState {
     pub slide: f32,
     /// Which [`ObjectDesc`] to draw it with (itself, or the template it was spawned from).
     pub desc: u32,
-    pub _pad: u32,
+    /// Grenades: seconds left on a burning fuse the runtime times ([`OS_ARMED`]), else 0.
+    pub fuse: f32,
 }
 /// The runtime is moving it: draw it at `pose`.
 pub const OS_SIMULATED: u32 = 1 << 0;
@@ -356,13 +392,28 @@ pub const OS_HOVERED: u32 = 1 << 7;
 pub const OS_SPAWNED: u32 = 1 << 8;
 /// The slide / bolt is locked back.
 pub const OS_SLIDE_LOCKED: u32 = 1 << 9;
+/// Grenades: the fuse is burning (the game may show it lit, and its AI flee it).
+pub const OS_ARMED: u32 = 1 << 10;
+/// Grenades: the pin is out (draw it without one).
+pub const OS_PIN_PULLED: u32 = 1 << 11;
+/// Thrown, and still in the air or rolling.
+pub const OS_THROWN: u32 = 1 << 12;
+/// Stuck in something (a knife's blade, a sticky bomb): `parent` is what (0: the world).
+pub const OS_STUCK: u32 = 1 << 13;
+/// Went off: inert, the game hides it until it respawns it (`spawn_seq`) or removes it.
+pub const OS_SPENT: u32 = 1 << 14;
 
 pub const SLOT_HIP_RIGHT: u32 = 0;
 pub const SLOT_HIP_LEFT: u32 = 1;
 /// Over the right / left shoulder, behind the head (long guns).
 pub const SLOT_BACK_RIGHT: u32 = 2;
 pub const SLOT_BACK_LEFT: u32 = 3;
-pub const SLOT_COUNT_BODY: usize = 4;
+/// Grenade pouches either side of the sternum, and a belt pouch on the weapon hand's side (small
+/// throwables: grenades, knives).
+pub const SLOT_CHEST_LEFT: u32 = 4;
+pub const SLOT_CHEST_RIGHT: u32 = 5;
+pub const SLOT_BELT: u32 = 6;
+pub const SLOT_COUNT_BODY: usize = 7;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

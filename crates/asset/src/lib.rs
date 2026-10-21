@@ -326,6 +326,32 @@ pub fn save_index(dir: &Path, index: &Index) -> Result<()> {
     write(&dir.join("index.toml"), toml::to_string_pretty(index)?.as_bytes())
 }
 
+/// A skeleton's identity from its bone names: the same for an extracted model and the game's own
+/// copy in memory, so an adapter can tell which cached model the game is showing (FNV-1a over the
+/// names lowercased, sorted and joined by newlines).
+pub fn bone_signature<'a>(names: impl IntoIterator<Item = &'a str>) -> u64 {
+    let mut v: Vec<String> = names.into_iter().map(|n| n.to_ascii_lowercase()).collect();
+    v.sort();
+    v.dedup();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for (i, n) in v.iter().enumerate() {
+        if i > 0 {
+            h = (h ^ 0x0a).wrapping_mul(0x0000_0100_0000_01b3); // '\n' between names
+        }
+        for b in n.bytes() {
+            h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
+}
+
+impl Model {
+    /// [`bone_signature`] of this model's bones.
+    pub fn bone_signature(&self) -> u64 {
+        bone_signature(self.bones.iter().map(|b| b.name.as_str()))
+    }
+}
+
 pub fn load_index(dir: &Path) -> Result<Index> {
     let path = dir.join("index.toml");
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -399,6 +425,13 @@ mod tests {
         // Flat ends: an ease.
         let ease = [key(0.0, 0.0, 0.0, 0.0), key(1.0, 1.0, 0.0, 0.0)];
         assert!((kick_value(&ease, 0.25) - 0.15625).abs() < 1e-5);
+    }
+
+    #[test]
+    fn bone_signatures_ignore_order_and_case() {
+        assert_eq!(bone_signature(["Root", "kurok", "zatvor"]), bone_signature(["zatvor", "root", "KUROK"]));
+        assert_ne!(bone_signature(["root", "kurok"]), bone_signature(["root", "kurok", "zatvor"]));
+        assert_ne!(bone_signature(["ab", "c"]), bone_signature(["a", "bc"]));
     }
 
     #[test]
