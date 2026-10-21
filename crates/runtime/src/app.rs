@@ -15,6 +15,9 @@ pub struct VrOptions {
     pub range_args: Vec<String>,
     /// Where the range's own log goes.
     pub range_log: Option<PathBuf>,
+    /// Quit once the game that started us has gone (for this long): a game that launches the
+    /// runtime gets it out of the way when it closes (Steam counts it as part of the game).
+    pub exit_with_game: Option<std::time::Duration>,
 }
 
 /// `%LOCALAPPDATA%\RustVR`: settings, profiles and logs.
@@ -34,7 +37,21 @@ pub fn run_vr(o: VrOptions) -> Result<()> {
         Some(exe) => Some(spawn_range(exe, &o.range_args, &o.mapping, o.range_log.as_deref(), false)?),
         None => None,
     };
-    while session.step()? {}
+    let mut gone_since: Option<std::time::Instant> = None;
+    let mut seen = false;
+    while session.step()? {
+        let Some(grace) = o.exit_with_game else { continue };
+        if session.adapter_connected() {
+            seen = true;
+            gone_since = None;
+        } else if seen {
+            let since = *gone_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() > grace {
+                tracing::info!("runtime: the game has gone: exiting");
+                break;
+            }
+        }
+    }
     Ok(())
 }
 

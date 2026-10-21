@@ -120,5 +120,6 @@ fn main() -> Result<()> {
         range,
         range_args: Vec::new(),
         range_log: None,
+        exit_with_game: None,
     })
 }

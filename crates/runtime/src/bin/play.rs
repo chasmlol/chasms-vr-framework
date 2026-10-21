@@ -3,8 +3,9 @@
 //! console window. Logs go to `%LOCALAPPDATA%\RustVR\rustvr.log` and `range.log`; if it can't
 //! start, a message box says why.
 //!
-//! Options: `--no-range` (just the runtime, waiting for a game adapter), and anything after `--`
-//! is passed to the range (e.g. `-- --weapon vsv`).
+//! Options: `--no-range` (just the runtime, waiting for a game adapter), `--exit-with-game` (quit
+//! a few seconds after the game that connected has gone: what game adapters start it with), and
+//! anything after `--` is passed to the range (e.g. `-- --weapon vsv`).
 
 #![windows_subsystem = "windows"]
 
@@ -26,6 +27,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let no_range = args[..split].iter().any(|a| a == "--no-range");
+    let exit_with_game = args[..split].iter().any(|a| a == "--exit-with-game");
     let range_args = args.get(split + 1..).map(|a| a.to_vec()).unwrap_or_default();
     let range = std::env::current_exe().ok().map(|p| p.with_file_name("rustvr-range.exe"));
     let opts = VrOptions {
@@ -34,6 +36,7 @@ fn main() {
         range: if no_range { None } else { range },
         range_args,
         range_log: Some(dir.join("range.log")),
+        exit_with_game: exit_with_game.then(|| std::time::Duration::from_secs(5)),
     };
     tracing::info!("rustvr-play: starting");
     if let Err(e) = run_vr(opts) {
