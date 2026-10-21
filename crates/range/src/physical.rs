@@ -250,49 +250,7 @@ pub fn weapon_desc(i: usize, w: &Weapon, spawn: Pose, start_slot: u32) -> Object
 /// weapon's (`Weapon::fix`), rotations and translations alike (the channels at each one's key times,
 /// so the turn is exact).
 pub fn kick_descs(object: u32, w: &Weapon) -> Vec<KickDesc> {
-    use rustvr_asset::{KICK_CHANNELS as N, KickKey, kick_slope, kick_value};
-    let (_, rot, _) = w.fix.to_scale_rotation_translation();
-    // A rotation as a rotation vector, so it turns like a translation: (-pitch, yaw, roll).
-    let turn = |keys: [&[KickKey]; 3], sign: [f32; 3]| -> [Vec<KickKey>; 3] {
-        let mut times: Vec<f32> = keys.iter().flat_map(|k| k.iter().map(|k| k.t)).collect();
-        times.sort_by(f32::total_cmp);
-        times.dedup();
-        let at = |f: &dyn Fn(&[KickKey]) -> f32| Vec3::from_array([0, 1, 2].map(|c| f(keys[c]) * sign[c]));
-        let mut out: [Vec<KickKey>; 3] = Default::default();
-        for t in times {
-            let (v, si, so) = (rot * at(&|k| kick_value(k, t)), rot * at(&|k| kick_slope(k, t, false)), rot * at(&|k| kick_slope(k, t, true)));
-            for c in 0..3 {
-                out[c].push(KickKey { t, v: v[c] * sign[c], slope_in: si[c] * sign[c], slope_out: so[c] * sign[c] });
-            }
-        }
-        out
-    };
-    let mut out = Vec::new();
-    for k in &w.kicks {
-        let ch = &k.channels;
-        let [p, y, r] = turn([&ch[0], &ch[1], &ch[2]], [-1.0, 1.0, 1.0]);
-        let [x, yy, z] = turn([&ch[3], &ch[4], &ch[5]], [1.0, 1.0, 1.0]);
-        let channels: [Vec<KickKey>; N] = [p, y, r, x, yy, z];
-        let mut d = KickDesc::zeroed();
-        d.object = object;
-        d.layer = k.layer as u32;
-        d.when = k.when;
-        d.speed = k.speed;
-        d.length = k.length;
-        d.pivot = w.fix.transform_point3(Vec3::from_array(k.pivot)).to_array();
-        for (c, keys) in channels.iter().enumerate() {
-            if keys.len() > KICK_KEYS {
-                tracing::warn!("range: {} kick {}: {} keys, keeping {KICK_KEYS}", w.key, k.name, keys.len());
-            }
-            let curve = &mut d.channels[c];
-            curve.count = keys.len().min(KICK_KEYS) as u32;
-            for (i, key) in keys.iter().take(KICK_KEYS).enumerate() {
-                curve.keys[i] = [key.t, key.v, key.slope_in, key.slope_out];
-            }
-        }
-        out.push(d);
-    }
-    out
+    rustvr_adapter::kicks::kick_descs(object, &w.kicks, w.fix)
 }
 
 /// The guns' kicks as the kick table can hold them (`capacity`, the protocol's `MAX_KICKS`): every

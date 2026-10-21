@@ -843,6 +843,7 @@ pub fn all() -> Vec<Scenario> {
                 })
             },
             checks: vec![
+                check(90.9, "the game's own recoil kicks the gun as the game fires", |c| ensure(c.mech.game_kicks > 0, || format!("{} kicks playing", c.mech.game_kicks))),
                 check(97.15, "A ejected the magazine", |c| ensure(c.mech.ejects >= 1, || format!("ejects {} mag {:?}", c.mech.ejects, c.mech.mag))),
                 check(99.85, "a magazine from the hip is in the well", |c| ensure(c.mech.mag == MagState::Seated, || format!("mag {:?}", c.mech.mag))),
                 check(102.4, "racking the handle finished the reload", |c| ensure(c.mech.reloads >= 1, || format!("reloads {} mag {:?}", c.mech.reloads, c.mech.mag))),

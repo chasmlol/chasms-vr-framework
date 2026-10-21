@@ -101,6 +101,10 @@ pub struct Session {
     hand_poses_seq: u32,
     kicks: Box<KickTable>,
     kicks_seq: u32,
+    /// Legacy mode's recoil: the held gun's kicks (`KICK_OBJECT_HELD`) and the shots the game
+    /// reported since the last frame.
+    held_kicks: Vec<KickDesc>,
+    game_shots: u32,
     /// What the game said its HUD's pieces are (see `hud.rs`), and where they go.
     hud_layout: Box<HudLayout>,
     hud_layout_seq: u32,
@@ -171,6 +175,8 @@ impl Session {
             hand_poses_seq: 0,
             kicks: bytemuck::zeroed_box(),
             kicks_seq: 0,
+            held_kicks: Vec::new(),
+            game_shots: 0,
             hud_layout: bytemuck::zeroed_box(),
             hud_layout_seq: 0,
             hud: Default::default(),
@@ -278,6 +284,7 @@ impl Session {
                 }
                 EV_RUMBLE => rumble = Some(ev.f[0]),
                 EV_RECENTER => self.mech.recenter(),
+                EV_GAME_SHOTS => self.game_shots = self.game_shots.saturating_add(ev.a),
                 // The game's explosions and hits push what the rig simulates (on its next step).
                 EV_BLAST => self.rig.blast(Vec3::new(ev.f[0], ev.f[1], ev.f[2]), ev.f[3], ev.f[4]),
                 EV_IMPULSE => self.rig.impulse(ev.a, Vec3::new(ev.f[0], ev.f[1], ev.f[2]), Vec3::new(ev.f[3], ev.f[4], ev.f[5])),
@@ -361,6 +368,7 @@ impl Session {
             if seq != self.kicks_seq && self.link.read_kicks_into(&mut self.kicks) {
                 self.kicks_seq = seq;
                 self.rig.set_kicks(&self.kicks);
+                self.held_kicks = self.kicks.entries().iter().filter(|k| k.object == KICK_OBJECT_HELD).copied().collect();
                 tracing::info!("runtime: {} recoil kicks registered (table {})", self.kicks.count, seq);
             }
             let seq = self.link.sound_pack_seq();
@@ -456,6 +464,8 @@ impl Session {
             aux_aspect,
             rumble,
             rig: rig_active.then_some(&self.rig_out),
+            game_shots: std::mem::take(&mut self.game_shots),
+            held_kicks: &self.held_kicks,
         });
         for h in self.mech.haptics.drain(..) {
             self.backend.haptic(h.hand, h.seconds, h.frequency, h.amplitude);
@@ -682,6 +692,7 @@ impl Session {
         self.hand_poses.count = 0;
         self.hand_poses_seq = 0;
         self.kicks.count = 0;
+        self.held_kicks.clear();
         self.hud_layout.count = 0;
         self.hud_layout_seq = 0;
         self.kicks_seq = 0;

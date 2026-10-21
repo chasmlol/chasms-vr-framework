@@ -718,6 +718,10 @@ pub const EV_BLAST: u32 = 4;
 /// A push on one object the runtime simulates (a bullet hitting it): `a` its id, f0..f2 the world
 /// impulse (N s), f3..f5 the world point it acts at.
 pub const EV_IMPULSE: u32 = 5;
+/// The game fired its held gun, `a` times since the last one (it counts its own rounds): in
+/// legacy mode (the gun glued to the hand) the runtime kicks it with the game's recoil, the kicks
+/// registered for [`KICK_OBJECT_HELD`].
+pub const EV_GAME_SHOTS: u32 = 6;
 
 pub const HAPTIC_LEFT: u32 = 0;
 pub const HAPTIC_RIGHT: u32 = 1;

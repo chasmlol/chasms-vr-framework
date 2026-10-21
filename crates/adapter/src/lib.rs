@@ -17,6 +17,7 @@
 //! adapter only translates.
 
 pub mod actions;
+pub mod kicks;
 pub mod basis;
 pub mod math;
 pub mod tracking;
@@ -442,6 +443,12 @@ impl Adapter {
     /// `impulse` (N s) at the centre, nothing past `radius` ([`EV_BLAST`]).
     pub fn blast(&self, pos: [f32; 3], radius: f32, impulse: f32) -> bool {
         self.push_event(Event { kind: EV_BLAST, a: 0, f: [pos[0], pos[1], pos[2], radius, impulse, 0.0] })
+    }
+
+    /// The game fired its held gun `shots` times since the last call ([`EV_GAME_SHOTS`]): legacy
+    /// mode's recoil.
+    pub fn game_shots(&self, shots: u32) -> bool {
+        shots == 0 || self.push_event(Event { kind: EV_GAME_SHOTS, a: shots, f: [0.0; 6] })
     }
 
     /// Pushes one simulated object (`impulse` N s at world point `at`, [`EV_IMPULSE`]).

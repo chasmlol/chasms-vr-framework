@@ -69,6 +69,9 @@ pub const COL_RING_DATA_OFF: usize = 0x80;
 pub const COL_RING_DATA_BYTES: usize = COLLISION_RING_BYTES - COL_RING_DATA_OFF;
 pub const OFF_KICKS: usize = OFF_COLLISION + COLLISION_RING_BYTES;
 pub const MAX_KICKS: usize = 256;
+/// `KickDesc::object` for the gun the game holds in legacy mode (no objects registered): its
+/// kicks are in the `WeaponRig`'s weapon space.
+pub const KICK_OBJECT_HELD: u32 = u32::MAX;
 
 // ---- body -------------------------------------------------------------------------------------
 #[repr(u32)]

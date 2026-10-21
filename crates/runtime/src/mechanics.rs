@@ -88,6 +88,10 @@ pub struct MechInput<'a> {
     pub rumble: Option<f32>,
     /// The rig's frame when it owns the hands (the game registered objects).
     pub rig: Option<&'a RigOutput>,
+    /// Legacy mode's recoil: the shots the game says it fired since the last frame
+    /// (`EV_GAME_SHOTS`), and its held gun's kicks (`KICK_OBJECT_HELD`).
+    pub game_shots: u32,
+    pub held_kicks: &'a [KickDesc],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +110,8 @@ impl Default for MechOutput {
 /// Values tests and the debug overlay look at.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MechDebug {
+    /// Legacy mode: the game's kicks playing on the gun.
+    pub game_kicks: usize,
     pub two_handed: bool,
     pub ads: bool,
     pub reloads: u32,
@@ -281,6 +287,9 @@ const HANDLE_RADIUS: f32 = 0.10;
 const RACK_PULL: f32 = 0.05;
 
 pub struct Mechanics {
+    /// The game's recoil on the gun glued to the hand (legacy mode), from the shots it reports.
+    game_recoil: crate::rig::kick::GameRecoil,
+    last_ads: bool,
     btn_a: [Btn; 2],
     btn_b: [Btn; 2],
     btn_stick: [Btn; 2],
@@ -322,6 +331,8 @@ pub struct Mechanics {
 impl Default for Mechanics {
     fn default() -> Self {
         Mechanics {
+            game_recoil: crate::rig::kick::GameRecoil::new(0x9E37_79B9),
+            last_ads: false,
             btn_a: Default::default(),
             btn_b: Default::default(),
             btn_stick: Default::default(),
@@ -551,6 +562,27 @@ impl Mechanics {
                 handle_t = Some(w2t.transform_point3(v3(rig.charging_handle)));
             }
 
+            // The game's own recoil (`rig::kick`), from the shots the game says it fired: its kicks
+            // turn the gun in weapon space, which here is the game's (for Metro its viewmodel camera
+            // space, so a view kick turns the gun about the eye as the flat game turns its camera).
+            // Held in one hand it kicks harder, as on the rig.
+            let ia = &c.interaction;
+            if ia.game_recoil && !inp.held_kicks.is_empty() {
+                let stance = crate::rig::kick::Stance { aimed: self.last_ads, crouched: gflags & GS_CROUCHED != 0 };
+                let hold = if two {
+                    crate::rig::kick::HoldScale::GAME
+                } else {
+                    crate::rig::kick::HoldScale { turn: ia.recoil_one_hand, push: 1.0 + (ia.recoil_one_hand - 1.0) * 0.5 }
+                };
+                for _ in 0..inp.game_shots.min(8) {
+                    self.game_recoil.kick(inp.held_kicks, stance, hold);
+                }
+                self.game_recoil.update(inp.dt, inp.held_kicks);
+                let (r, t) = self.game_recoil.transform(inp.held_kicks, ia.game_recoil_turn, ia.game_recoil_push);
+                w2t *= Mat4::from_rotation_translation(r, t);
+                self.debug.game_kicks = self.game_recoil.playing();
+            }
+
             // Shots follow the line of sight (through the optic or rear sight), parallel to the barrel.
             let (sight_w, sight_dir) = sight_line(&rig);
             let aim = w2t.transform_vector3(sight_dir).normalize_or(head_fwd);
@@ -566,6 +598,7 @@ impl Mechanics {
                 best = best.min(perp.length() + (along - 0.05).max(0.0) * 0.2);
             }
             let ads = (best < 0.06 && aim.dot(head_fwd) > 0.9) || dc.squeeze > 0.7;
+            self.last_ads = ads;
 
             // Scope picture-in-picture: magnification from the game's own aim zoom.
             let zoom = game.map(|g| g.game_zoom).filter(|z| *z > 0.0).unwrap_or(1.0);
@@ -1129,6 +1162,10 @@ mod tests {
     }
 
     fn run(m: &mut Mechanics, f: &HmdFrame, g: &GameState, s: &Settings, t: f64) -> MechOutput {
+        run_firing(m, f, g, s, t, 0, &[])
+    }
+
+    fn run_firing(m: &mut Mechanics, f: &HmdFrame, g: &GameState, s: &Settings, t: f64, game_shots: u32, held_kicks: &[KickDesc]) -> MechOutput {
         m.update(&MechInput {
             frame: f,
             game: Some(g),
@@ -1141,7 +1178,45 @@ mod tests {
             aux_aspect: 1.0,
             rumble: None,
             rig: None,
+            game_shots,
+            held_kicks,
         })
+    }
+
+    #[test]
+    fn the_games_shots_kick_the_gun_with_its_own_recoil_and_it_settles() {
+        // One view kick: 2 degrees of muzzle climb at once, gone over half a second.
+        let mut k = KickDesc::zeroed();
+        k.object = KICK_OBJECT_HELD;
+        k.layer = KICK_LAYER_VIEW;
+        k.when = KICK_HIP | KICK_AIMED | KICK_STANDING | KICK_CROUCHED | KICK_FIRST | KICK_FOLLOW | KICK_LONG;
+        k.speed = 1.0;
+        k.length = 0.5;
+        let v = 2f32.to_radians();
+        k.channels[KICK_PITCH].count = 2;
+        k.channels[KICK_PITCH].keys[0] = [0.0, v, -v / 0.5, -v / 0.5];
+        k.channels[KICK_PITCH].keys[1] = [0.5, 0.0, -v / 0.5, -v / 0.5];
+        let kicks = [k];
+        let (mut m, s, f, g) = (Mechanics::default(), Settings::default(), standing(), game());
+        let still = run(&mut m, &f, &g, &s, 0.0).weapon.unwrap().aim_dir;
+        let kicked = run_firing(&mut m, &f, &g, &s, 0.011, 1, &kicks).weapon.unwrap().aim_dir;
+        let climb = (kicked.y - still.y).asin().to_degrees();
+        // Held in one hand (the off hand isn't on the foregrip): three times the game's kick.
+        let want = 2.0 * s.interaction.recoil_one_hand;
+        assert!((climb - want).abs() < 0.5, "the muzzle climbs with the kick: {climb:.2} degrees, want {want}");
+        let mut t = 0.022;
+        let mut last = kicked;
+        for _ in 0..60 {
+            last = run_firing(&mut m, &f, &g, &s, t, 0, &kicks).weapon.unwrap().aim_dir;
+            t += 1.0 / 90.0;
+        }
+        assert!(last.angle_between(still) < 0.2f32.to_radians(), "and settles once it's over");
+        // No kicks for the gun, or the game's recoil turned off: no climb.
+        let mut off = s.clone();
+        off.interaction.game_recoil = false;
+        let mut m2 = Mechanics::default();
+        let none = run_firing(&mut m2, &f, &g, &off, 0.0, 1, &kicks).weapon.unwrap().aim_dir;
+        assert!(none.angle_between(still) < 1e-4);
     }
 
     #[test]

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 rustvr-protocol.workspace = true
 rustvr-gpu.workspace = true
+rustvr-asset.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
 glam.workspace = true

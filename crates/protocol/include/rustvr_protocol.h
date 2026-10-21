@@ -268,6 +268,13 @@
  */
 #define RVR_EV_IMPULSE 5
 
+/**
+ * The game fired its held gun, `a` times since the last one (it counts its own rounds): in
+ * legacy mode (the gun glued to the hand) the runtime kicks it with the game's recoil, the kicks
+ * registered for [`KICK_OBJECT_HELD`].
+ */
+#define RVR_EV_GAME_SHOTS 6
+
 #define RVR_HAPTIC_LEFT 0
 
 #define RVR_HAPTIC_RIGHT 1
@@ -386,6 +393,12 @@
 #define RVR_OFF_KICKS (RVR_OFF_COLLISION + RVR_COLLISION_RING_BYTES)
 
 #define RVR_MAX_KICKS 256
+
+/**
+ * `KickDesc::object` for the gun the game holds in legacy mode (no objects registered): its
+ * kicks are in the `WeaponRig`'s weapon space.
+ */
+#define RVR_KICK_OBJECT_HELD UINT32_MAX
 
 #define RVR_JOINT_COUNT 22
 

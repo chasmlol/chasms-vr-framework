@@ -98,7 +98,7 @@ adapters (`tests/header.rs` keeps the two in step).
 | `GameState`: flags, tracking state, eye height, zoom, `WeaponRig`, texture request, stats | adapter -> runtime | seqlock |
 | `Targets`: the shared textures' size, format and generation | runtime -> adapter | seqlock |
 | `SubmitCtl` + 3 x `SlotInfo`: the texture triple buffer | adapter -> runtime | xchg |
-| `Event` ring: haptics, game rumble, recentre requests, the game's blasts and bullet pushes | adapter -> runtime | SPSC ring |
+| `Event` ring: haptics, game rumble, recentre requests, the game's blasts and bullet pushes, the shots it fired | adapter -> runtime | SPSC ring |
 | `RtBody`: the player's 22 joints, finger curls, hand states | runtime -> adapter | seqlock |
 | `ObjectTable`: the objects the player can handle (guns, magazines, grenades, knives, props, templates) | adapter -> runtime | seqlock |
 | `ObjectStates`: where each object is, who holds it, rounds, shots fired, a grenade's fuse and when it went off | runtime -> adapter | seqlock |
@@ -149,6 +149,7 @@ works in tracking space:
 |---|---|
 | Gun in hand | The rig's grip sits on the palm and the barrel follows the aim ray; per-game offsets come from the settings |
 | Two-handed | The off hand grips near the foregrip (25 cm reach), and the gun pivots around the firing hand so its foregrip follows the off hand |
+| Recoil | The game's own (`rig/kick.rs`, as on the rig): the adapter registers its held gun's kicks for `KICK_OBJECT_HELD` in the `WeaponRig`'s weapon space and says when the game fires (`EV_GAME_SHOTS`, from the game's own round count); each shot plays a kick on the gun, so bursts climb and you pull it back down. One-handed it kicks `recoil_one_hand` times harder |
 | Line of sight | Shots start at the sight and travel parallel to the barrel. Adapters can report the exact sight line (`RIG_SIGHT_LINE`) |
 | Auto aim-down-sights | Fires when the sight line passes within 6 cm of an eye while you look along it, or when the grip is held |
 | Scopes | A camera just past the muzzle renders into a lens behind the optic, at true magnification from the game's own zoom |
