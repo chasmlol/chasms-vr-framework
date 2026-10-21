@@ -1674,6 +1674,7 @@ name = "rustvr-asset"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glam 0.34.1",
  "postcard",
  "serde",
  "toml 1.1.8+spec-1.1.0",
