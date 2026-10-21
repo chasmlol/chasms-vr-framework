@@ -35,6 +35,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for how it fits together.
 | `crates/ik` | Full-body IK from the head and hands |
 | `crates/avatar` | Draws the player's body and hands over the game's picture |
 | `crates/audio` | Procedural, spatial interaction sounds |
+| `content/rigs` | How the hands hold each game's guns, measured on its models ([docs/RIGGING.md](docs/RIGGING.md)) |
 
 ## Building
 

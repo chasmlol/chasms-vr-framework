@@ -59,6 +59,9 @@ Supporting crates:
   game's geometry using its depth.
 - `crates/metro-assets`: reads Metro 2033 Redux's archives (`metro-extract`). Local test content
   only, never committed.
+- `content/rigs/<game>.toml`: how the hands hold each of a game's guns, measured on its models
+  (ours, so committed; `rustvr_asset::rigs` reads them). [RIGGING.md](RIGGING.md) says how to rig
+  a gun.
 
 ## 3. Spaces
 
@@ -180,7 +183,7 @@ the hands while walking.
 |---|---|
 | Physics hands | Light palm boxes driven by velocity: 1:1 in free space, stopped by walls and tables, pushing loose objects. A ghost hand shows the controller when one is held back; past 0.7 m they snap back |
 | Grabbing | Within 7 cm of an object's surface, grip hysteresis 0.6 press / 0.4 release (optional toggle). Props are held where you touched them; guns snap grip-to-palm, barrel along the aim (0.12 s ease) |
-| Rigged guns | A gun's descriptor says how the hand holds it (`grip_rot`: the controller grip pose in weapon space) and where the support hand goes (a foregrip line with a slide range, and `support_rot`). Rigged guns point where the hand does; unrigged ones follow the aim ray. Left hands use the mirror image |
+| Rigged guns | A gun's descriptor says how the hand holds it (`grip_rot`: the controller grip pose in weapon space) and where the support hand goes (a foregrip line with a slide range, and `support_rot`). Rigged guns point where the hand does; unrigged ones follow the aim ray. Left hands use the mirror image. The rigs are data, measured on each game's models (`content/rigs/<game>.toml`, [RIGGING.md](RIGGING.md)): the line of sight through the gun's own sights, the game's own hands, the parts that move, the game's rate of fire, fire mode, magazine and caliber |
 | Weight | Held objects can only speed up and turn so hard, less the heavier they are (the weight setting, squared): a 3.5 kg rifle about 30 m/s^2 and 60 rad/s^2 in one hand (a quarter turn takes a third of a second), two to three times that in two hands; pistols nearly and bottles fully keep up. Both brake into the hand rather than overshoot, and soften to 5% against the world, so they never jitter through walls. Heavy things also throw slower (a rifle about 80% of the hand's speed) |
 | Two-handed | The support hand grips the barrel within 14 cm of its foregrip line and locks onto it: it's drawn on the gun, slides along the handguard within the rigged range, and steers the barrel about the firing hand (steadied by a One-Euro filter); pulling it 30 cm away lets go. Letting go of the gun hand hands the gun over. Optional virtual stock: shouldered rifles aim along the shoulder-to-support-hand line |
 | Holsters | Both hips (13 cm) and both shoulders (behind the head only), on a body anchor that lags the head yaw by 0.5 s and freezes while a hand reaches into a zone. Let go of a gun gently in a slot to holster it (a swing faster than 1.2 m/s throws instead); a tick tells you you're in one. Auto-return of let-go guns is optional (off) |
@@ -270,11 +273,14 @@ Adapters can be written in any language: Rust (hook-and-offset games like Metro,
 
 ## 9. Test content
 
-The test range runs in **physical mode** by default: the built-in rifles lie on a table at your
-right hand, the built-in pistol starts on your right hip, Metro's guns (when extracted) lie along a
-long table ahead, and there are bottles, cans, crates and a barrel to knock about. `--legacy` gives
-the old behaviour (the current gun glued to the firing hand, driven by intents), which the
-original scenarios still test.
+The test range runs in **physical mode** by default: the built-in rifles, Metro's Kalash and its
+Bastard lie on a table at your right hand, the built-in pistol starts on your right hip, every other
+rigged Metro gun (20 of them, when extracted) lies on an armory bench behind you, side by side and
+grouped by caliber, and there are bottles, cans, crates and a barrel to knock about on the long table
+ahead and around. Every gun's own magazines come from the ammo pouch while it's in your other hand
+(guns that take the same magazine share one: the Kalash's and the AKSU's). `--legacy` gives the old
+behaviour (the current gun glued to the firing hand, driven by intents), which the original
+scenarios still test.
 
 `metro-extract` reads the user's own Metro 2033 Redux install (read-only) and writes first-person
 guns, hands, a body and props into `local_assets/metro2033/` (`crates/asset` format). The test range

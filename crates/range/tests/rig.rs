@@ -162,6 +162,8 @@ struct View {
     /// Draw the gun (off: only the markers and a block where the pistol grip is, to see the fist
     /// round it).
     gun: bool,
+    /// Tint the gun's moving parts: the magazine red, the bolt or handle cyan, the trigger yellow.
+    parts: bool,
 }
 
 const SIZE: (u32, u32) = (900, 700);
@@ -176,7 +178,15 @@ impl Scene<'_> {
         let (cam, rot) = view.cam;
         let vp = projection(&view.fov, 0.02, 50.0) * view_matrix(cam, rot);
         let model = gun_at * w.fix;
-        let mut draws: Vec<Draw> = if view.gun { gun.iter().map(|(m, two)| Draw { mesh: m, model, tint: [1.0; 4], emissive: 0.0, two_sided: *two }).collect() } else { Vec::new() };
+        let tint = |i: usize| match () {
+            _ if !view.parts => [1.0; 4],
+            _ if w.mag_parts.contains(&i) => [1.0, 0.25, 0.25, 1.0],
+            _ if w.bolt_parts.contains(&i) => [0.25, 1.0, 1.0, 1.0],
+            _ if w.trigger_parts.contains(&i) => [1.0, 1.0, 0.2, 1.0],
+            _ => [0.6, 0.6, 0.6, 1.0],
+        };
+        let moving = |i: usize| w.mag_parts.contains(&i) || w.bolt_parts.contains(&i) || w.trigger_parts.contains(&i);
+        let mut draws: Vec<Draw> = if view.gun { gun.iter().enumerate().map(|(i, (m, two))| Draw { mesh: m, model, tint: tint(i), emissive: if view.parts && moving(i) { 0.6 } else { 0.0 }, two_sided: *two }).collect() } else { Vec::new() };
         if !view.gun {
             // The pistol grip's cross-section (measured), as a block along its axis.
             let (centre, half) = w.grip_block.unwrap();
@@ -434,11 +444,13 @@ fn renders() {
         let close = fov(0.17, SIZE.0 as f32 / SIZE.1 as f32);
         let aspect = SIZE.0 as f32 / SIZE.1 as f32;
         let all_markers = std::env::var("RIG_MARKERS").is_ok();
-        let view = |name: &'static str, cam: (Vec3, Quat), fov: Fov, visibility: u32| View { name, cam, fov, visibility, first_person: false, markers: all_markers, runtime_bias: false, gun: true };
+        let view = |name: &'static str, cam: (Vec3, Quat), fov: Fov, visibility: u32| View { name, cam, fov, visibility, first_person: false, markers: all_markers, runtime_bias: false, gun: true, parts: false };
         let side = mid + Vec3::new(span * 1.9 + 0.3, 0.06, 0.0);
         let mut shots = vec![
             view("side", look_at(side, mid, Vec3::Y), wide, BODYVIS_ARMS),
             View { markers: true, ..view("markers", look_at(side, mid, Vec3::Y), wide, BODYVIS_HANDS) },
+            // The parts the rig moves, tinted: magazine red, bolt or handle cyan, trigger yellow.
+            View { parts: true, ..view("parts", look_at(side, mid, Vec3::Y), wide, BODYVIS_HANDS) },
             view("left", look_at(mid + Vec3::new(-(span * 1.9 + 0.3), 0.06, 0.0), mid, Vec3::Y), wide, BODYVIS_ARMS),
             view("top", look_at(mid + Vec3::new(0.0, span * 1.9 + 0.35, 0.0), mid, Vec3::Z), wide, BODYVIS_ARMS),
             view("under", look_at(mid + Vec3::new(0.0, -(span * 1.9 + 0.35), 0.0), mid, Vec3::Z), wide, BODYVIS_ARMS),
