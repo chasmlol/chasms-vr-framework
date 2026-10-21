@@ -123,6 +123,21 @@ too.
 Settings live in `%LOCALAPPDATA%\RustVR\settings.toml` (per-game overrides go in
 `profiles/<adapter>.toml`) and can be changed from the in-headset menu.
 
+## Playing Metro 2033 Redux in VR
+
+```bat
+cargo build --release -p metro-adapter -p rustvr-runtime
+python tools\install_metro.py
+```
+
+Then start Metro 2033 Redux from Steam as usual: the adapter starts the RustVR runtime in the
+background, which takes the headset. You hold the gun (aim down its sights by raising it to your
+eye; the other hand on the barrel steadies it), Metro's own recoil kicks it, you reload by hand
+(A drops the magazine, take one from your hip, push it in, pull the charging handle), and the HUD
+is placed for VR: subtitles low in view, the ammo counter on the gun. Everything about it (settings,
+controls, how it works, how to test it without a headset) is in [docs/METRO.md](docs/METRO.md);
+`python tools\install_metro.py --uninstall` takes it out again.
+
 ## License
 
 [MIT](LICENSE)
