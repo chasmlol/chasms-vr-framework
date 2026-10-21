@@ -1077,3 +1077,307 @@ fn a_knife_in_a_loose_crate_rides_with_it() {
     assert!(moved.x > 0.05, "the crate moved: {moved:?}");
     assert!((s.pos(KNIFE) - k0 - moved).length() < 0.03, "and the knife with it");
 }
+
+// ---- guns that don't cycle themselves (`rig::actions`) ------------------------------------------
+
+const DOUBLE: u32 = 20;
+const SHELL: u32 = 120;
+const BOLT: u32 = 21;
+const BOLT_MAG: u32 = 121;
+const AIR: u32 = 22;
+const AIR_MAG: u32 = 122;
+
+/// A double-barrelled break action lying across the back of the table, barrels to the right: the
+/// hinge under the breech, two side-by-side chambers, opening 100 degrees.
+fn double() -> ObjectDesc {
+    let mut d = obj(DOUBLE, OBJ_WEAPON, Vec3::new(-0.3, 0.87, 0.8), [0.03, 0.06, 0.35], 3.2);
+    d.spawn_pose = pose(Vec3::new(-0.3, 0.87, 0.8), Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    d.flags |= OBJF_TWO_HANDED | OBJF_HOLSTERABLE;
+    d.center = [0.0, 0.0, 0.2];
+    d.grip = [0.0, -0.05, 0.0];
+    d.foregrip = [0.0, -0.04, 0.3];
+    d.muzzle = [0.0, 0.0, 0.55];
+    d.sight = [0.0, 0.03, 0.0];
+    d.handle = [0.0, -0.03, 0.15];
+    d.mag_well = [0.02, 0.0, 0.14];
+    d.chamber_step = -0.04;
+    d.action = ACTION_BREAK;
+    d.action_angle = 100f32.to_radians();
+    d.weapon_flags = WPN_LOADS_CHAMBERS | WPN_STOCK;
+    d.ammo_type = 7;
+    d.capacity = 2;
+    d.fire_rate = 5.0;
+    d
+}
+
+/// Its round: a shell, base at the first chamber's mouth (the gun's space).
+fn shell() -> ObjectDesc {
+    let mut d = obj(SHELL, OBJ_MAGAZINE, Vec3::ZERO, [0.01, 0.01, 0.035], 0.045);
+    d.flags |= OBJF_TEMPLATE;
+    d.center = [0.02, 0.0, 0.175];
+    d.mag_well = [0.02, 0.0, 0.14];
+    d.ammo_type = 7;
+    d.capacity = 1;
+    d.rounds = 1;
+    d
+}
+
+/// A bolt-action rifle with a five-round magazine: the knob 9 cm right of the bore, lifting 90
+/// degrees and pulling back 8 cm.
+fn bolt_rifle() -> ObjectDesc {
+    let mut d = obj(BOLT, OBJ_WEAPON, Vec3::new(0.0, 0.87, 0.75), [0.03, 0.06, 0.45], 4.0);
+    d.spawn_pose = pose(Vec3::new(0.0, 0.87, 0.75), Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    d.flags |= OBJF_TWO_HANDED;
+    d.center = [0.0, 0.0, 0.3];
+    d.grip = [0.0, -0.05, 0.0];
+    d.foregrip = [0.0, -0.03, 0.4];
+    d.mag_well = [0.0, -0.05, 0.15];
+    d.muzzle = [0.0, 0.0, 0.75];
+    d.sight = [0.0, 0.04, 0.0];
+    d.handle = [0.09, 0.0, 0.08];
+    d.handle_travel = 0.08;
+    d.action = ACTION_BOLT;
+    d.action_angle = 90f32.to_radians();
+    d.weapon_flags = WPN_NEEDS_RACK | WPN_STOCK;
+    d.ammo_type = 8;
+    d.capacity = 5;
+    d.fire_rate = 2.0;
+    d
+}
+
+fn bolt_mag() -> ObjectDesc {
+    let mut d = obj(BOLT_MAG, OBJ_MAGAZINE, Vec3::ZERO, [0.015, 0.04, 0.03], 0.25);
+    d.flags |= OBJF_TEMPLATE;
+    d.mag_well = [0.0, 0.04, 0.0];
+    d.ammo_type = 8;
+    d.capacity = 5;
+    d.rounds = 5;
+    d
+}
+
+/// An air rifle: its pump under the barrel pulled back 10 cm, a quarter of full pressure a stroke.
+fn air_rifle() -> ObjectDesc {
+    let mut d = rifle();
+    d.id = AIR;
+    d.spawn_pose = pose(Vec3::new(-0.3, 0.87, 0.82), Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    d.handle = [0.0, -0.06, 0.45];
+    d.handle_travel = 0.1;
+    d.weapon_flags = WPN_PNEUMATIC | WPN_AUTOMATIC;
+    d.pump_pressure = 0.25;
+    d.shot_pressure = 0.1;
+    d.min_pressure = 0.15;
+    d.ammo_type = 9;
+    d.capacity = 15;
+    d
+}
+
+fn air_mag() -> ObjectDesc {
+    let mut d = rifle_mag();
+    d.id = AIR_MAG;
+    d.ammo_type = 9;
+    d.capacity = 15;
+    d.rounds = 15;
+    d
+}
+
+impl Sim {
+    /// Picks gun `id` up off the table in the right hand and holds it out level, pointing ahead.
+    fn take_gun(&mut self, id: u32) {
+        let top = self.pos(id) + Vec3::new(0.0, 0.12, 0.0);
+        self.move_hand(1, top, 30);
+        self.grip(1, 1.0);
+        assert_eq!(self.rig.held(1), Some(id), "picked up {id}");
+        self.move_hand(1, Vec3::new(0.15, 1.3, 0.25), 30);
+        self.step(30);
+    }
+
+    fn fire_once(&mut self) {
+        self.trigger(1, 1.0);
+        self.step(3);
+        self.trigger(1, 0.0);
+        self.step(30);
+    }
+
+    fn weapon(&self, id: u32) -> WeaponState {
+        self.rig.weapon_state(id).unwrap().clone()
+    }
+
+    /// Reaches over the left shoulder into the pouch and takes what it hands over.
+    fn from_the_pouch(&mut self) -> u32 {
+        self.move_hand(0, Vec3::new(-0.3, 1.45, 0.1), 20);
+        self.move_hand(0, Vec3::new(-0.26, 1.6, -0.06), 20);
+        self.grip(0, 1.0);
+        self.rig.held(0).expect("something from the pouch")
+    }
+
+    /// A snap of the right wrist about the world's X axis (positive: the muzzle down), out and back.
+    fn flick(&mut self, rad_per_frame: f32) {
+        let base = q4(self.f.hands[1].grip.rot);
+        for k in (1..=4).chain((0..4).rev()) {
+            self.set_rot(1, Quat::from_rotation_x(rad_per_frame * k as f32) * base);
+            self.step(1);
+        }
+    }
+}
+
+#[test]
+fn a_double_barrel_breaks_open_throws_its_cases_takes_two_shells_and_snaps_shut() {
+    let mut s = Sim::with(&[double(), shell()]);
+    s.take_gun(DOUBLE);
+    assert_eq!(s.weapon(DOUBLE).chamber_bits(), 0b11, "it arrives with both barrels loaded");
+    // One barrel per pull; then a click.
+    s.fire_once();
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 2);
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 2, "both barrels fired");
+    assert!(s.rig.debug.dry_fires >= 1);
+    assert_eq!(s.weapon(DOUBLE).chamber_bits(), 0b11 << CHAMBER_SPENT_SHIFT, "the cases stay in");
+    // B: the lever. Held level, the barrels fall open under their weight and the cases fly out.
+    s.tap(1, CTRL_B);
+    s.step(90);
+    let h = s.weapon(DOUBLE).hinge.unwrap();
+    assert!(!h.latched && h.angle.to_degrees() > 80.0, "fallen open: {:.1} deg", h.angle.to_degrees());
+    assert_eq!(s.rig.debug.case_ejects, 2);
+    assert_eq!(s.weapon(DOUBLE).chamber_bits(), 0);
+    assert!(s.state(DOUBLE).flags & OS_ACTION_OPEN != 0 && s.state(DOUBLE).slide > 0.8);
+    assert!(s.cues.contains(&Cue::BreakOpen) && s.cues.contains(&Cue::CaseEject));
+    // It won't fire open.
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 2);
+    // Two shells from the pouch, one into each chamber: base to the mouth, along the bore.
+    let d = double();
+    for k in 0..2 {
+        let round = s.from_the_pouch();
+        assert!(s.rig.weapon_state(round).is_none(), "a round, not a gun");
+        let (gp, gq) = s.rig.object_world_pose(DOUBLE).unwrap();
+        let angle = s.weapon(DOUBLE).hinge.unwrap().angle;
+        let turn = actions::hinge_rot(&d, angle);
+        let bore = gq * turn * Vec3::Z;
+        let mouth = gp + gq * actions::on_barrels(&d, angle, actions::chamber_mouth(&d, k));
+        let rot = (gq * turn * held_round_rot().inverse()).normalize();
+        s.set_rot(0, rot);
+        let hand_at = |base: Vec3| base - rot * HELD_ROUND_BASE;
+        s.move_hand(0, hand_at(mouth - bore * 0.12), 30);
+        s.step(10);
+        assert_eq!(s.rig.held(0), Some(round), "not in yet");
+        s.move_hand(0, hand_at(mouth + bore * 0.02), 15);
+        s.step(3);
+        assert_eq!(s.rig.held(0), None, "shell {k} went in");
+        s.grip(0, 0.0);
+        s.set_rot(0, Quat::IDENTITY);
+        s.move_hand(0, Vec3::new(-0.2, 1.1, 0.2), 15);
+    }
+    assert_eq!(s.weapon(DOUBLE).chamber_bits(), 0b11);
+    assert_eq!(s.rig.debug.loads, 2);
+    assert!(s.cues.contains(&Cue::ShellIn));
+    // A flick up: they swing shut and latch.
+    s.flick(-0.15);
+    s.step(30);
+    assert!(s.weapon(DOUBLE).hinge.unwrap().latched, "flicked shut");
+    assert_eq!(s.rig.debug.closes, 1);
+    assert!(s.cues.contains(&Cue::BreakClose));
+    assert!(s.state(DOUBLE).flags & OS_ACTION_OPEN == 0);
+    s.fire_once();
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 4, "both barrels again");
+}
+
+#[test]
+fn the_support_hand_pulls_the_barrels_open_and_pushes_them_shut() {
+    let mut s = Sim::with(&[double(), shell()]);
+    s.take_gun(DOUBLE);
+    let (gp, gq) = s.rig.object_world_pose(DOUBLE).unwrap();
+    s.move_hand(0, gp + gq * v3(double().foregrip) + Vec3::new(0.0, -0.02, 0.0), 30);
+    s.grip(0, 1.0);
+    assert!(s.out.primary_weapon.unwrap().two_handed, "on the foregrip");
+    // The lever: the support hand now has the barrels; pulled down about the hinge they open.
+    s.tap(1, CTRL_B);
+    let (gp, gq) = s.rig.object_world_pose(DOUBLE).unwrap();
+    let hinge = gp + gq * v3(double().handle);
+    let at = s.hand_pos(0);
+    let down = hinge + gq * Quat::from_rotation_x(50f32.to_radians()) * gq.inverse() * (at - hinge);
+    s.move_hand(0, down, 30);
+    s.step(5);
+    let h = s.weapon(DOUBLE).hinge.unwrap();
+    assert!((h.angle.to_degrees() - 50.0).abs() < 8.0, "the barrels followed the hand: {:.1}", h.angle.to_degrees());
+    assert!(!s.out.primary_weapon.unwrap().two_handed, "it isn't steering the gun now");
+    // Pushed home (a little past, as a hand does), they latch and the hand is on the foregrip again.
+    let home = hinge + gq * Quat::from_rotation_x(-10f32.to_radians()) * gq.inverse() * (at - hinge);
+    s.move_hand(0, home, 30);
+    s.step(5);
+    assert!(s.weapon(DOUBLE).hinge.unwrap().latched);
+    assert!(s.out.primary_weapon.unwrap().two_handed, "back on the foregrip");
+}
+
+#[test]
+fn a_bolt_action_needs_its_bolt_worked_between_shots() {
+    let mut s = Sim::with(&[bolt_rifle(), bolt_mag()]);
+    s.take_gun(BOLT);
+    assert_eq!(s.rig.weapon_rounds(BOLT), Some((5, true, false)));
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 1);
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 1, "no second shot without the bolt");
+    assert_eq!(s.state(BOLT).chambered, 1 << CHAMBER_SPENT_SHIFT, "a case in the chamber");
+    // The left hand on the knob: up, back, forward, down.
+    let d = bolt_rifle();
+    let knob = |s: &Sim, lift: f32, back: f32| {
+        let (gp, gq) = s.rig.object_world_pose(BOLT).unwrap();
+        gp + gq * (Cycle::at(lift, back).knob(&d, v3(d.handle)) + Vec3::new(0.02, 0.0, 0.0))
+    };
+    let start = knob(&s, 0.0, 0.0);
+    s.move_hand(0, start, 30);
+    s.grip(0, 1.0);
+    let path = [(1.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)];
+    for (lift, back) in path {
+        let from = s.weapon(BOLT).cycle.unwrap();
+        for k in 1..=12 {
+            let t = k as f32 / 12.0;
+            // Round the bore for the lift (a straight line would cut inside the knob's circle).
+            let at = knob(&s, from.lift + (lift - from.lift) * t, from.back + (back - from.back) * t);
+            s.set_hand(0, at);
+            s.step(1);
+        }
+        s.step(3);
+    }
+    s.grip(0, 0.0);
+    let ws = s.weapon(BOLT);
+    assert!(ws.cycle.unwrap().closed(), "home and down: {:?}", ws.cycle);
+    assert!(ws.chambered && !ws.spent);
+    assert_eq!(s.rig.weapon_rounds(BOLT), Some((4, true, false)), "the next round went in");
+    assert_eq!(s.rig.debug.cycles, 1);
+    assert_eq!(s.rig.debug.case_ejects, 1);
+    for c in [Cue::BoltUp, Cue::BoltBack, Cue::BoltForward, Cue::BoltDown, Cue::CaseEject] {
+        assert!(s.cues.contains(&c), "{c:?}");
+    }
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 2, "worked, it fires again");
+}
+
+#[test]
+fn an_air_rifle_needs_pumping_and_shots_spend_the_pressure() {
+    let mut s = Sim::with(&[air_rifle(), air_mag()]);
+    s.take_gun(AIR);
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 0, "no pressure, no shot");
+    assert!(s.rig.debug.hisses >= 1 && s.cues.contains(&Cue::AirHiss));
+    // Three strokes of the pump.
+    let d = air_rifle();
+    let (gp, gq) = s.rig.object_world_pose(AIR).unwrap();
+    let pump = gp + gq * v3(d.handle);
+    s.move_hand(0, pump + Vec3::new(0.0, -0.02, 0.0), 30);
+    s.grip(0, 1.0);
+    for _ in 0..3 {
+        let (_, gq) = s.rig.object_world_pose(AIR).unwrap();
+        s.move_hand(0, s.hand_pos(0) - gq * Vec3::Z * 0.1, 10);
+        s.move_hand(0, s.hand_pos(0) + gq * Vec3::Z * 0.1, 10);
+    }
+    s.grip(0, 0.0);
+    assert_eq!(s.rig.debug.pumps, 3);
+    assert!((s.state(AIR).fuse - 0.75).abs() < 1e-4, "pressure {}", s.state(AIR).fuse);
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 1);
+    assert!((s.rig.debug.last_strength - 0.75).abs() < 1e-4);
+    assert!((s.state(AIR).fuse - 0.65).abs() < 1e-4, "a shot spent a tenth");
+}

@@ -48,6 +48,30 @@ pub enum Cue {
     ExplosionRumble,
     KnifeThrow,
     KnifeStick,
+    // The actions of guns that don't cycle themselves (`rig::actions`).
+    /// A break action's latch let go (its barrels start to fall open), and its barrels latching shut.
+    BreakOpen,
+    BreakClose,
+    /// A swing-out barrel or cylinder unlatched, and back in and latched.
+    SwingOpen,
+    SwingClose,
+    /// A round pushed into a chamber, and a live one pulled back out by hand.
+    ShellIn,
+    ShellOut,
+    /// A case (or a live round) thrown out of a chamber: a break action opening, a bolt or pump
+    /// at the back of its stroke.
+    CaseEject,
+    /// A bolt turned up out of its lugs, pulled back, pushed home and turned down.
+    BoltUp,
+    BoltBack,
+    BoltForward,
+    BoltDown,
+    /// A pump action's forend pulled back and pushed forward.
+    PumpBack,
+    PumpForward,
+    /// An air gun's pump stroke (pressure building), and its trigger without the pressure to fire.
+    Pump,
+    AirHiss,
 }
 
 impl Cue {
@@ -84,6 +108,21 @@ impl Cue {
             Cue::ExplosionRumble => "explosion_rumble",
             Cue::KnifeThrow => "knife_throw",
             Cue::KnifeStick => "knife_stick",
+            Cue::BreakOpen => "break_open",
+            Cue::BreakClose => "break_close",
+            Cue::SwingOpen => "swing_open",
+            Cue::SwingClose => "swing_close",
+            Cue::ShellIn => "shell_in",
+            Cue::ShellOut => "shell_out",
+            Cue::CaseEject => "case_eject",
+            Cue::BoltUp => "bolt_up",
+            Cue::BoltBack => "bolt_back",
+            Cue::BoltForward => "bolt_forward",
+            Cue::BoltDown => "bolt_down",
+            Cue::PumpBack => "pump_back",
+            Cue::PumpForward => "pump_forward",
+            Cue::Pump => "pump",
+            Cue::AirHiss => "air_hiss",
         }
     }
 }
@@ -146,6 +185,17 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
             (0.12 + 0.2 * i, 55.0, (0.3 + 0.7 * i).min(1.0))
         }
         Cue::KnifeStick => (0.03, 90.0, 0.85),
+        // The latch going is a click; shutting is the heaviest of them (metal on metal).
+        Cue::BreakOpen | Cue::SwingOpen => (0.025, 180.0, 0.6),
+        Cue::BreakClose | Cue::SwingClose => (0.05, 110.0, 0.95),
+        Cue::ShellIn => (0.03, 140.0, 0.6),
+        Cue::ShellOut => (0.02, 160.0, 0.4),
+        Cue::CaseEject => (0.015, 220.0, 0.3),
+        Cue::BoltUp | Cue::BoltDown => (0.02, 200.0, 0.5),
+        Cue::BoltBack | Cue::PumpBack => (0.035, 170.0, 0.75),
+        Cue::BoltForward | Cue::PumpForward => (0.045, 140.0, 0.85),
+        Cue::Pump => (0.04, 90.0, 0.6),
+        Cue::AirHiss => (0.03, 320.0, 0.25),
     })
 }
 
@@ -170,5 +220,31 @@ mod tests {
         assert!(haptic(Cue::Explosion, 1.0).is_none(), "the explosion's sound has no pulse of its own");
         assert!(haptic(Cue::ExplosionRumble, 1.0).unwrap().0 > haptic(Cue::ExplosionRumble, 0.2).unwrap().0);
         assert!(haptic(Cue::GrenadeTick, 1.0).unwrap().2 < haptic(Cue::GrenadeArm, 1.0).unwrap().2, "ticks are faint");
+    }
+
+    #[test]
+    fn the_actions_cues_have_their_event_names_and_a_pulse() {
+        let cues = [
+            (Cue::BreakOpen, "break_open"),
+            (Cue::BreakClose, "break_close"),
+            (Cue::SwingOpen, "swing_open"),
+            (Cue::SwingClose, "swing_close"),
+            (Cue::ShellIn, "shell_in"),
+            (Cue::ShellOut, "shell_out"),
+            (Cue::CaseEject, "case_eject"),
+            (Cue::BoltUp, "bolt_up"),
+            (Cue::BoltBack, "bolt_back"),
+            (Cue::BoltForward, "bolt_forward"),
+            (Cue::BoltDown, "bolt_down"),
+            (Cue::PumpBack, "pump_back"),
+            (Cue::PumpForward, "pump_forward"),
+            (Cue::Pump, "pump"),
+            (Cue::AirHiss, "air_hiss"),
+        ];
+        for (c, n) in cues {
+            assert_eq!(c.name(), n);
+            assert!(haptic(c, 1.0).is_some(), "{n}");
+        }
+        assert!(haptic(Cue::BreakClose, 1.0).unwrap().2 > haptic(Cue::BreakOpen, 1.0).unwrap().2, "shutting is the heavier");
     }
 }
