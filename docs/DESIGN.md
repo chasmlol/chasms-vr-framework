@@ -198,7 +198,7 @@ the hands while walking.
 | Grenades | `rig/throwable.rs`. The fuse is the game's (`ObjectDesc::fuse`), else 4 s. Two arming schemes (Hands tab): *pin* (default, Pavlov / H3VR / Into the Radius): the other hand takes the ring (8 cm) and pulls it 5 cm out; a lever holds the fuse while the grip does, so it starts when you let go, or press B to cook it in your hand; a grenade without a lever (Metro's lit fuse) starts as the pin comes out. *Button* (HL:A's priming button): the trigger or A on the hand holding it. One-handed anyway while the other hand holds a gun, or for a grenade without a pin. It ticks (sound and a faint pulse in the holding hand) every second, four times a second in the last 1.5 s; it can be re-gripped or caught, the fuse keeps burning; the game's pause stops it. When it runs out (impact grenades: on a hard hit once thrown) the game is told (`ObjectState::shots`, `OS_SPENT`) and makes the explosion; its blast pushes the rig's loose objects through `EV_BLAST` |
 | Throwing knives | Blade first (Meta's dart, HVR's stab test): at the release, more than 8 rad/s about the blade's flat throws it end over end (that spin only, nudged so the tip comes round where it's going to hit); otherwise it's a dart, turned tip-first once and kept on its flight (16/s). It sticks if the tip meets something at 1 m/s or more within 60 degrees of its flight (72 with the assist, on by default); a spinning knife is judged in its tip-forward pose whenever its tip is round the front. Stuck (`OS_STUCK`), it rides with what it's in and pulls back out with a grip. Sticky bombs stick to whatever they hit |
 | Gravity gloves | Half-Life: Alyx's, with its own numbers (`vr_hand_pull_*` / `vr_gg_*` from its `server.dll`, see `rig::alyx`): point the hand (its aim or its palm) at something within 10 m (a 15° cone from 25 cm behind the hand, held to 20°; nothing nearer than 30 cm); 0.1 s pointed at it takes it (it glows). Grip locks it on: it hops and strains towards you; pointing 60° away, or 0.25 s with the grip let go, drops the lock. A flick (the hand yanked back at 1.2 m/s, or the wrist flicked back at 5 rad/s) throws it on Alyx's arc: 0.6 s in flight out to 2.5 m, 0.8 s at 10 m, launched 20° above the line near and 10° far, gravity eased to as little as half; it steers after your moving hand from 0.6 s out to 0.05 s before arriving (up to 12.7 m/s^2). Caught within 0.5 m with the grip held (a 0.125 s pulse) |
-| Feedback | Every interaction is one cue: a haptic pulse and a spatial sound on the same frame. Impacts scale with speed. Cues have event names (`grenade_pin`, `grenade_arm`, `grenade_tick`, `grenade_throw`, `explosion`, `knife_throw`, `knife_stick` ...) for games' sound packs; until one gives them their own they use the nearest synthesized sound | A cue also names its object (the gun, for its magazine, bolt and shots), so the sound is that object's own from the game's sound pack (§6c)
+| Feedback | Every interaction is one cue: a haptic pulse and a spatial sound on the same frame. Impacts scale with speed. Cues have event names (`grenade_pin`, `grenade_arm`, `grenade_tick`, `grenade_throw`, `explosion`, `knife_throw`, `knife_stick` ...) for games' sound packs; where a pack has none they use the nearest synthesized sound. A cue also names its object (the gun, for its magazine, bolt and shots; the grenade or knife), so the sound is that object's own from the game's sound pack (§6c): Metro's dynamite is lit, thrown and goes off with Metro's own sounds |
 | Fingers | Curls from the trigger, grip and thumb-rest touch, wrapped round whatever the hand holds (pistol grip, foregrip, magazine, small or large object) |
 | Full body | `crates/ik` solves 22 joints every frame from the head and the hands the rig drew (VRIK/FRIK-style: torso yaw from the hands, spine pitch from the head drop, stepping legs, elbow prediction, hands pinned exactly). The avatar (Metro's Miller when extracted, else a mannequin) is drawn between the game's picture and the overlays, hidden behind the game's geometry using its linear depth; the head is cut away in first person. Hands only, arms or full body. The body stands on the game's floor (the game puts your eyes at its own eye height, so the real floor would leave it floating or crouched), its proportions follow your height (set, measured, or the game character's), and its arms follow your arm span: set, measured in a T-pose, or automatic (it grows whenever your real arms reach further). Seated mode draws it standing |
 | Comfort | A vignette eases in while the stick moves or smooth-turns you (strength 0.5, 0.3 s); the view fades out when the head pushes into the game's collision; snap turn 45° (0.75 press, 0.25 re-arm, 0.5 s repeat); seated mode; play at your real height or the character's |
@@ -217,7 +217,8 @@ only the fallback, for events the pack doesn't have and until it has loaded.
 - **The pack** is a folder with a `sounds.toml` and the files it names (Ogg Vorbis or WAV). It maps
   *events* (`grab`, `release`, `holster_in`/`out`, `mag_out`, `mag_in`, `bolt_back`,
   `bolt_forward`, `dry_fire`, `fire`, `fire_tail`, `casing`, `impact`, `pouch`, `zone_tick`,
-  `ui_click`, `melee`, `grenade_throw`, `explosion`, ...; `rustvr_audio::Event`) to sounds, in
+  `ui_click`, `melee`, `grenade_pin`, `grenade_arm`, `grenade_tick`, `grenade_throw`, `explosion`,
+  `knife_throw`, `knife_stick`, ...; `rustvr_audio::Event`) to sounds, in
   `[defaults]` and per **sound set** (`[sets.wpn_ak]`, one per gun, say; a set can `extends`
   another). An event is layers that play together (a shot's close crack and its body), each a
   choice of files picked at random, never the same twice running. A layer can be `spatial = false`
@@ -243,8 +244,22 @@ only the fallback, for events the pack doesn't have and until it has loaded.
   `cc_545_concrete_*`. Reloads are Redux's split reloads (`weapons\split_reloads`: the AK's magazine
   out, magazine in and bolt), which suit a reload made by hand; a table there says which part is
   which. Grabs and holsters are the player's cloth and gear, a dropped gun Metro's weapon-fall
-  sounds, the pouch its ammo pickup. Events are levelled to where the runtime's own sounds sit,
-  except shots, which share one gain so the guns keep their loudness relative to each other.
+  sounds, the pouch its ammo pickup. **Throwables** have sets of their own, from their configs
+  too (the `weapons\fast drop\...` configs that hold their first-person models): Metro's
+  dynamite and sticky dynamite are lit with `bomb_prepare`, thrown with `bomb_atack_1` or `_2`
+  and go off with `grenade_explosion`; the incendiary bomb goes off with `molotoff_explosion`;
+  every explosion has the echo every Metro explosive's config names after it (`preved_echo`, in
+  the bed like a shot's tail). The throwing knife flies with `weapons\dagger` and sinks in with
+  `knife_hit_default` (what Metro's material table plays for knife hits); the range's own knife
+  sounds like it. Pulling a bomb's fuse is a cord tugged (Metro's tripwire, `trap_check_pull`:
+  Metro's hands strike a lighter instead). The range's frag (`[sets.grenade]`) counts down with
+  the claymore's beep and throws and goes off with the defaults; its pin and lever, which Metro
+  hasn't got, stay the runtime's own, and a lit fuse doesn't tick. Not used yet: the bombs' fuse
+  burning (`bomb_idle`, `molotoff_fly2`), a loop that would need a looped event that follows the
+  bomb. The table of every throwable's events is in `sound_pack.rs`. Events are levelled to where
+  the runtime's own sounds sit, except shots, which share one gain so the guns keep their
+  loudness relative to each other. `metro-extract --sound-items <substring>` lists `sounds.bin`'s
+  items and what they play.
 
 ## 6d. The HUD in VR
 
@@ -350,7 +365,12 @@ Adapters can be written in any language: Rust (hook-and-offset games like Metro,
     - `wall_hand`: a hand pushed into the table stops at its surface (ghost hand);
     - `game_sounds`: the range hands over Metro's sound pack; picking up the Kalash, its three
       shots (each with its tail and a casing) and dropping its magazine play Metro's own sounds
-      (the mixer runs offline in scenarios, so the checks see which sounds played).
+      (the mixer runs offline in scenarios, so the checks see which sounds played), and every
+      throwable has its set;
+    - `game_dynamite`: Metro's dynamite from the throwables' table, the other hand pulls its fuse,
+      a throw down range: the fuse lit, the throw and the explosion are Metro's own sounds. With
+      Metro's sounds extracted, `grenade` and `knife` check theirs too (the frag's countdown
+      beeps, its throw and explosion; the knife's throw and hit).
 - **The range's own renders:** `cargo test -p rustvr-range` also draws the guns as the rig holds
   them (`tests/rig.rs`, `captures/rig/`) and its effects close up and from the side
   (`tests/fx.rs`, `captures/fx/`: a shot's flash and tracer, a casing on the floor, holes in a

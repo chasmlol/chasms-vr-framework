@@ -170,6 +170,33 @@ fn throwable<'a>(c: &Ctx<'a>, flag: u32) -> Option<&'a ObjSnap> {
     c.objects.iter().find(|o| o.kind == OBJ_THROWABLE && o.throw_flags & flag != 0 && o.flags & (OS_THROWN | OS_ARMED | OS_STUCK | OS_SPENT | OS_HELD_LEFT | OS_HELD_RIGHT) != 0)
 }
 
+/// Metro's dynamite on the throwables' table: a lit-fuse bomb (a pin, its fuse cord, without a
+/// lever), not sticky, not set off by a hit.
+fn table_dynamite(objs: &[ObjSnap]) -> Option<ObjSnap> {
+    let kind = THROW_GRENADE | THROW_PIN | THROW_LEVER | THROW_STICKY | THROW_IMPACT;
+    objs.iter().find(|o| o.kind == OBJ_THROWABLE && o.throw_flags & kind == (THROW_GRENADE | THROW_PIN) && o.flags & OS_HOLSTERED == 0 && o.pos.x < -0.4 && o.pos.z > 0.8).copied()
+}
+
+/// The runtime's audio when the range handed over Metro's sound pack (it does whenever Metro's
+/// sounds have been extracted), to see which of its events played; `None` when it handed over
+/// none, and the runtime's own sounds played.
+fn game_pack<'a>(c: &Ctx<'a>) -> Result<Option<&'a rustvr_audio::Audio>, String> {
+    let a = c.audio.ok_or("no audio")?;
+    match a.pack_status() {
+        rustvr_audio::PackStatus::None => Ok(None),
+        rustvr_audio::PackStatus::Ready(_) => Ok(Some(a)),
+        other => Err(format!("the sound pack: {other:?}")),
+    }
+}
+
+/// With Metro's pack: `test` on its plays. Without: nothing to check.
+fn pack_check(c: &Ctx, test: impl FnOnce(&dyn Fn(rustvr_audio::Event) -> u32) -> Result<(), String>) -> Result<(), String> {
+    match game_pack(c)? {
+        Some(a) => test(&|e| a.pack_plays(e)),
+        None => Ok(()),
+    }
+}
+
 /// A throwing swing: from rest at `t0` the hand speeds up along `dir` over `accel` seconds to
 /// `speed`, passing `at` (where it lets go) `hold` seconds into the steady part. Its position at `t`.
 fn swing(t: f64, t0: f64, at: Vec3, dir: Vec3, speed: f32, accel: f32, hold: f32) -> Vec3 {
@@ -305,6 +332,25 @@ pub fn all() -> Vec<Scenario> {
                         rustvr_audio::PackStatus::Ready(info) => ensure(info.name == "Metro 2033 Redux" && info.sets > 20 && info.missing.is_empty(), || format!("{info:?}")),
                         other => Err(format!("{other:?} (run metro-extract --sounds?)")),
                     }
+                }),
+                check(0.1, "it gives every throwable Metro's sounds: the bombs' fuse, throw and explosion, the knife's throw and hit", |c| {
+                    let a = c.audio.ok_or("no audio")?;
+                    let rustvr_audio::PackStatus::Ready(info) = a.pack_status() else { return Err("no pack".into()) };
+                    let spec = rustvr_audio::pack::PackSpec::read(&info.dir).map_err(|e| format!("{e:#}"))?;
+                    let wants: [(&str, &[&str]); 5] = [
+                        ("throw_dynamite", &["grenade_pin", "grenade_arm", "grenade_throw", "explosion"]),
+                        ("throw_sticky_dynamite", &["grenade_pin", "grenade_arm", "grenade_throw", "explosion"]),
+                        ("throw_incendiary", &["grenade_pin", "grenade_arm", "grenade_throw", "explosion"]),
+                        ("throw_knife", &["knife_throw", "knife_stick"]),
+                        ("grenade", &["grenade_tick", "grenade_throw", "explosion"]),
+                    ];
+                    for (set, events) in wants {
+                        let have = spec.resolve(Some(set)).map_err(|e| format!("{e:#}"))?;
+                        for e in events {
+                            ensure(have.contains_key(*e), || format!("{set} has no {e}"))?;
+                        }
+                    }
+                    Ok(())
                 }),
                 check(0.95, "picking the Kalash up was the game's sound", |c| {
                     let a = c.audio.ok_or("no audio")?;
@@ -568,13 +614,26 @@ pub fn all() -> Vec<Scenario> {
                     let lit = g.flags & (OS_ARMED | OS_THROWN) == OS_ARMED | OS_THROWN;
                     ensure(c.rig.throws >= 1 && c.rig.last_throw_speed > 6.0 && lit && (3.7..4.0).contains(&g.fuse), || format!("throws {} at {:.1} m/s (gain {:.2}), flags {:#x}, fuse {:.2}", c.rig.throws, c.rig.last_throw_speed, c.rig.last_throw_gain, g.flags, g.fuse))
                 }),
+                check(2.95, "with Metro's sounds (when extracted): the throw is the game's", |c| {
+                    use rustvr_audio::Event as E;
+                    pack_check(c, |n| ensure(n(E::GrenadeThrow) == 1, || format!("pack grenade_throw {}", n(E::GrenadeThrow))))
+                }),
                 check(6.6, "not before its fuse", |c| ensure(c.rig.detonations == 0, || format!("{} went off", c.rig.detonations))),
+                check(6.6, "with Metro's sounds: its fuse counts down with the game's beep", |c| {
+                    use rustvr_audio::Event as E;
+                    // Every second, then four times a second from 1.5 s left.
+                    pack_check(c, |n| ensure(n(E::GrenadeTick) >= 6, || format!("pack grenade_tick {}", n(E::GrenadeTick))))
+                }),
                 check(7.2, "it went off down range near the target, and the range made the explosion", |c| {
                     let at = c.rig.last_detonation.ok_or("no detonation")?;
                     let near = at.distance(TARGET_AHEAD) < 5.0;
                     ensure(c.rig.detonations == 1 && at.z > 4.0 && near && c.stat_f(rs::F_EXPLOSIONS) >= 1.0 && c.stat_f(rs::F_BLAST_HITS) >= 1.0, || {
                         format!("detonations {} at {at:?}; range: explosions {}, plates hit {}", c.rig.detonations, c.stat_f(rs::F_EXPLOSIONS), c.stat_f(rs::F_BLAST_HITS))
                     })
+                }),
+                check(7.2, "with Metro's sounds: the explosion is the game's", |c| {
+                    use rustvr_audio::Event as E;
+                    pack_check(c, |n| ensure(n(E::Explosion) == 1, || format!("pack explosion {}", n(E::Explosion))))
                 }),
                 check(7.9, "its smoke and debris are still about", |c| ensure(c.stat_f(rs::F_FX_LIVE) > 20.0, || format!("{} effects", c.stat_f(rs::F_FX_LIVE)))),
             ],
@@ -634,6 +693,10 @@ pub fn all() -> Vec<Scenario> {
                     ensure(c.objects.iter().any(|o| o.kind == OBJ_THROWABLE && o.throw_flags & THROW_KNIFE != 0 && o.flags & OS_HELD_LEFT != 0), || "not held".into())
                 }),
                 check(1.4, "thrown", |c| ensure(c.rig.knife_throws == 1 && c.rig.last_throw_speed > 8.0, || format!("knife throws {} at {:.1} m/s", c.rig.knife_throws, c.rig.last_throw_speed))),
+                check(1.4, "with Metro's sounds (when extracted): the throw is its knife's", |c| {
+                    use rustvr_audio::Event as E;
+                    pack_check(c, |n| ensure(n(E::KnifeThrow) == 1, || format!("pack knife_throw {}", n(E::KnifeThrow))))
+                }),
                 check(2.4, "it stuck in the target, blade first", |c| {
                     let k = throwable(c, THROW_KNIFE).ok_or("no knife in flight or stuck")?;
                     let tip = c.rig.last_stick.ok_or("it never stuck")?;
@@ -643,9 +706,86 @@ pub fn all() -> Vec<Scenario> {
                         format!("flags {:#x}, sticks {}, tip {tip:?} ({off:.2} m off), blade {blade:?}, range knife hits {}", k.flags, c.rig.sticks, c.stat_f(rs::F_KNIFE_HITS))
                     })
                 }),
+                check(2.4, "with Metro's sounds: it went in with the game's knife hit", |c| {
+                    use rustvr_audio::Event as E;
+                    pack_check(c, |n| ensure(n(E::KnifeStick) == 1, || format!("pack knife_stick {}", n(E::KnifeStick))))
+                }),
                 check(2.9, "and stays there", |c| ensure(throwable(c, THROW_KNIFE).is_some_and(|k| k.flags & OS_STUCK != 0), || "fell out".into())),
             ],
             captures: vec![(1.0, "knife_aim"), (1.5, "knife_flight"), (2.5, "knife_stuck")],
+        },
+        Scenario {
+            name: "game_dynamite",
+            about: "physical: Metro's dynamite from the throwables' table, the other hand pulls its fuse to light it, a throw down range: Metro's own sounds for the fuse lit, the throw and the explosion",
+            duration: 6.6,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(d) = table_dynamite(objs) else { return b };
+                    let rest = Body::rest().hands;
+                    let above = d.at(d.grip) + Vec3::Y * 0.04;
+                    let hold = Vec3::new(-0.12, 1.3, 0.38);
+                    // The throw: the grenade's, from the left shoulder, letting go at 2.8 s.
+                    let dir = Vec3::new(0.0, 0.5, 1.0).normalize();
+                    let (release, speed, accel, steady) = (Vec3::new(-0.3, 1.62, 0.2), 6.5, 0.12, 0.05);
+                    let t0 = 2.8 - (accel + steady) as f64;
+                    let start = swing(t0, t0, release, dir, speed, accel, steady);
+                    let follow = swing(2.9, t0, release, dir, speed, accel, steady);
+                    b.hands[0].pos = if t < t0 {
+                        keys(t, &[(0.0, rest[0].pos), (0.4, above), (0.55, above), (1.0, hold), (2.2, hold), (2.55, start)])
+                    } else if t < 2.9 {
+                        swing(t, t0, release, dir, speed, accel, steady)
+                    } else {
+                        keys(t, &[(2.9, follow), (3.5, rest[0].pos)])
+                    };
+                    b.hands[0].squeeze = on(t, &[(0.48, 2.8)]);
+                    // The right hand takes the fuse's end where the held bomb has it and pulls it.
+                    let fuse = live(see, d.id).filter(|o| o.flags & OS_HELD_LEFT != 0).map(|o| o.at(o.handle)).unwrap_or(hold);
+                    b.hands[1].pos = keys(t, &[(1.15, rest[1].pos), (1.5, fuse), (1.6, fuse), (1.8, fuse + Vec3::X * 0.1), (2.1, rest[1].pos)]);
+                    b.hands[1].squeeze = on(t, &[(1.55, 1.95)]);
+                    b.head_rot = qkeys(t, &[(0.0, look_rot(above - Body::rest().head_pos)), (0.9, look_rot(hold + Vec3::Z * 0.1 - Body::rest().head_pos)), (2.1, look_rot(hold + Vec3::Z * 0.1 - Body::rest().head_pos)), (2.5, Quat::IDENTITY)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.0, "the dynamite is in the left hand", |c| {
+                    let held = c.objects.iter().any(|o| o.kind == OBJ_THROWABLE && o.throw_flags & THROW_PIN != 0 && o.throw_flags & THROW_LEVER == 0 && o.flags & OS_HELD_LEFT != 0);
+                    ensure(held, || "not held (run metro-extract --extras?)".into())
+                }),
+                check(2.0, "the other hand pulled its fuse: it's lit", |c| {
+                    let d = throwable(c, THROW_PIN).ok_or("no dynamite")?;
+                    ensure(c.rig.pins == 1 && c.rig.arms == 1 && d.flags & OS_ARMED != 0, || format!("pins {}, arms {}, flags {:#x}", c.rig.pins, c.rig.arms, d.flags))
+                }),
+                check(2.0, "Metro's sounds: the fuse pulled and lit", |c| {
+                    use rustvr_audio::Event as E;
+                    let a = game_pack(c)?.ok_or("no sound pack (run metro-extract --sounds?)")?;
+                    let n = |e| a.pack_plays(e);
+                    // One sound each (the pull's pulse is in both hands).
+                    ensure(n(E::GrenadePin) == 1 && n(E::GrenadeArm) == 1, || format!("pack grenade_pin {}, grenade_arm {}", n(E::GrenadePin), n(E::GrenadeArm)))
+                }),
+                check(2.95, "thrown down range, the fuse burning, with Metro's throw", |c| {
+                    use rustvr_audio::Event as E;
+                    let d = throwable(c, THROW_PIN).ok_or("no dynamite")?;
+                    let a = game_pack(c)?.ok_or("no sound pack")?;
+                    let lit = d.flags & (OS_ARMED | OS_THROWN) == OS_ARMED | OS_THROWN;
+                    ensure(c.rig.throws >= 1 && lit && a.pack_plays(E::GrenadeThrow) == 1, || format!("throws {}, flags {:#x}, pack grenade_throw {}", c.rig.throws, d.flags, a.pack_plays(E::GrenadeThrow)))
+                }),
+                check(6.5, "it went off down range with Metro's explosion, and the range made it", |c| {
+                    use rustvr_audio::Event as E;
+                    let at = c.rig.last_detonation.ok_or("no detonation")?;
+                    let a = game_pack(c)?.ok_or("no sound pack")?;
+                    ensure(c.rig.detonations == 1 && at.z > 3.0 && c.stat_f(rs::F_EXPLOSIONS) >= 1.0 && a.pack_plays(E::Explosion) == 1, || {
+                        format!("detonations {} at {at:?}, range explosions {}, pack explosion {}", c.rig.detonations, c.stat_f(rs::F_EXPLOSIONS), a.pack_plays(E::Explosion))
+                    })
+                }),
+            ],
+            captures: vec![(1.7, "dynamite_lit"), (5.9, "dynamite_explosion")],
         },
         Scenario {
             name: "gloves",

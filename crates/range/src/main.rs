@@ -178,6 +178,7 @@ impl Game {
         if let Some(a) = &mut armory {
             let placed = throwables::layout(&throw_list);
             a.add_objects(&placed.iter().map(|(i, d)| (*d, physical::Kind::Throwable(*i))).collect::<Vec<_>>());
+            a.add_sound_sets(&placed.iter().map(|(i, d)| (d.id, throwables::sound_set(&throw_list[*i]))).collect::<Vec<_>>());
             let table = throwables::furniture();
             a.add_collision(&table.iter().map(|(lo, hi, _)| (*lo, *hi)).collect::<Vec<_>>());
             let mut m = MeshData::default();

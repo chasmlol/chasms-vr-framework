@@ -6,9 +6,9 @@
 //! (`add_objects`: the throwables, which `throwables` draws).
 //!
 //! The range makes no sound itself: it hands the runtime Metro's own sounds (the sound pack
-//! `metro-extract` writes to `local_assets/metro2033/sounds`, see [`sound_pack`]), each gun the
-//! set it sounds like, and the runtime plays them, its shots included, as it would for any game
-//! that doesn't play its own.
+//! `metro-extract` writes to `local_assets/metro2033/sounds`, see [`sound_pack`]), each gun and
+//! throwable the set it sounds like, and the runtime plays them, its shots and explosions
+//! included, as it would for any game that doesn't play its own.
 
 use bytemuck::Zeroable;
 use glam::{Mat3, Mat4, Quat, Vec3};
@@ -549,6 +549,19 @@ impl Armory {
         }
     }
 
+    /// Objects added by other modules (`add_objects`) that sound like one of the pack's sets
+    /// (the throwables, see `throwables::sound_set`): nothing without a pack. Before registering.
+    pub fn add_sound_sets(&mut self, sets: &[(u32, &str)]) {
+        if self.sounds.path().is_empty() {
+            return;
+        }
+        for (id, set) in sets {
+            if !self.sounds.add_object(*id, set, 0) {
+                tracing::warn!("range: no room for object {id}'s sound set {set}");
+            }
+        }
+    }
+
     /// Adds objects of other kinds (before registering).
     pub fn add_objects(&mut self, items: &[(ObjectDesc, Kind)]) {
         for (d, kind) in items {
@@ -614,7 +627,7 @@ impl Armory {
                 tracing::info!("range: registered {} objects, {} hand poses and {} recoil kicks", self.table.count, self.poses.count, self.kicks.count);
                 match self.sounds.path() {
                     "" => tracing::info!("range: no sound pack (run metro-extract): the runtime's own sounds"),
-                    dir => tracing::info!("range: Metro's sounds from {dir}, {} guns with their own", self.sounds.count),
+                    dir => tracing::info!("range: Metro's sounds from {dir}, {} objects with their own", self.sounds.count),
                 }
             }
         }
@@ -798,6 +811,20 @@ mod tests {
         };
         assert_eq!((set("builtin_rifle").as_str(), set("builtin_pistol").as_str()), ("wpn_ak", "wpn_revolver"));
         let _ = std::fs::remove_dir_all(&assets);
+    }
+
+    #[test]
+    fn throwables_get_their_sound_sets_only_with_a_pack() {
+        let weapons = builtins();
+        let refs: Vec<&Weapon> = weapons.iter().collect();
+        let mut a = Armory::new(&refs);
+        *a.sounds = SoundPack::zeroed();
+        a.add_sound_sets(&[(3000, "grenade")]);
+        assert_eq!(a.sounds.count, 0, "no pack, no sets");
+        *a.sounds = SoundPack::new("C:\\metro2033\\sounds");
+        a.add_sound_sets(&[(3000, "grenade"), (3002, "throw_knife")]);
+        assert_eq!(a.sounds.object(3000).unwrap().set_name(), "grenade");
+        assert_eq!(a.sounds.object(3002).unwrap().set_name(), "throw_knife");
     }
 
     #[test]
