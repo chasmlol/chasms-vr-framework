@@ -229,6 +229,49 @@ pub fn all() -> Vec<Scenario> {
             captures: vec![(0.62, "reach"), (1.2, "lifted"), (1.95, "aim")],
         },
         Scenario {
+            name: "gun_fx",
+            about: "physical: the range shows the rifle's shots as a game does: muzzle flash and light, smoke, tracers, holes and sparks on the target, casings out of the port onto the floor",
+            duration: 4.4,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(rifle) = near_rifle(objs) else { return b };
+                    b.head_rot = Quat::from_rotation_x(0.5 * (1.0 - ramp(t, 1.0, 1.4)));
+                    // Fired from the hip, so the eye sees the flash, the tracers and the port from the side.
+                    let aim = aim_gun(&rifle, Vec3::new(0.22, 1.34, 0.3), TARGET_AHEAD, 0.0);
+                    let (p, r) = take_rifle(t, &rifle);
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0)]) };
+                    b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1)]) };
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    b.hands[1].trigger = on(t, &[(1.9, 1.98), (2.4, 2.48), (2.9, 2.98)]);
+                    // Look down to the right at the brass on the floor at the end.
+                    let brass = look_rot(Vec3::new(1.1, 0.0, 0.25) - Body::rest().head_pos);
+                    b.head_rot = b.head_rot.slerp(brass, ramp(t, 3.4, 3.8));
+                    b
+                })
+            },
+            checks: vec![
+                check(1.88, "nothing yet", |c| ensure(c.stat(rs::SHOTS) == 0, || format!("{} shots", c.stat(rs::SHOTS)))),
+                check(1.95, "the first shot: flash, light, smoke, tracer, casing, a hole", |c| {
+                    ensure(c.stat(rs::SHOTS) == 1 && c.stat_f(rs::F_FX_LIVE) >= 9.0, || format!("{} shots, {} effects", c.stat(rs::SHOTS), c.stat_f(rs::F_FX_LIVE)))
+                }),
+                check(3.3, "three shots from the hip, holes where they hit and three casings down", |c| {
+                    ensure(c.stat(rs::SHOTS) >= 3 && c.stat(rs::HITS) >= 2 && c.stat_f(rs::F_FX_LIVE) >= 6.0, || format!("shots {} hits {}, {} effects", c.stat(rs::SHOTS), c.stat(rs::HITS), c.stat_f(rs::F_FX_LIVE)))
+                }),
+                check(3.3, "the flash lit the view up", |c| {
+                    let (before, flash) = (c.capture("fx_before").ok_or("no capture")?, c.capture("fx_flash").ok_or("no capture")?);
+                    ensure(flash.mean > before.mean + 0.002, || format!("mean {:.4} -> {:.4}", before.mean, flash.mean))
+                }),
+            ],
+            captures: vec![(1.85, "fx_before"), (1.92, "fx_flash"), (1.94, "fx_flash_2"), (1.96, "fx_flash_3"), (2.2, "fx_after"), (2.95, "fx_third"), (4.3, "fx_casings")],
+        },
+        Scenario {
             name: "game_recoil",
             about: "physical: Metro's Kalash fires a burst with Metro's own recoil (its camera tracks and fire motions), the muzzle held up while it fires and back after",
             duration: 3.6,

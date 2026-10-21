@@ -39,8 +39,8 @@ use std::collections::VecDeque;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 use content::{MeshData, Weapon};
-use effects::{BitKind, Casing, Effects};
-use hits::Surface;
+use effects::{BitKind, Casing, Effects, GunFx};
+use hits::{HitWhat, ObjBox, Surface};
 use render::{Draw, Mesh, Renderer};
 use std::collections::HashMap;
 
@@ -106,8 +106,9 @@ struct Game {
     /// Physical mode's throwables, and what's happened to them.
     throwables: Vec<throwables::Throwable>,
     watch: throwables::Watch,
-    /// What the game shows (explosions, their debris and smoke), and the room it all lands in.
+    /// The guns' shots as a game shows them, and what the bullets hit.
     effects: Effects,
+    gun_fx: Vec<GunFx>,
     world: hits::World,
 }
 
@@ -191,6 +192,7 @@ impl Game {
         let fx_meshes = [Casing::Rifle, Casing::Pistol, Casing::Shell].iter().map(|c| renderer.upload(&gpu, &effects::casing_mesh(*c))).collect::<Result<Vec<_>>>()?;
         let sprites = effects::Sprites::load(|key, fallback| renderer.fx_texture(&gpu, key, fallback));
         tracing::info!("range: effect sprites {}", if sprites.flash.from_game { "from Metro 2033" } else { "built in" });
+        let gun_fx = weapons.iter().map(|g| effects::gun_fx(&g.w, &assets)).collect();
         // What bullets hit: the room (stone), the furniture (wood, the steel rails metal), the plates.
         let mut boxes: Vec<(Vec3, Vec3, Surface)> = content::shell().into_iter().map(|(lo, hi)| (lo, hi, Surface::Stone)).collect();
         for (lo, hi, c) in content::furniture().into_iter().chain(if legacy { Vec::new() } else { throwables::furniture() }) {
@@ -244,6 +246,7 @@ impl Game {
             throwables: throw_list,
             watch: throwables::Watch::default(),
             effects: Effects::new(sprites),
+            gun_fx,
             world,
         })
     }
@@ -412,6 +415,7 @@ impl Game {
                 self.stats[rs::SHOTS] += 1;
                 self.stats_f[rs::F_SHOT_AIM_ERROR] = 0.0;
                 self.shoot(shot.origin, shot.dir.normalize());
+                self.shot_fx(shot.weapon, shot.gun, shot.vel, shot.origin, shot.dir.normalize(), v);
             }
         }
         // Weapons.
@@ -465,14 +469,51 @@ impl Game {
             let barrel = v.weapon_to_world(it).z_axis.truncate().normalize();
             self.stats_f[rs::F_SHOT_AIM_ERROR] = dir.angle_between(barrel).to_degrees();
             self.shoot(origin, dir);
+            let (_, rot, pos) = v.weapon_to_world(it).to_scale_rotation_translation();
+            self.shot_fx(self.weapon, (pos, rot), Vec3::ZERO, origin, dir, v);
             self.adapter.rumble(0.35);
         }
+    }
+
+    /// The loose objects a bullet can hit, as boxes (not what the hands hold or wear).
+    fn object_boxes(&self, v: &View) -> Vec<ObjBox> {
+        let Some(a) = &self.armory else { return Vec::new() };
+        a.states()
+            .iter()
+            .filter(|s| s.flags & (OS_TRACKING | OS_IN_WEAPON | OS_SPENT) == 0)
+            .filter_map(|s| {
+                let d = a.desc(s.desc)?;
+                let (pos, rot) = physical::Armory::world_pose(s, v);
+                let name = name_str(&d.name);
+                let surface = match d.kind {
+                    OBJ_PROP if name.contains("box") || name.contains("crate") => Surface::Wood,
+                    OBJ_PROP if name.contains("bottle") => Surface::Stone,
+                    _ => Surface::Metal,
+                };
+                Some(ObjBox { id: s.id, pos, rot, center: Vec3::from_array(d.center), half: Vec3::from_array(d.half_extents), surface })
+            })
+            .collect()
     }
 
     /// Where each object is (world), for what rides on them.
     fn object_poses(&self, v: &View) -> HashMap<u32, (Vec3, Quat)> {
         let Some(a) = &self.armory else { return HashMap::new() };
         a.states().iter().filter(|s| s.flags & OS_SPENT == 0).map(|s| (s.id, physical::Armory::world_pose(s, v))).collect()
+    }
+
+    /// A shot as the game shows it: the gun's flash, smoke, tracer and casing, and what it hit
+    /// (a hole, sparks or dust, and a push on a loose object).
+    fn shot_fx(&mut self, weapon: usize, gun: (Vec3, Quat), vel: Vec3, origin: Vec3, dir: Vec3, v: &View) {
+        let boxes = self.object_boxes(v);
+        let hit = self.world.raycast(origin, dir, 150.0, &boxes);
+        let Some(fx) = self.gun_fx.get(weapon).copied() else { return };
+        self.effects.shot(&fx, gun, vel, dir, hit.as_ref());
+        if let Some(h) = hit
+            && let HitWhat::Object(id, _) = h.what
+        {
+            // A rifle round knocks a can over; real momentum would throw it across the room.
+            self.adapter.impulse(id, (dir * 1.5).to_array(), h.pos.to_array());
+        }
     }
 
     /// The throwables: explosions (effects, the blast's push, damage to the plates), knives in the

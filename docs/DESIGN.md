@@ -256,6 +256,8 @@ Adapters can be written in any language: Rust (hook-and-offset games like Metro,
   - `void`: no game; the runtime shows its own room and menu.
   - Physical mode (the range's objects in the runtime's hands):
     - `pickup`: pick up the rifle from the table, aim down the sights, hit the target;
+    - `gun_fx`: three shots from the hip: the range shows them as a game would (the flash lights
+      the view, smoke, tracers, holes in the target, casings out of the port onto the floor);
     - `mag_reload`: eject, a magazine from the shoulder pouch, seat it, rack the handle, fire;
     - `holster`: draw the pistol from the hip, fire, let go and it returns to the holster;
     - `throw`: throw a bottle down the range;
@@ -272,6 +274,10 @@ Adapters can be written in any language: Rust (hook-and-offset games like Metro,
     - `vignette`: walking closes the vignette in, stopping opens it;
     - `wall_fade`: the head inside the table fades the view out;
     - `wall_hand`: a hand pushed into the table stops at its surface (ghost hand).
+- **The range's own renders:** `cargo test -p rustvr-range` also draws the guns as the rig holds
+  them (`tests/rig.rs`, `captures/rig/`) and its effects close up and from the side
+  (`tests/fx.rs`, `captures/fx/`: a shot's flash and tracer, a casing on the floor, holes in a
+  plate, an explosion's flash, fire and smoke), with checks that each one shows.
 - **Nothing opens a window.** Nothing launches a game, Steam, SteamVR or Virtual Desktop. The
   range renders offscreen, and builds and child processes run at below-normal priority.
 
@@ -285,7 +291,21 @@ two more frags, two knives and Metro's dynamite, sticky dynamite and incendiary 
 extracted) on a table at your left hand. The range is the game for them: it makes the explosions
 (effects, a blast that pushes the props and hits the target plates within 5 m, the grenade back
 on its table 3 s later) and counts knives stuck in the plates.
- `--legacy` gives
+
+The range also shows what a game shows when its guns fire (`crates/range/src/effects.rs`; in Metro
+the game draws its own): a muzzle flash (a sprite facing you and one along the barrel, two frames)
+and a point light on the gun, hands and tables; gas and smoke; a tracer streaking to the hit (its
+head glows, since from behind your own tracer is a receding dot); a hole where the bullet hit
+(`hits.rs` casts it against the room, the plates and the loose objects; holes ride with the object
+they're in, at most 64, the oldest fading first), sparks off metal, dust and chips off wood and
+stone, a push on a loose object (`EV_IMPULSE`); and a casing from the ejection port (Metro's
+`loc_shell_point` locator, the built-in guns' receivers), out right, up and a little back with a
+spin, bouncing on the floor and tables and fading after 6 s. Magazine-fed rifles and pistols
+eject; revolvers, break-actions and air guns keep their brass. With Metro extracted the sprites
+are Metro's own (its muzzle flash `pfx_muzzle1`, gas, sparks `part_iskry`, the fireball
+`part_flame_1`, explosion star and smoke, dust, the wallmark `wm_bullet_metall_thin_1` and the
+`fx_tracer1` sheet the tracer meshes use); otherwise built-in ones. All of it is cheap sprites
+(at most a few hundred), drawn after the world with depth testing and no depth writes. `--legacy` gives
 the old behaviour (the current gun glued to the firing hand, driven by intents), which the
 original scenarios still test.
 
