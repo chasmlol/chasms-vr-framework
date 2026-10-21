@@ -776,6 +776,70 @@ pub fn all() -> Vec<Scenario> {
             captures: (0..34).map(|i| (i as f64 * 5.0, &*Box::leak(format!("boot_{:03}", i * 5).into_boxed_str()))).collect(),
         },
         Scenario {
+            name: "metro_play",
+            about: "Metro, attached (--attach): through its intro into the game, then play: aim down the sights, fire, crouch, turn, the menu, walk; captures each",
+            duration: 175.0,
+            needs_game: true,
+            lockstep: false,
+            range_args: vec![],
+            physical: false,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                Box::new(|t, see| {
+                    let mut b = Body::rest();
+                    // Through the splash, "press any key", the menu and the loading screen.
+                    if t < 75.0 && (t % 6.0) < 0.2 {
+                        b.hands[1].buttons |= rustvr_protocol::CTRL_A;
+                    }
+                    if t < 80.0 {
+                        return b;
+                    }
+                    // The gun up to the eye, sights on a point ahead.
+                    let rig = see.rig();
+                    let crouch = ramp(t, 104.0, 105.0) - ramp(t, 109.0, 110.0);
+                    b.head_pos.y -= 0.4 * crouch;
+                    let turn = 1.0f32.to_radians() * 60.0 * (ramp(t, 112.0, 113.0) - ramp(t, 118.0, 119.0));
+                    b.head_rot = Quat::from_rotation_y(turn);
+                    let target = b.head_pos + b.head_rot * Vec3::new(0.0, -0.1, 10.0);
+                    if t < 140.0 {
+                        let (p, r) = aim_hand(&rig, b.eye(1), target);
+                        b.hands[1].pos = p;
+                        b.hands[1].rot = r;
+                    }
+                    // Bursts.
+                    b.hands[1].trigger = if between(t, 90.0, 91.2) || between(t, 93.0, 93.3) || between(t, 95.0, 96.5) { 1.0 } else { 0.0 };
+                    // The pause menu, and back.
+                    if between(t, 124.0, 124.2) || between(t, 132.0, 132.2) {
+                        b.hands[0].buttons |= rustvr_protocol::CTRL_MENU;
+                    }
+                    // Walk forward.
+                    if between(t, 145.0, 160.0) {
+                        b.hands[0].stick = Vec2::new(0.0, 1.0);
+                    }
+                    b
+                })
+            },
+            checks: vec![check(174.0, "the game's picture reached the headset", |c| {
+                ensure(c.stats.game_frames > 100, || format!("{} game frames", c.stats.game_frames))
+            })],
+            captures: [
+                (60.0, "loading"),
+                (85.0, "aim"),
+                (90.6, "firing"),
+                (95.8, "burst"),
+                (99.0, "after_burst"),
+                (107.0, "crouched"),
+                (116.0, "turned"),
+                (127.0, "menu"),
+                (136.0, "resumed"),
+                (150.0, "walking"),
+                (158.0, "walked"),
+                (170.0, "end"),
+            ]
+            .to_vec(),
+        },
+        Scenario {
             name: "void",
             about: "no game: the runtime shows its own room and settings menu",
             duration: 1.0,

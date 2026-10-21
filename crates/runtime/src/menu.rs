@@ -428,6 +428,14 @@ fn display(ui: &mut egui::Ui, s: &mut Settings) {
     slider(ui, "HUD distance", &mut s.ui.hud_distance, 0.6, 3.0, " m", 2);
     slider(ui, "HUD size", &mut s.ui.hud_size, 0.6, 3.0, " m", 2);
     ui.checkbox(&mut s.ui.hud_follow_head, "HUD follows your head");
+    slider(ui, "HUD follows after a turn of", &mut s.ui.hud_deadzone_deg, 0.0, 45.0, " deg", 0);
+    ui.checkbox(&mut s.ui.split_hud, "HUD in pieces (subtitles low, ammo on the gun) when the game supports it");
+    if s.ui.split_hud {
+        slider(ui, "Subtitles: distance", &mut s.ui.caption_distance, 0.6, 3.0, " m", 2);
+        slider(ui, "Subtitles: below gaze", &mut s.ui.caption_pitch_deg, 0.0, 30.0, " deg", 0);
+        slider(ui, "Subtitles: text size", &mut s.ui.caption_width_deg, 40.0, 120.0, "", 0);
+        slider(ui, "Ammo counter size", &mut s.ui.ammo_width, 0.05, 0.25, " m", 2);
+    }
     slider(ui, "Menu distance", &mut s.ui.menu_distance, 1.0, 4.0, " m", 2);
     slider(ui, "Menu size", &mut s.ui.menu_size, 1.0, 5.0, " m", 2);
 }

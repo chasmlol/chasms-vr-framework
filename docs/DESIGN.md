@@ -103,6 +103,7 @@ adapters (`tests/header.rs` keeps the two in step).
 | `HandPoseTable`: the game's own hands on its guns (every finger joint) | adapter -> runtime | seqlock |
 | `KickTable`: the guns' recoil as the game authored it (per-shot kicks, keyframed) | adapter -> runtime | seqlock |
 | `SoundPack`: where the game's sound pack is, each object's sound set, which sounds the game plays itself | adapter -> runtime | seqlock |
+| `HudLayout`: which rectangle of the HUD texture is what (subtitles, hints, ammo, status...) | adapter -> runtime | seqlock |
 
 - **Shared memory** is only touched through 32-bit atomics, so concurrent access is defined
   behaviour.
@@ -238,6 +239,31 @@ only the fallback, for events the pack doesn't have and until it has loaded.
   which. Grabs and holsters are the player's cloth and gear, a dropped gun Metro's weapon-fall
   sounds, the pouch its ammo pickup. Events are levelled to where the runtime's own sounds sit,
   except shots, which share one gain so the guns keep their loudness relative to each other.
+
+## 6d. The HUD in VR
+
+A flat game's HUD is a full-screen layer. Hung in front of the face as one sheet it covers the view
+and chases the head, which no well-liked VR game does (`research_notes/VR throwables and UI/ui.md`:
+Half-Life: Alyx, the Titanfall 2 VR mod, UEVR, Doom 3 VR, Metro Awakening). So the adapter
+describes its HUD (`HudLayout`: rectangles of the HUD texture and their roles) and the runtime
+(`crates/runtime/src/hud.rs`) puts each piece where native VR games do:
+
+| Role | Where |
+|---|---|
+| Subtitles | a caption strip 13 degrees under gaze at 1.5 m, at most 50 degrees wide |
+| Hints | a row just above the subtitles |
+| Prompts | the caption strip's right end |
+| Ammo | on the held gun's left side, facing the eye; hidden with no gun |
+| Status | on the back of the off-hand wrist, shown while you look at it |
+| Overlay | fixed to the face over the whole view (damage, fades) |
+| Centre and the rest | the flat screen, 1.4 m ahead |
+| Hidden | not drawn (a crosshair: the gun's sights aim) |
+
+Everything that follows the head waits for a 20 degree turn, glides back in front (0.15 s) and
+stops; it never rolls. The game stays the source of truth for *when* a piece shows: its rectangle
+is drawn every frame, so it appears and fades as the game draws it. Without a layout the HUD is one
+flat screen, as before. Menus are a world-locked panel with a laser (§6). Metro's layout is in
+[METRO.md](METRO.md).
 
 ## 7. Adapters
 

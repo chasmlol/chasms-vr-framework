@@ -15,8 +15,10 @@ same, tested VR experience, and a new game only needs an adapter.
 
 > **Status: early.** The runtime, its player controller (physics hands, full body, physical guns),
 > the protocol, the adapter SDK and a test range work end to end and are tested headlessly; the
-> runtime has run on a Quest 3 through Virtual Desktop. The Metro 2033 Redux adapter is written but
-> not yet run in the game, and doesn't hand its guns to the player controller yet.
+> runtime has run on a Quest 3 through Virtual Desktop. Metro 2033 Redux runs in VR through its
+> adapter (stereo, the gun in your hand, the HUD placed for VR, Metro's own sounds; see
+> [docs/METRO.md](docs/METRO.md)), tested in the game with a simulated headset; it doesn't hand its
+> guns to the player controller yet.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for how it fits together.
 
