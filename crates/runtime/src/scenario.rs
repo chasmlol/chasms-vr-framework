@@ -807,8 +807,30 @@ pub fn all() -> Vec<Scenario> {
                         b.hands[1].pos = p;
                         b.hands[1].rot = r;
                     }
-                    // Bursts.
-                    b.hands[1].trigger = if between(t, 90.0, 91.2) || between(t, 93.0, 93.3) || between(t, 95.0, 96.5) { 1.0 } else { 0.0 };
+                    // Bursts, and one after the reload.
+                    b.hands[1].trigger = if between(t, 90.0, 91.2) || between(t, 93.0, 93.3) || between(t, 95.0, 96.5) || between(t, 102.6, 103.0) { 1.0 } else { 0.0 };
+                    // The reload, by hand: A ejects, a magazine from the hip into the well, rack the handle.
+                    if between(t, 97.0, 97.1) {
+                        b.hands[1].buttons |= rustvr_protocol::CTRL_A;
+                    }
+                    if between(t, 97.2, 102.4) && rig.flags & rustvr_protocol::RIG_HAS_MAG_WELL != 0 {
+                        let hand = (b.hands[1].pos, b.hands[1].rot);
+                        let rest = Body::rest().hands[0].pos;
+                        let hip = Vec3::new(-0.25, 0.85, 0.05);
+                        let well = on_gun(&rig, hand, crate::mechanics::mag_well(&rig)) + Vec3::new(0.0, -0.02, 0.0);
+                        let handle = on_gun(&rig, hand, Vec3::from_array(rig.charging_handle));
+                        let pulled = handle - hand.1 * Vec3::Z * 0.08;
+                        b.hands[0].pos = if t < 98.4 {
+                            rest.lerp(hip, ramp(t, 97.4, 98.2))
+                        } else if t < 99.9 {
+                            hip.lerp(well, ramp(t, 98.6, 99.6))
+                        } else if t < 100.9 {
+                            well.lerp(handle, ramp(t, 100.0, 100.6))
+                        } else {
+                            handle.lerp(pulled, ramp(t, 101.0, 101.6))
+                        };
+                        b.hands[0].squeeze = if between(t, 98.3, 99.9) || between(t, 100.8, 101.9) { 1.0 } else { 0.0 };
+                    }
                     // The pause menu, and back.
                     if between(t, 124.0, 124.2) || between(t, 132.0, 132.2) {
                         b.hands[0].buttons |= rustvr_protocol::CTRL_MENU;
@@ -820,15 +842,21 @@ pub fn all() -> Vec<Scenario> {
                     b
                 })
             },
-            checks: vec![check(174.0, "the game's picture reached the headset", |c| {
-                ensure(c.stats.game_frames > 100, || format!("{} game frames", c.stats.game_frames))
-            })],
+            checks: vec![
+                check(97.15, "A ejected the magazine", |c| ensure(c.mech.ejects >= 1, || format!("ejects {} mag {:?}", c.mech.ejects, c.mech.mag))),
+                check(99.85, "a magazine from the hip is in the well", |c| ensure(c.mech.mag == MagState::Seated, || format!("mag {:?}", c.mech.mag))),
+                check(102.4, "racking the handle finished the reload", |c| ensure(c.mech.reloads >= 1, || format!("reloads {} mag {:?}", c.mech.reloads, c.mech.mag))),
+                check(174.0, "the game's picture reached the headset", |c| ensure(c.stats.game_frames > 100, || format!("{} game frames", c.stats.game_frames))),
+            ],
             captures: [
                 (60.0, "loading"),
                 (85.0, "aim"),
                 (90.6, "firing"),
                 (95.8, "burst"),
-                (99.0, "after_burst"),
+                (98.3, "mag_at_hip"),
+                (99.7, "mag_in_well"),
+                (101.4, "racking"),
+                (102.9, "reloaded_fire"),
                 (107.0, "crouched"),
                 (116.0, "turned"),
                 (127.0, "menu"),
