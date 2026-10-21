@@ -843,6 +843,8 @@ pub fn all() -> Vec<Scenario> {
                 })
             },
             checks: vec![
+                check(86.0, "the sights at the eye aim down them", |c| ensure(c.mech.ads, || format!("sight {:.3} m from the eye", c.mech.sight_to_eye))),
+                check(90.8, "and firing doesn't drop the aim", |c| ensure(c.mech.ads, || format!("sight {:.3} m from the eye", c.mech.sight_to_eye))),
                 check(90.9, "the game's own recoil kicks the gun as the game fires", |c| ensure(c.mech.game_kicks > 0, || format!("{} kicks playing", c.mech.game_kicks))),
                 check(97.15, "A ejected the magazine", |c| ensure(c.mech.ejects >= 1, || format!("ejects {} mag {:?}", c.mech.ejects, c.mech.mag))),
                 check(99.85, "a magazine from the hip is in the well", |c| ensure(c.mech.mag == MagState::Seated, || format!("mag {:?}", c.mech.mag))),

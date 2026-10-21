@@ -287,6 +287,8 @@ const HANDLE_RADIUS: f32 = 0.10;
 const RACK_PULL: f32 = 0.05;
 
 pub struct Mechanics {
+    /// When a non-finite gun pose was last logged.
+    insane_logged: f64,
     /// The game's recoil on the gun glued to the hand (legacy mode), from the shots it reports.
     game_recoil: crate::rig::kick::GameRecoil,
     last_ads: bool,
@@ -333,6 +335,7 @@ impl Default for Mechanics {
         Mechanics {
             game_recoil: crate::rig::kick::GameRecoil::new(0x9E37_79B9),
             last_ads: false,
+            insane_logged: f64::MIN,
             btn_a: Default::default(),
             btn_b: Default::default(),
             btn_stick: Default::default(),
@@ -579,7 +582,19 @@ impl Mechanics {
                 }
                 self.game_recoil.update(inp.dt, inp.held_kicks);
                 let (r, t) = self.game_recoil.transform(inp.held_kicks, ia.game_recoil_turn, ia.game_recoil_push);
-                w2t *= Mat4::from_rotation_translation(r, t);
+                if std::env::var_os("RUSTVR_TRACE_GUN").is_some() && self.game_recoil.playing() > 0 {
+                    let (axis, angle) = r.to_axis_angle();
+                    tracing::info!("recoil trace: {} playing, turn {:.2} deg about {axis:.2?}, move {t:.3?}", self.game_recoil.playing(), angle.to_degrees());
+                }
+                // Never a jump: a kick that would move the grip more than 25 cm at once (a broken
+                // pivot) is dropped.
+                let kick = Mat4::from_rotation_translation(r, t);
+                if kick.transform_point3(rg).distance(rg) < 0.25 {
+                    w2t *= kick;
+                } else if now - self.insane_logged > 1.0 {
+                    self.insane_logged = now;
+                    tracing::warn!("mechanics: dropped a recoil kick that would move the gun {:.2} m", kick.transform_point3(rg).distance(rg));
+                }
                 self.debug.game_kicks = self.game_recoil.playing();
             }
 
@@ -597,7 +612,12 @@ impl Mechanics {
                 let perp = v - aim * along;
                 best = best.min(perp.length() + (along - 0.05).max(0.0) * 0.2);
             }
-            let ads = (best < 0.06 && aim.dot(head_fwd) > 0.9) || dc.squeeze > 0.7;
+            // Hysteresis: in at 6 cm, out past 12 cm, and never mid-burst (a game's fire animation
+            // nudges the gun, and with it the sights; dropping out of the aim pose then would pull
+            // the gun off the eye, further out of it: Metro did).
+            let firing = dc.trigger > 0.5;
+            let keep = if firing { 0.35 } else { 0.12 };
+            let ads = (best < 0.06 && aim.dot(head_fwd) > 0.9) || (self.last_ads && best < keep && aim.dot(head_fwd) > 0.8) || dc.squeeze > 0.7;
             self.last_ads = ads;
 
             // Scope picture-in-picture: magnification from the game's own aim zoom.
@@ -606,6 +626,19 @@ impl Mechanics {
             let scope = (c.scope.enabled && (c.scope.force || (ads && zoom > 1.4))).then(|| scope_view(c, w2t, aim, so, mz, mag, inp.aux_aspect));
 
             let sane = w2t.is_finite() && so.is_finite() && aim.is_finite() && mz.is_finite();
+            if !sane && now - self.insane_logged > 1.0 {
+                self.insane_logged = now;
+                tracing::warn!(
+                    "mechanics: the gun's pose isn't finite (w2t {}, sight {so:?}, aim {aim:?}); rig grip {:?} foregrip {:?} line {:?}/{:?} flags {:#x}; kicks {}",
+                    w2t.is_finite(),
+                    rig.grip,
+                    rig.foregrip,
+                    rig.sight_line_origin,
+                    rig.sight_line_dir,
+                    rig.flags,
+                    self.game_recoil.playing()
+                );
+            }
             if sane {
                 weapon = Some(WeaponPose {
                     weapon_to_tracking: w2t,
@@ -960,6 +993,18 @@ impl Mechanics {
         } else {
             self.debug.two_handed = false;
             self.debug.ads = false;
+        }
+        if std::env::var_os("RUSTVR_TRACE_GUN").is_some() && now - self.insane_logged > 0.5 {
+            self.insane_logged = now;
+            tracing::info!(
+                "gun trace: has_weapon {has_weapon} rig_mode {rig_mode} connected {} weapon {} sight_to_eye {:.3} ads {} flags {:#x} trigger {:.2}",
+                dc.connected,
+                weapon.is_some(),
+                weapon.as_ref().map_or(-1.0, |w| w.sight_to_eye),
+                weapon.as_ref().is_some_and(|w| w.ads),
+                gflags,
+                dc.trigger
+            );
         }
         out.weapon = weapon;
         out.intents.held = held;
