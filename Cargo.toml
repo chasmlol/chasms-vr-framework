@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+rustvr-protocol = { path = "crates/protocol" }
+rustvr-gpu = { path = "crates/gpu" }
+rustvr-adapter = { path = "crates/adapter" }
+rustvr-asset = { path = "crates/asset" }
+rustvr-audio = { path = "crates/audio" }
+rustvr-ik = { path = "crates/ik" }
+rustvr-avatar = { path = "crates/avatar" }
+
+anyhow = "1"
+bytemuck = { version = "1.25", features = ["derive"] }
+glam = { version = "0.34", features = ["bytemuck", "serde"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+postcard = { version = "1", features = ["use-std"] }
+png = "0.18"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+egui = { version = "0.37", features = ["default_fonts"] }
+openxr = "0.22"
+lz4_flex = "0.14"
+retour = "0.4.0-alpha.4"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_System_SystemInformation",
+    "Win32_System_Performance",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_ProcessStatus",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_UI_Input_XboxController",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Dependencies are built optimised even in debug builds: PNG encoding, LZ4 and maths stay fast in
+# tests while our own crates keep quick debug compiles.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+debug = "line-tables-only"

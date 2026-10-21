@@ -1,0 +1,36 @@
+[package]
+name = "rustvr-runtime"
+description = "The RustVR runtime: one VR player experience that connects into any game through an adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+
+[[bin]]
+name = "rustvr"
+path = "src/main.rs"
+
+# No console window: what the Steam shortcut launches.
+[[bin]]
+name = "rustvr-play"
+path = "src/bin/play.rs"
+
+[dependencies]
+rustvr-protocol.workspace = true
+rustvr-gpu.workspace = true
+rustvr-audio.workspace = true
+rustvr-ik.workspace = true
+rustvr-avatar.workspace = true
+rustvr-asset.workspace = true
+anyhow.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+egui.workspace = true
+openxr = { workspace = true, features = ["static"] }
+windows.workspace = true
+rapier3d = "0.36"

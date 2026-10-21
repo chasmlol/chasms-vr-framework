@@ -1,0 +1,14 @@
+[package]
+name = "rustvr-audio"
+description = "Spatial interaction sounds for the runtime: a mixer and a procedural sound library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+glam.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+# Audio output (WASAPI on Windows).
+cpal = "0.18"

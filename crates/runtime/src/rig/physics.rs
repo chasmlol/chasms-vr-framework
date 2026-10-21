@@ -1,0 +1,398 @@
+//! The Rapier world the player interacts with, in game-world metres: the game's static collision
+//! (streamed through the collision ring), the objects it registered, and the two hands.
+//!
+//! Rapier 0.36 does its maths with `glamx`, which pins an older glam than the rest of the runtime,
+//! so values cross this module's boundary through the small conversions at the bottom.
+
+use rapier3d::prelude::*;
+use rustvr_protocol::*;
+use std::collections::HashMap;
+
+pub type V3 = glam::Vec3;
+pub type Q = glam::Quat;
+
+/// Collision groups: who touches whom.
+pub const G_WORLD: Group = Group::GROUP_1;
+pub const G_OBJECT: Group = Group::GROUP_2;
+pub const G_HAND: [Group; 2] = [Group::GROUP_3, Group::GROUP_4];
+pub const G_HELD: [Group; 2] = [Group::GROUP_5, Group::GROUP_6];
+
+pub fn groups_world() -> InteractionGroups {
+    InteractionGroups::new(G_WORLD, Group::ALL, InteractionTestMode::And)
+}
+
+/// A free object touches the world, other objects, hands and held objects.
+pub fn groups_free() -> InteractionGroups {
+    InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
+}
+
+/// An object held by `hand` touches the world and free objects, never the hands.
+pub fn groups_held(hand: usize) -> InteractionGroups {
+    InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
+}
+
+/// A hand touches the world and free objects (not what either hand is holding).
+pub fn groups_hand(hand: usize) -> InteractionGroups {
+    InteractionGroups::new(G_HAND[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
+}
+
+pub fn groups_none() -> InteractionGroups {
+    InteractionGroups::new(Group::NONE, Group::NONE, InteractionTestMode::And)
+}
+
+pub struct Physics {
+    pub world: PhysicsWorld,
+    meshes: HashMap<u32, (RigidBodyHandle, ColliderHandle)>,
+    boxes: HashMap<u32, (RigidBodyHandle, ColliderHandle)>,
+    /// Number of static triangles loaded (diagnostics).
+    pub triangles: usize,
+}
+
+impl Default for Physics {
+    fn default() -> Self {
+        let mut world = PhysicsWorld::new();
+        world.gravity = Vector::new(0.0, -9.81, 0.0);
+        Physics { world, meshes: HashMap::new(), boxes: HashMap::new(), triangles: 0 }
+    }
+}
+
+impl Physics {
+    pub fn set_dt(&mut self, dt: f32) {
+        self.world.integration_parameters.dt = dt.clamp(1.0 / 240.0, 1.0 / 30.0);
+    }
+
+    pub fn step(&mut self) {
+        self.world.step();
+    }
+
+    // ---- static world ---------------------------------------------------------------------------
+    /// Applies one collision-ring message.
+    pub fn apply_collision(&mut self, kind: u32, payload: &[u8]) {
+        match kind {
+            COL_CLEAR => {
+                for (_, (b, _)) in self.meshes.drain().chain(self.boxes.drain()) {
+                    self.world.remove_body_with_colliders(b, true);
+                }
+                self.triangles = 0;
+            }
+            COL_MESH if payload.len() >= size_of::<ColMesh>() => {
+                let head: ColMesh = bytemuck::pod_read_unaligned(&payload[..size_of::<ColMesh>()]);
+                let tris_bytes = &payload[size_of::<ColMesh>()..];
+                let count = (head.count as usize).min(tris_bytes.len() / size_of::<ColTriangle>());
+                if let Some((b, _)) = self.meshes.remove(&head.id) {
+                    self.world.remove_body_with_colliders(b, true);
+                }
+                if count == 0 {
+                    return;
+                }
+                let mut verts = Vec::with_capacity(count * 3);
+                let mut idx = Vec::with_capacity(count);
+                for i in 0..count {
+                    let t: ColTriangle = bytemuck::pod_read_unaligned(&tris_bytes[i * size_of::<ColTriangle>()..(i + 1) * size_of::<ColTriangle>()]);
+                    let base = verts.len() as u32;
+                    for k in 0..3 {
+                        verts.push(Vector::new(t.v[k * 3], t.v[k * 3 + 1], t.v[k * 3 + 2]));
+                    }
+                    idx.push([base, base + 1, base + 2]);
+                }
+                match ColliderBuilder::trimesh(verts, idx) {
+                    Ok(c) => {
+                        let h = self.world.insert(RigidBodyBuilder::fixed(), c.collision_groups(groups_world()).friction(0.8));
+                        self.meshes.insert(head.id, h);
+                        self.triangles += count;
+                    }
+                    Err(e) => tracing::warn!("rig: collision mesh {}: {e:?}", head.id),
+                }
+            }
+            COL_BOX if payload.len() >= size_of::<ColBox>() => {
+                let b: ColBox = bytemuck::pod_read_unaligned(&payload[..size_of::<ColBox>()]);
+                if let Some((h, _)) = self.boxes.remove(&b.id) {
+                    self.world.remove_body_with_colliders(h, true);
+                }
+                let half = b.half_extents;
+                if half.iter().any(|h| *h <= 0.0) {
+                    return;
+                }
+                let pose = to_pose(V3::from_array(b.center), quat(b.rot));
+                let body = RigidBodyBuilder::fixed().pose(pose);
+                let c = ColliderBuilder::cuboid(half[0], half[1], half[2]).collision_groups(groups_world()).friction(0.8);
+                let h = self.world.insert(body, c);
+                self.boxes.insert(b.id, h);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn has_world(&self) -> bool {
+        !self.meshes.is_empty() || !self.boxes.is_empty()
+    }
+
+    // ---- bodies ---------------------------------------------------------------------------------
+    /// A dynamic body with the object's collider.
+    pub fn add_object(&mut self, d: &ObjectDesc, pos: V3, rot: Q) -> (RigidBodyHandle, ColliderHandle) {
+        let body = RigidBodyBuilder::dynamic()
+            .pose(to_pose(pos, rot))
+            .ccd_enabled(true)
+            .linear_damping(0.05)
+            .angular_damping(0.2);
+        let c = object_collider(d).collision_groups(groups_free());
+        self.world.insert(body, c)
+    }
+
+    /// A hand: a light dynamic palm box with no gravity, driven by velocity.
+    pub fn add_hand(&mut self, hand: usize, pos: V3, rot: Q) -> (RigidBodyHandle, ColliderHandle) {
+        let body = RigidBodyBuilder::dynamic()
+            .pose(to_pose(pos, rot))
+            .gravity_scale(0.0)
+            .ccd_enabled(true)
+            .linear_damping(0.0)
+            .angular_damping(0.0);
+        // Palm-sized box (HIGGS's hand half-extents ~0.05 x 0.015 x 0.09), 0.5 kg like LÖVR's hand.
+        let c = ColliderBuilder::cuboid(0.045, 0.02, 0.07).mass(0.5).friction(1.0).collision_groups(groups_hand(hand));
+        self.world.insert(body, c)
+    }
+
+    pub fn remove(&mut self, body: RigidBodyHandle) {
+        self.world.remove_body_with_colliders(body, true);
+    }
+
+    pub fn pose(&self, b: RigidBodyHandle) -> (V3, Q) {
+        let p = self.world.bodies[b].position();
+        from_pose(p)
+    }
+
+    pub fn velocity(&self, b: RigidBodyHandle) -> (V3, V3) {
+        let rb = &self.world.bodies[b];
+        (from_v(rb.linvel()), from_v(rb.angvel()))
+    }
+
+    pub fn set_pose(&mut self, b: RigidBodyHandle, pos: V3, rot: Q) {
+        self.world.bodies[b].set_position(to_pose(pos, rot), true);
+    }
+
+    pub fn set_velocity(&mut self, b: RigidBodyHandle, lin: V3, ang: V3) {
+        let rb = &mut self.world.bodies[b];
+        rb.set_linvel(to_v(lin), true);
+        rb.set_angvel(to_v(ang), true);
+    }
+
+    pub fn set_groups(&mut self, c: ColliderHandle, g: InteractionGroups) {
+        if let Some(col) = self.world.colliders.get_mut(c) {
+            col.set_collision_groups(g);
+            col.set_solver_groups(g);
+        }
+    }
+
+    pub fn set_gravity(&mut self, b: RigidBodyHandle, scale: f32) {
+        self.world.bodies[b].set_gravity_scale(scale, true);
+    }
+
+    pub fn set_angular_damping(&mut self, b: RigidBodyHandle, d: f32) {
+        self.world.bodies[b].set_angular_damping(d);
+    }
+
+    /// Kinematic bodies are moved only by us (holstered or seated objects ride along exactly).
+    pub fn set_kinematic(&mut self, b: RigidBodyHandle, kinematic: bool) {
+        let t = if kinematic { RigidBodyType::KinematicPositionBased } else { RigidBodyType::Dynamic };
+        let rb = &mut self.world.bodies[b];
+        if rb.body_type() != t {
+            rb.set_body_type(t, true);
+        }
+    }
+
+    pub fn move_kinematic(&mut self, b: RigidBodyHandle, pos: V3, rot: Q) {
+        self.world.bodies[b].set_next_kinematic_position(to_pose(pos, rot));
+    }
+
+    /// Drives a dynamic body towards a target pose by setting its velocity: it arrives in one
+    /// step when nothing is in the way. `max_accel` and `max_ang_accel` limit how hard it may change
+    /// speed and spin (weight: m/s^2, rad/s^2); `gain` < 1 softens it (e.g. while pressing against a
+    /// wall); `ang_gain` is the share of the rotation it makes up each step.
+    #[allow(clippy::too_many_arguments)]
+    pub fn track(&mut self, b: RigidBodyHandle, target_pos: V3, target_rot: Q, dt: f32, gain: f32, max_accel: f32, ang_gain: f32, max_ang_accel: f32) {
+        let rb = &mut self.world.bodies[b];
+        let (pos, rot) = from_pose(rb.position());
+        let dt = dt.max(1e-4);
+        let to = target_pos - pos;
+        let mut want = to / dt * gain;
+        // Never faster than it could still stop in, so heavy (acceleration-limited) objects
+        // settle onto the hand instead of overshooting and swinging back.
+        let brake = (2.0 * max_accel * to.length()).sqrt();
+        if want.length() > brake {
+            want = want.normalize_or_zero() * brake;
+        }
+        let cur = from_v(rb.linvel());
+        let dv = want - cur;
+        let max_dv = max_accel * dt;
+        if dv.length() > max_dv {
+            want = cur + dv.normalize() * max_dv;
+        }
+        // 20 m/s is beyond any real hand; it only guards against tracking glitches.
+        let want = want.clamp_length_max(20.0);
+        let dq = (target_rot * rot.inverse()).normalize();
+        let dq = if dq.w < 0.0 { -dq } else { dq };
+        let (axis, angle) = dq.to_axis_angle();
+        let mut ang = if angle.is_finite() && axis.is_finite() { axis * (angle / dt * ang_gain.clamp(0.02, 1.0)) } else { V3::ZERO };
+        // Turning the same way: never faster than it can still stop in, and only so much spin
+        // gained or lost per step, so a heavy thing swings round and settles instead of snapping.
+        if angle.is_finite() {
+            let brake = (2.0 * max_ang_accel * angle.abs()).sqrt();
+            if ang.length() > brake {
+                ang = ang.normalize_or_zero() * brake;
+            }
+            let cur = from_v(rb.angvel());
+            let dw = ang - cur;
+            let max_dw = max_ang_accel * dt;
+            if dw.length() > max_dw {
+                ang = cur + dw.normalize() * max_dw;
+            }
+        }
+        rb.set_linvel(to_v(want), true);
+        rb.set_angvel(to_v(ang.clamp_length_max(60.0)), true);
+    }
+
+    /// True if the collider currently touches the static world or a free object.
+    pub fn in_contact(&self, c: ColliderHandle) -> bool {
+        self.world.contact_pairs_with(c).any(|p| p.has_any_active_contact())
+    }
+
+    /// Distance from `p` to the surface of collider `c` (0 inside).
+    pub fn distance_to(&self, c: ColliderHandle, p: V3) -> f32 {
+        let Some(col) = self.world.colliders.get(c) else { return f32::MAX };
+        let proj = col.shape().project_point(col.position(), to_v(p), true);
+        if proj.is_inside { 0.0 } else { (from_v(proj.point) - p).length() }
+    }
+
+    /// First static-world hit along a ray, as a distance.
+    pub fn ray_world(&self, origin: V3, dir: V3, max: f32) -> Option<f32> {
+        let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
+        let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD, InteractionTestMode::And));
+        self.world.cast_ray(&ray, max, true, filter).map(|(_, t)| t)
+    }
+
+    /// How far a sphere at `p` sinks into the static world (0 when clear).
+    pub fn sphere_penetration(&self, p: V3, radius: f32) -> f32 {
+        let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD, InteractionTestMode::And));
+        match self.world.project_point(to_v(p), radius, true, filter) {
+            Some((_, proj)) => {
+                if proj.is_inside {
+                    radius + (from_v(proj.point) - p).length()
+                } else {
+                    (radius - (from_v(proj.point) - p).length()).max(0.0)
+                }
+            }
+            None => 0.0,
+        }
+    }
+}
+
+pub fn object_collider(d: &ObjectDesc) -> ColliderBuilder {
+    let he = d.half_extents;
+    let shape = match d.shape {
+        SHAPE_CAPSULE => ColliderBuilder::capsule_y(he[1].max(0.001), d.radius.max(0.001)),
+        SHAPE_SPHERE => ColliderBuilder::ball(d.radius.max(0.001)),
+        _ => ColliderBuilder::cuboid(he[0].max(0.002), he[1].max(0.002), he[2].max(0.002)),
+    };
+    shape
+        .translation(to_v(V3::from_array(d.center)))
+        .mass(d.mass.max(0.02))
+        .friction(0.7)
+        .restitution(0.15)
+}
+
+// ---- glam 0.34 <-> Rapier's glam ------------------------------------------------------------
+pub fn to_v(v: V3) -> Vector {
+    Vector::new(v.x, v.y, v.z)
+}
+
+pub fn from_v(v: Vector) -> V3 {
+    V3::new(v.x, v.y, v.z)
+}
+
+pub fn to_q(q: Q) -> Rotation {
+    Rotation::from_xyzw(q.x, q.y, q.z, q.w)
+}
+
+pub fn from_q(q: Rotation) -> Q {
+    Q::from_xyzw(q.x, q.y, q.z, q.w)
+}
+
+pub fn to_pose(p: V3, q: Q) -> rapier3d::math::Pose {
+    rapier3d::math::Pose::from_parts(to_v(p), to_q(q.normalize()))
+}
+
+pub fn from_pose(p: &rapier3d::math::Pose) -> (V3, Q) {
+    (from_v(p.translation), from_q(p.rotation))
+}
+
+pub fn quat(a: [f32; 4]) -> Q {
+    let q = Q::from_array(a);
+    if q.length_squared() < 1e-12 { Q::IDENTITY } else { q.normalize() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytemuck::Zeroable;
+
+    fn floor(p: &mut Physics) {
+        let b = ColBox { id: 1, center: [0.0, -0.5, 0.0], half_extents: [10.0, 0.5, 10.0], rot: [0.0, 0.0, 0.0, 1.0], ..Default::default() };
+        p.apply_collision(COL_BOX, bytemuck::bytes_of(&b));
+    }
+
+    fn crate_desc() -> ObjectDesc {
+        let mut d = ObjectDesc::zeroed();
+        d.id = 5;
+        d.kind = OBJ_PROP;
+        d.shape = SHAPE_BOX;
+        d.half_extents = [0.1, 0.1, 0.1];
+        d.mass = 2.0;
+        d
+    }
+
+    #[test]
+    fn objects_fall_and_rest_on_the_floor() {
+        let mut p = Physics::default();
+        floor(&mut p);
+        let (b, _) = p.add_object(&crate_desc(), V3::new(0.0, 1.0, 0.0), Q::IDENTITY);
+        p.set_dt(1.0 / 90.0);
+        for _ in 0..180 {
+            p.step();
+        }
+        let (pos, _) = p.pose(b);
+        assert!((pos.y - 0.1).abs() < 0.02, "rests on the floor: {pos:?}");
+    }
+
+    #[test]
+    fn a_tracked_hand_reaches_its_target_unless_blocked() {
+        let mut p = Physics::default();
+        floor(&mut p);
+        let wall = ColBox { id: 2, center: [0.0, 1.0, 1.0], half_extents: [2.0, 2.0, 0.05], rot: [0.0, 0.0, 0.0, 1.0], ..Default::default() };
+        p.apply_collision(COL_BOX, bytemuck::bytes_of(&wall));
+        let (h, _) = p.add_hand(1, V3::new(0.0, 1.0, 0.0), Q::IDENTITY);
+        p.set_dt(1.0 / 90.0);
+        for _ in 0..5 {
+            p.track(h, V3::new(0.0, 1.0, 0.4), Q::IDENTITY, 1.0 / 90.0, 1.0, 1e5, 1.0, 1e5);
+            p.step();
+        }
+        assert!(p.pose(h).0.distance(V3::new(0.0, 1.0, 0.4)) < 0.01, "free space: on target");
+        for _ in 0..30 {
+            p.track(h, V3::new(0.0, 1.0, 1.3), Q::IDENTITY, 1.0 / 90.0, 1.0, 1e5, 1.0, 1e5);
+            p.step();
+        }
+        let z = p.pose(h).0.z;
+        assert!(z < 0.95, "the wall stops the hand: z = {z}");
+    }
+
+    #[test]
+    fn collision_mesh_messages_replace_and_remove() {
+        let mut p = Physics::default();
+        let mut payload = bytemuck::bytes_of(&ColMesh { id: 9, count: 1 }).to_vec();
+        payload.extend_from_slice(bytemuck::bytes_of(&ColTriangle { v: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0] }));
+        p.apply_collision(COL_MESH, &payload);
+        assert_eq!(p.triangles, 1);
+        assert!(p.has_world());
+        p.apply_collision(COL_MESH, bytemuck::bytes_of(&ColMesh { id: 9, count: 0 }));
+        assert!(!p.has_world());
+    }
+}

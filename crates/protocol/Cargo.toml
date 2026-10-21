@@ -1,0 +1,14 @@
+[package]
+name = "rustvr-protocol"
+description = "Shared-memory protocol between the RustVR runtime and game adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytemuck = { workspace = true, features = ["extern_crate_alloc"] }
+windows.workspace = true
+
+[dev-dependencies]
+cbindgen = "0.29"

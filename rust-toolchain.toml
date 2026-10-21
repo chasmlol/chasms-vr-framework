@@ -1,0 +1,3 @@
+# egui 0.37 needs Rust 1.95+; pinned to an installed toolchain so builds are reproducible.
+[toolchain]
+channel = "1.99.0"

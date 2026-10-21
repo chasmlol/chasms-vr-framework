@@ -1,0 +1,32 @@
+[package]
+name = "rustvr-range"
+description = "The test range: a small fake game that connects to the runtime through the real adapter SDK"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rustvr-range"
+path = "src/main.rs"
+
+[dependencies]
+rustvr-protocol.workspace = true
+rustvr-gpu.workspace = true
+rustvr-adapter.workspace = true
+rustvr-asset.workspace = true
+# The game's own hand poses are read from its arms models with the avatar's retargeting.
+rustvr-avatar.workspace = true
+# The one mapping from a controller's grip pose to the hand drawn on it.
+rustvr-ik.workspace = true
+anyhow.workspace = true
+bytemuck.workspace = true
+glam.workspace = true
+egui.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+windows.workspace = true
+
+[dev-dependencies]
+# The recoil test plays the guns' kicks with the runtime's own player.
+rustvr-runtime = { path = "../runtime" }

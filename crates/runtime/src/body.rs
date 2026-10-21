@@ -1,0 +1,370 @@
+//! The player's body: solved by IK (`rustvr_ik`) from the head and the hands (the rig's physics
+//! hands when it owns them, else the controllers), published as [`RtBody`], and drawn over the
+//! game's picture by the avatar (`rustvr_avatar`), hidden behind the game's geometry using its depth.
+
+use glam::{Quat, Vec3};
+use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput, HeldHand};
+use rustvr_gpu::Gpu;
+use rustvr_ik::{BodyParams, BodySolver, Calibration, FingerInput, FingerSolver, HandOffsets, HoldShape, Side, TrackedInput};
+use rustvr_protocol::*;
+
+use crate::backend::{EyeTarget, HmdFrame};
+use crate::settings::{BodyVisibility, Settings};
+
+/// What the body is solved from this frame.
+pub struct BodyInput<'a> {
+    pub frame: &'a HmdFrame,
+    /// Where the hands are drawn, as controller grip poses in tracking space (the rig's physics
+    /// hands); None: the controllers themselves.
+    pub hands: Option<[(Vec3, Quat); 2]>,
+    /// The rig's hand states (blocked, holding), if it owns the hands.
+    pub hand_states: Option<[HandState; 2]>,
+    /// Controller grips to show as ghost hands (a physics hand is held back).
+    pub ghosts: [Option<(Vec3, Quat)>; 2],
+    pub holds: [HoldShape; 2],
+    /// Hands holding something in the game's own pose for it (`rustvr_avatar::held_hands`): the
+    /// hand goes exactly to that wrist and is drawn in that pose.
+    pub held: [Option<HeldHand>; 2],
+    /// Stick locomotion velocity in tracking space (m/s), for the legs' gait.
+    pub locomotion: Vec3,
+    /// Standing head height as measured in tracking space (0: not known yet).
+    pub eye_height: f32,
+    /// Where the game's floor is in tracking space (the body stands on it, whatever the real
+    /// floor's height: the game puts your eyes at its own eye height).
+    pub floor: f32,
+    pub settings: &'a Settings,
+}
+
+pub struct PlayerBody {
+    solver: BodySolver,
+    offsets: HandOffsets,
+    fingers: [FingerSolver; 2],
+    avatar: Option<Avatar>,
+    avatar_tried: bool,
+    pub body: RtBody,
+    /// Ghost hands (canonical hand frames), drawn translucent.
+    pub ghosts: [Option<Pose>; 2],
+    /// Hands drawn in the game's own pose this frame.
+    pub held: [Option<HeldHand>; 2],
+    pub reached: [bool; 2],
+    seq: u32,
+    /// Automatic arm span: grows while a hand keeps reaching beyond the arms.
+    auto_span: Option<f32>,
+    unreached: [f32; 2],
+}
+
+impl Default for PlayerBody {
+    fn default() -> Self {
+        let params = BodyParams::default();
+        PlayerBody {
+            offsets: params.hand_offsets,
+            solver: BodySolver::new(params, Calibration { eye_height: 1.70, arm_span: grip_span(1.70) }),
+            fingers: [FingerSolver::new(), FingerSolver::new()],
+            avatar: None,
+            avatar_tried: false,
+            body: bytemuck::Zeroable::zeroed(),
+            ghosts: [None; 2],
+            held: [None; 2],
+            reached: [true; 2],
+            seq: 0,
+            auto_span: None,
+            unreached: [0.0; 2],
+        }
+    }
+}
+
+fn ik(p: (Vec3, Quat)) -> rustvr_ik::Pose {
+    rustvr_ik::Pose { pos: p.0, rot: p.1.normalize() }
+}
+
+fn proto(p: rustvr_ik::Pose) -> Pose {
+    Pose { pos: p.pos.to_array(), valid: 1, rot: p.rot.normalize().to_array() }
+}
+
+fn quat(a: [f32; 4]) -> Quat {
+    let q = Quat::from_array(a);
+    if q.length_squared() < 1e-12 { Quat::IDENTITY } else { q.normalize() }
+}
+
+fn grip_of(c: &Controller) -> (Vec3, Quat) {
+    let q = Quat::from_array(c.grip.rot);
+    (Vec3::from_array(c.grip.pos), if q.length_squared() < 1e-12 { Quat::IDENTITY } else { q.normalize() })
+}
+
+const SIDES: [Side; 2] = [Side::Left, Side::Right];
+
+/// Grip-to-grip distance with the arms out, estimated from the eye height: the arm span about
+/// equals the height (eyes 11 cm below the top of the head), less most of the hands beyond the
+/// grips. A little generous: the automatic span only ever grows.
+pub fn grip_span(eye_height: f32) -> f32 {
+    eye_height + 0.11 - 0.15
+}
+
+/// A T-pose measurement: (height, grip-to-grip span) from the head and both grips, if they look
+/// like one (both hands out level with the shoulders).
+pub fn measure_tpose(head: Vec3, left: Vec3, right: Vec3) -> Option<(f32, f32)> {
+    let span = left.distance(right);
+    let level = (left.y - (head.y - 0.25)).abs() < 0.25 && (right.y - (head.y - 0.25)).abs() < 0.25;
+    (level && (0.9..2.6).contains(&span) && (1.0..2.4).contains(&head.y)).then_some((head.y + 0.11, span))
+}
+
+impl PlayerBody {
+    /// The body's calibration: the player's height from the settings, else the measured standing
+    /// eye height; the arm span from the settings, else about the height.
+    fn calibration(&self, inp: &BodyInput) -> Option<Calibration> {
+        let b = &inp.settings.body;
+        // The body's standing eye height is the view's height above the game's floor.
+        let eye = inp.eye_height - inp.floor;
+        if inp.eye_height <= 0.0 || !(1.0..2.4).contains(&eye) {
+            return None;
+        }
+        let real_eye = if b.height > 1.0 { b.height - 0.11 } else { eye };
+        let span = if b.arm_span > 1.0 { b.arm_span } else { self.auto_span.unwrap_or(grip_span(real_eye)) };
+        Some(Calibration { eye_height: eye, arm_span: span })
+    }
+
+    /// The automatic arm span now (for the menu).
+    pub fn arm_span(&self) -> f32 {
+        self.solver.calibration().arm_span
+    }
+
+    pub fn update(&mut self, inp: &BodyInput) -> &RtBody {
+        let f = inp.frame;
+        if let Some(c) = self.calibration(inp) {
+            let cur = self.solver.calibration();
+            if (cur.eye_height - c.eye_height).abs() > 0.02 || (cur.arm_span - c.arm_span).abs() > 0.03 {
+                self.solver.set_calibration(c);
+            }
+        }
+        let head = (Vec3::from_array(f.hmd.pos), {
+            let q = Quat::from_array(f.hmd.rot);
+            if q.length_squared() < 1e-12 { Quat::IDENTITY } else { q.normalize() }
+        });
+        // Solve with the game's floor at 0, then put the body back where it stands.
+        let down = Vec3::new(0.0, inp.floor, 0.0);
+        let grips = [0, 1].map(|i| {
+            (f.hands[i].connected != 0 && f.hands[i].grip.valid != 0).then(|| {
+                // A hand in the game's own pose goes exactly to its wrist: the grip whose hand
+                // joint that is.
+                if let Some(h) = &inp.held[i] {
+                    let wrist = rustvr_ik::Pose { pos: Vec3::from_array(h.wrist.pos) - down, rot: quat(h.wrist.rot) };
+                    return self.offsets.grip_for(SIDES[i], wrist);
+                }
+                let g = inp.hands.map(|h| h[i]).unwrap_or_else(|| grip_of(&f.hands[i]));
+                ik((g.0 - down, g.1))
+            })
+        });
+        // Seated players still play a standing character: the body is drawn standing.
+        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false });
+        for j in out.joints.iter_mut().chain(out.hand_targets.iter_mut()) {
+            j.pos += down;
+        }
+        self.reached = out.reached;
+        // Arms that keep falling short of the hands grow (automatic arm span only).
+        if inp.settings.body.arm_span <= 1.0 {
+            let dt = f.dt.clamp(0.0, 0.1);
+            for i in 0..2 {
+                self.unreached[i] = if out.reached[i] || grips[i].is_none() { 0.0 } else { self.unreached[i] + dt };
+            }
+            if self.unreached.iter().any(|t| *t > 0.25) {
+                let span = self.auto_span.unwrap_or(self.solver.calibration().arm_span);
+                self.auto_span = Some((span + 0.25 * dt).min(2.4));
+            }
+        }
+        self.seq = self.seq.wrapping_add(1);
+        let mut body: RtBody = bytemuck::Zeroable::zeroed();
+        body.seq = self.seq;
+        body.flags = BODY_VALID;
+        body.frame_index = f.index;
+        body.eye_height = self.solver.calibration().eye_height;
+        body.scale = out.scale;
+        body.arm_length = out.arm_length;
+        body.visibility = match inp.settings.body.visibility {
+            BodyVisibility::Hands => BODYVIS_HANDS,
+            BodyVisibility::Arms => BODYVIS_ARMS,
+            BodyVisibility::Full => BODYVIS_FULL,
+        };
+        body.joints = out.to_protocol();
+        for i in 0..2 {
+            let c = &f.hands[i];
+            let rig = inp.hand_states.map(|h| h[i]);
+            body.hands[i] = HandState {
+                pose: proto(out.hand_targets[i]),
+                flags: rig.map(|h| h.flags).unwrap_or(if grips[i].is_some() { HAND_TRACKED } else { 0 }),
+                holding: rig.map(|h| h.holding).unwrap_or(0),
+                _pad: [0; 2],
+            };
+            let touch_thumb = c.buttons & (CTRL_TOUCH_A | CTRL_TOUCH_B | CTRL_TOUCH_STICK) != 0;
+            let thumb_press = c.buttons & (CTRL_A | CTRL_B | CTRL_STICK_CLICK) != 0;
+            let fi = FingerInput {
+                trigger: c.trigger,
+                squeeze: c.squeeze,
+                touch_trigger: c.buttons & CTRL_TOUCH_TRIGGER != 0 || c.trigger > 0.02,
+                touch_thumb: touch_thumb || thumb_press,
+                thumb_press,
+            };
+            body.fingers[i] = self.fingers[i].update(f.dt.clamp(1e-4, 0.1), &fi, inp.holds[i]);
+            self.ghosts[i] = inp.ghosts[i].map(|g| proto(self.offsets.hand_frame(SIDES[i], ik(g))));
+        }
+        self.held = [0, 1].map(|i| inp.held[i].filter(|_| grips[i].is_some()));
+        self.body = body;
+        &self.body
+    }
+
+    /// Loads the avatar the first time it's needed: Metro's Miller when the extracted assets are
+    /// there (local test content), else the built-in mannequin.
+    fn avatar(&mut self, gpu: &Gpu) -> Option<&mut Avatar> {
+        if !self.avatar_tried {
+            self.avatar_tried = true;
+            let dir = rustvr_asset::default_root().join("metro2033");
+            let source = if dir.join("models").join("body_miller.rvm").exists() {
+                AvatarSource::Model { dir, body: "body_miller".into(), hands: Some("hands_basic_suit".into()) }
+            } else {
+                AvatarSource::Procedural
+            };
+            match Avatar::new(gpu, source) {
+                Ok(a) => self.avatar = Some(a),
+                Err(e) => tracing::error!("runtime: no avatar: {e:#}"),
+            }
+        }
+        self.avatar.as_mut()
+    }
+
+    /// Draws the body into one eye. `light.sun_dir` must already be in tracking space.
+    pub fn draw(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>) {
+        let body = self.body;
+        let ghosts = self.ghosts;
+        let held = self.held;
+        let Some(avatar) = self.avatar(gpu) else { return };
+        let frame = AvatarFrame {
+            joints: &body.joints,
+            fingers: body.fingers,
+            hands: body.hands,
+            ghosts,
+            held,
+            visibility: body.visibility,
+            light,
+            first_person: true,
+        };
+        if let Err(e) = avatar.draw(gpu, &target.rtv, target.width, target.height, eye, fov, &frame, depth) {
+            tracing::warn!("runtime: drawing the avatar: {e:#}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustvr_ik::Pose as IkPose;
+
+    #[test]
+    fn automatic_arms_grow_to_reach_the_hands() {
+        let settings = Settings::default();
+        let mut body = PlayerBody::default();
+        let mut f = HmdFrame { dt: 1.0 / 90.0, ..Default::default() };
+        f.hmd = Pose { pos: [0.0, 1.7, 0.0], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] };
+        // Arms straight out in front, further than the default arms reach.
+        for (i, x) in [(0, -0.18), (1, 0.18)] {
+            f.hands[i].connected = 1;
+            f.hands[i].grip = Pose { pos: [x, 1.45, 0.78], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] };
+        }
+        let before = body.arm_span();
+        for _ in 0..360 {
+            body.update(&BodyInput {
+                frame: &f,
+                hands: None,
+                hand_states: None,
+                ghosts: [None; 2],
+                holds: [HoldShape::None; 2],
+                held: [None; 2],
+                locomotion: Vec3::ZERO,
+                eye_height: 1.7,
+                floor: 0.0,
+                settings: &settings,
+            });
+        }
+        assert!(body.arm_span() > before + 0.05, "grew from {before:.2} to {:.2}", body.arm_span());
+        assert_eq!(body.reached, [true, true], "and now reaches");
+    }
+
+    /// A hand in the game's own pose on a gun: the body puts that hand joint exactly on the
+    /// game's wrist (whatever the floor), and the avatar gets the pose.
+    #[test]
+    fn a_held_hand_goes_exactly_to_the_games_wrist() {
+        let settings = Settings::default();
+        let mut f = HmdFrame { dt: 1.0 / 90.0, ..Default::default() };
+        for floor in [0.0, -0.3] {
+            let mut body = PlayerBody::default();
+            f.hmd = Pose { pos: [0.0, 1.7 + floor, 0.0], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] };
+            for (i, x) in [(0, -0.12), (1, 0.12)] {
+                f.hands[i].connected = 1;
+                f.hands[i].grip = Pose { pos: [x, 1.3 + floor, 0.4], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] };
+            }
+            let wrist = Pose { pos: [0.1, 1.33 + floor, 0.36], valid: 1, rot: Quat::from_euler(glam::EulerRot::YXZ, 0.3, -1.1, 1.4).to_array() };
+            let held = HeldHand { wrist, fingers: [Quat::from_rotation_z(-0.8); 15], index_pulled: None, trigger: 0.3, size: 0.1, reach: [None; 5], index_reach_pulled: None };
+            for _ in 0..30 {
+                body.update(&BodyInput {
+                    frame: &f,
+                    hands: None,
+                    hand_states: None,
+                    ghosts: [None; 2],
+                    holds: [HoldShape::None, HoldShape::PistolGrip],
+                    held: [None, Some(held)],
+                    locomotion: Vec3::ZERO,
+                    eye_height: 1.7 + floor,
+                    floor,
+                    settings: &settings,
+                });
+            }
+            let hand = body.body.hands[1].pose;
+            let joint = body.body.joints[Joint::RightHand as usize];
+            for p in [hand, joint] {
+                assert!(Vec3::from_array(p.pos).distance(Vec3::from_array(wrist.pos)) < 1e-4, "floor {floor}: {:?}", p.pos);
+                assert!(Quat::from_array(p.rot).angle_between(Quat::from_array(wrist.rot)) < 1e-3);
+            }
+            assert_eq!(body.held, [None, Some(held)], "drawn in the game's pose");
+        }
+    }
+
+    #[test]
+    fn t_pose_measurement() {
+        let m = measure_tpose(Vec3::new(0.0, 1.65, 0.0), Vec3::new(-0.8, 1.42, 0.0), Vec3::new(0.8, 1.42, 0.0)).unwrap();
+        assert!((m.0 - 1.76).abs() < 1e-4 && (m.1 - 1.6).abs() < 1e-4);
+        assert!(measure_tpose(Vec3::new(0.0, 1.65, 0.0), Vec3::new(-0.2, 1.0, 0.3), Vec3::new(0.2, 1.0, 0.3)).is_none(), "arms down isn't a T-pose");
+        assert!((grip_span(1.70) - 1.66).abs() < 1e-4);
+    }
+
+    /// The IK and the avatar must agree on the joint convention: absolute canonical frames, so a
+    /// player standing in the reference T-pose gets exactly the avatar's reference frames.
+    #[test]
+    fn a_t_pose_solves_to_the_reference_frames() {
+        let mut solver = BodySolver::new(BodyParams::default(), Calibration { eye_height: 1.62, arm_span: 1.72 });
+        let offsets = BodyParams::default().hand_offsets;
+        let head = IkPose { pos: Vec3::new(0.0, 1.62, 0.0), rot: Quat::IDENTITY };
+        // Grips whose hand frames are the T-pose hands, at arm's length.
+        let grip_for = |side: Side, x: f32| {
+            let want = rustvr_avatar::pose::reference_frame(if side == Side::Left { Joint::LeftHand } else { Joint::RightHand });
+            let o = offsets.hand_frame(side, IkPose::IDENTITY);
+            let rot = (want * o.rot.inverse()).normalize();
+            IkPose { pos: Vec3::new(x, 1.42, 0.0) - rot * o.pos, rot }
+        };
+        let grips = [Some(grip_for(Side::Left, -0.78)), Some(grip_for(Side::Right, 0.78))];
+        let mut out = None;
+        for _ in 0..120 {
+            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false }));
+        }
+        let out = out.unwrap();
+        for j in [Joint::LeftUpperArm, Joint::LeftLowerArm, Joint::RightUpperArm, Joint::RightLowerArm, Joint::LeftHand, Joint::RightHand, Joint::Hips, Joint::Chest] {
+            let got = out.joints[j as usize].rot;
+            let want = rustvr_avatar::pose::reference_frame(j);
+            // A straight arm's roll is the IK's elbow choice; the bone direction is the convention.
+            let axes: &[Vec3] = if matches!(j, Joint::LeftHand | Joint::RightHand | Joint::Hips | Joint::Chest) { &[Vec3::Y, Vec3::Z] } else { &[Vec3::Y] };
+            for &axis in axes {
+                let err = (got * axis).angle_between(want * axis).to_degrees();
+                assert!(err < 25.0, "{j:?}: {axis:?} goes to {:?}, should be {:?} ({err:.0} degrees off)", got * axis, want * axis);
+            }
+        }
+    }
+}
+
+

@@ -1,0 +1,76 @@
+//! Running the runtime for real: the headset through OpenXR, optionally with the test range
+//! started alongside (what the "RustVR" Steam shortcut launches).
+
+use anyhow::{Context, Result};
+use std::path::PathBuf;
+
+use crate::backend::openxr::OpenXrBackend;
+use crate::session::{Options, Session};
+
+pub struct VrOptions {
+    pub mapping: String,
+    pub settings_dir: PathBuf,
+    /// Start this test-range executable once the headset is up (killed again on exit).
+    pub range: Option<PathBuf>,
+    pub range_args: Vec<String>,
+    /// Where the range's own log goes.
+    pub range_log: Option<PathBuf>,
+}
+
+/// `%LOCALAPPDATA%\RustVR`: settings, profiles and logs.
+pub fn data_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("RustVR")
+}
+
+/// Runs until the headset session ends (closed from the VR dashboard, or the VR runtime quits).
+pub fn run_vr(o: VrOptions) -> Result<()> {
+    let (backend, gpu) = OpenXrBackend::new("RustVR")?;
+    let mut session = Session::new(
+        gpu,
+        Box::new(backend),
+        Options { mapping: o.mapping.clone(), settings_dir: Some(o.settings_dir.clone()), lockstep: false, lockstep_timeout_ms: 0, audio: true },
+    )?;
+    let _range = match &o.range {
+        Some(exe) => Some(spawn_range(exe, &o.range_args, &o.mapping, o.range_log.as_deref(), false)?),
+        None => None,
+    };
+    while session.step()? {}
+    Ok(())
+}
+
+/// Starts the test range with no window, connected to `mapping`.
+pub fn spawn_range(exe: &std::path::Path, args: &[String], mapping: &str, log: Option<&std::path::Path>, low_priority: bool) -> Result<KillOnDrop> {
+    anyhow::ensure!(exe.exists(), "{} not found: build the workspace first", exe.display());
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args).env("RUSTVR_LINK", mapping).stdout(std::process::Stdio::null());
+    match log {
+        Some(path) => {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            cmd.stderr(std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?);
+        }
+        None => {
+            cmd.stderr(std::process::Stdio::null());
+        }
+    }
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+        cmd.creation_flags(CREATE_NO_WINDOW | if low_priority { BELOW_NORMAL_PRIORITY_CLASS } else { 0 });
+    }
+    let child = cmd.spawn().with_context(|| format!("starting {}", exe.display()))?;
+    tracing::info!("runtime: started the test range (pid {})", child.id());
+    Ok(KillOnDrop(child))
+}
+
+/// A child process that's stopped when this is dropped.
+pub struct KillOnDrop(pub std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}

@@ -1,0 +1,25 @@
+//! The RustVR runtime: one VR player experience (hands, aiming, gestures, comfort, menus) that
+//! connects into any game through an adapter. See `docs/DESIGN.md` at the repository root.
+
+#![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
+
+pub mod app;
+pub mod backend;
+pub mod body;
+pub mod compositor;
+pub mod mechanics;
+pub mod menu;
+pub mod panels;
+pub mod rig;
+pub mod scenario;
+pub mod scenario_physical;
+pub mod session;
+pub mod settings;
+pub mod targets;
+
+/// Wraps an angle to (-pi, pi].
+pub fn wrap_angle(a: f32) -> f32 {
+    let t = std::f32::consts::TAU;
+    let r = a.rem_euclid(t);
+    if r > std::f32::consts::PI { r - t } else { r }
+}

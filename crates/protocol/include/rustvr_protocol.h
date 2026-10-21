@@ -1,0 +1,654 @@
+/* RustVR shared-memory protocol. Generated from crates/protocol (cbindgen): do not edit.
+ * See crates/protocol/src/lib.rs for what every field means. */
+
+#ifndef RUSTVR_PROTOCOL_H
+#define RUSTVR_PROTOCOL_H
+
+#include <stdint.h>
+
+#define RVR_MAGIC 1381389650
+
+#define RVR_VERSION 4
+
+#define RVR_MAPPING_BYTES 4915200
+
+#define RVR_OFF_HEADER 0
+
+#define RVR_OFF_SUBMIT 128
+
+#define RVR_OFF_TARGETS 256
+
+#define RVR_OFF_RT_FRAME 512
+
+#define RVR_OFF_GAME_STATE 3072
+
+#define RVR_OFF_SLOTS 4096
+
+#define RVR_OFF_EVENTS 8192
+
+/**
+ * Number of texture slots in the triple buffer.
+ */
+#define RVR_SLOT_COUNT 3
+
+#define RVR_SLOT_STRIDE 256
+
+/**
+ * Events ring: `u64` head (producer) at +0x00, `u64` tail (consumer) at +0x40, entries at +0x80.
+ */
+#define RVR_EVENT_RING_ENTRIES 256
+
+#define RVR_RING_HEAD_OFF 0
+
+#define RVR_RING_TAIL_OFF 64
+
+#define RVR_RING_DATA_OFF 128
+
+/**
+ * A connected side is alive while its heartbeat is at most this old.
+ */
+#define RVR_HEARTBEAT_TIMEOUT_MS 2000
+
+#define RVR_SUBMIT_DIRTY (1 << 2)
+
+#define RVR_TGT_DEPTH (1 << 0)
+
+#define RVR_TGT_HUD (1 << 1)
+
+#define RVR_TGT_AUX (1 << 2)
+
+#define RVR_CTRL_A (1 << 0)
+
+#define RVR_CTRL_B (1 << 1)
+
+#define RVR_CTRL_STICK_CLICK (1 << 2)
+
+#define RVR_CTRL_MENU (1 << 3)
+
+#define RVR_CTRL_TRIGGER_CLICK (1 << 4)
+
+#define RVR_CTRL_SQUEEZE_CLICK (1 << 5)
+
+#define RVR_CTRL_TOUCH_TRIGGER (1 << 6)
+
+#define RVR_CTRL_TOUCH_A (1 << 7)
+
+#define RVR_CTRL_TOUCH_B (1 << 8)
+
+#define RVR_CTRL_TOUCH_STICK (1 << 9)
+
+#define RVR_HAND_LEFT 0
+
+#define RVR_HAND_RIGHT 1
+
+/**
+ * Tracking is valid and the runtime wants the game in VR.
+ */
+#define RVR_RT_ACTIVE (1 << 0)
+
+#define RVR_RT_USER_PRESENT (1 << 1)
+
+/**
+ * Poses come from the simulated headset (tests).
+ */
+#define RVR_RT_SIMULATED (1 << 2)
+
+/**
+ * The runtime waits for every frame (tests): the adapter should render exactly once per
+ * `frame_index`, using `dt` as its time step.
+ */
+#define RVR_RT_LOCKSTEP (1 << 3)
+
+/**
+ * The runtime's own menu has the controllers: the game should ignore gameplay intents.
+ */
+#define RVR_RT_RUNTIME_MENU (1 << 4)
+
+/**
+ * The headset's system dashboard is open.
+ */
+#define RVR_RT_DASHBOARD (1 << 5)
+
+/**
+ * The runtime draws the player's body and hands over the game's picture (the game shouldn't draw
+ * its own first-person hands or arms).
+ */
+#define RVR_RT_DRAWS_BODY (1 << 6)
+
+/**
+ * The head may move away from the game body (roomscale).
+ */
+#define RVR_TRK_ROOMSCALE (1 << 0)
+
+/**
+ * The runtime is walking the game body after the head: absorb that movement into the origin.
+ */
+#define RVR_TRK_FOLLOW (1 << 1)
+
+/**
+ * Keep the game's camera bob and shake.
+ */
+#define RVR_TRK_HEAD_BOB (1 << 2)
+
+/**
+ * Follow scripted camera animations (ladders, cutscenes).
+ */
+#define RVR_TRK_CAMERA_ANIMS (1 << 3)
+
+#define RVR_INT_WEAPON (1 << 0)
+
+#define RVR_INT_TWO_HANDED (1 << 1)
+
+/**
+ * Aiming down the sights (sights at the eye, or the grip held).
+ */
+#define RVR_INT_ADS (1 << 2)
+
+#define RVR_INT_SCOPE (1 << 3)
+
+/**
+ * The game's menu is shown as a panel: gameplay input is off, the cursor drives the menu.
+ */
+#define RVR_INT_MENU_MODE (1 << 4)
+
+#define RVR_INT_CURSOR (1 << 5)
+
+#define RVR_INT_CURSOR_DOWN (1 << 6)
+
+/**
+ * Manual reload: the magazine is out of the gun (hide it on the model).
+ */
+#define RVR_INT_MAG_OUT (1 << 7)
+
+/**
+ * Manual reload: the off hand holds a fresh magazine (draw one there).
+ */
+#define RVR_INT_HOLDING_MAG (1 << 8)
+
+/**
+ * One past the highest [Action] value (some values in between are unused).
+ */
+#define RVR_ACTION_COUNT 48
+
+#define RVR_GS_IN_GAME (1 << 0)
+
+/**
+ * A game menu is open: the runtime shows the HUD texture as a big panel and points a laser at it.
+ */
+#define RVR_GS_MENU (1 << 1)
+
+#define RVR_GS_LOADING (1 << 2)
+
+/**
+ * The game's camera is being driven by an animation or cutscene.
+ */
+#define RVR_GS_SCRIPTED (1 << 3)
+
+#define RVR_GS_DEAD (1 << 4)
+
+#define RVR_GS_CROUCHED (1 << 5)
+
+#define RVR_GS_HAS_WEAPON (1 << 6)
+
+#define RVR_GS_PAUSED (1 << 7)
+
+/**
+ * The game draws the player's body and hands itself (from [RtBody]); the runtime doesn't.
+ */
+#define RVR_GS_DRAWS_BODY (1 << 8)
+
+/**
+ * Magazines from the ammo pouch never run out.
+ */
+#define RVR_GS_INFINITE_AMMO (1 << 9)
+
+#define RVR_RIG_HAS_SIGHT (1 << 0)
+
+#define RVR_RIG_HAS_MUZZLE (1 << 1)
+
+#define RVR_RIG_SIGHT_LINE (1 << 2)
+
+#define RVR_RIG_HAS_MAG_WELL (1 << 3)
+
+/**
+ * The gun can be held with two hands.
+ */
+#define RVR_RIG_TWO_HANDED (1 << 4)
+
+#define RVR_RIG_HAS_CHARGING_HANDLE (1 << 5)
+
+#define RVR_SLOT_STEREO (1 << 0)
+
+#define RVR_SLOT_HUD (1 << 1)
+
+/**
+ * The HUD texture holds the game's whole picture (a menu or loading screen) instead of an overlay.
+ */
+#define RVR_SLOT_MENU (1 << 2)
+
+#define RVR_SLOT_AUX (1 << 3)
+
+#define RVR_SLOT_DEPTH (1 << 4)
+
+/**
+ * Depth holds linear view distance in metres.
+ */
+#define RVR_DEPTH_LINEAR (1 << 0)
+
+/**
+ * Depth holds a reversed-Z projection's depth (near = 1).
+ */
+#define RVR_DEPTH_REVERSED (1 << 1)
+
+/**
+ * Vibrate: `a` = [`HAPTIC_LEFT`]..[`HAPTIC_OFF_HAND`], f0 seconds, f1 frequency (Hz), f2 amplitude 0..1.
+ */
+#define RVR_EV_HAPTIC 1
+
+/**
+ * The game's own rumble (recoil, damage): f0 strength 0..1.
+ */
+#define RVR_EV_RUMBLE 2
+
+/**
+ * Ask the runtime to recentre (e.g. after a level load).
+ */
+#define RVR_EV_RECENTER 3
+
+#define RVR_HAPTIC_LEFT 0
+
+#define RVR_HAPTIC_RIGHT 1
+
+#define RVR_HAPTIC_FIRING_HAND 2
+
+#define RVR_HAPTIC_OFF_HAND 3
+
+#define RVR_OFF_BODY 65536
+
+#define RVR_OFF_OBJECTS 69632
+
+#define RVR_MAX_OBJECTS 256
+
+#define RVR_OFF_OBJECT_STATES 196608
+
+#define RVR_OFF_HAND_POSES 229376
+
+#define RVR_MAX_HAND_POSES 64
+
+#define RVR_OFF_COLLISION 262144
+
+/**
+ * Collision ring: `u64` head (producer) at +0x00, `u64` tail (consumer) at +0x40, bytes at +0x80.
+ */
+#define RVR_COLLISION_RING_BYTES 4194304
+
+#define RVR_COL_RING_DATA_OFF 128
+
+#define RVR_COL_RING_DATA_BYTES (RVR_COLLISION_RING_BYTES - RVR_COL_RING_DATA_OFF)
+
+#define RVR_OFF_KICKS (RVR_OFF_COLLISION + RVR_COLLISION_RING_BYTES)
+
+#define RVR_MAX_KICKS 256
+
+#define RVR_JOINT_COUNT 22
+
+#define RVR_HAND_TRACKED (1 << 0)
+
+/**
+ * The physics hand is held back by the world: also show a ghost hand at the controller.
+ */
+#define RVR_HAND_BLOCKED (1 << 1)
+
+#define RVR_HAND_HOLDING (1 << 2)
+
+#define RVR_BODY_VALID (1 << 0)
+
+#define RVR_BODYVIS_HANDS 0
+
+#define RVR_BODYVIS_ARMS 1
+
+#define RVR_BODYVIS_FULL 2
+
+#define RVR_OBJ_PROP 1
+
+#define RVR_OBJ_WEAPON 2
+
+#define RVR_OBJ_MAGAZINE 3
+
+#define RVR_OBJ_THROWABLE 4
+
+#define RVR_OBJ_MELEE 5
+
+#define RVR_OBJF_GRABBABLE (1 << 0)
+
+/**
+ * Gravity gloves can pull it.
+ */
+#define RVR_OBJF_PULLABLE (1 << 1)
+
+#define RVR_OBJF_HOLSTERABLE (1 << 2)
+
+#define RVR_OBJF_TWO_HANDED (1 << 3)
+
+#define RVR_OBJF_SCOPED (1 << 4)
+
+/**
+ * Not placed in the world: the runtime spawns copies of it (magazines from the ammo pouch).
+ */
+#define RVR_OBJF_TEMPLATE (1 << 5)
+
+#define RVR_SHAPE_BOX 0
+
+#define RVR_SHAPE_CAPSULE 1
+
+#define RVR_SHAPE_SPHERE 2
+
+#define RVR_WPN_AUTOMATIC (1 << 0)
+
+/**
+ * The slide or bolt locks back after the last round.
+ */
+#define RVR_WPN_SLIDE_LOCKS (1 << 1)
+
+/**
+ * A fresh magazine needs the gun racked when the chamber is empty.
+ */
+#define RVR_WPN_NEEDS_RACK (1 << 2)
+
+#define RVR_WPN_PISTOL (1 << 3)
+
+/**
+ * Shoulder-fired: the virtual stock may anchor it.
+ */
+#define RVR_WPN_STOCK (1 << 4)
+
+/**
+ * The runtime is moving it: draw it at `pose`.
+ */
+#define RVR_OS_SIMULATED (1 << 0)
+
+/**
+ * `pose` is in tracking space (held or holstered): map it with the adapter's `View`.
+ */
+#define RVR_OS_TRACKING (1 << 1)
+
+#define RVR_OS_HELD_LEFT (1 << 2)
+
+#define RVR_OS_HELD_RIGHT (1 << 3)
+
+#define RVR_OS_HOLSTERED (1 << 4)
+
+/**
+ * A magazine seated in `parent`.
+ */
+#define RVR_OS_IN_WEAPON (1 << 5)
+
+/**
+ * Flying to a hand (gravity gloves).
+ */
+#define RVR_OS_PULLED (1 << 6)
+
+/**
+ * Highlighted: a hand is about to grab it (or pull it).
+ */
+#define RVR_OS_HOVERED (1 << 7)
+
+/**
+ * Spawned by the runtime from a template (e.g. a magazine from the ammo pouch).
+ */
+#define RVR_OS_SPAWNED (1 << 8)
+
+/**
+ * The slide / bolt is locked back.
+ */
+#define RVR_OS_SLIDE_LOCKED (1 << 9)
+
+#define RVR_SLOT_HIP_RIGHT 0
+
+#define RVR_SLOT_HIP_LEFT 1
+
+/**
+ * Over the right / left shoulder, behind the head (long guns).
+ */
+#define RVR_SLOT_BACK_RIGHT 2
+
+#define RVR_SLOT_BACK_LEFT 3
+
+#define RVR_SLOT_COUNT_BODY 4
+
+/**
+ * The index finger rests on a trigger and curls to `index_pulled` as it's pulled.
+ */
+#define RVR_HPOSE_TRIGGER (1 << 0)
+
+#define RVR_KICK_KEYS 16
+
+/**
+ * Muzzle up (rad). The offset turns yaw, then pitch, then roll: `Ry(yaw) * Rx(-pitch) * Rz(roll)`
+ * about the pivot, then moves by the translation.
+ */
+#define RVR_KICK_PITCH 0
+
+/**
+ * About +Y (rad): positive turns the muzzle (+Z) towards +X.
+ */
+#define RVR_KICK_YAW 1
+
+/**
+ * About +Z, the barrel (rad).
+ */
+#define RVR_KICK_ROLL 2
+
+/**
+ * Translation (m), object space.
+ */
+#define RVR_KICK_X 3
+
+#define RVR_KICK_Y 4
+
+#define RVR_KICK_Z 5
+
+#define RVR_KICK_CHANNELS 6
+
+/**
+ * The game's view kick (on a flat screen, the camera's jolt, which takes the gun with it). A
+ * shot's view kick adds to the ones still playing.
+ */
+#define RVR_KICK_LAYER_VIEW 0
+
+/**
+ * The gun model's own kick (an animation): a shot's replaces the one playing.
+ */
+#define RVR_KICK_LAYER_GUN 1
+
+#define RVR_KICK_LAYERS 2
+
+/**
+ * [`KickDesc::when`]: fired from the hip, or aimed (shouldered or down the sights) ...
+ */
+#define RVR_KICK_HIP (1 << 0)
+
+#define RVR_KICK_AIMED (1 << 1)
+
+/**
+ * ... standing or crouched ...
+ */
+#define RVR_KICK_STANDING (1 << 2)
+
+#define RVR_KICK_CROUCHED (1 << 3)
+
+/**
+ * ... and the first shot of a burst, the next few, or a long burst's later ones.
+ */
+#define RVR_KICK_FIRST (1 << 4)
+
+#define RVR_KICK_FOLLOW (1 << 5)
+
+#define RVR_KICK_LONG (1 << 6)
+
+#define RVR_COL_PAD 0
+
+/**
+ * Drop all static geometry (level change).
+ */
+#define RVR_COL_CLEAR 1
+
+/**
+ * [`ColMesh`] + `count` x [`ColTriangle`]: replaces mesh `id` (0 triangles removes it).
+ */
+#define RVR_COL_MESH 2
+
+/**
+ * [`ColBox`]: replaces (or adds) box `id`.
+ */
+#define RVR_COL_BOX 3
+
+#define RVR_SHOTS 0
+
+#define RVR_HITS 1
+
+#define RVR_RELOADS 2
+
+#define RVR_WEAPON 3
+
+#define RVR_AMMO 4
+
+#define RVR_CROUCHED 5
+
+#define RVR_JUMPS 6
+
+#define RVR_GESTURE_FACE 7
+
+#define RVR_GESTURE_HEAD_TOP 8
+
+#define RVR_GESTURE_CHEST 9
+
+#define RVR_GESTURE_SHOULDER 10
+
+#define RVR_GESTURE_HIP 11
+
+#define RVR_MENU_TOGGLES 12
+
+#define RVR_MENU_CLICKS 13
+
+#define RVR_THROWS 14
+
+#define RVR_SWITCHES 15
+
+#define RVR_MELEES 16
+
+#define RVR_ABILITY_UP 17
+
+#define RVR_ABILITY_DOWN 18
+
+#define RVR_ABILITY_LEFT 19
+
+#define RVR_ABILITY_RIGHT 20
+
+#define RVR_USES 21
+
+/**
+ * Physical mode: objects the runtime reports.
+ */
+#define RVR_OBJECTS 22
+
+/**
+ * Physical mode: 1 + the index of the gun in a hand (0 = none).
+ */
+#define RVR_HELD 23
+
+#define RVR_F_FEET_X 0
+
+#define RVR_F_FEET_Z 1
+
+/**
+ * Distance (m) from the last hit to the target's centre.
+ */
+#define RVR_F_LAST_HIT_ERROR 2
+
+#define RVR_F_LOOK_YAW 3
+
+/**
+ * Angle (degrees) between the last shot and the runtime's aim direction.
+ */
+#define RVR_F_SHOT_AIM_ERROR 4
+
+#define RVR_F_FRAME_MS 5
+
+#define RVR_F_SCOPE_FRAMES 6
+
+/**
+ * Rounds in a full magazine of the held weapon.
+ */
+#define RVR_F_MAG_SIZE 7
+
+enum RVR_TexKind
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  RVR_TexKind_EyeLeft = 0,
+  RVR_TexKind_EyeRight = 1,
+  /**
+   * `R32_FLOAT` linear view depth in metres (or the encoding in [`SlotInfo::depth_flags`]).
+   */
+  RVR_TexKind_DepthLeft = 2,
+  RVR_TexKind_DepthRight = 3,
+  /**
+   * Premultiplied-alpha 2D layer: the game's HUD, or its whole picture while a menu is open.
+   */
+  RVR_TexKind_Hud = 4,
+  /**
+   * Extra camera view, e.g. a magnified scope picture.
+   */
+  RVR_TexKind_Aux = 5,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum RVR_TexKind RVR_TexKind;
+#else
+typedef uint32_t RVR_TexKind;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+enum RVR_Joint
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  RVR_Joint_Hips = 0,
+  RVR_Joint_Spine = 1,
+  RVR_Joint_Chest = 2,
+  RVR_Joint_UpperChest = 3,
+  RVR_Joint_Neck = 4,
+  RVR_Joint_Head = 5,
+  RVR_Joint_LeftShoulder = 6,
+  RVR_Joint_LeftUpperArm = 7,
+  RVR_Joint_LeftLowerArm = 8,
+  RVR_Joint_LeftHand = 9,
+  RVR_Joint_RightShoulder = 10,
+  RVR_Joint_RightUpperArm = 11,
+  RVR_Joint_RightLowerArm = 12,
+  RVR_Joint_RightHand = 13,
+  RVR_Joint_LeftUpperLeg = 14,
+  RVR_Joint_LeftLowerLeg = 15,
+  RVR_Joint_LeftFoot = 16,
+  RVR_Joint_LeftToes = 17,
+  RVR_Joint_RightUpperLeg = 18,
+  RVR_Joint_RightLowerLeg = 19,
+  RVR_Joint_RightFoot = 20,
+  RVR_Joint_RightToes = 21,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum RVR_Joint RVR_Joint;
+#else
+typedef uint32_t RVR_Joint;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+#define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, }
+
+#define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
+
+#endif  /* RUSTVR_PROTOCOL_H */
