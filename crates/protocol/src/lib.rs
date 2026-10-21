@@ -57,8 +57,10 @@ use bytemuck::{Pod, Zeroable};
 
 #[cfg(windows)]
 pub mod link;
+pub mod hud;
 pub mod world;
 
+pub use hud::*;
 pub use world::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"

@@ -263,6 +263,61 @@
 
 #define RVR_HAPTIC_OFF_HAND 3
 
+
+
+#define RVR_MAX_HUD_ELEMENTS 32
+
+/**
+ * Spoken lines: a caption strip low in view (13 degrees under gaze), lazily following the head.
+ */
+#define RVR_HUD_SUBTITLES 1
+
+/**
+ * Hints and tutorial prompts: a row just under gaze (6 degrees), lazily following the head.
+ */
+#define RVR_HUD_HINTS 2
+
+/**
+ * The ammo counter: on the held gun's left side, facing the eye.
+ */
+#define RVR_HUD_AMMO 3
+
+/**
+ * Status (health, filters, item counts): on the back of the off-hand wrist.
+ */
+#define RVR_HUD_STATUS 4
+
+/**
+ * Full-screen effects (damage, fades, a gas mask's glass): fixed to the face, covering the view.
+ */
+#define RVR_HUD_OVERLAY 5
+
+/**
+ * Button prompts and notifications ("A Continue", "+ammo"): the caption strip's right end.
+ */
+#define RVR_HUD_PROMPTS 6
+
+/**
+ * Things the game puts at the screen centre (use prompts, markers): at gaze, a little below.
+ */
+#define RVR_HUD_CENTER 7
+
+/**
+ * Not drawn at all (e.g. the crosshair).
+ */
+#define RVR_HUD_HIDDEN 8
+
+/**
+ * Don't draw what no element covers.
+ */
+#define RVR_HUDL_REST_HIDDEN (1 << 0)
+
+/**
+ * The HUD texture's colour is added to the view (it has no usable alpha): every element is
+ * blended additively.
+ */
+#define RVR_HUDL_ADDITIVE (1 << 1)
+
 #define RVR_OFF_BODY 65536
 
 #define RVR_OFF_OBJECTS 69632

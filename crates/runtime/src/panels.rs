@@ -43,7 +43,13 @@ impl Panel {
         self.center + self.right * (uv.x - 0.5) * self.width + self.up * (0.5 - uv.y) * self.height
     }
 
-    fn facing(center: Vec3, yaw: f32, pitch: f32, width: f32, aspect: f32) -> Panel {
+    /// The direction `yaw` to the right of +Z and `pitch` below the horizon.
+    pub fn dir(yaw: f32, pitch: f32) -> Vec3 {
+        Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch) * Vec3::Z
+    }
+
+    /// An upright panel at `center` facing back along (`yaw`, `pitch`), `width` wide.
+    pub fn facing(center: Vec3, yaw: f32, pitch: f32, width: f32, aspect: f32) -> Panel {
         let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
         Panel { center, right: rot * Vec3::X, up: rot * Vec3::Y, width, height: width / aspect.max(0.1) }
     }

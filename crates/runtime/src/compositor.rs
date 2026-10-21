@@ -137,6 +137,15 @@ pub struct PanelLayer<'a> {
     pub panel: Panel,
     pub srv: &'a ID3D11ShaderResourceView,
     pub opacity: f32,
+    /// The part of the texture shown: u0, v0, u1, v1.
+    pub uv: [f32; 4],
+}
+
+impl<'a> PanelLayer<'a> {
+    /// The whole texture on `panel`.
+    pub fn whole(panel: Panel, srv: &'a ID3D11ShaderResourceView) -> Self {
+        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0] }
+    }
 }
 
 pub struct LensLayer<'a> {
@@ -292,6 +301,7 @@ impl Compositor {
             c.axis_x = (p.panel.right * p.panel.width * 0.5).extend(0.0).to_array();
             c.axis_y = (p.panel.up * p.panel.height * 0.5).extend(0.0).to_array();
             c.params = [MODE_TEXTURE, 0.0, p.opacity, 0.0];
+            c.uv_rect = p.uv;
             self.draw_quad(gpu, &c, Some(p.srv));
         }
         for (pos, rot) in &layers.markers {

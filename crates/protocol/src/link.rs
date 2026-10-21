@@ -309,6 +309,19 @@ impl Link {
     pub fn kicks_seq(&self) -> u32 {
         self.u32_at(OFF_KICKS).load(Ordering::Acquire)
     }
+    /// Adapter: describe the HUD's pieces (see [`HudLayout`]).
+    pub fn write_hud_layout(&self, v: &HudLayout) {
+        unsafe { seq_write(self.base.add(OFF_HUD_LAYOUT), v) }
+    }
+    /// Runtime: read the HUD layout into `out`. False if nothing was ever written or no consistent
+    /// copy was obtained.
+    pub fn read_hud_layout_into(&self, out: &mut HudLayout) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_HUD_LAYOUT), out) }
+    }
+    /// Changes whenever the adapter rewrites the HUD layout (0: never written).
+    pub fn hud_layout_seq(&self) -> u32 {
+        self.u32_at(OFF_HUD_LAYOUT).load(Ordering::Acquire)
+    }
     pub fn write_object_states(&self, v: &ObjectStates) {
         unsafe { seq_write(self.base.add(OFF_OBJECT_STATES), v) }
     }

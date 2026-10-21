@@ -262,6 +262,21 @@ pub struct Ui {
     pub hud_size: f32,
     /// The HUD lazily follows the head (otherwise it stays where it was put).
     pub hud_follow_head: bool,
+    /// The head turns this far before the HUD follows (degrees), and it catches up in this time
+    /// constant (seconds).
+    pub hud_deadzone_deg: f32,
+    pub hud_catchup: f32,
+    /// Place the HUD's pieces where VR games do, when the game says what they are (see `hud.rs`).
+    pub split_hud: bool,
+    /// The caption strip (subtitles, hints, prompts): distance, how far under gaze (degrees), the
+    /// whole HUD layer's width on it (degrees: text size), and the widest a piece gets.
+    pub caption_distance: f32,
+    pub caption_pitch_deg: f32,
+    pub caption_width_deg: f32,
+    pub caption_max_deg: f32,
+    /// Width of the ammo counter on the gun, and of the status on the wrist (metres).
+    pub ammo_width: f32,
+    pub status_width: f32,
 }
 
 
@@ -372,7 +387,22 @@ impl Default for Scope {
 
 impl Default for Ui {
     fn default() -> Self {
-        Ui { menu_distance: 2.2, menu_size: 2.6, hud_distance: 1.4, hud_size: 1.5, hud_follow_head: true }
+        Ui {
+            menu_distance: 2.2,
+            menu_size: 2.6,
+            hud_distance: 1.4,
+            hud_size: 1.5,
+            hud_follow_head: true,
+            hud_deadzone_deg: 20.0,
+            hud_catchup: 0.15,
+            split_hud: true,
+            caption_distance: 1.5,
+            caption_pitch_deg: 13.0,
+            caption_width_deg: 70.0,
+            caption_max_deg: 50.0,
+            ammo_width: 0.10,
+            status_width: 0.09,
+        }
     }
 }
 

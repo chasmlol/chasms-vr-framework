@@ -95,6 +95,10 @@ pub struct Session {
     hand_poses_seq: u32,
     kicks: Box<KickTable>,
     kicks_seq: u32,
+    /// What the game said its HUD's pieces are (see `hud.rs`), and where they go.
+    hud_layout: Box<HudLayout>,
+    hud_layout_seq: u32,
+    hud: crate::hud::HudPlacer,
     audio: Option<rustvr_audio::Audio>,
     comfort: Comfort,
     menu_trigger_was: bool,
@@ -153,6 +157,9 @@ impl Session {
             hand_poses_seq: 0,
             kicks: bytemuck::zeroed_box(),
             kicks_seq: 0,
+            hud_layout: bytemuck::zeroed_box(),
+            hud_layout_seq: 0,
+            hud: Default::default(),
             audio: opts.audio.then(rustvr_audio::Audio::new),
             comfort: Comfort::default(),
             menu_trigger_was: false,
@@ -313,6 +320,11 @@ impl Session {
             if seq != self.hand_poses_seq && self.link.read_hand_poses_into(&mut self.hand_poses) {
                 self.hand_poses_seq = seq;
                 tracing::info!("runtime: {} hand poses registered (table {})", self.hand_poses.count, seq);
+            }
+            let seq = self.link.hud_layout_seq();
+            if seq != self.hud_layout_seq && self.link.read_hud_layout_into(&mut self.hud_layout) {
+                self.hud_layout_seq = seq;
+                tracing::info!("runtime: the game's HUD has {} pieces (layout {})", self.hud_layout.count, seq);
             }
             let seq = self.link.kicks_seq();
             if seq != self.kicks_seq && self.link.read_kicks_into(&mut self.kicks) {
@@ -620,6 +632,8 @@ impl Session {
         self.hand_poses.count = 0;
         self.hand_poses_seq = 0;
         self.kicks.count = 0;
+        self.hud_layout.count = 0;
+        self.hud_layout_seq = 0;
         self.kicks_seq = 0;
     }
 
@@ -686,19 +700,51 @@ impl Session {
                     });
                     self.stats.scope_frames += 1;
                 }
+        let mut hud_shown = false;
         if let Some((slot, info)) = &locked
             && let Some(hud) = &slot.hud {
                 if menu_mode {
                     if let Some(p) = layout.game_menu {
-                        layers.panels.push(PanelLayer { panel: p, srv: hud.srv.as_ref().unwrap(), opacity: 1.0 });
+                        layers.panels.push(PanelLayer::whole(p, hud.srv.as_ref().unwrap()));
                     }
                 } else if info.flags & SLOT_HUD != 0
                     && let Some(p) = layout.hud {
-                        layers.panels.push(PanelLayer { panel: p, srv: hud.srv.as_ref().unwrap(), opacity: 1.0 });
+                        // The HUD in pieces: each where VR games put it (see `hud.rs`).
+                        let dom = s.dominant();
+                        let gun = out
+                            .weapon
+                            .as_ref()
+                            .map(|w| (w.weapon_to_tracking, w.sight_origin, w.aim_dir))
+                            .or_else(|| self.rig_out.primary_weapon.as_ref().map(|w| {
+                                let m = w.weapon_to_tracking;
+                                (m, m.transform_point3(w.sight), m.transform_vector3(Vec3::Z).normalize_or(Vec3::Z))
+                            }));
+                        let off = &frame.hands[dom ^ 1];
+                        let at = crate::hud::Attach {
+                            gun,
+                            off_hand: (off.connected != 0).then(|| (Vec3::from_array(off.grip.pos), quat(off.grip.rot))),
+                        };
+                        let aspect = p.width / p.height.max(1e-4);
+                        let pieces = self.hud.place(
+                            s,
+                            Vec3::from_array(frame.hmd.pos),
+                            quat(frame.hmd.rot),
+                            frame.dt,
+                            aspect,
+                            (self.hud_layout.count > 0).then_some(&*self.hud_layout),
+                            &at,
+                        );
+                        for piece in pieces {
+                            layers.panels.push(PanelLayer { panel: piece.panel, srv: hud.srv.as_ref().unwrap(), opacity: piece.opacity, uv: piece.uv });
+                        }
+                        hud_shown = true;
                     }
             }
+        if !hud_shown {
+            self.hud.reset();
+        }
         if let Some(p) = layout.runtime_menu {
-            layers.panels.push(PanelLayer { panel: p, srv: self.menu.srv(), opacity: 1.0 });
+            layers.panels.push(PanelLayer::whole(p, self.menu.srv()));
         }
         let dom = s.dominant();
         if let (true, Some(w), false) = (s.interaction.laser_sight, &out.weapon, menu_mode) {

@@ -347,6 +347,18 @@ impl Adapter {
         }
     }
 
+    /// Says which part of the HUD texture is what (subtitles, prompts, ammo...), so the runtime
+    /// places each piece where VR games do (see [`HudLayout`]). Call again after a reconnect.
+    pub fn write_hud_layout(&self, layout: &HudLayout) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_hud_layout(layout);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Registers the game's own hand poses (`ObjectDesc::grip_pose` / `support_pose` name them).
     /// Bump `table.seq` on every change, as for the objects; call again after a reconnect.
     pub fn write_hand_poses(&self, table: &HandPoseTable) -> bool {
