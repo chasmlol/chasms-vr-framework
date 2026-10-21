@@ -79,6 +79,8 @@ pub struct Adapter {
     last_frame_index: u64,
     last_frame: Option<RtFrame>,
     retry_at: std::time::Instant,
+    /// A target generation that failed to open, and when to try it again.
+    targets_failed: Option<(u32, std::time::Instant)>,
     state_frame: u64,
     connections: u32,
     pub tracking: TrackingMapper,
@@ -99,6 +101,7 @@ impl Adapter {
             last_frame_index: 0,
             last_frame: None,
             retry_at: std::time::Instant::now(),
+            targets_failed: None,
             state_frame: 0,
             connections: 0,
             tracking: TrackingMapper::default(),
@@ -220,6 +223,12 @@ impl Adapter {
         if t.generation == 0 || self.open.as_ref().is_some_and(|o| o.targets.generation == t.generation) {
             return;
         }
+        // Opening shared textures is slow: a generation that won't open is retried once a second,
+        // not every frame (which would stall the game), and its error is reported once.
+        let now = std::time::Instant::now();
+        if self.targets_failed.is_some_and(|(g, at)| g == t.generation && now < at) {
+            return;
+        }
         self.release_back();
         self.open = None;
         let mapping = self.cfg.mapping.clone();
@@ -227,8 +236,17 @@ impl Adapter {
             Ok(slots) => {
                 tracing::info!("rustvr: targets generation {} ({}x{} per eye)", t.generation, t.eye_w, t.eye_h);
                 self.open = Some(OpenTargets { targets: t, slots });
+                self.targets_failed = None;
             }
-            Err(e) => tracing::debug!("rustvr: targets not ready yet: {e:#}"),
+            Err(e) => {
+                if self.targets_failed.is_none_or(|(g, _)| g != t.generation) {
+                    tracing::warn!("rustvr: can't open targets generation {} yet: {e:#}", t.generation);
+                    // Diagnose: does a device of our own, in this process, see them?
+                    let fresh = Gpu::new().and_then(|g| open_targets(&g, &mapping, &t).map(|_| g.adapter_name()));
+                    tracing::warn!("rustvr: a fresh device here: {}", match fresh { Ok(n) => format!("opens them ({n})"), Err(e) => format!("{e:#}") });
+                }
+                self.targets_failed = Some((t.generation, now + std::time::Duration::from_secs(1)));
+            }
         }
     }
 

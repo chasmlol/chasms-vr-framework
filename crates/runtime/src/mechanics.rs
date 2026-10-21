@@ -431,7 +431,10 @@ impl Mechanics {
             out.intents.presses = self.presses;
             return out;
         }
-        if inp.menu_mode || inp.runtime_menu {
+        // A loading screen takes the menu controls too: its "press to continue" wants the menu's
+        // accept (and nothing should fire or move while it's up).
+        let loading = inp.game.is_some_and(|g| g.flags & GS_LOADING != 0);
+        if inp.menu_mode || inp.runtime_menu || loading {
             self.menu_controls(inp, &mut out);
             self.following = false;
             self.debug.following = false;
@@ -1036,7 +1039,9 @@ impl Mechanics {
             held |= Action::MenuRight.bit();
         }
         if !inp.runtime_menu {
-            if self.btn_a[dom].pressed() || self.btn_a[off].pressed() {
+            // A on either hand accepts; so does a trigger pull (the natural "continue").
+            let trigger = (0..2).any(|h| self.btn_trig[h].pressed()) && inp.cursor.is_none();
+            if self.btn_a[dom].pressed() || self.btn_a[off].pressed() || trigger {
                 self.press(Action::MenuAccept);
             }
             if self.btn_b[dom].pressed() || self.btn_b[off].pressed() {

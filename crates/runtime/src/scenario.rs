@@ -721,6 +721,58 @@ pub fn all() -> Vec<Scenario> {
             captures: vec![(1.5, "async")],
         },
         Scenario {
+            name: "live",
+            about: "a running game (--attach): look around for 12 s and capture what the headset shows",
+            duration: 12.0,
+            needs_game: true,
+            lockstep: false,
+            range_args: vec![],
+            physical: false,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                Box::new(|t, _| {
+                    let mut b = Body::rest();
+                    // Ahead, then a slow look left and right, up and down.
+                    let k = ((t - 2.0).max(0.0) * 0.6) as f32;
+                    b.head_rot = Quat::from_rotation_y(0.6 * k.sin()) * Quat::from_rotation_x(0.25 * (k * 0.7).sin());
+                    b
+                })
+            },
+            checks: vec![check(11.9, "the game's picture reached the headset", |c| {
+                ensure(c.stats.game_frames > 30, || format!("{} game frames of {}", c.stats.game_frames, c.frames_run))
+            })],
+            captures: vec![(1.0, "live_01"), (3.0, "live_03"), (5.0, "live_05"), (7.0, "live_07"), (9.0, "live_09"), (11.5, "live_11")],
+        },
+        Scenario {
+            name: "metro_boot",
+            about: "Metro, attached (--attach) as it starts: tap A through its intro and menus into the game, capturing the headset every 5 s",
+            duration: 170.0,
+            needs_game: true,
+            lockstep: false,
+            range_args: vec![],
+            physical: false,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                Box::new(|t, _| {
+                    let mut b = Body::rest();
+                    // A tap every 6 s for the first two minutes (the splash, "press any key", the
+                    // main menu's first item, the loading screen's "press to continue").
+                    if t < 120.0 && (t % 6.0) < 0.2 {
+                        b.hands[1].buttons |= rustvr_protocol::CTRL_A;
+                    }
+                    let k = ((t - 130.0).max(0.0) * 0.6) as f32;
+                    b.head_rot = Quat::from_rotation_y(0.6 * k.sin());
+                    b
+                })
+            },
+            checks: vec![check(169.0, "the game's picture reached the headset", |c| {
+                ensure(c.stats.game_frames > 100, || format!("{} game frames", c.stats.game_frames))
+            })],
+            captures: (0..34).map(|i| (i as f64 * 5.0, &*Box::leak(format!("boot_{:03}", i * 5).into_boxed_str()))).collect(),
+        },
+        Scenario {
             name: "void",
             about: "no game: the runtime shows its own room and settings menu",
             duration: 1.0,
@@ -770,6 +822,9 @@ pub struct RunOptions {
     pub captures: PathBuf,
     /// Start the test range for scenarios that need a game.
     pub launch_range: bool,
+    /// Or play against a game that's already running: its adapter connects to this mapping (the
+    /// one the real runtime uses), and the captures show what the headset would.
+    pub attach: Option<String>,
     pub range_exe: Option<PathBuf>,
     pub eye_size: (u32, u32),
     pub warmup_timeout: std::time::Duration,
@@ -790,7 +845,7 @@ impl Report {
 }
 
 pub fn run(gpu: &Gpu, sc: &Scenario, opts: &RunOptions) -> Result<Report> {
-    let mapping = format!("Local\\RustVR_scenario_{}_{}", sc.name, std::process::id());
+    let mapping = opts.attach.clone().unwrap_or_else(|| format!("Local\\RustVR_scenario_{}_{}", sc.name, std::process::id()));
     let start = Arc::new(AtomicU64::new(0));
     let world = Arc::new(Mutex::new(World::default()));
     let game = Arc::new(Mutex::new(None));
@@ -807,7 +862,7 @@ pub fn run(gpu: &Gpu, sc: &Scenario, opts: &RunOptions) -> Result<Report> {
     session.settings = SettingsStore::memory(settings);
 
     let mut child = None;
-    if sc.needs_game {
+    if sc.needs_game && opts.attach.is_none() {
         anyhow::ensure!(opts.launch_range, "scenario '{}' needs the test range (--launch-range)", sc.name);
         let exe = match &opts.range_exe {
             Some(p) => p.clone(),
@@ -823,11 +878,19 @@ pub fn run(gpu: &Gpu, sc: &Scenario, opts: &RunOptions) -> Result<Report> {
     }
 
     // Warm up: the range connects, gets its textures and renders a few frames.
-    let deadline = std::time::Instant::now() + opts.warmup_timeout;
+    // A game being started by hand takes a while to reach its first frame.
+    let deadline = std::time::Instant::now() + if opts.attach.is_some() { opts.warmup_timeout * 3 } else { opts.warmup_timeout };
     loop {
         session.step()?;
         *game.lock().unwrap() = session.game;
-        let ready = if sc.needs_game { session.adapter_connected() && session.stats.game_frames > 5 } else { session.stats.frames > 5 };
+        // An attached game may sit in its menus (flat frames) for a while: any frame from it counts.
+        let ready = if !sc.needs_game {
+            session.stats.frames > 5
+        } else if opts.attach.is_some() {
+            session.adapter_connected() && session.stats.slots > 5
+        } else {
+            session.adapter_connected() && session.stats.game_frames > 5
+        };
         if ready {
             break;
         }
@@ -860,6 +923,7 @@ pub fn run(gpu: &Gpu, sc: &Scenario, opts: &RunOptions) -> Result<Report> {
                 let sim = session.backend.as_sim().unwrap();
                 sim.capture(gpu, &path)?;
                 let (mean, lit) = brightness(gpu, sim)?;
+                tracing::info!("capture {name}: game flags {:#x}, {} game frames", session.game.map(|g| g.flags).unwrap_or(0), session.stats.game_frames);
                 captures.push(Capture { name: name.to_string(), path, mean, lit });
             }
         }

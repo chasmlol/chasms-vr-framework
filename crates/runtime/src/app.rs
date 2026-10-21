@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::backend::openxr::OpenXrBackend;
 use crate::session::{Options, Session};
 
+#[derive(Clone)]
 pub struct VrOptions {
     pub mapping: String,
     pub settings_dir: PathBuf,
@@ -15,8 +16,9 @@ pub struct VrOptions {
     pub range_args: Vec<String>,
     /// Where the range's own log goes.
     pub range_log: Option<PathBuf>,
-    /// Quit once the game that started us has gone (for this long): a game that launches the
-    /// runtime gets it out of the way when it closes (Steam counts it as part of the game).
+    /// Quit once the game that connected has exited (its process, not just its heartbeat: games go
+    /// quiet while loading). A game that launches the runtime gets it out of the way when it closes
+    /// (Steam counts it as part of the game). The duration is unused (kept for the option's shape).
     pub exit_with_game: Option<std::time::Duration>,
 }
 
@@ -37,22 +39,35 @@ pub fn run_vr(o: VrOptions) -> Result<()> {
         Some(exe) => Some(spawn_range(exe, &o.range_args, &o.mapping, o.range_log.as_deref(), false)?),
         None => None,
     };
-    let mut gone_since: Option<std::time::Instant> = None;
-    let mut seen = false;
+    // The game that connected, and whether it has exited (not just gone quiet: a game loading a
+    // level stops its heartbeat for a while).
+    let mut game_pid = 0u32;
     while session.step()? {
-        let Some(grace) = o.exit_with_game else { continue };
-        if session.adapter_connected() {
-            seen = true;
-            gone_since = None;
-        } else if seen {
-            let since = *gone_since.get_or_insert_with(std::time::Instant::now);
-            if since.elapsed() > grace {
-                tracing::info!("runtime: the game has gone: exiting");
-                break;
-            }
+        if o.exit_with_game.is_none() {
+            continue;
+        }
+        let pid = session.link.adapter_pid();
+        if session.adapter_connected() && pid != 0 {
+            game_pid = pid;
+        } else if game_pid != 0 && !process_alive(game_pid) {
+            tracing::info!("runtime: the game (pid {game_pid}) has exited: exiting");
+            break;
         }
     }
     Ok(())
+}
+
+/// Whether a process is still running.
+pub fn process_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(h, &mut code).is_ok();
+        let _ = CloseHandle(h);
+        ok && code == STILL_ACTIVE.0 as u32
+    }
 }
 
 /// Starts the test range with no window, connected to `mapping`.

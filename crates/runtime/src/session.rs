@@ -224,7 +224,7 @@ impl Session {
                 self.generation += 1;
                 match SharedTargets::create(&self.gpu, &self.opts.mapping, self.generation, spec, self.sec.as_ref()) {
                     Ok(t) => {
-                        tracing::info!("runtime: targets generation {} {}x{} flags {:#x}", self.generation, spec.eye_w, spec.eye_h, spec.flags);
+                        tracing::info!("runtime: targets generation {} {}x{} flags {:#x} format {} on {}", self.generation, spec.eye_w, spec.eye_h, spec.flags, spec.color_format, self.gpu.adapter_name());
                         self.link.write_targets(&t.info());
                         self.targets = Some(t);
                         self.shown = None;

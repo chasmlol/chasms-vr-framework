@@ -4,7 +4,9 @@
 //! start, a message box says why.
 //!
 //! Options: `--no-range` (just the runtime, waiting for a game adapter), `--exit-with-game` (quit
-//! a few seconds after the game that connected has gone: what game adapters start it with), and
+//! once the game that connected has exited: what game adapters start it with; `--game-pid <pid>`
+//! names that game before it connects, and then a missing headset is waited for quietly, with no
+//! message box, until the game exits), and
 //! anything after `--` is passed to the range (e.g. `-- --weapon vsv`).
 
 #![windows_subsystem = "windows"]
@@ -28,6 +30,7 @@ fn main() {
     let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
     let no_range = args[..split].iter().any(|a| a == "--no-range");
     let exit_with_game = args[..split].iter().any(|a| a == "--exit-with-game");
+    let game_pid: Option<u32> = args[..split].iter().position(|a| a == "--game-pid").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok());
     let range_args = args.get(split + 1..).map(|a| a.to_vec()).unwrap_or_default();
     let range = std::env::current_exe().ok().map(|p| p.with_file_name("rustvr-range.exe"));
     let opts = VrOptions {
@@ -39,6 +42,29 @@ fn main() {
         exit_with_game: exit_with_game.then(|| std::time::Duration::from_secs(5)),
     };
     tracing::info!("rustvr-play: starting");
+    // Started by a game: nobody may be at the desktop, so wait for the headset instead of saying
+    // it's missing, for as long as the game runs.
+    if let Some(pid) = game_pid {
+        let mut said = false;
+        loop {
+            match run_vr(opts.clone()) {
+                Ok(()) => break,
+                Err(e) => {
+                    if !rustvr_runtime::app::process_alive(pid) {
+                        tracing::info!("rustvr-play: the game (pid {pid}) has exited");
+                        break;
+                    }
+                    if !said {
+                        tracing::warn!("rustvr-play: {e:#}; trying again every few seconds while the game runs");
+                        said = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                }
+            }
+        }
+        tracing::info!("rustvr-play: finished");
+        return;
+    }
     if let Err(e) = run_vr(opts) {
         tracing::error!("rustvr-play: {e:#}");
         let text = format!("RustVR couldn't start:\n\n{e:#}\n\nLog: {}", log_path.display());

@@ -112,7 +112,7 @@ impl Gpu {
             let Ok(adapter) = dxgi.GetAdapter() else { return String::new() };
             let Ok(desc) = adapter.GetDesc() else { return String::new() };
             let n = desc.Description.iter().position(|&c| c == 0).unwrap_or(desc.Description.len());
-            String::from_utf16_lossy(&desc.Description[..n])
+            format!("{} (LUID {:x}:{:x})", String::from_utf16_lossy(&desc.Description[..n]), desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart)
         }
     }
 

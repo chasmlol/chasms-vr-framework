@@ -20,6 +20,8 @@ struct Args {
     sim: Option<String>,
     list: bool,
     launch_range: bool,
+    /// Scenarios: connect to a running game's adapter instead of starting the test range.
+    attach: bool,
     mapping: Option<String>,
     settings: Option<PathBuf>,
     captures: Option<PathBuf>,
@@ -28,7 +30,7 @@ struct Args {
 }
 
 fn parse() -> Result<Args> {
-    let mut a = Args { sim: None, list: false, launch_range: false, mapping: None, settings: None, captures: None, size: (640, 704), range: None };
+    let mut a = Args { sim: None, list: false, launch_range: false, attach: false, mapping: None, settings: None, captures: None, size: (640, 704), range: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = || it.next().with_context(|| format!("{arg} needs a value"));
@@ -36,6 +38,7 @@ fn parse() -> Result<Args> {
             "--sim" => a.sim = Some(value()?),
             "--list" => a.list = true,
             "--launch-range" => a.launch_range = true,
+            "--attach" => a.attach = true,
             "--mapping" => a.mapping = Some(value()?),
             "--settings" => a.settings = Some(value()?.into()),
             "--captures" => a.captures = Some(value()?.into()),
@@ -77,6 +80,7 @@ fn main() -> Result<()> {
         let opts = RunOptions {
             captures: args.captures.clone().unwrap_or_else(|| root.join("captures")),
             launch_range: args.launch_range,
+            attach: args.attach.then(|| args.mapping.clone().unwrap_or_else(|| rustvr_protocol::DEFAULT_MAPPING.to_owned())),
             range_exe: args.range.clone(),
             eye_size: args.size,
             warmup_timeout: std::time::Duration::from_secs(90),

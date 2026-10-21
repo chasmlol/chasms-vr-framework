@@ -5,11 +5,32 @@ use anyhow::{Context, Result, bail};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
-use windows::Win32::Graphics::Dxgi::{DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIKeyedMutex, IDXGIResource1};
+use windows::Win32::Graphics::Dxgi::{DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIKeyedMutex, IDXGIResource, IDXGIResource1};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::core::{HSTRING, Interface};
 
 use crate::Gpu;
+
+/// A device of our own for opening shared textures by name on a game's device's behalf (see
+/// [`Texture::open_shared`]); made the first time it's needed.
+static HELPER: std::sync::Mutex<Option<Gpu>> = std::sync::Mutex::new(None);
+
+/// Opens `name` on the helper device, makes an unnamed NT handle to it and opens that on `gpu`.
+unsafe fn open_through_helper(gpu: &Gpu, name: &str, access: u32) -> Result<ID3D11Texture2D> {
+    let mut helper = HELPER.lock().unwrap();
+    if helper.is_none() {
+        *helper = Some(Gpu::new().context("helper device")?);
+    }
+    let h = helper.as_ref().unwrap();
+    unsafe {
+        let theirs: ID3D11Texture2D = h.device1.OpenSharedResourceByName(&HSTRING::from(name), access).context("by name on a helper device")?;
+        let res: IDXGIResource1 = theirs.cast()?;
+        let handle = res.CreateSharedHandle(None, access, None).context("an unnamed handle")?;
+        let opened = gpu.device1.OpenSharedResource1::<ID3D11Texture2D>(handle);
+        let _ = CloseHandle(handle);
+        opened.context("the unnamed handle on the game's device")
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct TexDesc {
@@ -74,13 +95,44 @@ impl Texture {
         Ok(t)
     }
 
+    /// Creates a texture another device in this process can open with [`Texture::open_local`]: a
+    /// legacy shared handle with a keyed mutex, which devices that can't open NT-handle textures
+    /// (some games') still can. Returns the texture and the handle (owned by the texture).
+    pub fn new_shared_local(gpu: &Gpu, desc: &TexDesc) -> Result<(Texture, HANDLE)> {
+        let mut t = Texture::create(gpu, desc, D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX, None)?;
+        unsafe {
+            let res: IDXGIResource = t.tex.cast()?;
+            let handle = res.GetSharedHandle().context("legacy shared handle")?;
+            t.mutex = Some(t.tex.cast()?);
+            Ok((t, handle))
+        }
+    }
+
+    /// Opens a texture from [`Texture::new_shared_local`] on another device (no views).
+    pub fn open_local(gpu: &Gpu, handle: HANDLE) -> Result<Texture> {
+        unsafe {
+            let mut out: Option<ID3D11Texture2D> = None;
+            gpu.device.OpenSharedResource(handle, &mut out).context("opening a legacy shared texture")?;
+            let tex = out.context("no texture")?;
+            let mut d = D3D11_TEXTURE2D_DESC::default();
+            tex.GetDesc(&mut d);
+            let mutex = tex.cast().ok();
+            Ok(Texture { tex, width: d.Width, height: d.Height, format: d.Format, rtv: None, srv: None, dsv: None, mutex, shared_handle: None })
+        }
+    }
+
     /// Opens a texture shared by another process (or device) under `name`, with the given views.
+    ///
+    /// Some games' devices can't look a shared texture up by name (Metro 2033 Redux's gets "the
+    /// parameter is incorrect" for names any other device in the process finds). Then a helper
+    /// device of our own opens it by name and hands the game's device an unnamed handle to it.
     pub fn open_shared(gpu: &Gpu, name: &str, rtv: Option<DXGI_FORMAT>, srv: Option<DXGI_FORMAT>) -> Result<Texture> {
         unsafe {
-            let tex: ID3D11Texture2D = gpu
-                .device1
-                .OpenSharedResourceByName(&HSTRING::from(name), (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0)
-                .with_context(|| format!("opening shared texture {name}"))?;
+            let access = (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0;
+            let tex: ID3D11Texture2D = match gpu.device1.OpenSharedResourceByName(&HSTRING::from(name), access) {
+                Ok(t) => t,
+                Err(by_name) => open_through_helper(gpu, name, access).with_context(|| format!("opening shared texture {name} ({by_name})"))?,
+            };
             let mut d = D3D11_TEXTURE2D_DESC::default();
             tex.GetDesc(&mut d);
             let mut t = Texture {
