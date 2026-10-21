@@ -227,6 +227,17 @@ fn model_meshes(m: &asset::Model) -> Vec<MeshData> {
         .collect()
 }
 
+/// The sound set a throwable uses in Metro's sound pack (`metro-assets`' `sound_pack`): Metro's
+/// its own (its key), the built-in knife Metro's throwing knife's, and the built-in frag the
+/// pack's pin grenade (`grenade`: Metro has none, so its pin and lever stay the runtime's own).
+pub fn sound_set(t: &Throwable) -> &str {
+    match t.key.as_str() {
+        "builtin_frag" => "grenade",
+        "builtin_knife" => "throw_knife",
+        key => key,
+    }
+}
+
 /// Everything the range throws: the built-in ones, then Metro's.
 pub fn all(root: &std::path::Path) -> Vec<Throwable> {
     let mut v = vec![builtin_frag(), builtin_knife()];
@@ -363,6 +374,14 @@ mod tests {
         }
         let ids: Vec<u32> = placed.iter().map(|(_, d)| d.id).collect();
         assert!(ids.windows(2).all(|w| w[0] < w[1]), "unique ids");
+    }
+
+    #[test]
+    fn throwables_sound_like_metros() {
+        assert_eq!((sound_set(&builtin_frag()), sound_set(&builtin_knife())), ("grenade", "throw_knife"));
+        let mut t = builtin_knife();
+        t.key = "throw_dynamite".into();
+        assert_eq!(sound_set(&t), "throw_dynamite", "Metro's are their own");
     }
 
     #[test]

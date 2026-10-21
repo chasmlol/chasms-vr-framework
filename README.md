@@ -75,7 +75,8 @@ target\debug\metro-extract
 This reads your install and writes into `local_assets/`, which is git-ignored. Never commit or share
 those files: they're the game's. It includes a sound pack (`local_assets/metro2033/sounds`): the range
 hands it to the runtime, which then plays Metro's own sounds (each gun's shots and their echo,
-its reload, the casings landing, grabs and holsters) instead of its synthesised ones.
+its reload, the casings landing, grabs and holsters, the bombs lit, thrown and going off, the
+throwing knife's flight and hit) instead of its synthesised ones.
 `metro-extract --sounds` writes just the sound pack.
 
 ## Running with a headset
