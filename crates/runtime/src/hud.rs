@@ -104,7 +104,10 @@ impl HudPlacer {
             (Some((ly, lp)), false) => (ly.angle, lp.angle),
         };
         // The flat screen, as the game drew it (the centre and any piece without a place of its own).
-        let screen = Panel::facing(head_pos + Panel::dir(ay, ap) * u.hud_distance, ay, ap, u.hud_size, aspect);
+        // Sizes are for a 16:9 layer and kept by height: a game's UI scales with its screen's
+        // height, so a narrower layer (a game drawing at an eye's shape) keeps its text's size.
+        let by_height = (aspect / (16.0 / 9.0)).min(1.0);
+        let screen = Panel::facing(head_pos + Panel::dir(ay, ap) * u.hud_distance, ay, ap, u.hud_size * by_height, aspect);
         let full = [0.0, 0.0, 1.0, 1.0];
         let Some(layout) = layout.filter(|l| l.count > 0 && u.split_hud) else {
             return vec![HudPiece { panel: screen, uv: full, opacity: 1.0, role: 0 }];
@@ -115,7 +118,7 @@ impl HudPlacer {
         }
         // The caption strip: the whole layer would be `caption_width_deg` wide at its distance.
         let cd = u.caption_distance;
-        let strip_full = 2.0 * cd * (u.caption_width_deg.to_radians() * 0.5).tan();
+        let strip_full = 2.0 * cd * (u.caption_width_deg.to_radians() * 0.5).tan() * by_height;
         let strip_max = 2.0 * cd * (u.caption_max_deg.to_radians() * 0.5).tan();
         for e in layout.entries() {
             let scale = if e.scale > 0.0 { e.scale } else { 1.0 };
