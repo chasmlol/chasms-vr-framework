@@ -79,8 +79,14 @@ impl WeaponState {
             w.chambers = vec![Chamber::Live; d.capacity.clamp(1, 16) as usize];
             w.chambered = false;
         }
+        // A revolver's chambers are its cylinder's, the speed loader's rounds: the one under the
+        // hammer is chambered as the loader goes in, not as well as them.
+        if d.action == ACTION_SWING && d.weapon_flags & WPN_LOADS_CHAMBERS == 0 {
+            w.chambered = false;
+        }
         match d.action {
-            ACTION_BREAK | ACTION_SWING => w.hinge = Some(Hinge::shut()),
+            ACTION_BREAK => w.hinge = Some(Hinge::shut()),
+            ACTION_SWING => w.hinge = Some(Hinge::swing_out()),
             ACTION_BOLT | ACTION_PUMP => w.cycle = Some(Cycle::default()),
             _ => {}
         }

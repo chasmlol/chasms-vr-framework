@@ -204,6 +204,13 @@ fn chamber_at(gun: &ObjSnap, k: usize) -> (Vec3, Vec3) {
     (gun.at(hinge + turn * (mouth - hinge)), (gun.rot * turn * Vec3::Z).normalize())
 }
 
+/// A swung-out cylinder's well (where its speed loader's top goes, tracking space) and the turn
+/// it's swung out by (tracking space rotation of the gun's frame).
+fn cylinder_well(gun: &ObjSnap) -> (Vec3, Quat) {
+    let turn = Quat::from_rotation_z(gun.action_angle * gun.slide);
+    (gun.at(gun.handle + turn * (gun.mag_well - gun.handle)), (gun.rot * turn).normalize())
+}
+
 /// The hand holding a round from the pouch with its base at `base`, pointing along `dir`.
 fn round_in_hand(base: Vec3, dir: Vec3) -> (Vec3, Quat) {
     let rot = (look_rot(dir) * crate::rig::held_round_rot().inverse()).normalize();
@@ -1170,6 +1177,77 @@ pub fn all() -> Vec<Scenario> {
                 }),
             ],
             captures: vec![(2.75, "pump_home"), (3.05, "pump_back"), (4.95, "pumped"), (5.52, "air_shot")],
+        },
+        Scenario {
+            name: "cylinder_reload",
+            about: "physical: Metro's revolver: six shots and a click, B swings the cylinder out, A drops the cases, a speed loader from the pouch goes into the swung-out cylinder, a roll of the wrist swings it home, and it fires",
+            duration: 8.2,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec!["--table", "wpn_revolver"],
+            physical: true,
+            start: Body::rest,
+            settings: |s| s.body.visibility = crate::settings::BodyVisibility::Hands,
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(gun) = table_gun(objs) else { return b };
+                    let aim = aim_gun(&gun, Body::rest().eye(1), TARGET_AHEAD, 0.4);
+                    let aim_rot = gun_rot_in(&gun, aim.1);
+                    // Loading: low in front, the muzzle 35 degrees down, the swung-out cylinder's
+                    // back towards you.
+                    let load = (Vec3::new(0.15, 1.25, 0.4), hand_rot_for(&gun, pitched(aim_rot, 35.0)));
+                    // The roll that swings it home: the top to the right, 35 degrees, and back.
+                    let roll = hand_rot_for(&gun, (aim_rot * Quat::from_rotation_z(-35f32.to_radians())).normalize());
+                    let (p, r) = take_rifle(t, &gun);
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0), (4.6, aim.0), (5.0, load.0), (6.8, load.0), (7.1, aim.0)]) };
+                    b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1), (4.6, aim.1), (5.0, load.1), (6.8, load.1), (7.1, aim.1), (7.2, aim.1), (7.245, roll), (7.35, aim.1)]) };
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    b.hands[1].trigger = on(t, &[(1.8, 1.86), (2.1, 2.16), (2.4, 2.46), (2.7, 2.76), (3.0, 3.06), (3.3, 3.36), (3.6, 3.66), (7.7, 7.76)]);
+                    b.hands[1].buttons = if between(t, 3.9, 4.0) { CTRL_B } else if between(t, 4.4, 4.5) { CTRL_A } else { 0 };
+                    // The left hand: a speed loader from the pouch into the swung-out cylinder, from
+                    // behind along its axis, upright in the cylinder's frame.
+                    let now = live(see, gun.id).unwrap_or(gun);
+                    let (well, frame) = cylinder_well(&now);
+                    let rot = (frame * crate::rig::held_mag_rot().inverse()).normalize();
+                    let at = |back: f32| well - rot * crate::rig::HELD_MAG_TOP - frame * Vec3::Z * back;
+                    let rest = Body::rest().hands[0];
+                    let pouch = Vec3::new(-0.27, 1.56, -0.05);
+                    b.hands[0].pos = keys(t, &[(4.6, rest.pos), (5.1, pouch), (5.3, pouch), (6.0, at(0.15)), (6.1, at(0.15)), (6.45, at(-0.01)), (6.6, at(-0.01)), (7.0, rest.pos)]);
+                    b.hands[0].rot = match () {
+                        _ if t < 5.3 => Quat::IDENTITY,
+                        _ if t < 6.0 => Quat::IDENTITY.slerp(rot, ramp(t, 5.3, 6.0)),
+                        _ if t < 6.6 => rot,
+                        _ => rot.slerp(Quat::IDENTITY, ramp(t, 6.6, 7.0)),
+                    };
+                    b.hands[0].squeeze = on(t, &[(5.2, 6.6)]);
+                    let look = look_rot(well - Body::rest().head_pos);
+                    b.head_rot = qkeys(t, &[(0.0, Quat::from_rotation_x(0.5)), (1.2, Quat::IDENTITY), (3.8, Quat::IDENTITY), (4.1, look), (6.8, look), (7.1, Quat::IDENTITY)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.0, "the revolver is in the right hand", |c| {
+                    let g = held_gun(c).ok_or("no gun in hand (run metro-extract?)")?;
+                    ensure(g.action == ACTION_SWING && g.rounds == 5 && g.chambered == 1, || format!("action {} rounds {} chambered {:#x}", g.action, g.rounds, g.chambered))
+                }),
+                check(3.8, "six shots, then a click", |c| ensure(c.rig.shots == 6 && c.rig.dry_fires >= 1 && c.stat(rs::HITS) >= 4, || format!("shots {} dry {} hits {}", c.rig.shots, c.rig.dry_fires, c.stat(rs::HITS)))),
+                check(4.35, "B swung the cylinder out, the loader with it", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(g.flags & OS_ACTION_OPEN != 0 && g.slide > 0.9 && c.rig.opens == 1, || format!("open {} slide {:.2}", g.flags & OS_ACTION_OPEN != 0, g.slide))
+                }),
+                check(4.7, "A dropped the cases out", |c| ensure(c.rig.ejects == 1, || format!("ejects {}", c.rig.ejects))),
+                check(6.7, "a fresh speed loader went into the swung-out cylinder", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.seats == 1 && g.rounds == 5 && g.chambered == 1, || format!("seats {} rounds {} chambered {:#x}", c.rig.seats, g.rounds, g.chambered))
+                }),
+                check(7.6, "a roll of the wrist swung it home", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.closes == 1 && g.flags & OS_ACTION_OPEN == 0, || format!("closes {} open {}", c.rig.closes, g.flags & OS_ACTION_OPEN != 0))
+                }),
+                check(8.1, "it fires from the fresh loader", |c| ensure(c.rig.shots == 7, || format!("shots {}", c.rig.shots))),
+            ],
+            captures: vec![(1.82, "rev_fire"), (4.35, "rev_open"), (4.75, "rev_cases_out"), (6.3, "rev_loading"), (6.75, "rev_loaded"), (7.5, "rev_shut")],
         },
     ]
 }

@@ -33,8 +33,11 @@ pub const FLICK_CLOSE: f32 = 5.0;
 pub const FLICK_CLOSE_SPEED: f32 = 12.0;
 /// The swing loses this much of its speed per second (the hinge's friction).
 const HINGE_DAMPING: f32 = 4.0;
-/// The push open as the latch lets go (the hinge's spring), rad/s.
+/// The push open as the latch lets go (the hinge's spring), rad/s...
 const UNLATCH_KICK: f32 = 1.5;
+/// ...and a swing-out's, harder: a cylinder (or a barrel) on its pin sits balanced over it, so it's
+/// pushed out past that (a revolver's by the thumb), and its weight takes it from there.
+pub const SWING_OUT_KICK: f32 = 6.0;
 /// Open this far (or 80% of the way, if the action opens less), the spent cases fly out.
 pub const EJECT_ANGLE: f32 = 75.0 * std::f32::consts::PI / 180.0;
 /// It latches when it comes back within this of shut (radians: the catch takes it from there)
@@ -63,6 +66,8 @@ pub struct Hinge {
     /// How long it's been unlatched without opening, and how long latched.
     shut_for: f32,
     latched_for: f32,
+    /// How hard the latch going pushes them open (rad/s).
+    kick: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,7 +80,7 @@ pub enum HingeEvent {
 
 impl Hinge {
     pub fn shut() -> Hinge {
-        Hinge { angle: 0.0, vel: 0.0, latched: true, opened: false, ejected: false, flung: false, shut_for: 0.0, latched_for: FLICK_REARM }
+        Hinge { angle: 0.0, vel: 0.0, latched: true, opened: false, ejected: false, flung: false, shut_for: 0.0, latched_for: FLICK_REARM, kick: UNLATCH_KICK }
     }
 
     /// How far open, 0 shut .. 1 fully (of `max`, the gun's `action_angle`).
@@ -83,7 +88,13 @@ impl Hinge {
         (self.angle / max.abs().max(1e-3)).clamp(0.0, 1.0)
     }
 
-    /// Lets the latch go (the lever, a flick, a hand pulling the barrels). False if it was open.
+    /// A swing-out's: pushed out harder as the latch goes (see [`SWING_OUT_KICK`]).
+    pub fn swing_out() -> Hinge {
+        Hinge { kick: SWING_OUT_KICK, ..Hinge::shut() }
+    }
+
+    /// Lets the latch go (the lever, a flick, a hand pulling the barrels), pushing them open. False
+    /// if it was open.
     pub fn unlatch(&mut self) -> bool {
         if !self.latched {
             return false;
@@ -93,7 +104,7 @@ impl Hinge {
         self.ejected = false;
         self.flung = false;
         self.shut_for = 0.0;
-        self.vel = self.vel.max(UNLATCH_KICK);
+        self.vel = self.vel.max(self.kick);
         true
     }
 
@@ -154,9 +165,8 @@ impl Hinge {
         // shut by its own weight as the lever went): the latch catches again a moment later.
         self.shut_for = if !self.opened && self.angle < OPENED { self.shut_for + dt } else { 0.0 };
         if (self.opened && self.angle <= LATCH) || (self.shut_for > RELATCH && hand.is_none()) {
-            let was_open = self.opened;
-            *self = Hinge::shut();
-            self.latched_for = 0.0;
+            let (was_open, kick) = (self.opened, self.kick);
+            *self = Hinge { kick, latched_for: 0.0, ..Hinge::shut() };
             if was_open {
                 events.push(HingeEvent::Latched);
             }
@@ -479,6 +489,28 @@ mod tests {
             h.step(DT, d.action_angle, gravity_pull(&d, h.angle, level()), 0.0, Some(a), &mut ev);
         }
         assert!(h.latched && ev == vec![HingeEvent::Latched], "{h:?} {ev:?}");
+    }
+
+    #[test]
+    fn a_cylinder_balanced_over_its_pin_is_pushed_out_and_hangs_open() {
+        // A revolver's: the cylinder 4 cm over its crane's pin and a touch right of it (so its
+        // weight holds it in), swinging out 105 degrees to the left.
+        let mut d = double();
+        d.action = ACTION_SWING;
+        d.action_angle = 105f32.to_radians();
+        d.handle = [-0.005, -0.04, 0.0];
+        d.muzzle = [0.0, 0.0, 0.2];
+        let mut h = Hinge::shut();
+        h.unlatch();
+        run(&mut h, &d, 60, level(), 0.0, None);
+        assert!(h.latched, "a break action's little push doesn't get it over: it catches again");
+        let mut h = Hinge::swing_out();
+        h.unlatch();
+        run(&mut h, &d, 60, level(), 0.0, None);
+        assert!(!h.latched && h.fraction(d.action_angle) > 0.99, "pushed out, it hangs open: {h:?}");
+        // Rolled the other way hard, it swings home and latches.
+        let ev = run(&mut h, &d, 30, level(), -(FLICK_CLOSE + 1.0), None);
+        assert!(h.latched && ev.contains(&HingeEvent::Latched));
     }
 
     #[test]

@@ -1355,6 +1355,139 @@ fn a_bolt_action_needs_its_bolt_worked_between_shots() {
     assert_eq!(s.rig.debug.shots, 2, "worked, it fires again");
 }
 
+const REVOLVER: u32 = 23;
+const LOADER: u32 = 123;
+const PUMP_GUN: u32 = 24;
+const PUMP_MAG: u32 = 124;
+
+/// A revolver whose cylinder swings out 105 degrees to the left on a crane under its front.
+fn revolver() -> ObjectDesc {
+    let mut d = obj(REVOLVER, OBJ_WEAPON, Vec3::new(-0.15, 0.87, 0.82), [0.015, 0.06, 0.13], 1.2);
+    d.spawn_pose = pose(Vec3::new(-0.15, 0.87, 0.82), Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    d.center = [0.0, 0.0, 0.1];
+    d.muzzle = [0.0, 0.05, 0.25];
+    d.sight = [0.0, 0.07, 0.0];
+    d.handle = [-0.005, 0.01, 0.1];
+    d.mag_well = [0.0, 0.04, 0.05];
+    d.action = ACTION_SWING;
+    d.action_angle = 105f32.to_radians();
+    d.weapon_flags = WPN_PISTOL;
+    d.ammo_type = 10;
+    d.capacity = 6;
+    d.fire_rate = 4.0;
+    d
+}
+
+/// Its speed loader: six rounds, its top at the cylinder's back.
+fn loader() -> ObjectDesc {
+    let mut d = obj(LOADER, OBJ_MAGAZINE, Vec3::ZERO, [0.02, 0.02, 0.02], 0.16);
+    d.flags |= OBJF_TEMPLATE;
+    d.center = [0.0, 0.04, 0.07];
+    d.mag_well = [0.0, 0.04, 0.05];
+    d.ammo_type = 10;
+    d.capacity = 6;
+    d.rounds = 6;
+    d
+}
+
+/// A pump-action shotgun: its forend under the barrel back 9 cm and forward after every shot.
+fn pump_gun() -> ObjectDesc {
+    let mut d = bolt_rifle();
+    d.id = PUMP_GUN;
+    d.handle = [0.0, -0.05, 0.35];
+    d.handle_travel = 0.09;
+    d.action = ACTION_PUMP;
+    d.action_angle = 0.0;
+    d.ammo_type = 11;
+    d
+}
+
+fn pump_mag() -> ObjectDesc {
+    let mut d = bolt_mag();
+    d.id = PUMP_MAG;
+    d.ammo_type = 11;
+    d
+}
+
+#[test]
+fn a_revolvers_cylinder_swings_out_drops_its_cases_takes_a_speed_loader_and_flicks_shut() {
+    let mut s = Sim::with(&[revolver(), loader()]);
+    s.take_gun(REVOLVER);
+    for _ in 0..7 {
+        s.fire_once();
+    }
+    assert_eq!(s.rig.debug.shots, 6, "six, then a click");
+    assert!(s.rig.debug.dry_fires >= 1);
+    // A with the cylinder shut swings it out (there's nothing to drop yet).
+    let mag = s.rig.mag_of(REVOLVER).expect("a speed loader in it");
+    s.tap(1, CTRL_A);
+    s.step(60);
+    let h = s.weapon(REVOLVER).hinge.unwrap();
+    assert!(!h.latched && h.angle.to_degrees() > 90.0, "swung out: {:.1}", h.angle.to_degrees());
+    assert_eq!(s.rig.mag_of(REVOLVER), Some(mag), "still in it");
+    assert!(s.cues.contains(&Cue::SwingOpen));
+    // The speed loader swings out with the cylinder.
+    let d = revolver();
+    let (gp, gq) = s.rig.object_world_pose(REVOLVER).unwrap();
+    let well = gp + gq * actions::on_barrels(&d, h.angle, v3(d.mag_well));
+    let top = s.pos(mag) + s.rot(mag) * v3(loader().mag_well);
+    assert!(top.distance(well) < 0.005, "the loader is in the swung-out cylinder: {top} vs {well}");
+    // A again: the cases drop out; the pouch hands a fresh loader, and it goes into the open cylinder.
+    s.tap(1, CTRL_A);
+    s.step(5);
+    assert_eq!(s.rig.mag_of(REVOLVER), None);
+    let fresh = s.from_the_pouch();
+    assert_ne!(fresh, mag);
+    let angle = s.weapon(REVOLVER).hinge.unwrap().angle;
+    let (gp, gq) = s.rig.object_world_pose(REVOLVER).unwrap();
+    let turn = actions::hinge_rot(&d, angle);
+    let rot = (gq * turn * held_mag_rot().inverse()).normalize();
+    s.set_rot(0, rot);
+    let well = gp + gq * actions::on_barrels(&d, angle, v3(d.mag_well));
+    s.move_hand(0, well - rot * HELD_MAG_TOP - gq * turn * Vec3::Z * 0.15, 30);
+    s.move_hand(0, well - rot * HELD_MAG_TOP, 15);
+    s.step(3);
+    assert_eq!(s.rig.mag_of(REVOLVER), Some(fresh), "seated in the swung-out cylinder");
+    s.grip(0, 0.0);
+    s.set_rot(0, Quat::IDENTITY);
+    s.move_hand(0, Vec3::new(-0.2, 1.1, 0.2), 15);
+    // A roll of the wrist (the top to the right) swings it home.
+    let base = q4(s.f.hands[1].grip.rot);
+    for k in (1..=4).chain((0..4).rev()) {
+        s.set_rot(1, Quat::from_rotation_z(-0.15 * k as f32) * base);
+        s.step(1);
+    }
+    s.step(30);
+    assert!(s.weapon(REVOLVER).hinge.unwrap().latched, "flicked shut");
+    assert!(s.cues.contains(&Cue::SwingClose));
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 7, "it fires from the fresh loader");
+}
+
+#[test]
+fn a_pump_action_needs_its_forend_worked_between_shots() {
+    let mut s = Sim::with(&[pump_gun(), pump_mag()]);
+    s.take_gun(PUMP_GUN);
+    s.fire_once();
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 1, "no second shot without the pump");
+    let d = pump_gun();
+    let (gp, gq) = s.rig.object_world_pose(PUMP_GUN).unwrap();
+    s.move_hand(0, gp + gq * v3(d.handle) + Vec3::new(0.0, -0.02, 0.0), 30);
+    s.grip(0, 1.0);
+    let (_, gq) = s.rig.object_world_pose(PUMP_GUN).unwrap();
+    s.move_hand(0, s.hand_pos(0) - gq * Vec3::Z * 0.095, 10);
+    s.move_hand(0, s.hand_pos(0) + gq * Vec3::Z * 0.095, 10);
+    s.grip(0, 0.0);
+    assert_eq!(s.rig.debug.cycles, 1);
+    for c in [Cue::PumpBack, Cue::PumpForward, Cue::CaseEject] {
+        assert!(s.cues.contains(&c), "{c:?}");
+    }
+    assert!(!s.cues.contains(&Cue::BoltUp), "a pump doesn't turn");
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 2, "pumped, it fires again");
+}
+
 #[test]
 fn an_air_rifle_needs_pumping_and_shots_spend_the_pressure() {
     let mut s = Sim::with(&[air_rifle(), air_mag()]);

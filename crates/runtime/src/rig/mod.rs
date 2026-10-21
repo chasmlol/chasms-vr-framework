@@ -1415,7 +1415,14 @@ impl Rig {
     }
 
     fn eject(&mut self, wid: u32, hand: usize) {
-        let Some(mag) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()).and_then(|w| w.mag.take()) else { return };
+        let swing = self.objects.get(&wid).is_some_and(|o| o.desc.action == ACTION_SWING);
+        let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) else { return };
+        // A revolver's chambered round is one of its cylinder's: it goes out with the loader.
+        let back_in = swing && std::mem::take(&mut w.chambered);
+        let Some(mag) = w.mag.take() else { return };
+        if back_in && let Some(m) = self.objects.get_mut(&mag) {
+            m.rounds = (m.rounds + 1).min(m.desc.capacity.max(m.rounds + 1));
+        }
         let (wp, wr) = self.obj_pose(wid).unwrap();
         let (wv, _) = self.physics.velocity(self.objects[&wid].body);
         self.debug.ejects += 1;
@@ -1763,7 +1770,6 @@ impl Rig {
         let mut events = Vec::new();
         let Some(w) = self.objects.get_mut(&id).and_then(|o| o.weapon.as_mut()) else { return };
         let Some(hinge) = &mut w.hinge else { return };
-        let was_latched = hinge.latched;
         hinge.step(dt, d.action_angle, pull, flick, carried, &mut events);
         w.slide = hinge.fraction(d.action_angle);
         for e in events {
@@ -1799,7 +1805,6 @@ impl Rig {
                 }
             }
         }
-        let _ = was_latched;
     }
 
     /// The other hand working a bolt or a pump (or an air gun's pump) for one frame: the handle goes
