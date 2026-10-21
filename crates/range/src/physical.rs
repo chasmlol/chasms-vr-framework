@@ -134,6 +134,52 @@ pub fn table_layout(weapons: &[&Weapon], order: &[usize]) -> Vec<(usize, Pose)> 
     out
 }
 
+/// How far apart the guns on the armory bench lie (their drawn footprints), and how far in from
+/// its edges.
+const ARMORY_GAP: f32 = 0.03;
+const ARMORY_MARGIN: f32 = 0.05;
+
+/// The guns' places on the armory bench behind you, left to right in `order` (indices into
+/// `weapons`): each on its side, barrel to the back wall, its butt a little in from the bench's
+/// near edge. (index, spawn pose).
+pub fn armory_layout(weapons: &[&Weapon], order: &[usize]) -> Vec<(usize, Pose)> {
+    let (min, max) = content::TABLE_ARMORY;
+    let barrel = -Vec3::Z;
+    let mut x = min.x + ARMORY_MARGIN;
+    let mut out = Vec::new();
+    for &i in order {
+        let w = weapons[i];
+        let rot = lying_rot(barrel, w.left_side_up);
+        let (lo, hi) = world_bounds(rot, drawn_bounds(w));
+        // The butt (the far end from the barrel) at the near edge.
+        let (pose, right) = lying_from(w, barrel, x, max.z - ARMORY_MARGIN - (hi.z - lo.z), max.y);
+        if right > max.x - ARMORY_MARGIN {
+            tracing::warn!("range: {} doesn't fit on the armory bench", w.key);
+        }
+        out.push((i, pose));
+        x = right + ARMORY_GAP;
+    }
+    out
+}
+
+/// Axis-aligned bounds of weapon-space bounds turned by `rot`.
+fn world_bounds(rot: Quat, (min, max): (Vec3, Vec3)) -> (Vec3, Vec3) {
+    let corners = (0..8).map(|k| rot * Vec3::new([min.x, max.x][k & 1], [min.y, max.y][(k >> 1) & 1], [min.z, max.z][k >> 2]));
+    bounds_of(corners).unwrap()
+}
+
+/// A gun lying on its side on a table top at height `top` with its barrel along `barrel`, the
+/// corner of its drawn footprint towards -X and -Z at (`x`, `z`). Returns the pose and the
+/// footprint's far edge along X.
+fn lying_from(w: &Weapon, barrel: Vec3, x: f32, z: f32, top: f32) -> (Pose, f32) {
+    let rot = lying_rot(barrel, w.left_side_up);
+    let (collider_lo, _) = world_bounds(rot, weapon_bounds(w));
+    let (drawn_lo, drawn_hi) = world_bounds(rot, drawn_bounds(w));
+    // The collider rests on the table; the drawn gun (magazine and all) sets the footprint.
+    let pos = Vec3::new(x - drawn_lo.x, top + 0.01 - collider_lo.y, z - drawn_lo.z);
+    (Pose { pos: pos.to_array(), valid: 1, rot: rot.to_array() }, pos.x + drawn_hi.x)
+}
+
 pub fn weapon_desc(i: usize, w: &Weapon, spawn: Pose, start_slot: u32) -> ObjectDesc {
     let (min, max) = weapon_bounds(w);
     let mut d = ObjectDesc::zeroed();
@@ -251,6 +297,34 @@ pub fn pose_desc(id: u32, side: usize, h: &GunHand) -> HandPoseDesc {
     p
 }
 
+/// The runtime's ammo types (`ObjectDesc::ammo_type`: guns and magazines with the same one fit
+/// together), by weapon: one per kind of magazine (`Weapon::magazine`), so guns that take the same
+/// magazine take each other's. Each says what it fires too: `caliber << 8 | magazine`, both
+/// numbered from 1 in the order they first appear.
+pub fn ammo_types(weapons: &[&Weapon]) -> Vec<u32> {
+    let mut calibers: Vec<&str> = Vec::new();
+    let mut mags: Vec<(&str, u32)> = Vec::new();
+    weapons
+        .iter()
+        .map(|w| {
+            if let Some((_, t)) = mags.iter().find(|(m, _)| *m == w.magazine) {
+                return *t;
+            }
+            let c = match calibers.iter().position(|c| *c == w.caliber) {
+                Some(c) => c,
+                None => {
+                    calibers.push(&w.caliber);
+                    calibers.len() - 1
+                }
+            } as u32
+                + 1;
+            let t = c << 8 | (mags.iter().filter(|(_, t)| t >> 8 == c).count() as u32 + 1);
+            mags.push((&w.magazine, t));
+            t
+        })
+        .collect()
+}
+
 /// Magazine space is the gun's own space: seated, a magazine sits exactly where the gun's model
 /// has it, so its part draws in place. Its collider is the magazine mesh's box.
 fn mag_desc(i: usize, w: &Weapon) -> ObjectDesc {
@@ -290,15 +364,22 @@ fn col_box(id: u32, min: Vec3, max: Vec3) -> ColBox {
 }
 
 /// Front-to-back order on the near table: the plain rifle nearest (the scenarios reach for it),
-/// then Metro's rigged guns, then the scoped rifle.
-fn table_rank(w: &Weapon) -> u32 {
+/// then Metro's Kalash and Bastard, then the scoped rifle. Every other gun goes on the armory
+/// bench (`None`).
+fn table_rank(w: &Weapon) -> Option<u32> {
     match w.key.as_str() {
-        "builtin_rifle" => 0,
-        "wpn_ak" => 1,
-        "wpn_ubludok" => 2,
-        "builtin_rifle_scoped" => 4,
-        _ => 3,
+        "builtin_rifle" => Some(0),
+        "wpn_ak" => Some(1),
+        "wpn_ubludok" => Some(2),
+        "builtin_rifle_scoped" => Some(4),
+        _ => None,
     }
+}
+
+/// The pistol that starts in the right hip holster: the range's own, else the first rigged one.
+fn hip_pistol(weapons: &[&Weapon]) -> Option<usize> {
+    let pistols = || (0..weapons.len()).filter(|&i| weapons[i].rigged() && weapons[i].pistol);
+    pistols().find(|&i| weapons[i].key == "builtin_pistol").or_else(|| pistols().next())
 }
 
 impl Armory {
@@ -314,22 +395,29 @@ impl Armory {
         let mut descs = Vec::new();
         let mut pose_descs = Vec::new();
         let long_top = content::TABLE_LONG.1.y;
-        let mut on_table: Vec<usize> = (0..weapons.len()).filter(|&i| weapons[i].rigged() && !weapons[i].pistol).collect();
+        let hip = hip_pistol(weapons);
+        let rigged = || (0..weapons.len()).filter(|&i| weapons[i].rigged() && Some(i) != hip);
+        let mut on_table: Vec<usize> = rigged().filter(|&i| table_rank(weapons[i]).is_some()).collect();
         on_table.sort_by_key(|&i| table_rank(weapons[i]));
-        let mut places: HashMap<usize, (Pose, u32)> = table_layout(weapons, &on_table).into_iter().map(|(i, p)| (i, (p, 0))).collect();
-        let mut hip_taken = false;
-        let mut spare_x = 1.3f32;
-        for (i, w) in weapons.iter().enumerate().filter(|(_, w)| w.rigged() && w.pistol) {
-            // The first pistol starts in the right hip holster; its spawn pose (and any other
-            // pistol's place) is on the right end of the long table.
-            let (pose, _) = lying(w, spare_x, content::TABLE_LONG.0.z + 0.2, long_top);
-            spare_x += 0.3;
-            places.insert(i, (pose, if hip_taken { 0 } else { SLOT_HIP_RIGHT + 1 }));
-            hip_taken = true;
+        // The armory bench, grouped by what they fire, the pistols last.
+        let mut on_bench: Vec<usize> = rigged().filter(|&i| table_rank(weapons[i]).is_none()).collect();
+        on_bench.sort_by(|&a, &b| {
+            let key = |i: usize| (weapons[i].pistol, weapons[i].caliber.clone(), weapons[i].key.clone());
+            key(a).cmp(&key(b))
+        });
+        let mut places: HashMap<usize, (Pose, u32)> = table_layout(weapons, &on_table).into_iter().chain(armory_layout(weapons, &on_bench)).map(|(i, p)| (i, (p, 0))).collect();
+        if let Some(i) = hip {
+            // The hip pistol starts in the right hip holster; its spawn pose is on the right end
+            // of the long table.
+            let (pose, _) = lying(weapons[i], 1.3, content::TABLE_LONG.0.z + 0.2, long_top);
+            places.insert(i, (pose, SLOT_HIP_RIGHT + 1));
         }
+        let ammo = ammo_types(weapons);
+        let mut templates = Vec::new();
         for (i, w) in weapons.iter().enumerate() {
             let Some(&(spawn, slot)) = places.get(&i) else { continue };
-            let d = weapon_desc(i, w, spawn, slot);
+            let mut d = weapon_desc(i, w, spawn, slot);
+            d.ammo_type = ammo[i];
             for (id, side) in [(d.grip_pose, HAND_RIGHT), (d.support_pose, HAND_LEFT)] {
                 if let (true, Some(h)) = (id != 0, &w.game_hands[side]) {
                     pose_descs.push(pose_desc(id, side, h));
@@ -337,9 +425,15 @@ impl Armory {
             }
             kick_list.extend(kick_descs(d.id, w));
             descs.push(d);
-            descs.push(mag_desc(i, w));
             kinds.insert(WEAPON_BASE + i as u32, Kind::Weapon(i));
-            kinds.insert(MAG_BASE + i as u32, Kind::Mag(i));
+            // One magazine template per kind of magazine, from the first gun laid out that takes it.
+            if !templates.contains(&ammo[i]) {
+                templates.push(ammo[i]);
+                let mut m = mag_desc(i, w);
+                m.ammo_type = ammo[i];
+                descs.push(m);
+                kinds.insert(MAG_BASE + i as u32, Kind::Mag(i));
+            }
         }
         let side_top = content::TABLE_SIDE.1.y;
         let props = [
@@ -600,19 +694,22 @@ mod tests {
         }
         if weapons.iter().any(|w| w.from_game) {
             assert!(keys.contains(&"wpn_ak") && keys.contains(&"wpn_ubludok"), "{keys:?}");
-            assert_eq!(laid.len(), 5, "{keys:?}");
         }
-        // Each laid-out gun has its own magazine template, and nothing else is registered.
-        let templates = a.table.descs[..a.table.count as usize].iter().filter(|d| d.flags & OBJF_TEMPLATE != 0).count();
-        assert_eq!(templates, laid.len());
+        // Each kind of magazine the laid-out guns take has one template, and nothing else is
+        // registered.
+        let templates: Vec<u32> = a.table.descs[..a.table.count as usize].iter().filter(|d| d.flags & OBJF_TEMPLATE != 0).map(|d| d.ammo_type).collect();
+        let mut kinds: Vec<u32> = weapon_descs(&a).iter().map(|d| d.ammo_type).collect();
+        kinds.sort();
+        kinds.dedup();
+        assert_eq!(templates.len(), kinds.len(), "one template per magazine: {templates:x?} for {kinds:x?}");
+        assert!(kinds.iter().all(|k| templates.contains(k)), "every gun's magazine has its template");
     }
 
     #[test]
-    fn the_near_table_holds_the_long_guns_apart() {
+    fn the_tables_hold_the_guns_apart() {
         let weapons = everything();
         let refs: Vec<&Weapon> = weapons.iter().collect();
         let a = Armory::new(&refs);
-        let (tmin, tmax) = content::TABLE_NEAR;
         let mut boxes = Vec::new();
         for d in weapon_descs(&a).iter().filter(|d| d.start_slot == 0) {
             let w = refs[(d.id - WEAPON_BASE) as usize];
@@ -624,6 +721,8 @@ mod tests {
             };
             let (lo, hi) = world(drawn_bounds(w));
             let (clo, _) = world(weapon_bounds(w));
+            // On the near table or the armory bench, whichever it's over.
+            let (tmin, tmax) = [content::TABLE_NEAR, content::TABLE_ARMORY].into_iter().find(|(tmin, tmax)| pos.z > tmin.z - 1.0 && pos.z < tmax.z + 1.0 && pos.x > tmin.x - 1.0 && pos.x < tmax.x + 1.0).unwrap_or_else(|| panic!("{}: on no table at {pos}", w.key));
             assert!((clo.y - tmax.y - 0.01).abs() < 1e-3, "{}: rests on the table ({})", w.key, clo.y);
             assert!(lo.z >= tmin.z && hi.z <= tmax.z, "{}: {lo}..{hi} off the table's depth", w.key);
             assert!(lo.x >= tmin.x - 0.03 && hi.x <= tmax.x + 0.03, "{}: {lo}..{hi} off the table's width", w.key);
@@ -637,9 +736,18 @@ mod tests {
                 assert!(apart, "{a} {alo}..{ahi} overlaps {b} {blo}..{bhi}");
             }
         }
-        // The scenarios reach for the plain rifle: it's the nearest gun on the table.
-        let nearest = boxes.iter().min_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap();
+        // The scenarios reach for the plain rifle: it's the nearest gun on the near table.
+        let (nmin, nmax) = content::TABLE_NEAR;
+        let nearest = boxes.iter().filter(|b| b.1.x >= nmin.x - 0.03 && b.2.x <= nmax.x + 0.03 && b.1.z >= nmin.z && b.2.z <= nmax.z).min_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap();
         assert_eq!(nearest.0, "builtin_rifle");
+        // Metro's other guns are on the bench, its Kalash (the scenarios' game rifle) on the near table.
+        if weapons.iter().any(|w| w.from_game) {
+            let on_near = |key: &str| boxes.iter().any(|b| b.0 == key && b.1.z >= nmin.z && b.2.z <= nmax.z && b.1.x >= nmin.x - 0.03);
+            assert!(on_near("wpn_ak"));
+            let (bmin, bmax) = content::TABLE_ARMORY;
+            let on_bench = boxes.iter().filter(|b| b.1.z >= bmin.z && b.2.z <= bmax.z).count();
+            assert_eq!(on_bench + 5, weapons.iter().filter(|w| w.rigged()).count(), "every other rigged gun is on the bench");
+        }
     }
 
     #[test]
@@ -654,7 +762,9 @@ mod tests {
                 "wpn_ak" => [0.65, 8.0, 14.0],
                 "wpn_ubludok" => [0.7, 7.5, 18.0],
                 "builtin_pistol" => [0.4, 14.0, 8.0],
-                _ => [0.6, 9.0, 12.0],
+                "builtin_rifle" | "builtin_rifle_scoped" => [0.6, 9.0, 12.0],
+                // (The other rigs' own, from content/rigs/.)
+                _ => w.recoil_feel,
             };
             assert_eq!([d.recoil_climb, d.recoil_return, d.recoil_angle], want, "{}", w.key);
             // Every rigged gun has Metro's hands when Metro's there (the built-in ones the Kalash's).
@@ -696,20 +806,28 @@ mod tests {
             let q = Quat::from_array(d.grip_rot);
             assert!((q.length() - 1.0).abs() < 1e-4, "{}: grip_rot {:?}", w.key, d.grip_rot);
             assert!((q * Vec3::Z).dot(w.grip_rot.unwrap() * Vec3::Z) > 0.9999);
+            assert_eq!([d.recoil_pitch, d.recoil_yaw, d.recoil_back], w.recoil, "{}", w.key);
             if w.pistol {
                 assert!((10.0..=14.0).contains(&d.recoil_pitch) && (0.025..=0.035).contains(&d.recoil_back), "{}", w.key);
+                assert!(d.flags & OBJF_TWO_HANDED == 0 && d.weapon_flags & WPN_PISTOL != 0, "{}", w.key);
             } else {
                 assert!(d.flags & OBJF_TWO_HANDED != 0);
                 assert!((Quat::from_array(d.support_rot).length() - 1.0).abs() < 1e-4, "{}: support_rot", w.key);
-                assert!((6.0..=8.0).contains(&d.recoil_pitch) && (1.5..=2.0).contains(&d.recoil_yaw), "{}", w.key);
-                assert!((0.02..=0.03).contains(&d.recoil_back), "{}", w.key);
+                assert!((4.0..=14.0).contains(&d.recoil_pitch) && (1.0..=4.0).contains(&d.recoil_yaw), "{}", w.key);
+                assert!((0.015..=0.06).contains(&d.recoil_back), "{}", w.key);
             }
-            assert!(d.handle_travel > 0.03 && d.weapon_flags & WPN_NEEDS_RACK != 0);
-            // The magazine template's box is the magazine, a small part of the gun.
-            let m = a.descs[&(MAG_BASE + d.id - WEAPON_BASE)];
+            // A gun with something to rack needs racking after a fresh magazine; one without
+            // (a revolver, a break action) chambers as the magazine goes in.
+            assert_eq!(d.weapon_flags & WPN_NEEDS_RACK != 0, w.handle.is_some(), "{}", w.key);
+            if w.handle.is_some() {
+                assert!(d.handle_travel >= 0.015, "{}: handle travel {}", w.key, d.handle_travel);
+            }
+            // The magazine template's box is the magazine (a box, a drum, a speed loader, a pair
+            // of shells), a small part of the gun.
+            let m = *a.descs.values().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type).unwrap_or_else(|| panic!("{}: no magazine", w.key));
             let (mh, gh) = (Vec3::from_array(m.half_extents), Vec3::from_array(d.half_extents));
-            assert!(mh.min_element() > 0.004 && mh.max_element() < 0.12 && mh.z < gh.z * 0.4, "{}: magazine box {mh}", w.key);
-            assert!(m.mass > 0.15 && m.mass < 0.8);
+            assert!(mh.min_element() > 0.004 && mh.max_element() < 0.2 && mh.z < gh.z * 0.4, "{}: magazine box {mh}", w.key);
+            assert!(m.mass > 0.03 && m.mass < 3.0, "{}: magazine {} kg", w.key, m.mass);
         }
     }
 }

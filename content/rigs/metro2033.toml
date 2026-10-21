@@ -1,0 +1,108 @@
+# How the player's hands hold Metro 2033 Redux's guns: points measured on each gun's own
+# first-person model (in its model space, as `local_assets/metro2033/models/<key>.rvm` has it and
+# `cargo run --release -p rustvr-asset --example rig_probe -- metro2033 <key> survey` prints it),
+# plus the facts the runtime needs. See docs/RIGGING.md for every field and how it's measured.
+#
+# The hands themselves are Metro's: the first-person arms the game poses for each gun
+# (`hands_<gun>` in the index; their bind pose is the hold) put the firing hand on the grip and
+# the support hand on the handguard. The measured hold below is the fallback without them.
+#
+# Rates of fire are the game's own (offset 392 of each gun's config in content/config.bin, in
+# rounds per minute: `cargo run --release -p metro-assets --example config_values -- --at 392 <gun>`),
+# except where a gun says otherwise. Calibers are the game's ammo classes (the bullet section and
+# cartridge case its config names); masses are real-world references for what each gun copies.
+
+game = "metro2033"
+
+# Kalash (AK-74). Measured from the model's own geometry (rig_probe cuts):
+# * sights: the rear leaf's notch (x 0.087..0.090, bottom y -0.0281) between shoulders topped at
+#   y -0.0257, z 0.478; the front post's tip at y -0.0227, z 0.831 (the line through them is
+#   tilted 0.49° up from the bore, so weapon +Z follows it, not the bore);
+# * pistol grip: 1.65 cm wide, 3.7 cm deep, from y -0.215 up to the receiver at -0.135, its
+#   cross-section centres raked 21.7° (z 0.2328 at y -0.19 to 0.2487 at y -0.15);
+# * trigger (bone `kurok`): blade x 0.087..0.091, y -0.133..-0.107, z 0.296..0.317;
+# * lower handguard: z 0.50..0.65, x 0.0725..0.1044, bottom y -0.105 (gas tube cover on top to
+#   -0.033); the barrel's axis at y -0.077 (`loc_fire_point`);
+# * magazine: bone `pul32` (its rounds `patron_*`, follower `pruz1`/`pruz2`), top at
+#   `loc_magazin_m` (0.0886, -0.098, 0.390);
+# * charging handle: bone `zatvor`'s rod x 0.104..0.130, y -0.071..-0.060, z 0.452..0.457.
+# Hands: Metro's own arms for this gun (`hands_ak`) hold it in their bind pose. As grip poses (the
+# avatar's canonical hand frame through `rustvr_ik`'s default `HandOffsets`, see
+# `metro_hand_grips` in crates/range/tests/rig.rs) the right fist's tube is raked 14° with the palm
+# centre on the grip, and the left hand cradles the handguard: palm up, thumb along the left side,
+# fingers up the right. The support hand is exactly that (`support_tube`, `support_palm`, its palm
+# centre at `foregrip`, 0.8 cm under the handguard). The firing hand's tube follows the grip's
+# measured 21.7° axis instead, turned -15° with its palm centre 1.7 cm up the grip and 1.3 cm
+# behind its axis, so the avatar's index finger (Metro's arms are drawn about 10% larger) rests its
+# pad on the trigger: 14° and 1.1 cm from Metro's own hand.
+# Fire rate 10.8/s is the real AK-74's 650 rpm (the game's config says 620).
+[[gun]]
+key = "wpn_ak"
+caliber = "5.45x39"
+magazine = "ak_30"
+rear_sight = [0.0885, -0.0257, 0.478]
+front_sight = [0.0885, -0.0227, 0.831]
+grip = [0.0885, -0.1444, 0.2369]
+grip_rake_deg = 21.7
+grip_twist_deg = -15.0
+trigger = [0.0886, -0.124, 0.311]
+grip_block = { centre = [0.0885, -0.175, 0.2387], half = [0.0083, 0.0172, 0.04] }
+foregrip = [0.0866, -0.1127, 0.5712]
+support_tube = [-0.705, 0.331, 0.627]
+support_palm = [0.391, 0.919, -0.045]
+mag_well = [0.0886, -0.098, 0.390]
+muzzle = [0.0886, -0.077, 0.856]
+handle = [0.124, -0.065, 0.4545]
+handle_travel = 0.10
+trigger_bone = "kurok"
+mag_bones = ["pul32"]
+bolt_bones = ["zatvor"]
+recoil = [7.0, 1.8, 0.025]
+recoil_feel = [0.65, 8.0, 14.0]
+rounds_per_second = 10.8
+mass = 3.3
+mag_mass = 0.55
+
+# Bastard (Ubludok): a home-made 5.45 carbine with its magazine sticking out of the left side.
+# * sights: rear notch x 0.1275..0.1318 (bottom y -0.0414) between shoulders topped at y -0.0365,
+#   z 0.398; front post x 0.1287..0.1305, tip y -0.0344, z 0.699 (0.40° up from the bore);
+# * pistol grip: x 0.1155..0.1372, y -0.20 up to -0.115, centres raked ~20° (z 0.3909 at y -0.18
+#   to 0.4053 at y -0.14);
+# * trigger (`bone_kurok`): x 0.1255..0.1299, y -0.134..-0.105, z 0.442..0.483;
+# * barrel shroud: z 0.60..0.74, x 0.1065..0.1511, y -0.118..-0.045, bore at y -0.068;
+# * magazine: `bone_magazin` (and its `bone_patron_*`) from x -0.039 (outer end) to its top at
+#   x 0.1426 inside the housing (`bone_korobka`), y -0.074..-0.046, z 0.525..0.561;
+# * charging handle: `bone_zatvor`'s rod x 0.156..0.169 on the right, y -0.077..-0.070,
+#   z 0.461..0.465.
+# Hands as for the AK: the support hand is Metro's own (`hands_ubludok`'s bind pose: cradling the
+# shroud's front just ahead of the magazine, palm centre 0.7 cm under it); the firing hand runs up
+# the measured grip axis, turned -15°, its palm centre 1.8 cm up the grip and 0.5 cm behind its
+# axis, so the index finger's pad rests on the trigger (23° and 1.3 cm from Metro's own hand,
+# which is turned the other way round the grip).
+# Recoil feel: a crude gun, it wanders more. Fire rate 10/s (the game's config says 720 rpm).
+[[gun]]
+key = "wpn_ubludok"
+caliber = "5.45x39"
+rear_sight = [0.1296, -0.0365, 0.398]
+front_sight = [0.1296, -0.0344, 0.699]
+grip = [0.1266, -0.1431, 0.3985]
+grip_rake_deg = 20.0
+grip_twist_deg = -15.0
+trigger = [0.1277, -0.122, 0.475]
+grip_block = { centre = [0.1266, -0.1575, 0.3982], half = [0.0109, 0.0274, 0.0425] }
+foregrip = [0.1344, -0.1249, 0.6402]
+support_tube = [-0.557, 0.514, 0.652]
+support_palm = [0.483, 0.839, -0.250]
+mag_well = [0.1426, -0.060, 0.543]
+muzzle = [0.1300, -0.068, 0.961]
+handle = [0.165, -0.0733, 0.4628]
+handle_travel = 0.07
+trigger_bone = "bone_kurok"
+mag_bones = ["bone_magazin"]
+bolt_bones = ["bone_zatvor"]
+recoil = [7.5, 2.0, 0.025]
+recoil_feel = [0.7, 7.5, 18.0]
+rounds_per_second = 10.0
+mass = 2.6
+mag_mass = 0.5
+left_side_up = true

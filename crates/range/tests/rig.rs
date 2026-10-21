@@ -484,6 +484,61 @@ fn table_layout_renders() {
     }
 }
 
+/// (For rigging, see docs/RIGGING.md) Every Metro gun as the game holds it: its model with
+/// Metro's own first-person arms for it, in the model's space, from the right, the left, above,
+/// below and behind, with the rig points marked (the rig's when it has one, else the extractor's
+/// guesses): red grip, yellow trigger, green line of sight, blue foregrip, magenta magazine well,
+/// white muzzle, cyan charging handle. `captures/rig/survey/<gun>_<view>.png`; `RIG_ONLY` picks guns.
+#[test]
+fn metro_guns_as_the_game_holds_them() {
+    if !has_metro() {
+        return;
+    }
+    let gpu = Gpu::new().unwrap();
+    let dir = out_dir().join("survey");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut renderer = Renderer::new(&gpu, rustvr_asset::default_root()).unwrap();
+    let mut cube = MeshData::default();
+    cube.add_box(Vec3::splat(-0.5), Vec3::splat(0.5), [255, 255, 255, 255]);
+    let cube = renderer.upload(&gpu, &cube).unwrap();
+    let only = std::env::var("RIG_ONLY").ok();
+    let (width, height) = SIZE;
+    let aspect = width as f32 / height as f32;
+    for w in content::metro_weapons(&rustvr_asset::default_root()).iter().filter(|w| only.as_ref().is_none_or(|k| k.split(',').any(|k| w.key.starts_with(k)))) {
+        let meshes: Vec<Mesh> = w.parts.iter().chain(&w.hands).map(|p| renderer.upload(&gpu, p).unwrap()).collect();
+        let Some((lo, hi)) = content::parts_bounds(&w.parts, &(0..w.parts.len()).collect::<Vec<_>>(), Mat4::IDENTITY) else { continue };
+        let centre = (lo + hi) * 0.5;
+        let size = (hi - lo).length().max(0.3);
+        let to_model = w.fix.inverse();
+        let marks: Vec<(Mat4, [f32; 4])> = markers(w).into_iter().map(|(m, tint)| (to_model * m, tint)).collect();
+        let d = size * 1.25;
+        let mut views = vec![
+            ("right".to_string(), look_at(centre + Vec3::X * d, centre, Vec3::Y), 0.45),
+            ("left".to_string(), look_at(centre - Vec3::X * d, centre, Vec3::Y), 0.45),
+            ("top".to_string(), look_at(centre + Vec3::Y * d, centre, Vec3::Z), 0.45),
+            ("under".to_string(), look_at(centre - Vec3::Y * d, centre, Vec3::Z), 0.45),
+            ("back".to_string(), look_at(centre - Vec3::Z * d, centre, Vec3::Y), 0.45),
+        ];
+        // The top of the gun along the line of sight, close up from the right in four tiles (rear
+        // to front), to see its sights side-on.
+        let to_model = |p: [f32; 3]| to_model.transform_point3(Vec3::from_array(p));
+        let (sight, muzzle) = (to_model(w.rig.sight), to_model(w.rig.muzzle));
+        let (z0, z1) = (to_model(w.rig.grip).z - 0.05, muzzle.z + 0.02);
+        for k in 0..4 {
+            let at = Vec3::new(sight.x, sight.y, z0 + (z1 - z0) * (k as f32 + 0.5) / 4.0);
+            views.push((format!("sights_{k}"), look_at(at + Vec3::X * 0.4, at, Vec3::Y), (z1 - z0) / 8.0 / 0.4 / aspect * 1.1));
+        }
+        for (name, (cam, rot), tan) in views {
+            let color = Texture::new(&gpu, &TexDesc::target(width, height, DXGI_FORMAT_R8G8B8A8_UNORM)).unwrap();
+            let vp = projection(&fov(tan, aspect), 0.02, 20.0) * view_matrix(cam, rot);
+            let mut draws: Vec<Draw> = meshes.iter().map(|m| Draw { mesh: m, model: Mat4::IDENTITY, tint: [1.0; 4], emissive: 0.0, two_sided: true }).collect();
+            draws.extend(marks.iter().map(|(m, tint)| Draw { mesh: &cube, model: *m, tint: *tint, emissive: 1.5, two_sided: false }));
+            renderer.render(&gpu, color.rtv.as_ref().unwrap(), None, width, height, vp, cam, rot * Vec3::Z, &draws).unwrap();
+            rustvr_gpu::save_png(&dir.join(format!("{}_{name}.png", w.key)), width, height, &color.read_rgba8(&gpu).unwrap()).unwrap();
+        }
+    }
+}
+
 /// Prints every laid-out gun's descriptor rig (weapon space), for the record.
 #[test]
 fn print_descriptors() {
@@ -494,7 +549,7 @@ fn print_descriptors() {
     let descs = &a.table.descs[..a.table.count as usize];
     for d in descs.iter().filter(|d| d.kind == OBJ_WEAPON) {
         let w = refs[(d.id - physical::WEAPON_BASE) as usize];
-        let m = descs.iter().find(|m| m.id == physical::MAG_BASE + d.id - physical::WEAPON_BASE).unwrap();
+        let m = descs.iter().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type).unwrap();
         let v = |a: [f32; 3]| format!("({:.4}, {:.4}, {:.4})", a[0], a[1], a[2]);
         let q = |a: [f32; 4]| format!("[{:.4}, {:.4}, {:.4}, {:.4}]", a[0], a[1], a[2], a[3]);
         eprintln!("{} ({}):", w.key, w.name);

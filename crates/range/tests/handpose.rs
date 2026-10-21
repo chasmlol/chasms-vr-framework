@@ -402,7 +402,7 @@ fn the_game_hands_hold_the_rigged_guns() {
     let only = std::env::var("POSE_ONLY").ok();
     let renders = std::env::var("POSE_NO_RENDERS").is_err();
     let descs: Vec<ObjectDesc> = armory.table.descs[..armory.table.count as usize].iter().filter(|d| d.kind == OBJ_WEAPON).copied().collect();
-    assert_eq!(descs.len(), 5, "the five rigged guns");
+    assert_eq!(descs.len(), weapons.iter().filter(|w| w.rigged()).count(), "every rigged gun");
     for d in &descs {
         let w = refs[(d.id - physical::WEAPON_BASE) as usize];
         assert!(d.grip_pose != 0, "{}: a firing-hand pose", w.key);
