@@ -365,9 +365,10 @@ impl Adapter {
     /// synthesised ones wherever the pack has them, and none where the game makes its own:
     ///
     /// ```ignore
-    /// let mut pack = SoundPack::new(&dir.to_string_lossy());   // absolute; holds sounds.toml
-    /// pack.flags = SND_GAME_SHOTS;                             // the game plays its own gunshots
-    /// pack.add_object(gun.id, "wpn_ak", 0);                    // the gun sounds like [sets.wpn_ak]
+    /// let dir = rustvr_adapter::local_sound_pack("metro2033");  // <local_assets>/metro2033/sounds
+    /// let mut pack = SoundPack::new(&dir.map(|d| d.to_string_lossy().into_owned()).unwrap_or_default());
+    /// pack.flags = SND_GAME_SHOTS;                               // the game plays its own gunshots
+    /// pack.add_object(gun.id, "wpn_ak", 0);                      // the gun sounds like [sets.wpn_ak]
     /// adapter.set_sound_pack(&pack);
     /// ```
     ///
@@ -430,6 +431,17 @@ impl Drop for Adapter {
     fn drop(&mut self) {
         self.release_back();
     }
+}
+
+/// The sound pack an extractor wrote for `game` (`<local_assets>/<game>/sounds`, e.g. what
+/// `metro-extract` writes for `metro2033`), if it's there: for [`Adapter::set_sound_pack`].
+/// `local_assets` is `RUSTVR_ASSETS`, or the one in the repository this was built from.
+pub fn local_sound_pack(game: &str) -> Option<std::path::PathBuf> {
+    let root = std::env::var_os("RUSTVR_ASSETS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("local_assets"));
+    let dir = root.join(game).join("sounds");
+    dir.join("sounds.toml").is_file().then_some(dir)
 }
 
 fn open_targets(gpu: &Gpu, mapping: &str, t: &Targets) -> anyhow::Result<Vec<SlotTextures>> {

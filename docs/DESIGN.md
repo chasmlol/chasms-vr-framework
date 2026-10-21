@@ -223,7 +223,8 @@ only the fallback, for events the pack doesn't have and until it has loaded.
   itself, so it sets neither and the runtime plays Metro's shots for it. The region is additive: an
   adapter that never writes it gets the runtime's own sounds.
 - **The runtime** loads the pack on a background thread when the path (or its `revision`) changes,
-  decoding and resampling everything to the mixer's rate, and unloads it when the game goes. The
+  decoding and resampling everything to the mixer's rate, and unloads it when the game goes (each new
+  connection starts with none, so one game's sounds never carry over to the next). The
   audio thread still never allocates, blocks or frees: a new pack arrives through a `try_lock`ed
   slot, the old one stays while its voices finish, and packs are freed on the game thread. Each
   cue then plays the object's set's event (its own, inherited, or the pack's defaults) or the
