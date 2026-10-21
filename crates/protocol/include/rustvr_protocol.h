@@ -318,6 +318,35 @@
  */
 #define RVR_HUDL_ADDITIVE (1 << 1)
 
+/**
+ * The [`SoundPack`] region.
+ */
+#define RVR_OFF_SOUNDS 4886528
+
+/**
+ * Longest pack folder path, in UTF-8 bytes (with its NUL).
+ */
+#define RVR_SOUND_PATH_BYTES 512
+
+/**
+ * Longest sound set name, in UTF-8 bytes (with its NUL).
+ */
+#define RVR_SOUND_SET_BYTES 32
+
+#define RVR_MAX_SOUND_OBJECTS RVR_MAX_OBJECTS
+
+/**
+ * The game plays the gunshots of the shots it fires (the shot, its tail and the casings): the
+ * runtime plays none, from the pack or its own.
+ */
+#define RVR_SND_GAME_SHOTS (1 << 0)
+
+/**
+ * The game plays its own reloading and handling sounds (magazine out and in, the bolt, a dry
+ * fire): the runtime plays none of those.
+ */
+#define RVR_SND_GAME_HANDLING (1 << 1)
+
 #define RVR_OFF_BODY 65536
 
 #define RVR_OFF_OBJECTS 69632

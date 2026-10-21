@@ -33,7 +33,7 @@ pub fn run_vr(o: VrOptions) -> Result<()> {
     let mut session = Session::new(
         gpu,
         Box::new(backend),
-        Options { mapping: o.mapping.clone(), settings_dir: Some(o.settings_dir.clone()), lockstep: false, lockstep_timeout_ms: 0, audio: true },
+        Options { mapping: o.mapping.clone(), settings_dir: Some(o.settings_dir.clone()), lockstep: false, lockstep_timeout_ms: 0, audio: true, offline_audio: false },
     )?;
     let _range = match &o.range {
         Some(exe) => Some(spawn_range(exe, &o.range_args, &o.mapping, o.range_log.as_deref(), false)?),

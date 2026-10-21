@@ -1,6 +1,9 @@
 //! The feedback bus: every interaction event emits one cue that becomes a haptic pulse and a sound
 //! on the same frame ("one event, one frame", Meta and Valve). Release mirrors grab at lower
 //! amplitude; hover and zone ticks are short so they don't drown out the grab.
+//!
+//! A cue names the object it's about (the gun for its magazine, bolt and shots), so the sound
+//! can be that object's own: the game's, from its sound pack (see `session`).
 
 use glam::Vec3;
 
@@ -23,6 +26,8 @@ pub enum Cue {
     GloveCatch,
     Impact,
     ZoneTick,
+    /// A magazine taken from the ammo pouch (the gun it's for is the object).
+    Pouch,
     ShotPistol,
     ShotRifle,
     ShotShotgun,
@@ -34,6 +39,8 @@ pub struct Feedback {
     pub cue: Cue,
     /// Which hand vibrates (and where the sound comes from).
     pub hand: Option<usize>,
+    /// The object it happened to (the gun, for a magazine going in or out of it).
+    pub object: Option<u32>,
     /// Tracking-space position of the sound.
     pub pos: Vec3,
     /// 0..1: scales loudness and haptic strength (impact speed, ...).
@@ -67,7 +74,7 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
             }
             (0.01, 160.0, (0.1 + 0.6 * i).min(1.0))
         }
-        Cue::ZoneTick => (0.015, 160.0, 0.35),
+        Cue::ZoneTick | Cue::Pouch => (0.015, 160.0, 0.35),
         Cue::ShotPistol => (0.05, 200.0, 0.9),
         Cue::ShotRifle => (0.06, 180.0, 1.0),
         Cue::ShotShotgun => (0.09, 120.0, 1.0),

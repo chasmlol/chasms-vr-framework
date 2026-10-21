@@ -95,5 +95,6 @@ const _: () = {
     assert!(size_of::<HudLayout>() == 64 + 64 * MAX_HUD_ELEMENTS);
     assert!(OFF_HUD_LAYOUT.is_multiple_of(64));
     assert!(crate::OFF_KICKS + size_of::<crate::KickTable>() <= OFF_HUD_LAYOUT);
+    assert!(crate::OFF_SOUNDS + size_of::<crate::SoundPack>() <= OFF_HUD_LAYOUT);
     assert!(OFF_HUD_LAYOUT + size_of::<HudLayout>() <= crate::MAPPING_BYTES);
 };

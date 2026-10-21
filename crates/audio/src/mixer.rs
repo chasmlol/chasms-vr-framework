@@ -3,6 +3,10 @@
 //! It runs on the audio thread, so once built it never allocates, never blocks and never
 //! panics: commands arrive through a bounded lock-free queue, voices live in a fixed pool, and
 //! the scratch buffers are sized up front.
+//!
+//! A voice plays a variation of a synthesised [`Sound`] or a clip of a sound pack. A new pack
+//! arrives through `Shared::pending` (only ever `try_lock`ed); the one it replaces is kept until
+//! its last voice ends, and freed on the game thread (see `Shared::packs`), never here.
 
 use std::f32::consts::TAU;
 use std::sync::Arc;
@@ -11,10 +15,11 @@ use std::sync::mpsc::Receiver;
 
 use glam::Vec3;
 
+use crate::pack::Pack;
 use crate::sounds::{Bank, LEVEL_BLOCK, VARIATIONS, Variation};
 use crate::spatial::{self, Placement, Shelf};
 use crate::synth::Rng;
-use crate::{Command, Listener, MAX_VOICES, Shared, Sound};
+use crate::{Command, Event, Listener, MAX_VOICES, SetKey, Shared, Sound};
 
 /// Extra slots for voices fading out after being stolen or stopped, so a steal never cuts a
 /// sound dead and never has to wait for the fade before starting the new one.
@@ -104,8 +109,13 @@ impl Ear {
 #[derive(Clone, Copy)]
 struct Voice {
     playing: bool,
+    /// The pack the clip is from (its generation), or 0: the synthesised bank.
+    pack: u64,
+    /// The bank's sound, or the pack's clip.
     sound: usize,
     variation: usize,
+    /// Frames of silence before it starts (a delayed pack layer).
+    wait: usize,
     /// Next frame of the variation.
     at: usize,
     looping: Option<u64>,
@@ -136,8 +146,10 @@ struct Voice {
 impl Voice {
     const IDLE: Voice = Voice {
         playing: false,
+        pack: 0,
         sound: 0,
         variation: 0,
+        wait: 0,
         at: 0,
         looping: None,
         source: Vec3::ZERO,
@@ -200,6 +212,10 @@ impl Voice {
         let k = t.smooth;
         let sample = |layer: &[f32], i: usize| layer.get(i).copied().unwrap_or(0.0);
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            if self.wait > 0 {
+                self.wait -= 1;
+                continue;
+            }
             // A one-shot fades over its last moments, so it never ends on a cut even when it
             // is a loop sound played once.
             if self.looping.is_none() && self.at + t.release_frames >= v.len {
@@ -304,8 +320,27 @@ impl Limiter {
     }
 }
 
+/// The variation a voice plays: from the bank, the current pack or the one before it.
+fn clip<'a>(bank: &'a Bank, packs: [Option<&'a Pack>; 2], v: &Voice) -> Option<&'a Variation> {
+    if v.pack == 0 {
+        return bank.sounds.get(v.sound)?.get(v.variation);
+    }
+    packs.into_iter().flatten().find(|p| p.generation == v.pack)?.clips.get(v.sound)
+}
+
+/// What a new voice plays.
+#[derive(Clone, Copy)]
+enum Source {
+    Synth(Sound),
+    /// A pack's clip: the pack's generation, the clip, its gain and the frames it waits.
+    Clip { pack: u64, clip: usize, gain: f32, wait: usize },
+}
+
 pub(crate) struct Mixer {
     bank: Arc<Bank>,
+    /// The sound pack, and the one it replaced while voices still play from that.
+    pack: Option<Arc<Pack>>,
+    old: Option<Arc<Pack>>,
     tuning: Tuning,
     commands: Receiver<Command>,
     shared: Arc<Shared>,
@@ -326,8 +361,11 @@ pub(crate) struct Mixer {
 impl Mixer {
     pub fn new(bank: Arc<Bank>, commands: Receiver<Command>, shared: Arc<Shared>) -> Mixer {
         let rate = bank.rate as f32;
+        shared.rate.store(bank.rate, Ordering::Release);
         Mixer {
             bank,
+            pack: None,
+            old: None,
             tuning: Tuning::new(rate),
             commands,
             shared,
@@ -347,13 +385,35 @@ impl Mixer {
         self.bank.rate
     }
 
-    /// Switches to a bank at another sample rate (a new device). Whatever was playing stops.
+    /// Switches to a bank at another sample rate (a new device). Whatever was playing stops, and
+    /// the sound pack goes until it has been decoded again for the new rate (`Audio` sees to
+    /// that). Runs on the device thread while no stream does, so letting go of packs is fine.
     pub fn retune(&mut self, bank: Arc<Bank>) {
         let rate = bank.rate as f32;
+        self.shared.rate.store(bank.rate, Ordering::Release);
         self.bank = bank;
         self.tuning = Tuning::new(rate);
         self.limiter = Limiter::new(rate);
         self.voices.fill(Voice::IDLE);
+        self.pack = None;
+        self.old = None;
+    }
+
+    /// Takes the pack the game thread left for it, if any. The one it replaces stays (as `old`)
+    /// while its voices finish; one older than that has its voices stopped. Every pack is also
+    /// held in `Shared::packs`, so letting go of one here never frees it.
+    fn switch_pack(&mut self) {
+        let Ok(mut pending) = self.shared.pending.try_lock() else { return };
+        let Some(next) = pending.take() else { return };
+        drop(pending);
+        // A pack decoded for another rate (the device changed meanwhile) waits for its reload.
+        let next = next.filter(|p| p.rate == self.bank.rate);
+        if let Some(old) = self.old.take() {
+            for v in self.voices.iter_mut().filter(|v| v.pack == old.generation) {
+                v.playing = false;
+            }
+        }
+        self.old = std::mem::replace(&mut self.pack, next);
     }
 
     /// Voices playing, not counting ones fading out after a steal or a stop.
@@ -368,6 +428,7 @@ impl Mixer {
         if let Ok(listener) = self.shared.listener.try_lock() {
             self.listener = *listener;
         }
+        self.switch_pack();
         while let Ok(command) = self.commands.try_recv() {
             self.apply(command);
         }
@@ -384,9 +445,12 @@ impl Mixer {
             let (left, right) = (&mut self.left[..n], &mut self.right[..n]);
             left.fill(0.0);
             right.fill(0.0);
+            let packs = [self.pack.as_deref(), self.old.as_deref()];
             for voice in self.voices.iter_mut().filter(|v| v.playing) {
-                let variation = &self.bank.sounds[voice.sound][voice.variation];
-                voice.playing = voice.render(variation, &self.tuning, left, right);
+                voice.playing = match clip(&self.bank, packs, voice) {
+                    Some(variation) => voice.render(variation, &self.tuning, left, right),
+                    None => false,
+                };
             }
             for i in 0..n {
                 volume += (target - volume) * self.tuning.smooth;
@@ -397,12 +461,22 @@ impl Mixer {
         }
         self.volume = Some(volume);
         self.shared.voices.store(self.active(), Ordering::Relaxed);
+        // The pack before this one goes once its last voice has.
+        if let Some(old) = &self.old
+            && !self.voices.iter().any(|v| v.playing && v.pack == old.generation)
+        {
+            self.old = None;
+        }
     }
 
     fn apply(&mut self, command: Command) {
         match command {
-            Command::Play { sound, pos, intensity } => self.start(sound, pos, intensity, None),
-            Command::StartLoop { id, sound, pos } => self.start(sound, pos, 1.0, Some(id)),
+            Command::Play { sound, pos, intensity } => {
+                self.shared.synth_plays.fetch_add(1, Ordering::Relaxed);
+                self.start(Source::Synth(sound), pos, intensity, None);
+            }
+            Command::Event { event, set, fallback, pos, intensity } => self.start_event(event, set, fallback, pos, intensity),
+            Command::StartLoop { id, sound, pos } => self.start(Source::Synth(sound), pos, 1.0, Some(id)),
             Command::MoveLoop { id, pos } => {
                 if let Some(voice) = self.voices.iter_mut().find(|v| v.playing && v.looping == Some(id)) {
                     voice.source = pos;
@@ -416,19 +490,48 @@ impl Mixer {
         }
     }
 
-    fn start(&mut self, sound: Sound, source: Vec3, intensity: f32, looping: Option<u64>) {
-        let s = sound as usize;
-        let variation = self.pick(s);
+    /// The pack's sound for `event`, every layer at once (each picking one of its clips), or the
+    /// synthesised fallback where the pack has none.
+    fn start_event(&mut self, event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32) {
+        // A clone of the `Arc`, so the voices can be started while it's borrowed; dropping it
+        // again never frees the pack (`Shared::packs` holds every one).
+        let pack = self.pack.clone();
+        match pack.as_deref().and_then(|p| Some((p, p.find(set, event)?))) {
+            Some((p, e)) => {
+                self.shared.pack_plays[event as usize].fetch_add(1, Ordering::Relaxed);
+                for layer in &e.layers {
+                    let clip = layer.clips[layer.pick(&mut self.rng)];
+                    let source = Source::Clip { pack: p.generation, clip, gain: layer.gain * p.gain, wait: layer.delay };
+                    self.start(source, pos, intensity, None);
+                }
+            }
+            None => {
+                if let Some(sound) = fallback {
+                    self.shared.synth_plays.fetch_add(1, Ordering::Relaxed);
+                    self.start(Source::Synth(sound), pos, intensity, None);
+                }
+            }
+        }
+    }
+
+    fn start(&mut self, what: Source, source: Vec3, intensity: f32, looping: Option<u64>) {
+        let (pack, s, variation, gain, wait) = match what {
+            Source::Synth(sound) => (0, sound as usize, self.pick(sound as usize), 1.0, 0),
+            Source::Clip { pack, clip, gain, wait } => (pack, clip, 0, gain, wait),
+        };
         let bank = &self.bank;
-        let v = &bank.sounds[s][variation];
+        let packs = [self.pack.as_deref(), self.old.as_deref()];
+        let Some(v) = clip(bank, packs, &Voice { pack, sound: s, variation, ..Voice::IDLE }) else { return };
         let mut voice = Voice {
             playing: true,
+            pack,
             sound: s,
             variation,
+            wait,
             looping,
             source,
             // A soft sound is quieter (down to −16 dB), duller, and without its hard layer.
-            loudness: 0.15 + 0.85 * intensity,
+            loudness: (0.15 + 0.85 * intensity) * gain,
             hard: intensity * intensity,
             bright: intensity,
             order: self.started,
@@ -442,7 +545,7 @@ impl Mixer {
 
         if self.active() >= MAX_VOICES {
             // Steal the quietest playing voice, one-shots before loops, the oldest on a tie.
-            let level = |v: &Voice| v.level(&bank.sounds[v.sound][v.variation]);
+            let level = |v: &Voice| clip(bank, packs, v).map_or(0.0, |c| v.level(c));
             let playing = self.voices.iter_mut().filter(|v| v.playing && !v.releasing());
             let victim = playing.map(|v| (level(v), v)).min_by(|(la, a), (lb, b)| {
                 (a.looping.is_some(), *la, a.order)
@@ -474,6 +577,7 @@ impl Mixer {
         pick
     }
 }
+
 
 /// A NaN or infinity reaching the master bus would poison the limiter; make it silence.
 fn finite(x: f32) -> f32 {

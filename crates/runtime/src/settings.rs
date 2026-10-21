@@ -199,7 +199,8 @@ pub enum BodyVisibility {
     Full,
 }
 
-/// The runtime's own interaction sounds (grabs, holsters, reloads, shots).
+/// Interaction sounds (grabs, holsters, reloads, shots): the game's own where it has a sound pack,
+/// the runtime's synthesised ones otherwise.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Sound {
@@ -208,11 +209,13 @@ pub struct Sound {
     pub volume: f32,
     /// Play gunshots too (off when the game makes its own).
     pub shots: bool,
+    /// The game's own sounds where it has a sound pack (off: always the runtime's own).
+    pub game_sounds: bool,
 }
 
 impl Default for Sound {
     fn default() -> Self {
-        Sound { enabled: true, volume: 0.8, shots: true }
+        Sound { enabled: true, volume: 0.8, shots: true, game_sounds: true }
     }
 }
 

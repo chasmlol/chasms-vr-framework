@@ -26,11 +26,17 @@ pub struct Options {
     pub lockstep_timeout_ms: u32,
     /// Play sounds on the default output device (off for headless tests).
     pub audio: bool,
+    /// Without `audio`: mix the sounds offline anyway, each frame, heard by no one, so headless
+    /// tests can see which ones played (the game's or the runtime's own).
+    pub offline_audio: bool,
 }
+
+/// The offline mixer's rate.
+const OFFLINE_RATE: u32 = 48_000;
 
 impl Default for Options {
     fn default() -> Self {
-        Options { mapping: DEFAULT_MAPPING.to_owned(), settings_dir: None, lockstep: false, lockstep_timeout_ms: 2000, audio: false }
+        Options { mapping: DEFAULT_MAPPING.to_owned(), settings_dir: None, lockstep: false, lockstep_timeout_ms: 2000, audio: false, offline_audio: false }
     }
 }
 
@@ -99,7 +105,15 @@ pub struct Session {
     hud_layout: Box<HudLayout>,
     hud_layout_seq: u32,
     hud: crate::hud::HudPlacer,
-    audio: Option<rustvr_audio::Audio>,
+    /// The interaction sounds (see `play_cue`).
+    pub audio: Option<rustvr_audio::Audio>,
+    /// Where the game's sound pack is and the objects' sound sets (the `SoundPack` region).
+    sound_pack: Box<SoundPack>,
+    sound_pack_seq: u32,
+    /// Per object: its sound set and `SND_*` flags.
+    object_sounds: std::collections::HashMap<u32, (rustvr_audio::SetKey, u32)>,
+    /// The pack asked of the audio (folder and revision), if any.
+    pack_wanted: Option<(PathBuf, u32)>,
     comfort: Comfort,
     menu_trigger_was: bool,
     /// The player's body (IK) and its avatar.
@@ -160,7 +174,15 @@ impl Session {
             hud_layout: bytemuck::zeroed_box(),
             hud_layout_seq: 0,
             hud: Default::default(),
-            audio: opts.audio.then(rustvr_audio::Audio::new),
+            audio: if opts.audio {
+                Some(rustvr_audio::Audio::new())
+            } else {
+                opts.offline_audio.then(|| rustvr_audio::Audio::offline(OFFLINE_RATE))
+            },
+            sound_pack: bytemuck::zeroed_box(),
+            sound_pack_seq: 0,
+            object_sounds: Default::default(),
+            pack_wanted: None,
             comfort: Comfort::default(),
             menu_trigger_was: false,
             body: crate::body::PlayerBody::default(),
@@ -299,10 +321,16 @@ impl Session {
             Some((PanelId::RuntimeMenu, _, uv)) => Some((uv, trigger_down)),
             _ => None,
         };
+        let snd = &self.settings.current.sound;
+        if let Some(a) = &self.audio {
+            a.set_volume(if snd.enabled { snd.volume } else { 0.0 });
+            a.set_listener(rustvr_audio::Listener { pos: head_pos, rot: head_rot });
+        }
         // A click on either panel: a soft UI click where the laser hits.
         if let (Some((_, t, _)), Some(a)) = (pick, &self.audio)
-            && trigger_down && !self.menu_trigger_was && self.settings.current.sound.enabled {
-                a.play(rustvr_audio::Sound::UiClick, laser_origin + laser_dir * t, 1.0);
+            && trigger_down && !self.menu_trigger_was && snd.enabled {
+                let at = laser_origin + laser_dir * t;
+                a.play_event(rustvr_audio::Event::UiClick, rustvr_audio::SetKey::NONE, Some(rustvr_audio::Sound::UiClick), at, 1.0);
             }
         self.menu_trigger_was = trigger_down;
 
@@ -332,7 +360,22 @@ impl Session {
                 self.rig.set_kicks(&self.kicks);
                 tracing::info!("runtime: {} recoil kicks registered (table {})", self.kicks.count, seq);
             }
+            let seq = self.link.sound_pack_seq();
+            if seq != self.sound_pack_seq && self.link.read_sound_pack_into(&mut self.sound_pack) {
+                self.sound_pack_seq = seq;
+                let p = &self.sound_pack;
+                let sets = p.entries().iter().filter(|o| o.object != 0);
+                self.object_sounds = sets.map(|o| (o.object, (rustvr_audio::SetKey::of(o.set_name()), o.flags))).collect();
+                tracing::info!(
+                    "runtime: the game's sound pack: {:?} (revision {}, flags {:#x}, {} objects with sound sets)",
+                    p.path(),
+                    p.revision,
+                    p.flags,
+                    self.object_sounds.len()
+                );
+            }
         }
+        self.update_sound_pack(alive);
         let rig_active = alive && self.rig.has_objects() && self.game.is_some();
         // The game's floor in tracking space: the adapter maps the tracking origin onto the game's
         // eye (plus the height compensation and offset the runtime asked for).
@@ -359,21 +402,22 @@ impl Session {
                 paused: menu_mode || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0,
                 infinite_ammo: g.flags & GS_INFINITE_AMMO != 0,
             });
-            // One event, one frame: the pulse and the sound together.
-            let snd = &self.settings.current.sound;
-            if let Some(a) = &self.audio {
-                a.set_volume(if snd.enabled { snd.volume } else { 0.0 });
-                a.set_listener(rustvr_audio::Listener { pos: Vec3::from_array(frame.hmd.pos), rot: quat(frame.hmd.rot) });
-            }
+            // One event, one frame: the pulse and the sound together. The same cue for the same
+            // object twice in a frame (both hands' pulses for one shot, or for one seat) is one
+            // sound, at the louder of the two.
+            let mut heard: Vec<feedback::Feedback> = Vec::new();
             for fb in &self.rig.feedback {
                 if let (Some(hand), Some((secs, freq, amp))) = (fb.hand, feedback::haptic(fb.cue, fb.intensity)) {
                     self.backend.haptic(hand, secs, freq, amp * fb.intensity.clamp(0.0, 1.0).max(0.3));
                 }
-                if let Some(sound) = sound_of(fb.cue).filter(|_| snd.enabled && (snd.shots || !is_shot(fb.cue))) {
-                    self.sounds_played += 1;
-                    if let Some(a) = &self.audio {
-                        a.play(sound, fb.pos, fb.intensity);
-                    }
+                match heard.iter_mut().find(|h| h.cue == fb.cue && h.object == fb.object) {
+                    Some(h) => h.intensity = h.intensity.max(fb.intensity),
+                    None => heard.push(*fb),
+                }
+            }
+            if self.settings.current.sound.enabled {
+                for fb in &heard {
+                    self.play_cue(fb);
                 }
             }
             // The gravity gloves' whoosh follows the object to the hand.
@@ -390,6 +434,9 @@ impl Session {
             }
             self.rig.write_states(&mut self.states);
             self.link.write_object_states(&self.states);
+        }
+        if let (true, Some(a)) = (self.opts.offline_audio && !self.opts.audio, &self.audio) {
+            a.render((frame.dt.clamp(0.0, 0.1) * OFFLINE_RATE as f32).round() as usize);
         }
 
         // ---- mechanics
@@ -635,6 +682,55 @@ impl Session {
         self.hud_layout.count = 0;
         self.hud_layout_seq = 0;
         self.kicks_seq = 0;
+        *self.sound_pack = bytemuck::Zeroable::zeroed();
+        self.sound_pack_seq = 0;
+        self.object_sounds.clear();
+    }
+
+    /// Loads the game's sound pack when it names one (and the setting allows), and goes back to
+    /// the runtime's own sounds when it doesn't, or the game has gone.
+    fn update_sound_pack(&mut self, alive: bool) {
+        let Some(a) = &self.audio else { return };
+        let path = self.sound_pack.path();
+        let on = alive && self.settings.current.sound.game_sounds && !path.is_empty();
+        let want = on.then(|| (PathBuf::from(path), self.sound_pack.revision));
+        if want == self.pack_wanted {
+            return;
+        }
+        match &want {
+            Some((dir, rev)) => tracing::info!("runtime: loading the game's sounds from {} (revision {rev})", dir.display()),
+            None => tracing::info!("runtime: the runtime's own sounds"),
+        }
+        // A new revision of the same folder: let go of the old copy, so it's read again.
+        if let (Some((old, _)), Some((new, _))) = (&self.pack_wanted, &want)
+            && old == new
+        {
+            a.load_pack(None);
+        }
+        a.load_pack(want.as_ref().map(|(d, _)| d.as_path()));
+        self.pack_wanted = want;
+    }
+
+    /// The sound for one feedback cue: the object's own from the game's sound pack (its set, or
+    /// the pack's defaults), else the runtime's synthesised one. A shot also plays its tail and
+    /// its casing landing (the pack's; the runtime has none of its own), and none of it when the
+    /// game plays its own gunshots; reloading sounds likewise when the game plays its own.
+    fn play_cue(&mut self, fb: &feedback::Feedback) {
+        use rustvr_audio::Event as E;
+        let (event, fallback) = event_of(fb.cue);
+        let (set, flags) = fb.object.and_then(|id| self.object_sounds.get(&id)).copied().unwrap_or_default();
+        if !runtime_plays(event, flags | self.sound_pack.flags, self.settings.current.sound.shots) {
+            return;
+        }
+        let shot = event == E::Fire;
+        self.sounds_played += 1;
+        let Some(a) = &self.audio else { return };
+        a.play_event(event, set, Some(fallback), fb.pos, fb.intensity);
+        if shot {
+            a.play_event(E::FireTail, set, None, fb.pos, fb.intensity);
+            // The case lands on the floor under the gun.
+            a.play_event(E::Casing, set, None, Vec3::new(fb.pos.x, self.floor + 0.02, fb.pos.z), fb.intensity);
+        }
     }
 
     fn wait_for_adapter(&mut self, index: u64) {
@@ -850,39 +946,89 @@ impl Drop for Heartbeat {
     }
 }
 
-fn sound_of(c: feedback::Cue) -> Option<rustvr_audio::Sound> {
-    use feedback::Cue as C;
-    use rustvr_audio::Sound as S;
-    Some(match c {
-        C::Grab => S::Grab,
-        C::Release => S::Release,
-        C::HolsterIn => S::HolsterIn,
-        C::HolsterOut => S::HolsterOut,
-        C::MagEject => S::MagEject,
-        C::MagSeat => S::MagSeat,
-        C::SlideBack => S::SlideBack,
-        C::SlideForward => S::SlideForward,
-        C::LastRound => S::LastRound,
-        C::EmptyClick => S::EmptyClick,
-        C::Fail => S::Fail,
-        C::GloveHover => S::GloveHover,
-        C::GloveLock => S::GloveLock,
-        C::GloveFlick => S::GloveFlick,
-        C::GloveCatch => S::GloveCatch,
-        C::Impact => S::Impact,
-        C::ZoneTick => S::ZoneTick,
-        C::ShotPistol => S::ShotPistol,
-        C::ShotRifle => S::ShotRifle,
-        C::ShotShotgun => S::ShotShotgun,
-        C::Melee => S::Melee,
-    })
+/// Whether the runtime plays `event` at all: not a shot when gunshots are off or the game plays
+/// its own (`SND_GAME_SHOTS`), not a reloading or handling sound when the game plays those
+/// (`SND_GAME_HANDLING`). `flags` are the pack's and the object's together.
+fn runtime_plays(event: rustvr_audio::Event, flags: u32, shots: bool) -> bool {
+    use rustvr_audio::Event as E;
+    match event {
+        E::Fire | E::FireTail | E::Casing => shots && flags & SND_GAME_SHOTS == 0,
+        E::MagOut | E::MagIn | E::BoltBack | E::BoltForward | E::DryFire => flags & SND_GAME_HANDLING == 0,
+        _ => true,
+    }
 }
 
-fn is_shot(c: feedback::Cue) -> bool {
-    matches!(c, feedback::Cue::ShotPistol | feedback::Cue::ShotRifle | feedback::Cue::ShotShotgun)
+/// The sound pack event for a cue, and the runtime's own sound for it.
+fn event_of(c: feedback::Cue) -> (rustvr_audio::Event, rustvr_audio::Sound) {
+    use feedback::Cue as C;
+    use rustvr_audio::{Event as E, Sound as S};
+    match c {
+        C::Grab => (E::Grab, S::Grab),
+        C::Release => (E::Release, S::Release),
+        C::HolsterIn => (E::HolsterIn, S::HolsterIn),
+        C::HolsterOut => (E::HolsterOut, S::HolsterOut),
+        C::MagEject => (E::MagOut, S::MagEject),
+        C::MagSeat => (E::MagIn, S::MagSeat),
+        C::SlideBack => (E::BoltBack, S::SlideBack),
+        C::SlideForward => (E::BoltForward, S::SlideForward),
+        C::LastRound => (E::LastRound, S::LastRound),
+        C::EmptyClick => (E::DryFire, S::EmptyClick),
+        C::Fail => (E::Fail, S::Fail),
+        C::GloveHover => (E::GloveHover, S::GloveHover),
+        C::GloveLock => (E::GloveLock, S::GloveLock),
+        C::GloveFlick => (E::GloveFlick, S::GloveFlick),
+        C::GloveCatch => (E::GloveCatch, S::GloveCatch),
+        C::Impact => (E::Impact, S::Impact),
+        C::ZoneTick => (E::ZoneTick, S::ZoneTick),
+        C::Pouch => (E::Pouch, S::ZoneTick),
+        C::ShotPistol => (E::Fire, S::ShotPistol),
+        C::ShotRifle => (E::Fire, S::ShotRifle),
+        C::ShotShotgun => (E::Fire, S::ShotShotgun),
+        C::Melee => (E::Melee, S::Melee),
+    }
 }
 
 fn quat(a: [f32; 4]) -> Quat {
     let q = Quat::from_array(a);
     if q.length_squared() < 1e-12 { Quat::IDENTITY } else { q.normalize() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustvr_audio::Event as E;
+
+    #[test]
+    fn the_game_playing_its_own_sounds_silences_the_runtimes() {
+        // The range plays nothing of its own: the runtime plays everything.
+        assert!(runtime_plays(E::Fire, 0, true) && runtime_plays(E::MagIn, 0, true) && runtime_plays(E::Grab, 0, true));
+        // A game that fires the runtime's shots through its own weapon code plays their sound.
+        assert!(!runtime_plays(E::Fire, SND_GAME_SHOTS, true) && !runtime_plays(E::Casing, SND_GAME_SHOTS, true));
+        assert!(runtime_plays(E::MagOut, SND_GAME_SHOTS, true) && runtime_plays(E::Grab, SND_GAME_SHOTS, true));
+        // One that animates its own reloads plays those.
+        for e in [E::MagOut, E::MagIn, E::BoltBack, E::BoltForward, E::DryFire] {
+            assert!(!runtime_plays(e, SND_GAME_HANDLING, true), "{e:?}");
+        }
+        assert!(runtime_plays(E::Fire, SND_GAME_HANDLING, true));
+        // And the player can turn gunshots off.
+        assert!(!runtime_plays(E::Fire, 0, false) && runtime_plays(E::MagIn, 0, false));
+    }
+
+    #[test]
+    fn every_cue_has_a_sound_the_pack_can_replace() {
+        use feedback::Cue as C;
+        let cues = [
+            C::Grab, C::Release, C::HolsterIn, C::HolsterOut, C::MagEject, C::MagSeat, C::SlideBack, C::SlideForward, C::LastRound, C::EmptyClick,
+            C::Fail, C::GloveHover, C::GloveLock, C::GloveFlick, C::GloveCatch, C::Impact, C::ZoneTick, C::Pouch, C::ShotPistol, C::ShotRifle,
+            C::ShotShotgun, C::Melee,
+        ];
+        for c in cues {
+            let (event, fallback) = event_of(c);
+            // The fallback is the runtime's own sound for that event (a shot keeps its kind).
+            if event != E::Fire && c != C::Pouch {
+                assert_eq!(event.fallback(), Some(fallback), "{c:?}");
+            }
+        }
+        assert_eq!(event_of(C::ShotPistol), (E::Fire, rustvr_audio::Sound::ShotPistol));
+    }
 }

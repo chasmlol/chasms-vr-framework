@@ -371,6 +371,33 @@ impl Adapter {
         }
     }
 
+    /// Tells the runtime where the game's own sounds are (a sound pack: a folder with a
+    /// `sounds.toml`, see `rustvr_audio::pack`) and which of its sets each object uses, and which
+    /// sounds the game plays itself. The runtime then plays the pack's sounds instead of its own
+    /// synthesised ones wherever the pack has them, and none where the game makes its own:
+    ///
+    /// ```ignore
+    /// let dir = rustvr_adapter::local_sound_pack("metro2033");  // <local_assets>/metro2033/sounds
+    /// let mut pack = SoundPack::new(&dir.map(|d| d.to_string_lossy().into_owned()).unwrap_or_default());
+    /// pack.flags = SND_GAME_SHOTS;                               // the game plays its own gunshots
+    /// pack.add_object(gun.id, "wpn_ak", 0);                      // the gun sounds like [sets.wpn_ak]
+    /// adapter.set_sound_pack(&pack);
+    /// ```
+    ///
+    /// Every call is a new write the runtime notices (`seq` is the seqlock's: leave it alone).
+    /// Call it after connecting, again after every reconnect (when [`Adapter::connections`]
+    /// changes), and whenever the objects' sets change; bump `pack.revision` to make the runtime
+    /// reload the files from the same folder. False while not connected.
+    pub fn set_sound_pack(&self, pack: &SoundPack) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_sound_pack(pack);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Streams static collision (`COL_*` messages) for the runtime's physics. False when the
     /// ring is full (try again next frame).
     pub fn push_collision(&self, kind: u32, payload: &[u8]) -> bool {
@@ -416,6 +443,17 @@ impl Drop for Adapter {
     fn drop(&mut self) {
         self.release_back();
     }
+}
+
+/// The sound pack an extractor wrote for `game` (`<local_assets>/<game>/sounds`, e.g. what
+/// `metro-extract` writes for `metro2033`), if it's there: for [`Adapter::set_sound_pack`].
+/// `local_assets` is `RUSTVR_ASSETS`, or the one in the repository this was built from.
+pub fn local_sound_pack(game: &str) -> Option<std::path::PathBuf> {
+    let root = std::env::var_os("RUSTVR_ASSETS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("local_assets"));
+    let dir = root.join(game).join("sounds");
+    dir.join("sounds.toml").is_file().then_some(dir)
 }
 
 fn open_targets(gpu: &Gpu, mapping: &str, t: &Targets) -> anyhow::Result<Vec<SlotTextures>> {
