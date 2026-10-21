@@ -16,7 +16,9 @@
 //! bullet holes and sparks where the shots hit (`hits`), ejected casings, explosions.
 //!
 //! Options: `--weapon <name|scoped|first>` picks the starting gun (legacy); `--fps <n>` caps the
-//! frame rate when the runtime isn't in lockstep (to test a game slower than the headset).
+//! frame rate when the runtime isn't in lockstep (to test a game slower than the headset);
+//! `--table <key>[,<key>...]` lays those guns (asset keys, `wpn_duplet`) nearest on the table at
+//! your right hand (physical mode; the scenarios that handle a particular gun use it).
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
@@ -101,8 +103,8 @@ struct Game {
     /// Physical mode's objects (None: legacy mode).
     armory: Option<physical::Armory>,
     connections: u32,
-    /// Physical mode: the gun in a hand, if any (index, rounds, chambered).
-    held: Option<(usize, u32, bool)>,
+    /// Physical mode: the gun in a hand, if any (index, rounds in its magazine, rounds in its chambers).
+    held: Option<(usize, u32, u32)>,
     /// Physical mode's throwables, and what's happened to them.
     throwables: Vec<throwables::Throwable>,
     watch: throwables::Watch,
@@ -120,22 +122,24 @@ fn main() -> Result<()> {
     let mut start_weapon = String::from("first");
     let mut fps_cap = 0.0f64;
     let mut legacy = false;
+    let mut front: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--weapon" => start_weapon = args.next().unwrap_or_default(),
             "--fps" => fps_cap = args.next().and_then(|v| v.parse().ok()).unwrap_or(0.0),
             "--legacy" => legacy = true,
+            "--table" => front = args.next().unwrap_or_default().split(',').filter(|k| !k.is_empty()).map(String::from).collect(),
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
     let gpu = Gpu::new()?;
-    let mut game = Game::new(gpu, &start_weapon, legacy)?;
+    let mut game = Game::new(gpu, &start_weapon, legacy, &front)?;
     game.run(fps_cap)
 }
 
 impl Game {
-    fn new(gpu: Gpu, start_weapon: &str, legacy: bool) -> Result<Game> {
+    fn new(gpu: Gpu, start_weapon: &str, legacy: bool, front: &[String]) -> Result<Game> {
         let assets = rustvr_asset::default_root();
         let mut renderer = Renderer::new(&gpu, assets.clone())?;
         let (grid, plain) = content::room();
@@ -170,7 +174,7 @@ impl Game {
             name => weapons.iter().position(|g| g.w.name.to_lowercase().contains(&name.to_lowercase())).unwrap_or(0),
         };
 
-        let mut armory = (!legacy).then(|| physical::Armory::new(&weapons.iter().map(|g| &g.w).collect::<Vec<_>>()));
+        let mut armory = (!legacy).then(|| physical::Armory::with_front(&weapons.iter().map(|g| &g.w).collect::<Vec<_>>(), front));
         // Grenades and knives (physical mode): on their own table at your left hand, and in the
         // pouches.
         let throw_list = if legacy { Vec::new() } else { throwables::all(&assets) };
@@ -342,7 +346,7 @@ impl Game {
         self.held = held;
         if let Some((i, rounds, chambered)) = held {
             self.weapon = i;
-            self.ammo = rounds + chambered as u32;
+            self.ammo = rounds + chambered;
         }
         let w = &self.scene.weapons[self.weapon].w;
         let ads = it.flags & INT_ADS != 0;

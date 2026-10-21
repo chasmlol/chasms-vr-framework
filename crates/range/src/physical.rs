@@ -478,13 +478,18 @@ pub fn sound_pack(assets: &std::path::Path, guns: &[(u32, &Weapon)]) -> SoundPac
 
 /// Front-to-back order on the near table: the plain rifle nearest (the scenarios reach for it),
 /// then Metro's Kalash and Bastard, then the scoped rifle. Every other gun goes on the armory
-/// bench (`None`).
-fn table_rank(w: &Weapon) -> Option<u32> {
+/// bench (`None`). Guns named in `front` (the range's `--table`) go nearest instead, followed by
+/// the plain rifle and the Kalash only (to leave them room).
+fn table_rank(w: &Weapon, front: &[String]) -> Option<u32> {
+    if let Some(k) = front.iter().position(|k| *k == w.key) {
+        return Some(k as u32);
+    }
+    let first = front.len() as u32;
     match w.key.as_str() {
-        "builtin_rifle" => Some(0),
-        "wpn_ak" => Some(1),
-        "wpn_ubludok" => Some(2),
-        "builtin_rifle_scoped" => Some(4),
+        "builtin_rifle" => Some(first),
+        "wpn_ak" => Some(first + 1),
+        "wpn_ubludok" if front.is_empty() => Some(2),
+        "builtin_rifle_scoped" if front.is_empty() => Some(4),
         _ => None,
     }
 }
@@ -499,7 +504,14 @@ impl Armory {
     /// Lays out the range: the properly rigged guns (see [`Weapon::rigged`]) on the table at your
     /// right hand (the plain rifle nearest) and the pistol on your hip; things to throw around on
     /// the long table ahead and the floor. Guns that aren't rigged stay out (legacy mode only).
+    #[allow(dead_code)] // (the tests lay out the default range)
     pub fn new(weapons: &[&Weapon]) -> Armory {
+        Armory::with_front(weapons, &[])
+    }
+
+    /// [`Armory::new`], the guns named in `front` (asset keys) laid nearest on the near table.
+    pub fn with_front(weapons: &[&Weapon], front: &[String]) -> Armory {
+        let table_rank = |w: &Weapon| table_rank(w, front);
         let mut table: Box<ObjectTable> = bytemuck::zeroed_box();
         let mut poses: Box<HandPoseTable> = bytemuck::zeroed_box();
         let mut kicks: Box<KickTable> = bytemuck::zeroed_box();
@@ -779,12 +791,12 @@ impl Armory {
         out
     }
 
-    /// The gun in a hand (dominant first): weapon index, rounds in the magazine, chambered.
-    pub fn held_gun(&self, dominant: usize) -> Option<(usize, u32, bool)> {
+    /// The gun in a hand (dominant first): weapon index, rounds in the magazine, rounds in the chambers.
+    pub fn held_gun(&self, dominant: usize) -> Option<(usize, u32, u32)> {
         let flag = |h: usize| if h == 0 { OS_HELD_LEFT } else { OS_HELD_RIGHT };
         [dominant, dominant ^ 1].into_iter().find_map(|h| {
             self.states().iter().find(|s| s.flags & flag(h) != 0).and_then(|s| match self.kinds.get(&s.desc) {
-                Some(Kind::Weapon(i)) => Some((*i, s.rounds, s.chambered & CHAMBER_LIVE_MASK != 0)),
+                Some(Kind::Weapon(i)) => Some((*i, s.rounds, (s.chambered & CHAMBER_LIVE_MASK).count_ones())),
                 _ => None,
             })
         })

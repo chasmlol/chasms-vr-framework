@@ -2814,6 +2814,7 @@ pub struct ObjSnap {
     pub action_angle: f32,
     pub chamber_step: f32,
     pub capacity: u32,
+    pub handle_travel: f32,
     pub slide: f32,
     pub chambered: u32,
 }
@@ -2861,6 +2862,7 @@ impl Rig {
                     action_angle: d.action_angle,
                     chamber_step: d.chamber_step,
                     capacity: d.capacity,
+                    handle_travel: d.handle_travel,
                     slide: s.slide,
                     chambered: s.chambered,
                 })
