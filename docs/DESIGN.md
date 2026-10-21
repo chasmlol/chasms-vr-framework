@@ -328,7 +328,7 @@ committed or redistributed.**
 | 2 | **Headset** | The OpenXR backend is tested on the user's headset (Virtual Desktop); the HUD moves to quad layers; reprojection is verified |
 | 3 | **Second game** | Metro Exodus Enhanced Edition, same engine family: the new adapter takes days, not months |
 | 4 | **Second engine** | Skyrim SE through CommonLibSSE (C++ adapter on the generated header), reusing SkyCraft's camera and actor code |
-| 5 | **Feel** | Done in the runtime: physics hands, objects, holsters, physical reloads, gravity gloves, full-body IK and an avatar, spatial sound, comfort (§6b). Next: the Metro adapter registers its guns and collision, melee aimed at actor capsules (needs an actor table, as in SkyCraft), tuning on the headset |
+| 5 | **Feel** | Done in the runtime: physics hands, objects, holsters and pouches, physical reloads, throwing (grenades, knives), gravity gloves, full-body IK and an avatar, spatial sound, comfort (§6b). Next: the Metro adapter registers its guns, grenades, knives and collision (and maps the runtime's throws onto its own projectiles), melee and throw aim assist aimed at actor capsules (needs an actor table, as in SkyCraft), tuning on the headset |
 
 ## 11. Decisions (2026-10-21)
 
