@@ -36,6 +36,8 @@
 //! | [`OFF_GAME_STATE`] | [`GameState`] | adapter -> runtime | seqlock |
 //! | [`OFF_SLOTS`] | [`SlotInfo`] x [`SLOT_COUNT`] | adapter -> runtime | owned by the slot holder |
 //! | [`OFF_EVENTS`] | [`Event`] ring | adapter -> runtime | SPSC ring |
+//! | [`OFF_BODY`] .. [`OFF_KICKS`] | the player rig's regions: see [`world`] | both | seqlock, SPSC ring |
+//! | [`OFF_SOUNDS`] | [`SoundPack`]: the game's own sounds (see [`sound`]) | adapter -> runtime | seqlock |
 //!
 //! # Frames
 //!
@@ -57,8 +59,10 @@ use bytemuck::{Pod, Zeroable};
 
 #[cfg(windows)]
 pub mod link;
+pub mod sound;
 pub mod world;
 
+pub use sound::*;
 pub use world::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"

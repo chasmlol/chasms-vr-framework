@@ -230,7 +230,8 @@ impl Link {
     }
 
     /// Runtime: if the adapter announced a new epoch, reset the triple buffer (front = 2), ack it and
-    /// return true.
+    /// return true. A new connection starts with no sound pack (a game that has one publishes it
+    /// once acked), so one game's sounds never carry over to the next.
     pub fn poll_connect(&self) -> bool {
         let h = OFF_HEADER;
         let epoch = self.u32_at(h + offset_of!(Header, adapter_epoch)).load(Ordering::Acquire);
@@ -239,6 +240,9 @@ impl Link {
             return false;
         }
         self.reset_submit();
+        if self.sound_pack_seq() != 0 {
+            self.write_sound_pack(&bytemuck::allocation::zeroed_box::<SoundPack>());
+        }
         ack.store(epoch, Ordering::Release);
         true
     }
@@ -308,6 +312,20 @@ impl Link {
     /// The kick table's sequence number: it changes whenever the adapter rewrites the table.
     pub fn kicks_seq(&self) -> u32 {
         self.u32_at(OFF_KICKS).load(Ordering::Acquire)
+    }
+    /// Adapter: publish where the game's sound pack is and the objects' sound sets (call when it
+    /// changes, and after every reconnect, like the object table).
+    pub fn write_sound_pack(&self, v: &SoundPack) {
+        unsafe { seq_write(self.base.add(OFF_SOUNDS), v) }
+    }
+    /// Runtime: read the sound pack region into `out`. False if nothing was ever written or no
+    /// consistent copy was obtained.
+    pub fn read_sound_pack_into(&self, out: &mut SoundPack) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_SOUNDS), out) }
+    }
+    /// The sound pack region's sequence number: it changes whenever the adapter rewrites it.
+    pub fn sound_pack_seq(&self) -> u32 {
+        self.u32_at(OFF_SOUNDS).load(Ordering::Acquire)
     }
     pub fn write_object_states(&self, v: &ObjectStates) {
         unsafe { seq_write(self.base.add(OFF_OBJECT_STATES), v) }
@@ -762,6 +780,30 @@ mod tests {
         let seq = rt.kicks_seq();
         ad.write_kicks(&table);
         assert_ne!(rt.kicks_seq(), seq, "rewrites are visible");
+    }
+
+    #[test]
+    fn sound_pack_round_trip() {
+        let name = unique("sounds");
+        let rt = Link::create(&name).unwrap();
+        let ad = Link::open(&name).unwrap();
+        let mut back: Box<SoundPack> = bytemuck::allocation::zeroed_box();
+        assert!(!rt.read_sound_pack_into(&mut back), "nothing written yet: the runtime's own sounds");
+        let mut pack = SoundPack::new(r"C:\packs\game");
+        pack.flags = SND_GAME_SHOTS;
+        assert!(pack.add_object(7, "wpn_ak", SND_GAME_HANDLING));
+        ad.write_sound_pack(&pack);
+        assert!(rt.read_sound_pack_into(&mut back));
+        assert_eq!((back.path(), back.flags), (r"C:\packs\game", SND_GAME_SHOTS));
+        assert_eq!(back.object(7).map(|o| (o.set_name(), o.flags)), Some(("wpn_ak", SND_GAME_HANDLING)));
+        let seq = rt.sound_pack_seq();
+        ad.write_sound_pack(&pack);
+        assert_ne!(rt.sound_pack_seq(), seq, "rewrites are visible");
+        // Another game connecting starts without it.
+        let epoch = ad.begin_connect();
+        assert!(rt.poll_connect() && ad.connect_acked(epoch));
+        assert!(rt.read_sound_pack_into(&mut back));
+        assert!(back.path().is_empty() && back.count == 0 && back.flags == 0);
     }
 
     #[test]
