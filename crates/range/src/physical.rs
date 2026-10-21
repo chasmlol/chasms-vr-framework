@@ -3,6 +3,11 @@
 //! own hand poses on the guns: Metro's first-person arms, see `content::GunHand`), then each frame
 //! draws them where the runtime says they are, the trigger of a held gun following its hand's, and
 //! turns their shot counters into bullets.
+//!
+//! The range makes no sound itself: it hands the runtime Metro's own sounds (the sound pack
+//! `metro-extract` writes to `local_assets/metro2033/sounds`, see [`sound_pack`]), each gun the
+//! set it sounds like, and the runtime plays them, its shots included, as it would for any game
+//! that doesn't play its own.
 
 use bytemuck::Zeroable;
 use glam::{Mat3, Mat4, Quat, Vec3};
@@ -45,6 +50,8 @@ pub struct Armory {
     pub kicks: Box<KickTable>,
     /// The game's own hands on the guns (Metro's arms, see `content::GunHand`).
     pub poses: Box<HandPoseTable>,
+    /// Metro's sounds, when extracted, and each gun's set (see [`sound_pack`]).
+    pub sounds: Box<SoundPack>,
     pub kinds: HashMap<u32, Kind>,
     descs: HashMap<u32, ObjectDesc>,
     pub states: Box<ObjectStates>,
@@ -289,6 +296,32 @@ fn col_box(id: u32, min: Vec3, max: Vec3) -> ColBox {
     ColBox { id, center: ((min + max) * 0.5).to_array(), half_extents: ((max - min) * 0.5).to_array(), rot: [0.0, 0.0, 0.0, 1.0], ..Default::default() }
 }
 
+/// The sound set a gun uses in Metro's sound pack: a Metro gun its own (its asset key is the
+/// game's entity name, `wpn_ak`), the built-in guns the nearest Metro has (the Kalash for the
+/// rifles, the revolver for the pistol).
+pub fn sound_set(w: &Weapon) -> &str {
+    match w.key.as_str() {
+        "builtin_rifle" | "builtin_rifle_scoped" => "wpn_ak",
+        "builtin_pistol" => "wpn_revolver",
+        key => key,
+    }
+}
+
+/// The sound pack to publish: Metro's (`<assets>/metro2033/sounds`) if it has been extracted, with
+/// each registered gun's set; none otherwise (the runtime's own sounds). No flags: the range plays
+/// no sounds of its own, so the runtime plays every shot.
+pub fn sound_pack(assets: &std::path::Path, guns: &[(u32, &Weapon)]) -> SoundPack {
+    let dir = assets.join("metro2033").join("sounds");
+    if !dir.join("sounds.toml").is_file() {
+        return SoundPack::zeroed();
+    }
+    let mut pack = SoundPack::new(&dir.to_string_lossy());
+    for (id, w) in guns {
+        pack.add_object(*id, sound_set(w), 0);
+    }
+    pack
+}
+
 /// Front-to-back order on the near table: the plain rifle nearest (the scenarios reach for it),
 /// then Metro's rigged guns, then the scoped rifle.
 fn table_rank(w: &Weapon) -> u32 {
@@ -310,6 +343,7 @@ impl Armory {
         let mut poses: Box<HandPoseTable> = bytemuck::zeroed_box();
         let mut kicks: Box<KickTable> = bytemuck::zeroed_box();
         let mut kick_list = Vec::new();
+        let mut guns = Vec::new();
         let mut kinds = HashMap::new();
         let mut descs = Vec::new();
         let mut pose_descs = Vec::new();
@@ -336,6 +370,7 @@ impl Armory {
                 }
             }
             kick_list.extend(kick_descs(d.id, w));
+            guns.push((d.id, *w));
             descs.push(d);
             descs.push(mag_desc(i, w));
             kinds.insert(WEAPON_BASE + i as u32, Kind::Weapon(i));
@@ -396,10 +431,12 @@ impl Armory {
             collision.push(col_box(id, t.center - Vec3::new(t.radius, t.radius, 0.0), t.center + Vec3::new(t.radius, t.radius, 0.02)));
             id += 1;
         }
+        let sounds = Box::new(sound_pack(&rustvr_asset::default_root(), &guns));
         Armory {
             table,
             kicks,
             poses,
+            sounds,
             kinds,
             descs: descs.iter().map(|d| (d.id, *d)).collect(),
             states: bytemuck::zeroed_box(),
@@ -417,10 +454,15 @@ impl Armory {
             // The poses first: when the runtime sees the objects, their poses are there.
             self.poses.seq = self.poses.seq.wrapping_add(1).max(1);
             self.kicks.seq = self.kicks.seq.wrapping_add(1).max(1);
-            if adapter.write_hand_poses(&self.poses) && adapter.write_kicks(&self.kicks) && adapter.write_objects(&self.table) {
+            let written = adapter.write_hand_poses(&self.poses) && adapter.write_kicks(&self.kicks) && adapter.write_objects(&self.table);
+            if written && adapter.set_sound_pack(&self.sounds) {
                 self.registered = true;
                 self.shots_seen.clear();
                 tracing::info!("range: registered {} objects, {} hand poses and {} recoil kicks", self.table.count, self.poses.count, self.kicks.count);
+                match self.sounds.path() {
+                    "" => tracing::info!("range: no sound pack (run metro-extract): the runtime's own sounds"),
+                    dir => tracing::info!("range: Metro's sounds from {dir}, {} guns with their own", self.sounds.count),
+                }
             }
         }
         while self.sent < self.collision.len() && adapter.push_collision(COL_BOX, bytemuck::bytes_of(&self.collision[self.sent])) {
@@ -580,6 +622,25 @@ mod tests {
         let low = Vec3::from_array(rifle.spawn_pose.pos).y + (rot * Vec3::from_array(rifle.center)).y - rifle.half_extents[0];
         assert!((low - content::TABLE_NEAR.1.y).abs() < 0.02, "rests on the table: {low}");
         assert!(a.collision.len() > 10);
+    }
+
+    #[test]
+    fn guns_get_metros_sound_sets_when_its_sounds_are_there() {
+        let weapons = builtins();
+        let guns: Vec<(u32, &Weapon)> = weapons.iter().enumerate().map(|(i, w)| (WEAPON_BASE + i as u32, w)).collect();
+        let assets = std::env::temp_dir().join(format!("rustvr-range-sounds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&assets);
+        assert!(sound_pack(&assets, &guns).path().is_empty(), "nothing extracted: no pack");
+        std::fs::create_dir_all(assets.join("metro2033").join("sounds")).unwrap();
+        std::fs::write(assets.join("metro2033").join("sounds").join("sounds.toml"), "format = 1\n").unwrap();
+        let pack = sound_pack(&assets, &guns);
+        assert!(pack.path().ends_with("sounds") && pack.flags == 0, "{} {:#x}", pack.path(), pack.flags);
+        let set = |key: &str| {
+            let (id, _) = guns.iter().find(|(_, w)| w.key == key).unwrap();
+            pack.object(*id).unwrap().set_name().to_owned()
+        };
+        assert_eq!((set("builtin_rifle").as_str(), set("builtin_pistol").as_str()), ("wpn_ak", "wpn_revolver"));
+        let _ = std::fs::remove_dir_all(&assets);
     }
 
     #[test]

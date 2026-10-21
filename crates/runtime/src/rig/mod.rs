@@ -699,9 +699,9 @@ impl Rig {
         self.hands = Some([l, r]);
     }
 
-    fn emit(&mut self, cue: Cue, hand: Option<usize>, pos_world: Vec3, intensity: f32) {
+    fn emit(&mut self, cue: Cue, hand: Option<usize>, object: Option<u32>, pos_world: Vec3, intensity: f32) {
         let pos = self.map.inv_point(pos_world);
-        self.feedback.push(Feedback { cue, hand, pos, intensity });
+        self.feedback.push(Feedback { cue, hand, object, pos, intensity });
     }
 
     fn obj_pose(&self, id: u32) -> Option<(Vec3, Quat)> {
@@ -790,7 +790,7 @@ impl Rig {
         // A tick as the hand enters a holster or pouch, so you can find them without looking.
         let before = self.hands.as_ref().unwrap()[i].hover;
         if matches!(hover, Hover::Slot(_) | Hover::Ammo(_)) && before != hover {
-            self.emit(Cue::ZoneTick, Some(i), palm, 1.0);
+            self.emit(Cue::ZoneTick, Some(i), None, palm, 1.0);
         }
         let hands = self.hands.as_mut().unwrap();
         hands[i].hover = hover;
@@ -853,7 +853,7 @@ impl Rig {
                 match self.hands.as_ref().unwrap()[i].glove {
                     Glove::Hover(id) => {
                         self.set_glove(i, Glove::Locked(id));
-                        self.emit(Cue::GloveLock, Some(i), palm, 1.0);
+                        self.emit(Cue::GloveLock, Some(i), Some(id), palm, 1.0);
                     }
                     // Gripping again within the lock's grace: still locked.
                     Glove::Locked(_) => self.hands.as_mut().unwrap()[i].glove_released = None,
@@ -865,7 +865,7 @@ impl Rig {
                 if let Some(id) = self.slots[slot as usize].take() {
                     self.take(id, i, true);
                     self.debug.drawn += 1;
-                    self.emit(Cue::HolsterOut, Some(i), palm, 1.0);
+                    self.emit(Cue::HolsterOut, Some(i), Some(id), palm, 1.0);
                 }
             }
             Hover::Ammo(wid) => {
@@ -875,23 +875,23 @@ impl Rig {
                         let id = self.spawn_mag(&t, palm, grip_rot);
                         self.debug.mags_spawned += 1;
                         self.take(id, i, true);
-                        self.emit(Cue::ZoneTick, Some(i), palm, 1.0);
+                        self.emit(Cue::Pouch, Some(i), Some(wid), palm, 1.0);
                     }
-                    None => self.emit(Cue::Fail, Some(i), palm, 1.0),
+                    None => self.emit(Cue::Fail, Some(i), None, palm, 1.0),
                 }
             }
             Hover::Foregrip(wid) => {
                 let h = &mut self.hands.as_mut().unwrap()[i];
                 h.support = Some(wid);
                 h.euro.reset();
-                self.emit(Cue::Grab, Some(i), palm, 0.7);
+                self.emit(Cue::Grab, Some(i), Some(wid), palm, 0.7);
             }
             Hover::Handle(wid) => {
                 if let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) {
                     w.handle = Some(HandleGrab { hand: i, start: palm });
                 }
                 self.hands.as_mut().unwrap()[i].handle = Some(wid);
-                self.emit(Cue::Grab, Some(i), palm, 0.6);
+                self.emit(Cue::Grab, Some(i), Some(wid), palm, 0.6);
             }
         }
         let _ = inp;
@@ -935,7 +935,7 @@ impl Rig {
         h.glove = Glove::Idle;
         self.physics.set_groups(h.collider, groups_none());
         self.debug.grabs += 1;
-        self.emit(Cue::Grab, Some(i), palm, 1.0);
+        self.emit(Cue::Grab, Some(i), Some(id), palm, 1.0);
     }
 
     fn release(&mut self, i: usize, inp: &RigInput, zones: &[Zone; SLOT_COUNT_BODY]) {
@@ -955,7 +955,7 @@ impl Rig {
         if let Some(wid) = self.hands.as_mut().unwrap()[i].handle.take() {
             if let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) {
                 if w.let_go_handle() {
-                    self.emit(Cue::SlideForward, Some(i), palm, 1.0);
+                    self.emit(Cue::SlideForward, Some(i), Some(wid), palm, 1.0);
                 }
             }
             return;
@@ -977,7 +977,7 @@ impl Rig {
                 let free = self.slots[slot].is_none_or(|s| s == id);
                 if free && self.anchor.contains(z, palm_t) {
                     self.holster(id, slot as u32);
-                    self.emit(Cue::HolsterIn, Some(i), palm, 1.0);
+                    self.emit(Cue::HolsterIn, Some(i), Some(id), palm, 1.0);
                     return;
                 }
             }
@@ -1004,7 +1004,7 @@ impl Rig {
                 self.physics.set_kinematic(o.body, true);
                 self.physics.set_groups(o.collider, groups_none());
                 self.debug.returns += 1;
-                self.emit(Cue::Release, Some(i), palm, 0.6);
+                self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
                 return;
             }
         }
@@ -1016,7 +1016,7 @@ impl Rig {
             self.debug.throws += 1;
             self.debug.last_throw_speed = speed;
         }
-        self.emit(Cue::Release, Some(i), palm, 1.0);
+        self.emit(Cue::Release, Some(i), Some(id), palm, 1.0);
     }
 
     fn holster(&mut self, id: u32, slot: u32) {
@@ -1056,7 +1056,7 @@ impl Rig {
         let (wp, wr) = self.obj_pose(wid).unwrap();
         let (wv, _) = self.physics.velocity(self.objects[&wid].body);
         self.debug.ejects += 1;
-        self.emit(Cue::MagEject, Some(hand), wp, 1.0);
+        self.emit(Cue::MagEject, Some(hand), Some(wid), wp, 1.0);
         // The other hand waiting under the gun takes the magazine straight out.
         let well = wp + wr * v3(self.objects[&wid].desc.mag_well);
         let other = &self.hands.as_ref().unwrap()[hand ^ 1];
@@ -1082,7 +1082,7 @@ impl Rig {
         let released = self.with_rounds(wid, |w, _, r| w.release_slide(r)).unwrap_or(false);
         if released {
             let p = self.obj_pose(wid).unwrap().0;
-            self.emit(Cue::SlideForward, Some(hand), p, 1.0);
+            self.emit(Cue::SlideForward, Some(hand), Some(wid), p, 1.0);
         }
     }
 
@@ -1104,12 +1104,12 @@ impl Rig {
                 Holder::Held(h) => Some(h),
                 _ => None,
             };
-            self.emit(Cue::MagSeat, holder.map(|h| h ^ 1), p, 1.0);
+            self.emit(Cue::MagSeat, holder.map(|h| h ^ 1), Some(wid), p, 1.0);
             if let Some(h) = holder {
-                self.emit(Cue::MagSeat, Some(h), p, 0.6);
+                self.emit(Cue::MagSeat, Some(h), Some(wid), p, 0.6);
             }
             if chambered {
-                self.emit(Cue::SlideForward, holder, p, 0.8);
+                self.emit(Cue::SlideForward, holder, Some(wid), p, 0.8);
             }
         }
     }
@@ -1286,17 +1286,17 @@ impl Rig {
                     self.debug.shots += 1;
                     let cue = if d.weapon_flags & WPN_PISTOL != 0 { Cue::ShotPistol } else { Cue::ShotRifle };
                     let muzzle = wp + wr * v3(d.muzzle);
-                    self.emit(cue, Some(hand), muzzle, 1.0);
+                    self.emit(cue, Some(hand), Some(id), muzzle, 1.0);
                     if two {
-                        self.emit(cue, Some(hand ^ 1), muzzle, 0.5);
+                        self.emit(cue, Some(hand ^ 1), Some(id), muzzle, 0.5);
                     }
                     if fired == Fire::LastShot {
-                        self.emit(Cue::LastRound, None, wp, 1.0);
+                        self.emit(Cue::LastRound, None, Some(id), wp, 1.0);
                     }
                 }
                 Fire::Empty => {
                     self.debug.dry_fires += 1;
-                    self.emit(Cue::EmptyClick, Some(hand), wp, 1.0);
+                    self.emit(Cue::EmptyClick, Some(hand), Some(id), wp, 1.0);
                 }
                 Fire::None => {}
             }
@@ -1309,10 +1309,10 @@ impl Rig {
                 let (racked, forward) = self.with_rounds(id, |w, _, r| w.pull_handle(pull_m, travel, r)).unwrap_or((false, false));
                 if racked {
                     self.debug.racks += 1;
-                    self.emit(Cue::SlideBack, Some(g.hand), wp, 1.0);
+                    self.emit(Cue::SlideBack, Some(g.hand), Some(id), wp, 1.0);
                 }
                 if forward {
-                    self.emit(Cue::SlideForward, Some(g.hand), wp, 1.0);
+                    self.emit(Cue::SlideForward, Some(g.hand), Some(id), wp, 1.0);
                 }
                 // Pulling the hand away past the handle's travel lets go of it.
                 if hand_pos.distance(g.start) > travel.max(0.06) + 0.25 {
@@ -1434,7 +1434,7 @@ impl Rig {
                     h.glove_pending = None;
                     match best {
                         Some(id) => {
-                            self.emit(Cue::GloveHover, Some(i), origin, 0.6);
+                            self.emit(Cue::GloveHover, Some(i), Some(id), origin, 0.6);
                             self.set_glove(i, Glove::Hover(id));
                         }
                         None => self.set_glove(i, Glove::Idle),
@@ -1485,7 +1485,7 @@ impl Rig {
                     self.physics.set_velocity(body, launch, w);
                     self.set_glove(i, Glove::Flight(id));
                     self.debug.pulls += 1;
-                    self.emit(Cue::GloveFlick, Some(i), origin, 1.0);
+                    self.emit(Cue::GloveFlick, Some(i), Some(id), origin, 1.0);
                 }
             }
             Glove::Flight(id) => {
@@ -1587,7 +1587,7 @@ impl Rig {
                     if p.distance(palm) < s.interaction.glove_catch_radius && grip_held && elapsed > 0.05 {
                         self.debug.catches += 1;
                         self.take(*id, hand, true);
-                        self.emit(Cue::GloveCatch, Some(hand), palm, 1.0);
+                        self.emit(Cue::GloveCatch, Some(hand), Some(*id), palm, 1.0);
                         self.set_glove(hand, Glove::Idle);
                         continue;
                     }
@@ -1658,7 +1658,7 @@ impl Rig {
             if hit && self.now >= o.next_impact {
                 let hand = if let Holder::Held(h) = o.holder { Some(h) } else { None };
                 let strength = (change.max(o.prev_vel.length()) / 6.0).clamp(0.05, 1.0);
-                impacts.push((hand, pos, strength * (o.desc.mass / 2.0).clamp(0.4, 1.0)));
+                impacts.push((id, hand, pos, strength * (o.desc.mass / 2.0).clamp(0.4, 1.0)));
             }
             let now = self.now;
             let o = self.objects.get_mut(&id).unwrap();
@@ -1672,8 +1672,8 @@ impl Rig {
                 self.remove(id);
             }
         }
-        for (hand, pos, strength) in impacts {
-            self.emit(Cue::Impact, hand, pos, strength);
+        for (id, hand, pos, strength) in impacts {
+            self.emit(Cue::Impact, hand, Some(id), pos, strength);
         }
         // A support hand locks onto the gun's foregrip line, where along it the controller is; it
         // lets go if the controller wanders off.
@@ -1687,7 +1687,7 @@ impl Rig {
             if on_gun.distance(target) > FOREGRIP_BREAK {
                 self.hands.as_mut().unwrap()[i].support = None;
                 self.physics.set_groups(self.hands.as_ref().unwrap()[i].collider, groups_hand(i));
-                self.emit(Cue::Release, Some(i), target, 0.6);
+                self.emit(Cue::Release, Some(i), Some(wid), target, 0.6);
                 continue;
             }
             let rot = (wr * self.support_rot(&o.desc, i)).normalize();

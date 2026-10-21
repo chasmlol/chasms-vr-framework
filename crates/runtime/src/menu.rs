@@ -374,6 +374,7 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
     if s.sound.enabled {
         slider(ui, "Volume", &mut s.sound.volume, 0.0, 1.0, "", 2);
         ui.checkbox(&mut s.sound.shots, "Gunshot sounds");
+        ui.checkbox(&mut s.sound.game_sounds, "The game's own sounds (off: RustVR's)");
     }
 }
 

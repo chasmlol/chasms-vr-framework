@@ -193,6 +193,60 @@ pub fn all() -> Vec<Scenario> {
             captures: vec![(0.62, "reach"), (1.2, "lifted"), (1.95, "aim")],
         },
         Scenario {
+            name: "game_sounds",
+            about: "physical: the range hands over Metro's sound pack; the Kalash's grab, shots (with their tail and casings) and magazine are Metro's own sounds",
+            duration: 4.0,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(rifle) = near_game_rifle(objs) else { return b };
+                    b.head_rot = Quat::from_rotation_x(0.5 * (1.0 - ramp(t, 1.0, 1.4)));
+                    let aim = aim_gun(&rifle, Body::rest().eye(1), TARGET_AHEAD, 0.12);
+                    let (p, r) = take_rifle(t, &rifle);
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0)]) };
+                    b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1)]) };
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    // Three single shots, then A drops the magazine.
+                    b.hands[1].trigger = on(t, &[(1.9, 1.96), (2.3, 2.36), (2.7, 2.76)]);
+                    b.hands[1].buttons = if between(t, 3.3, 3.4) { CTRL_A } else { 0 };
+                    b
+                })
+            },
+            checks: vec![
+                check(0.1, "the range's sound pack (Metro's, extracted) has loaded", |c| {
+                    let a = c.audio.ok_or("no audio")?;
+                    match a.pack_status() {
+                        rustvr_audio::PackStatus::Ready(info) => ensure(info.name == "Metro 2033 Redux" && info.sets > 20 && info.missing.is_empty(), || format!("{info:?}")),
+                        other => Err(format!("{other:?} (run metro-extract --sounds?)")),
+                    }
+                }),
+                check(0.95, "picking the Kalash up was the game's sound", |c| {
+                    let a = c.audio.ok_or("no audio")?;
+                    ensure(gun_held_right(c) && a.pack_plays(rustvr_audio::Event::Grab) >= 1, || format!("held {}, pack grabs {}", gun_held_right(c), a.pack_plays(rustvr_audio::Event::Grab)))
+                }),
+                check(3.2, "every shot played the Kalash's own shot, its tail and a casing landing", |c| {
+                    let a = c.audio.ok_or("no audio")?;
+                    let n = |e| a.pack_plays(e);
+                    use rustvr_audio::Event as E;
+                    ensure(c.rig.shots == 3 && n(E::Fire) == 3 && n(E::FireTail) == 3 && n(E::Casing) == 3, || {
+                        format!("{} shots: fire {}, tail {}, casing {}", c.rig.shots, n(E::Fire), n(E::FireTail), n(E::Casing))
+                    })
+                }),
+                check(3.2, "the tails are still ringing", |c| ensure(c.audio.is_some_and(|a| a.voices() >= 3), || format!("{} voices", c.audio.map_or(0, |a| a.voices())))),
+                check(3.9, "the magazine came out with the AK's reload sound", |c| {
+                    let a = c.audio.ok_or("no audio")?;
+                    ensure(c.rig.ejects == 1 && a.pack_plays(rustvr_audio::Event::MagOut) == 1, || format!("ejects {}, pack mag_out {}", c.rig.ejects, a.pack_plays(rustvr_audio::Event::MagOut)))
+                }),
+            ],
+            captures: vec![],
+        },
+        Scenario {
             name: "game_recoil",
             about: "physical: Metro's Kalash fires a burst with Metro's own recoil (its camera tracks and fire motions), the muzzle held up while it fires and back after",
             duration: 3.6,

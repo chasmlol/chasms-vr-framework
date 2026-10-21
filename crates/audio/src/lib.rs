@@ -118,7 +118,7 @@ impl Sound {
 /// What happened, as a sound pack names it (`sounds.toml` keys). Each has a synthesised
 /// [`Sound`] to fall back on, except the ones only a game's own sounds can make (a shot's tail,
 /// casings landing, grenades).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Event {
     Grab,
     Release,

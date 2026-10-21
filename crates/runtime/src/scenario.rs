@@ -137,6 +137,9 @@ pub struct Ctx<'a> {
     pub haptics: usize,
     pub frames_run: u64,
     pub captures: &'a [Capture],
+    /// The runtime's sounds (mixed offline in scenarios): which played, from the game's pack or
+    /// the runtime's own.
+    pub audio: Option<&'a rustvr_audio::Audio>,
 }
 
 impl Ctx<'_> {
@@ -854,7 +857,7 @@ pub fn run(gpu: &Gpu, sc: &Scenario, opts: &RunOptions) -> Result<Report> {
     let mut session = Session::new(
         gpu.clone(),
         Box::new(backend),
-        Options { mapping: mapping.clone(), settings_dir: None, lockstep: sc.lockstep, lockstep_timeout_ms: 3000, audio: false },
+        Options { mapping: mapping.clone(), settings_dir: None, lockstep: sc.lockstep, lockstep_timeout_ms: 3000, audio: false, offline_audio: true },
     )?;
     session.world = world.clone();
     let mut settings = Settings::default();
@@ -891,7 +894,10 @@ pub fn run(gpu: &Gpu, sc: &Scenario, opts: &RunOptions) -> Result<Report> {
         } else {
             session.adapter_connected() && session.stats.game_frames > 5
         };
-        if ready {
+        // A game's sound pack is decoded in the background; scripts start once it's in (the
+        // simulated clock runs far faster than it).
+        let loading = session.audio.as_ref().is_some_and(|a| matches!(a.pack_status(), rustvr_audio::PackStatus::Loading { .. }));
+        if ready && !loading {
             break;
         }
         if let Some(c) = &mut child
@@ -946,6 +952,7 @@ pub fn run(gpu: &Gpu, sc: &Scenario, opts: &RunOptions) -> Result<Report> {
             haptics,
             frames_run: i + 1,
             captures: &captures,
+            audio: session.audio.as_ref(),
         };
         for (c, done) in &mut checks {
             if !*done && t >= c.at {

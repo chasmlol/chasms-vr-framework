@@ -353,6 +353,52 @@ fn switching_packs_mid_sound_is_clean() {
     assert_eq!(audio.shared.packs.lock().unwrap().len(), 1);
 }
 
+/// Writes Metro's sounds as the runtime plays them (`local_assets/metro2033/sounds`, from
+/// `metro-extract`) to `captures/audio/pack_*.wav`, for checking the mapping by ear:
+/// `cargo test -p rustvr-audio -- --ignored write_pack_listening_wavs`.
+#[test]
+#[ignore = "writes WAV files to captures/audio; needs Metro's extracted sounds"]
+fn write_pack_listening_wavs() {
+    let root = std::env::var_os("RUSTVR_ASSETS").map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../local_assets"));
+    let dir = root.join("metro2033").join("sounds");
+    let audio = Audio::offline(RATE);
+    audio.load_pack(Some(&dir));
+    wait_ready(&audio);
+    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../captures/audio");
+    std::fs::create_dir_all(&out).unwrap();
+    let floor = Vec3::new(0.2, -1.6, 0.4);
+    let write = |name: &str, cues: &[(f32, Event, &str, Vec3)], seconds: f32| {
+        let mut samples = Vec::new();
+        for (at, event, set, pos) in cues {
+            samples.extend(audio.render(frames(*at) - samples.len() / 2));
+            audio.play_event(*event, SetKey::of(set), event.fallback(), *pos, 1.0);
+        }
+        samples.extend(audio.render(frames(seconds) - samples.len() / 2));
+        std::fs::write(out.join(name), decode::wav_bytes(&Pcm { rate: RATE, channels: 2, samples })).unwrap();
+    };
+    for gun in ["wpn_ak", "wpn_ubludok", "wpn_revolver", "wpn_duplet"] {
+        let mut cues = vec![(0.1, Event::Grab, gun, HAND)];
+        for i in 0..3 {
+            let t = 0.8 + 0.12 * i as f32;
+            cues.extend([(t, Event::Fire, gun, HAND), (t, Event::FireTail, gun, HAND), (t, Event::Casing, gun, floor)]);
+        }
+        cues.extend([
+            (3.5, Event::DryFire, gun, HAND),
+            (4.2, Event::MagOut, gun, HAND),
+            (5.4, Event::Pouch, gun, Vec3::new(-0.25, -0.1, -0.05)),
+            (6.4, Event::MagIn, gun, HAND),
+            (7.4, Event::BoltBack, gun, HAND),
+            (7.9, Event::BoltForward, gun, HAND),
+            (8.8, Event::HolsterIn, gun, Vec3::new(0.22, -0.6, 0.05)),
+            (10.0, Event::HolsterOut, gun, Vec3::new(0.22, -0.6, 0.05)),
+            (11.5, Event::Impact, gun, floor),
+        ]);
+        write(&format!("pack_{gun}.wav"), &cues, 13.0);
+    }
+    let ui = [(0.1, Event::UiClick, "", HAND), (0.6, Event::ZoneTick, "", HAND), (1.1, Event::Release, "", HAND), (3.0, Event::Melee, "wpn_ak", HAND)];
+    write("pack_hands.wav", &ui, 4.5);
+}
+
 fn peak(x: &[f32]) -> f32 {
     x.iter().fold(0.0, |m, s| m.max(s.abs()))
 }
