@@ -37,7 +37,8 @@ pub(crate) struct Variation {
 }
 
 impl Variation {
-    fn new(main: Vec<f32>, hard: Vec<f32>, bed: Vec<f32>, looped: bool) -> Variation {
+    /// A variation from its layers (any may be empty; `bed` is stereo, interleaved).
+    pub(crate) fn from_layers(main: Vec<f32>, hard: Vec<f32>, bed: Vec<f32>, looped: bool) -> Variation {
         let len = main.len().max(hard.len()).max(bed.len() / 2);
         let level = (0..len.div_ceil(LEVEL_BLOCK))
             .map(|block| {
@@ -53,7 +54,7 @@ impl Variation {
     }
 
     fn single(main: Vec<f32>) -> Variation {
-        Variation::new(main, Vec::new(), Vec::new(), false)
+        Variation::from_layers(main, Vec::new(), Vec::new(), false)
     }
 }
 
@@ -370,7 +371,7 @@ fn glove_travel(v: &mut Vary) -> Variation {
         })
         .collect();
     normalise(&mut main, 0.20);
-    Variation::new(main, Vec::new(), Vec::new(), true)
+    Variation::from_layers(main, Vec::new(), Vec::new(), true)
 }
 
 /// The catch: a ping as the hand closes (an octave-and-fifth pair) and a soft grab-like thud.
@@ -404,7 +405,7 @@ fn impact(v: &mut Vary) -> Variation {
         let level = v.rng.range(0.1, 0.35) * (1.0 - at / 0.3);
         hard.noise(at, level, noise, Env::hit(v.rng.range(0.002, 0.004)));
     }
-    Variation::new(body.finish(0.40), hard.finish(0.36), Vec::new(), false)
+    Variation::from_layers(body.finish(0.40), hard.finish(0.36), Vec::new(), false)
 }
 
 /// A light tick, the quietest sound in the set.
@@ -446,7 +447,7 @@ fn melee(v: &mut Vary) -> Variation {
         hard.noise(at, v.rng.range(0.1, 0.3), Noise::band(3500.0, 1.0), Env::hit(0.001));
     }
     hard.mode(0.0, v.partial(520.0), 0.025, v.amp(0.3));
-    Variation::new(body.finish(0.42), hard.finish(0.30), Vec::new(), false)
+    Variation::from_layers(body.finish(0.42), hard.finish(0.30), Vec::new(), false)
 }
 
 /// The four layers of a gunshot, after Alyx's design.
@@ -544,5 +545,5 @@ fn shot(v: &mut Vary, shot: &Shot) -> Variation {
     let at = |v: &[f32], i: usize| v.get(i).copied().unwrap_or(0.0);
     let bed =
         (0..frames).flat_map(|i| [at(&lfe, i) + at(&tails[0], i), at(&lfe, i) + at(&tails[1], i)]).collect();
-    Variation::new(main.finish(shot.peaks.0), Vec::new(), bed, false)
+    Variation::from_layers(main.finish(shot.peaks.0), Vec::new(), bed, false)
 }

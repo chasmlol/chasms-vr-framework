@@ -419,6 +419,38 @@ fn mixing_never_allocates() {
     assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
 }
 
+#[test]
+fn mixing_pack_sounds_never_allocates() {
+    use crate::pack_tests::{gun_pack, wait_ready};
+    let (a, b) = (gun_pack("alloc_a"), gun_pack("alloc_b"));
+    let audio = Audio::offline(RATE);
+    audio.load_pack(Some(&a.0));
+    wait_ready(&audio);
+    let Output::Offline(mixer) = &audio.output else { unreachable!() };
+    // Switching to the first pack, and every kind of play from it (more than there are voices).
+    let events = [Event::Fire, Event::FireTail, Event::Casing, Event::DryFire, Event::Grab, Event::MagOut];
+    let play = |n: usize| {
+        for i in 0..n {
+            audio.play_event(events[i % events.len()], SetKey::of(if i % 2 == 0 { "gun" } else { "other" }), Some(Sound::Grab), HAND, 1.0);
+        }
+    };
+    play(60);
+    let mut m = mixer.lock().unwrap();
+    WATCHING.set(true);
+    m.mix(frames(0.3), |_, _, _| {});
+    WATCHING.set(false);
+    drop(m);
+    // Then a second pack while the first one's voices still play, and the first one let go.
+    audio.load_pack(Some(&b.0));
+    wait_ready(&audio);
+    play(12);
+    let mut m = mixer.lock().unwrap();
+    WATCHING.set(true);
+    m.mix(frames(1.5), |_, _, _| {});
+    WATCHING.set(false);
+    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0);
+}
+
 /// Writes a few short scenes to `captures/audio` for listening on headphones:
 /// `cargo test -p rustvr-audio -- --ignored write_listening_wavs`.
 #[test]
