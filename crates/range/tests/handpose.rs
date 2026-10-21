@@ -402,7 +402,7 @@ fn the_game_hands_hold_the_rigged_guns() {
     let only = std::env::var("POSE_ONLY").ok();
     let renders = std::env::var("POSE_NO_RENDERS").is_err();
     let descs: Vec<ObjectDesc> = armory.table.descs[..armory.table.count as usize].iter().filter(|d| d.kind == OBJ_WEAPON).copied().collect();
-    assert_eq!(descs.len(), 5, "the five rigged guns");
+    assert_eq!(descs.len(), weapons.iter().filter(|w| w.rigged()).count(), "every rigged gun");
     for d in &descs {
         let w = refs[(d.id - physical::WEAPON_BASE) as usize];
         assert!(d.grip_pose != 0, "{}: a firing-hand pose", w.key);
@@ -445,8 +445,12 @@ fn the_game_hands_hold_the_rigged_guns() {
             let metro = metro_skin(w, gun);
             let g = measure_skin(w, gun, &metro, &metro, true);
             eprintln!("{} (Metro's own arms): index pad {:.1} mm from the trigger blade; fingertips inside the gun at most: right {:.1} mm, left {:.1} mm", w.key, g.pad_gap, g.tips[1].0, g.tips[0].0);
-            assert!((m.pad_gap - g.pad_gap).abs() < 1.0, "{}: our index pad is {:.1} mm from the trigger, Metro's {:.1} mm", w.key, m.pad_gap, g.pad_gap);
-            for side in 0..2 {
+            // (A trigger that isn't a part of its own, as on the Hellbreath, has no blade to measure.)
+            if !w.trigger_blade.is_empty() {
+                assert!((m.pad_gap - g.pad_gap).abs() < 1.0, "{}: our index pad is {:.1} mm from the trigger, Metro's {:.1} mm", w.key, m.pad_gap, g.pad_gap);
+            }
+            // (A pistol is held in one hand: Metro's other hand cups it, ours is free.)
+            for side in (0..2).filter(|&s| s == 1 || !w.pistol) {
                 assert!((m.tips[side].0 - g.tips[side].0).abs() < 1.0, "{}: hand {side}'s fingertips {:.1} mm in, Metro's {:.1} mm", w.key, m.tips[side].0, g.tips[side].0);
             }
         }
@@ -544,7 +548,7 @@ fn the_registered_poses_are_metros() {
     for w in weapons.iter().filter(|w| w.from_game && w.rigged()) {
         let arms = rustvr_asset::load_model(&metro_dir(), &format!("hands_{}", w.key.trim_start_matches("wpn_"))).unwrap();
         let i = refs.iter().position(|r| r.key == w.key).unwrap();
-        for (id, side, bone) in [(physical::grip_pose_id(i), 1, "bip01_r_hand"), (physical::support_pose_id(i), 0, "bip01_l_hand")] {
+        for (id, side, bone) in [(physical::grip_pose_id(i), 1, "bip01_r_hand"), (physical::support_pose_id(i), 0, "bip01_l_hand")].into_iter().filter(|&(_, side, _)| side == 1 || !w.pistol) {
             let p = armory.poses.find(id).unwrap_or_else(|| panic!("{}: pose {id}", w.key));
             assert_eq!(p.side as usize, side);
             let b = arms.bones.iter().find(|b| b.name == bone).unwrap();

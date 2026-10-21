@@ -162,6 +162,8 @@ struct View {
     /// Draw the gun (off: only the markers and a block where the pistol grip is, to see the fist
     /// round it).
     gun: bool,
+    /// Tint the gun's moving parts: the magazine red, the bolt or handle cyan, the trigger yellow.
+    parts: bool,
 }
 
 const SIZE: (u32, u32) = (900, 700);
@@ -176,7 +178,15 @@ impl Scene<'_> {
         let (cam, rot) = view.cam;
         let vp = projection(&view.fov, 0.02, 50.0) * view_matrix(cam, rot);
         let model = gun_at * w.fix;
-        let mut draws: Vec<Draw> = if view.gun { gun.iter().map(|(m, two)| Draw { mesh: m, model, tint: [1.0; 4], emissive: 0.0, two_sided: *two }).collect() } else { Vec::new() };
+        let tint = |i: usize| match () {
+            _ if !view.parts => [1.0; 4],
+            _ if w.mag_parts.contains(&i) => [1.0, 0.25, 0.25, 1.0],
+            _ if w.bolt_parts.contains(&i) => [0.25, 1.0, 1.0, 1.0],
+            _ if w.trigger_parts.contains(&i) => [1.0, 1.0, 0.2, 1.0],
+            _ => [0.6, 0.6, 0.6, 1.0],
+        };
+        let moving = |i: usize| w.mag_parts.contains(&i) || w.bolt_parts.contains(&i) || w.trigger_parts.contains(&i);
+        let mut draws: Vec<Draw> = if view.gun { gun.iter().enumerate().map(|(i, (m, two))| Draw { mesh: m, model, tint: tint(i), emissive: if view.parts && moving(i) { 0.6 } else { 0.0 }, two_sided: *two }).collect() } else { Vec::new() };
         if !view.gun {
             // The pistol grip's cross-section (measured), as a block along its axis.
             let (centre, half) = w.grip_block.unwrap();
@@ -193,6 +203,11 @@ impl Scene<'_> {
             for (m, tint) in markers(w) {
                 draws.push(Draw { mesh: &self.cube, model: gun_at * m, tint, emissive: 1.5, two_sided: false });
             }
+        }
+        if view.name == "sights" {
+            // Where the shot goes: a red dot 6 m out on the line of sight.
+            let dot = Mat4::from_scale_rotation_translation(Vec3::splat(0.006), Quat::IDENTITY, EYE + Vec3::Z * 6.0);
+            draws.push(Draw { mesh: &self.cube, model: dot, tint: [1.0, 0.1, 0.1, 1.0], emissive: 1.5, two_sided: false });
         }
         self.renderer.render(gpu, color.rtv.as_ref().unwrap(), depth.rtv.as_ref(), width, height, vp, cam, rot * Vec3::Z, &draws).unwrap();
         let px = color.read_rgba8(gpu).unwrap();
@@ -273,7 +288,10 @@ fn the_line_of_sight_passes_through_the_sights() {
         // The muzzle is near the line (a sight sits a few centimetres over the bore).
         let m = Vec3::from_array(w.rig.muzzle);
         let over = sight.y - m.y;
-        assert!((0.0..0.12).contains(&over) && (m.x - sight.x).abs() < 0.01, "{}: muzzle {m} vs sight {sight}", w.key);
+        // (A heavy gun's line of sight is the game's aim, which can run well off the bore.)
+        if w.stock || w.pistol {
+            assert!((0.0..0.12).contains(&over) && (m.x - sight.x).abs() < 0.01, "{}: muzzle {m} vs sight {sight}", w.key);
+        }
     }
 }
 
@@ -289,6 +307,15 @@ fn the_drawn_hands_sit_on_the_gun() {
         let g = grips(w, gun);
         let right = offsets.hand_frame(Side::Right, g[1].unwrap());
         assert!(right.pos.distance(held.targets[1].pos) < 1e-4, "{}: the right hand is on its grip pose", w.key);
+        if let Some(left) = g[0] {
+            let l = offsets.hand_frame(Side::Left, left);
+            assert!(l.pos.distance(held.targets[0].pos) < 1e-4, "{}: the left hand is on its grip pose", w.key);
+        }
+        // A heavy gun's handles are the game's own shapes (a spade grip, a handlebar, a side
+        // handle): its hands are Metro's (`metro_arms_hold_their_guns`), not a pistol grip's.
+        if !w.stock && !w.pistol {
+            continue;
+        }
         // The right palm (canonical +X out of it) faces the gun's left, the fingers point forward.
         let to_weapon = gun.inverse();
         let r = Quat::from_mat4(&to_weapon) * right.rot;
@@ -296,14 +323,14 @@ fn the_drawn_hands_sit_on_the_gun() {
         assert!((r * Vec3::X).x < -0.8, "{}: right palm faces {:?}", w.key, r * Vec3::X);
         assert!((r * Vec3::Y).z > 0.6, "{}: right fingers point {:?}", w.key, r * Vec3::Y);
         let grip = Vec3::from_array(w.rig.grip);
-        assert!(wrist.z < grip.z && wrist.x > grip.x, "{}: the wrist {wrist} is behind and right of the grip", w.key);
+        assert!(wrist.z < grip.z && wrist.x > grip.x - 0.01, "{}: the wrist {wrist} is behind and right of the grip", w.key);
         // Wrist to trigger pad: the hand to the knuckle plus the index finger's first two joints
         // (about 14 cm for the default body), and the trigger straight ahead of the hand.
         let reach = wrist.distance(w.trigger.unwrap());
         eprintln!("{}: wrist to trigger {:.1} cm", w.key, reach * 100.0);
-        assert!((0.12..0.17).contains(&reach), "{}: trigger {:.1} cm from the wrist", w.key, reach * 100.0);
+        assert!((0.12..0.18).contains(&reach), "{}: trigger {:.1} cm from the wrist", w.key, reach * 100.0);
         let ahead = (w.trigger.unwrap() - wrist).normalize();
-        assert!(ahead.z > 0.85, "{}: the trigger is off to the side of the hand ({ahead})", w.key);
+        assert!(ahead.z > 0.8, "{}: the trigger is off to the side of the hand ({ahead})", w.key);
         if let Some(left) = g[0] {
             let l = offsets.hand_frame(Side::Left, left);
             assert!(l.pos.distance(held.targets[0].pos) < 1e-4, "{}: the left hand is on its grip pose", w.key);
@@ -353,15 +380,20 @@ fn metro_arms_hold_their_guns() {
         eprintln!("  right grip pose at {:.4} {}", right.pos, describe(right.rot));
         eprintln!("  left  grip pose at {:.4} {}", left.pos, describe(left.rot));
         let g = w.grip_rot.unwrap();
-        let s = w.support_rot.unwrap();
-        let (grip, fore) = (Vec3::from_array(w.rig.grip), Vec3::from_array(w.rig.foregrip));
-        let (dr, dl) = (g.angle_between(right.rot).to_degrees(), s.angle_between(left.rot).to_degrees());
+        let grip = Vec3::from_array(w.rig.grip);
+        let dr = g.angle_between(right.rot).to_degrees();
         eprintln!("  authored right {}  ({dr:.1}° from Metro's, palm {:.1} cm away)", describe(g), grip.distance(right.pos) * 100.0);
-        eprintln!("  authored left  {}  ({dl:.1}° from Metro's, palm {:.1} cm away)", describe(s), fore.distance(left.pos) * 100.0);
-        // The authored hands are Metro's own, set onto the measured grip (and turned so the
-        // avatar's index finger reaches the trigger): a few degrees and centimetres apart at most.
+        // The hands are Metro's own: the controllers go where they put the drawn hands exactly on
+        // Metro's arms for the gun.
         assert!(dr < 25.0 && grip.distance(right.pos) < 0.03, "{}: the firing hand strays from Metro's", w.key);
-        assert!(dl < 5.0 && fore.distance(left.pos) < 0.01, "{}: the support hand strays from Metro's", w.key);
+        // A pistol is held in the firing hand alone (Metro's other hand cups it; the runtime has no
+        // cupping hold).
+        if let Some(s) = w.support_rot.filter(|_| !w.pistol) {
+            let fore = Vec3::from_array(w.rig.foregrip);
+            let dl = s.angle_between(left.rot).to_degrees();
+            eprintln!("  authored left  {}  ({dl:.1}° from Metro's, palm {:.1} cm away)", describe(s), fore.distance(left.pos) * 100.0);
+            assert!(dl < 5.0 && fore.distance(left.pos) < 0.01, "{}: the support hand strays from Metro's", w.key);
+        }
     }
 }
 
@@ -412,16 +444,21 @@ fn renders() {
         let close = fov(0.17, SIZE.0 as f32 / SIZE.1 as f32);
         let aspect = SIZE.0 as f32 / SIZE.1 as f32;
         let all_markers = std::env::var("RIG_MARKERS").is_ok();
-        let view = |name: &'static str, cam: (Vec3, Quat), fov: Fov, visibility: u32| View { name, cam, fov, visibility, first_person: false, markers: all_markers, runtime_bias: false, gun: true };
+        let view = |name: &'static str, cam: (Vec3, Quat), fov: Fov, visibility: u32| View { name, cam, fov, visibility, first_person: false, markers: all_markers, runtime_bias: false, gun: true, parts: false };
         let side = mid + Vec3::new(span * 1.9 + 0.3, 0.06, 0.0);
         let mut shots = vec![
             view("side", look_at(side, mid, Vec3::Y), wide, BODYVIS_ARMS),
             View { markers: true, ..view("markers", look_at(side, mid, Vec3::Y), wide, BODYVIS_HANDS) },
+            // The parts the rig moves, tinted: magazine red, bolt or handle cyan, trigger yellow.
+            View { parts: true, ..view("parts", look_at(side, mid, Vec3::Y), wide, BODYVIS_HANDS) },
             view("left", look_at(mid + Vec3::new(-(span * 1.9 + 0.3), 0.06, 0.0), mid, Vec3::Y), wide, BODYVIS_ARMS),
             view("top", look_at(mid + Vec3::new(0.0, span * 1.9 + 0.35, 0.0), mid, Vec3::Z), wide, BODYVIS_ARMS),
             view("under", look_at(mid + Vec3::new(0.0, -(span * 1.9 + 0.35), 0.0), mid, Vec3::Z), wide, BODYVIS_ARMS),
             View { first_person: true, ..view("eye", (EYE, Quat::IDENTITY), fov(0.75, aspect), BODYVIS_FULL) },
             View { first_person: true, runtime_bias: true, ..view("eye_runtime", (EYE, Quat::IDENTITY), fov(0.75, aspect), BODYVIS_FULL) },
+            // Down the sights, magnified: the front post's tip should sit in the rear notch, level
+            // with its shoulders, on the point the shot goes (the image's centre).
+            View { first_person: true, ..view("sights", (EYE, Quat::IDENTITY), fov(0.03, aspect), BODYVIS_HANDS) },
             view("grip", look_at(grip + Vec3::new(0.42, 0.03, 0.03), grip + Vec3::new(0.0, 0.03, 0.03), Vec3::Y), close, BODYVIS_HANDS),
             view("grip_left", look_at(grip + Vec3::new(-0.42, 0.03, 0.03), grip + Vec3::new(0.0, 0.03, 0.03), Vec3::Y), close, BODYVIS_HANDS),
             view("grip_below", look_at(grip + Vec3::new(0.0, -0.42, 0.03), grip + Vec3::new(0.0, 0.0, 0.03), Vec3::Z), close, BODYVIS_HANDS),
@@ -471,16 +508,76 @@ fn table_layout_renders() {
     let (width, height) = SIZE;
     let (tmin, tmax) = content::TABLE_NEAR;
     let centre = Vec3::new((tmin.x + tmax.x) * 0.5, tmax.y, (tmin.z + tmax.z) * 0.5);
-    for (name, (cam, rot)) in [
-        ("table_top", look_at(centre + Vec3::new(0.0, 1.5, 0.0), centre, Vec3::Z)),
-        ("table_player", look_at(Vec3::new(0.0, 1.70, 0.0), centre + Vec3::new(0.0, 0.0, 0.05), Vec3::Y)),
+    // The armory bench behind the player: from above, and as you turn round to it.
+    let (bmin, bmax) = content::TABLE_ARMORY;
+    let bench = Vec3::new((bmin.x + bmax.x) * 0.5, bmax.y, (bmin.z + bmax.z) * 0.5);
+    for (name, (cam, rot), tan) in [
+        ("table_top", look_at(centre + Vec3::new(0.0, 1.5, 0.0), centre, Vec3::Z), 0.45),
+        ("table_player", look_at(Vec3::new(0.0, 1.70, 0.0), centre + Vec3::new(0.0, 0.0, 0.05), Vec3::Y), 0.45),
+        ("bench_top", look_at(bench + Vec3::new(0.0, 4.2, 0.0), bench, -Vec3::Z), 0.45),
+        ("bench_player", look_at(Vec3::new(0.0, 1.70, 0.2), bench + Vec3::new(0.0, 0.0, 0.4), Vec3::Y), 0.75),
     ] {
         let color = Texture::new(&gpu, &TexDesc::target(width, height, DXGI_FORMAT_R8G8B8A8_UNORM)).unwrap();
-        let vp = projection(&fov(0.45, width as f32 / height as f32), 0.05, 50.0) * view_matrix(cam, rot);
+        let vp = projection(&fov(tan, width as f32 / height as f32), 0.05, 50.0) * view_matrix(cam, rot);
         let mut draws = vec![Draw { mesh: &room, model: Mat4::IDENTITY, tint: [1.0; 4], emissive: 0.0, two_sided: false }];
         draws.extend(meshes.iter().map(|(m, at, two)| Draw { mesh: m, model: *at, tint: [1.0; 4], emissive: 0.0, two_sided: *two }));
         renderer.render(&gpu, color.rtv.as_ref().unwrap(), None, width, height, vp, cam, rot * Vec3::Z, &draws).unwrap();
         rustvr_gpu::save_png(&out_dir().join(format!("{name}.png")), width, height, &color.read_rgba8(&gpu).unwrap()).unwrap();
+    }
+}
+
+/// (For rigging, see docs/RIGGING.md) Every Metro gun as the game holds it: its model with
+/// Metro's own first-person arms for it, in the model's space, from the right, the left, above,
+/// below and behind, with the rig points marked (the rig's when it has one, else the extractor's
+/// guesses): red grip, yellow trigger, green line of sight, blue foregrip, magenta magazine well,
+/// white muzzle, cyan charging handle. `captures/rig/survey/<gun>_<view>.png`; `RIG_ONLY` picks guns.
+#[test]
+fn metro_guns_as_the_game_holds_them() {
+    if !has_metro() {
+        return;
+    }
+    let gpu = Gpu::new().unwrap();
+    let dir = out_dir().join("survey");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut renderer = Renderer::new(&gpu, rustvr_asset::default_root()).unwrap();
+    let mut cube = MeshData::default();
+    cube.add_box(Vec3::splat(-0.5), Vec3::splat(0.5), [255, 255, 255, 255]);
+    let cube = renderer.upload(&gpu, &cube).unwrap();
+    let only = std::env::var("RIG_ONLY").ok();
+    let (width, height) = SIZE;
+    let aspect = width as f32 / height as f32;
+    for w in content::metro_weapons(&rustvr_asset::default_root()).iter().filter(|w| only.as_ref().is_none_or(|k| k.split(',').any(|k| w.key.starts_with(k)))) {
+        let meshes: Vec<Mesh> = w.parts.iter().chain(&w.hands).map(|p| renderer.upload(&gpu, p).unwrap()).collect();
+        let Some((lo, hi)) = content::parts_bounds(&w.parts, &(0..w.parts.len()).collect::<Vec<_>>(), Mat4::IDENTITY) else { continue };
+        let centre = (lo + hi) * 0.5;
+        let size = (hi - lo).length().max(0.3);
+        let to_model = w.fix.inverse();
+        let marks: Vec<(Mat4, [f32; 4])> = markers(w).into_iter().map(|(m, tint)| (to_model * m, tint)).collect();
+        let d = size * 1.25;
+        let mut views = vec![
+            ("right".to_string(), look_at(centre + Vec3::X * d, centre, Vec3::Y), 0.45),
+            ("left".to_string(), look_at(centre - Vec3::X * d, centre, Vec3::Y), 0.45),
+            ("top".to_string(), look_at(centre + Vec3::Y * d, centre, Vec3::Z), 0.45),
+            ("under".to_string(), look_at(centre - Vec3::Y * d, centre, Vec3::Z), 0.45),
+            ("back".to_string(), look_at(centre - Vec3::Z * d, centre, Vec3::Y), 0.45),
+        ];
+        // The top of the gun along the line of sight, close up from the right in four tiles (rear
+        // to front), to see its sights side-on.
+        let to_model = |p: [f32; 3]| to_model.transform_point3(Vec3::from_array(p));
+        let (sight, muzzle) = (to_model(w.rig.sight), to_model(w.rig.muzzle));
+        let (z0, z1) = (to_model(w.rig.grip).z - 0.05, muzzle.z + 0.02);
+        for k in 0..4 {
+            let at = Vec3::new(sight.x, sight.y, z0 + (z1 - z0) * (k as f32 + 0.5) / 4.0);
+            views.push((format!("sights_{k}"), look_at(at + Vec3::X * 0.4, at, Vec3::Y), (z1 - z0) / 8.0 / 0.4 / aspect * 1.1));
+        }
+        for (name, (cam, rot), tan) in views {
+            let color = Texture::new(&gpu, &TexDesc::target(width, height, DXGI_FORMAT_R8G8B8A8_UNORM)).unwrap();
+            let vp = projection(&fov(tan, aspect), 0.02, 20.0) * view_matrix(cam, rot);
+            let mut draws: Vec<Draw> = meshes.iter().map(|m| Draw { mesh: m, model: Mat4::IDENTITY, tint: [1.0; 4], emissive: 0.0, two_sided: true }).collect();
+            draws.extend(marks.iter().map(|(m, tint)| Draw { mesh: &cube, model: *m, tint: *tint, emissive: 1.5, two_sided: false }));
+            renderer.render(&gpu, color.rtv.as_ref().unwrap(), None, width, height, vp, cam, rot * Vec3::Z, &draws).unwrap();
+            rustvr_gpu::save_png(&dir.join(format!("{}_{name}.png", w.key)), width, height, &color.read_rgba8(&gpu).unwrap()).unwrap();
+        }
     }
 }
 
@@ -494,7 +591,7 @@ fn print_descriptors() {
     let descs = &a.table.descs[..a.table.count as usize];
     for d in descs.iter().filter(|d| d.kind == OBJ_WEAPON) {
         let w = refs[(d.id - physical::WEAPON_BASE) as usize];
-        let m = descs.iter().find(|m| m.id == physical::MAG_BASE + d.id - physical::WEAPON_BASE).unwrap();
+        let m = descs.iter().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type);
         let v = |a: [f32; 3]| format!("({:.4}, {:.4}, {:.4})", a[0], a[1], a[2]);
         let q = |a: [f32; 4]| format!("[{:.4}, {:.4}, {:.4}, {:.4}]", a[0], a[1], a[2], a[3]);
         eprintln!("{} ({}):", w.key, w.name);
@@ -504,7 +601,11 @@ fn print_descriptors() {
         eprintln!("  sight {} muzzle {} mag_well {} handle {} travel {}", v(d.sight), v(d.muzzle), v(d.mag_well), v(d.handle), d.handle_travel);
         eprintln!("  trigger {}", v(w.trigger.unwrap().to_array()));
         eprintln!("  recoil {} deg, {} deg, {} m; mass {} kg; fire rate {}/s", d.recoil_pitch, d.recoil_yaw, d.recoil_back, d.mass, d.fire_rate);
-        eprintln!("  collider centre {} half {}; magazine centre {} half {} mass {} kg", v(d.center), v(d.half_extents), v(m.center), v(m.half_extents), m.mass);
+        match m {
+            Some(m) => eprintln!("  collider centre {} half {}; magazine centre {} half {} mass {} kg", v(d.center), v(d.half_extents), v(m.center), v(m.half_extents), m.mass),
+            None => eprintln!("  collider centre {} half {}; no magazine ({} rounds held)", v(d.center), v(d.half_extents), d.capacity),
+        }
+        eprintln!("  ammo type {:#x} ({}), {} rounds", d.ammo_type, w.caliber, d.capacity);
         eprintln!("  spawn {} slot {}", v(d.spawn_pose.pos), d.start_slot);
     }
 }

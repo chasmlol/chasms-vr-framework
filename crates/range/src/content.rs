@@ -148,11 +148,14 @@ pub const TABLE_NEAR: (Vec3, Vec3) = (Vec3::new(0.40, 0.0, 0.30), Vec3::new(1.50
 pub const TABLE_LONG: (Vec3, Vec3) = (Vec3::new(-3.0, 0.0, 2.2), Vec3::new(3.0, 0.85, 2.9));
 /// A small table at your left hand with things to throw.
 pub const TABLE_SIDE: (Vec3, Vec3) = (Vec3::new(-0.95, 0.0, 0.25), Vec3::new(-0.45, 0.85, 0.75));
+/// The armory bench behind you (turn round and step back): Metro's other rigged guns lie on it
+/// side by side, barrels to the back wall, butts towards you.
+pub const TABLE_ARMORY: (Vec3, Vec3) = (Vec3::new(-3.6, 0.0, -2.75), Vec3::new(3.6, 0.85, -0.95));
 
 /// Solid furniture (min, max), drawn and sent to the runtime's physics as collision boxes.
 pub fn furniture() -> Vec<(Vec3, Vec3, [u8; 4])> {
     let wood = [110, 85, 60, 255];
-    let mut v = vec![(TABLE_NEAR.0, TABLE_NEAR.1, wood), (TABLE_LONG.0, TABLE_LONG.1, wood), (TABLE_SIDE.0, TABLE_SIDE.1, wood)];
+    let mut v = vec![(TABLE_NEAR.0, TABLE_NEAR.1, wood), (TABLE_LONG.0, TABLE_LONG.1, wood), (TABLE_SIDE.0, TABLE_SIDE.1, wood), (TABLE_ARMORY.0, TABLE_ARMORY.1, wood)];
     for x in [-3.0f32, 3.0] {
         v.push((Vec3::new(x - 0.05, 0.0, 3.0), Vec3::new(x + 0.05, 1.1, 22.0), [80, 90, 100, 255]));
     }
@@ -227,6 +230,9 @@ pub struct Weapon {
     pub key: String,
     /// One-handed (holsters on the hip).
     pub pistol: bool,
+    /// Shouldered (`WPN_STOCK`): a rifle; not a pistol or a heavy gun held by its handles at the
+    /// hip.
+    pub stock: bool,
     /// Slide or charging handle you pull to chamber: grab point (weapon space) and travel.
     pub handle: Option<(Vec3, f32)>,
     /// Slide locks back on the last round.
@@ -299,6 +305,10 @@ pub struct Weapon {
     /// Metro's first-person arms posed holding it, and the same arms at rest (the game's hands
     /// are taken from these; the built-in guns borrow the Kalash's).
     pub game_arms: Option<std::sync::Arc<GameArms>>,
+    /// What it fires (the game's ammo class, `5.45x39`), and the magazine it takes: guns with the
+    /// same magazine take each other's (the runtime's `ammo_type`, see `physical::ammo_types`).
+    pub caliber: String,
+    pub magazine: String,
 }
 
 /// A game's first-person arms posed holding a gun (in the gun's model space), and at rest.
@@ -515,18 +525,18 @@ pub const TRIGGER_TWIST: f32 = -15.0;
 /// handguard in the palm, the fingers curled up its right side, the thumb along its left; the
 /// fist's tube points up, forward and to the left, the palm faces up and a little right.
 pub fn cradle() -> Quat {
-    fist(Vec3::new(-0.705, 0.331, 0.627), Vec3::new(0.391, 0.919, -0.045))
+    fist(CRADLE_TUBE, CRADLE_PALM)
 }
 
-/// The Kalash's own rig (from [`METRO_RIGS`]) in its weapon space: its line-of-sight rotation, and
+/// The Kalash's own rig (from [`metro_rigs`]) in its weapon space: its line-of-sight rotation, and
 /// its grip and foregrip frames (point and controller grip rotation, as `rigged_metro_weapon`
 /// builds them).
 fn kalash() -> (&'static MetroRig, Quat, (Vec3, Quat), (Vec3, Quat)) {
-    let r = &METRO_RIGS[0];
+    let r = metro_rigs().iter().find(|r| r.key == "wpn_ak").expect("content/rigs/metro2033.toml rigs the Kalash (wpn_ak)");
     let rot = Quat::from_rotation_arc((r.front_sight - r.rear_sight).normalize(), Vec3::Z);
     let fix = Mat4::from_quat(rot) * Mat4::from_translation(-r.grip);
     let grip = (fix.transform_point3(r.grip), (rot * pistol_grip(raked(r.grip_rake_deg), r.grip_twist_deg)).normalize());
-    let fore = (fix.transform_point3(r.foregrip), (rot * fist(r.support_tube, r.support_palm)).normalize());
+    let fore = (fix.transform_point3(r.foregrip.unwrap_or(r.grip)), (rot * fist(r.support_tube, r.support_palm)).normalize());
     (r, rot, grip, fore)
 }
 
@@ -613,6 +623,7 @@ pub fn builtin_rifle(name: &str, scoped: bool) -> Weapon {
         name: name.into(),
         key: if scoped { "builtin_rifle_scoped" } else { "builtin_rifle" }.into(),
         pistol: false,
+        stock: true,
         handle: Some((handle_at, 0.08)),
         slide_locks: false,
         trigger_blade: triangles(&blade, Mat4::IDENTITY),
@@ -645,6 +656,9 @@ pub fn builtin_rifle(name: &str, scoped: bool) -> Weapon {
         trigger: Some(trigger),
         grip_block: Some((grip_centre, grip_half)),
         game_arms: None,
+        caliber: "5.56x45".into(),
+        // Each built-in gun has a magazine of its own.
+        magazine: if scoped { "builtin_rifle_scoped" } else { "builtin_rifle" }.into(),
     }
 }
 
@@ -706,6 +720,7 @@ pub fn builtin_pistol() -> Weapon {
         name: "Range pistol".into(),
         key: "builtin_pistol".into(),
         pistol: true,
+        stock: false,
         handle: Some((handle_at, 0.045)),
         slide_locks: true,
         trigger_blade: triangles(&blade, Mat4::IDENTITY),
@@ -736,14 +751,25 @@ pub fn builtin_pistol() -> Weapon {
         trigger: Some(trigger),
         grip_block: Some((grip_centre, grip_half)),
         game_arms: None,
+        caliber: "9x19".into(),
+        magazine: "builtin_pistol".into(),
     }
 }
 
-/// A Metro 2033 gun rigged by hand. Every point is in the model's own space (Metro's viewmodel
-/// space, as `cargo run -p rustvr-asset --example rig_probe` prints it); the loader turns them into
-/// weapon space with the gun's `fix`.
+/// A Metro 2033 gun rigged by hand: its entry in `content/rigs/metro2033.toml` (see
+/// `rustvr_asset::rigs` and docs/RIGGING.md), in vectors. Every point is in the model's own space
+/// (Metro's viewmodel space, as `cargo run -p rustvr-asset --example rig_probe` prints it); the
+/// loader turns them into weapon space with the gun's `fix`.
 struct MetroRig {
-    key: &'static str,
+    key: String,
+    name: Option<String>,
+    /// One-handed (see `rigs::Hold`).
+    pistol: bool,
+    /// Shouldered (a rifle's hold, not a heavy gun's handles).
+    stock: bool,
+    caliber: String,
+    /// The magazine it takes: guns naming the same one take each other's.
+    magazine: String,
     /// Top of the rear sight notch's shoulders, and the front post's tip: weapon +Z is the line
     /// through them.
     rear_sight: Vec3,
@@ -760,129 +786,97 @@ struct MetroRig {
     grip_block: (Vec3, Vec3),
     /// The support hand's grip pose origin (its palm centre, cradling the handguard) and its fist's
     /// tube and palm normal (see [`fist`]); used only without Metro's arms.
-    foregrip: Vec3,
+    foregrip: Option<Vec3>,
     support_tube: Vec3,
     support_palm: Vec3,
     /// Where the magazine's top sits when it's in.
     mag_well: Vec3,
     muzzle: Vec3,
-    /// Charging handle knob, and how far it travels back.
-    handle: Vec3,
-    handle_travel: f32,
+    /// Charging handle (bolt, slide, pump, lever) knob, and how far it travels back.
+    handle: Option<(Vec3, f32)>,
     /// The trigger's bone (its blade's skin).
-    trigger_bone: &'static str,
+    trigger_bone: String,
     /// Bones (with their children) whose skin is the magazine, and the bolt or charging handle.
-    mag_bones: &'static [&'static str],
-    bolt_bones: &'static [&'static str],
+    mag_bones: Vec<String>,
+    bolt_bones: Vec<String>,
+    /// Meshes (by index in the model) that are the magazine too.
+    mag_meshes: Vec<usize>,
+    /// Bones whose skin isn't drawn.
+    hidden_bones: Vec<String>,
     recoil: [f32; 3],
     /// Recoil character: climb kept on full auto, return (1/s), lean (degrees).
     recoil_feel: [f32; 3],
     rounds_per_second: f32,
+    automatic: bool,
+    slide_locks: bool,
+    mag_size: Option<u32>,
     mass: f32,
     mag_mass: f32,
     left_side_up: bool,
+    ads_zoom: f32,
 }
 
-const METRO_RIGS: &[MetroRig] = &[
-    // Kalash (AK-74). Measured from the model's own geometry (rig_probe cuts):
-    // * sights: the rear leaf's notch (x 0.087..0.090, bottom y -0.0281) between shoulders topped
-    //   at y -0.0257, z 0.478; the front post's tip at y -0.0227, z 0.831 (the line through them
-    //   is tilted 0.49° up from the bore, so weapon +Z follows it, not the bore);
-    // * pistol grip: 1.65 cm wide, 3.7 cm deep, from y -0.215 up to the receiver at -0.135, its
-    //   cross-section centres raked 21.7° (z 0.2328 at y -0.19 to 0.2487 at y -0.15);
-    // * trigger (bone `kurok`): blade x 0.087..0.091, y -0.133..-0.107, z 0.296..0.317;
-    // * lower handguard: z 0.50..0.65, x 0.0725..0.1044, bottom y -0.105 (gas tube cover on top
-    //   to -0.033); the barrel's axis at y -0.077 (`loc_fire_point`);
-    // * magazine: bone `pul32` (its rounds `patron_*`, follower `pruz1`/`pruz2`), top at
-    //   `loc_magazin_m` (0.0886, -0.098, 0.390);
-    // * charging handle: bone `zatvor`'s rod x 0.104..0.130, y -0.071..-0.060, z 0.452..0.457.
-    // Hands: Metro's own arms for this gun (`hands_ak`) hold it in their bind pose. As grip poses
-    // (the avatar's canonical hand frame through `rustvr_ik`'s default `HandOffsets`, see
-    // `metro_hand_grips` in tests/rig.rs) the right fist's tube is raked 14° with the palm centre
-    // on the grip, and the left hand cradles the handguard: palm up, thumb along the left side,
-    // fingers up the right. The support hand is exactly that (`support_tube`, `support_palm`, its
-    // palm centre at `foregrip`, 0.8 cm under the handguard). The firing hand's tube follows the
-    // grip's measured 21.7° axis instead, turned `TRIGGER_TWIST` with its palm centre 1.7 cm up the
-    // grip and 1.3 cm behind its axis, so the avatar's index finger (Metro's arms are drawn about
-    // 10% larger) rests its pad on the trigger: 14° and 1.1 cm from Metro's own hand. That's how
-    // the gun sits on the controller; the hands themselves are drawn in Metro's own pose (the
-    // arms' idle, which is their bind pose here: see `GunHand` and `Weapon::game_hands`), the
-    // body's IK reaching Metro's wrist exactly.
-    MetroRig {
-        key: "wpn_ak",
-        rear_sight: Vec3::new(0.0885, -0.0257, 0.478),
-        front_sight: Vec3::new(0.0885, -0.0227, 0.831),
-        grip: Vec3::new(0.0885, -0.1444, 0.2369),
-        grip_rake_deg: 21.7,
-        grip_twist_deg: TRIGGER_TWIST,
-        trigger: Vec3::new(0.0886, -0.124, 0.311),
-        grip_block: (Vec3::new(0.0885, -0.175, 0.2387), Vec3::new(0.0083, 0.0172, 0.04)),
-        foregrip: Vec3::new(0.0866, -0.1127, 0.5712),
-        support_tube: Vec3::new(-0.705, 0.331, 0.627),
-        support_palm: Vec3::new(0.391, 0.919, -0.045),
-        mag_well: Vec3::new(0.0886, -0.098, 0.390),
-        muzzle: Vec3::new(0.0886, -0.077, 0.856),
-        handle: Vec3::new(0.124, -0.065, 0.4545),
-        handle_travel: 0.10,
-        trigger_bone: "kurok",
-        mag_bones: &["pul32"],
-        bolt_bones: &["zatvor"],
-        recoil: [7.0, 1.8, 0.025],
-        recoil_feel: [0.65, 8.0, 14.0],
-        rounds_per_second: 10.8,
-        mass: 3.3,
-        mag_mass: 0.55,
-        left_side_up: false,
-    },
-    // Bastard (Ubludok): a home-made 5.45 carbine with its magazine sticking out of the left side.
-    // * sights: rear notch x 0.1275..0.1318 (bottom y -0.0414) between shoulders topped at
-    //   y -0.0365, z 0.398; front post x 0.1287..0.1305, tip y -0.0344, z 0.699 (0.40° up from
-    //   the bore);
-    // * pistol grip: x 0.1155..0.1372, y -0.20 up to -0.115, centres raked ~20° (z 0.3909 at
-    //   y -0.18 to 0.4053 at y -0.14);
-    // * trigger (`bone_kurok`): x 0.1255..0.1299, y -0.134..-0.105, z 0.442..0.483;
-    // * barrel shroud: z 0.60..0.74, x 0.1065..0.1511, y -0.118..-0.045, bore at y -0.068;
-    // * magazine: `bone_magazin` (and its `bone_patron_*`) from x -0.039 (outer end) to its top
-    //   at x 0.1426 inside the housing (`bone_korobka`), y -0.074..-0.046, z 0.525..0.561;
-    // * charging handle: `bone_zatvor`'s rod x 0.156..0.169 on the right, y -0.077..-0.070,
-    //   z 0.461..0.465.
-    // Hands as for the AK: the support hand is Metro's own (`hands_ubludok`'s bind pose: cradling
-    // the shroud's front just ahead of the magazine, palm centre 0.7 cm under it); the firing hand
-    // runs up the measured grip axis, turned `TRIGGER_TWIST`, its palm centre 1.8 cm up the grip
-    // and 0.5 cm behind its axis, so the index finger's pad rests on the trigger (23° and 1.3 cm
-    // from Metro's own hand, which is turned the other way round the grip).
-    MetroRig {
-        key: "wpn_ubludok",
-        rear_sight: Vec3::new(0.1296, -0.0365, 0.398),
-        front_sight: Vec3::new(0.1296, -0.0344, 0.699),
-        grip: Vec3::new(0.1266, -0.1431, 0.3985),
-        grip_rake_deg: 20.0,
-        grip_twist_deg: TRIGGER_TWIST,
-        trigger: Vec3::new(0.1277, -0.122, 0.475),
-        grip_block: (Vec3::new(0.1266, -0.1575, 0.3982), Vec3::new(0.0109, 0.0274, 0.0425)),
-        foregrip: Vec3::new(0.1344, -0.1249, 0.6402),
-        support_tube: Vec3::new(-0.557, 0.514, 0.652),
-        support_palm: Vec3::new(0.483, 0.839, -0.250),
-        mag_well: Vec3::new(0.1426, -0.060, 0.543),
-        muzzle: Vec3::new(0.1300, -0.068, 0.961),
-        handle: Vec3::new(0.165, -0.0733, 0.4628),
-        handle_travel: 0.07,
-        trigger_bone: "bone_kurok",
-        mag_bones: &["bone_magazin"],
-        bolt_bones: &["bone_zatvor"],
-        recoil: [7.5, 2.0, 0.025],
-        // A crude gun: it wanders more.
-        recoil_feel: [0.7, 7.5, 18.0],
-        rounds_per_second: 10.0,
-        mass: 2.6,
-        mag_mass: 0.5,
-        left_side_up: true,
-    },
-];
+/// The cradle's fist (see [`cradle`]), for rigs that don't give their own.
+const CRADLE_TUBE: Vec3 = Vec3::new(-0.705, 0.331, 0.627);
+const CRADLE_PALM: Vec3 = Vec3::new(0.391, 0.919, -0.045);
+
+impl MetroRig {
+    fn new(g: &asset::rigs::GunRig) -> MetroRig {
+        let v = Vec3::from_array;
+        MetroRig {
+            key: g.key.clone(),
+            name: g.name.clone(),
+            pistol: g.hold == asset::rigs::Hold::Pistol,
+            stock: g.hold == asset::rigs::Hold::Rifle,
+            caliber: g.caliber.clone(),
+            magazine: g.magazine.clone().unwrap_or_else(|| g.key.clone()),
+            rear_sight: v(g.rear_sight),
+            front_sight: v(g.front_sight),
+            grip: v(g.grip),
+            grip_rake_deg: g.grip_rake_deg,
+            grip_twist_deg: g.grip_twist_deg,
+            trigger: v(g.trigger),
+            grip_block: (v(g.grip_block.centre), v(g.grip_block.half)),
+            foregrip: g.foregrip.map(v),
+            support_tube: g.support_tube.map_or(CRADLE_TUBE, v),
+            support_palm: g.support_palm.map_or(CRADLE_PALM, v),
+            mag_well: v(g.mag_well),
+            muzzle: v(g.muzzle),
+            handle: g.handle.map(|h| (v(h), g.handle_travel)),
+            trigger_bone: g.trigger_bone.clone(),
+            mag_bones: g.mag_bones.clone(),
+            bolt_bones: g.bolt_bones.clone(),
+            mag_meshes: g.mag_meshes.clone(),
+            hidden_bones: g.hidden_bones.clone(),
+            recoil: g.recoil,
+            recoil_feel: g.recoil_feel,
+            rounds_per_second: g.rounds_per_second,
+            automatic: g.automatic,
+            slide_locks: g.slide_locks,
+            mag_size: g.mag_size,
+            mass: g.mass,
+            mag_mass: g.mag_mass,
+            left_side_up: g.left_side_up,
+            ads_zoom: g.ads_zoom.unwrap_or(1.1),
+        }
+    }
+}
+
+/// Metro 2033's rigs (`content/rigs/metro2033.toml`, or `RUSTVR_RIGS`'s), read once.
+fn metro_rigs() -> &'static [MetroRig] {
+    static RIGS: std::sync::OnceLock<Vec<MetroRig>> = std::sync::OnceLock::new();
+    RIGS.get_or_init(|| {
+        let file = asset::rigs::load("metro2033").unwrap_or_else(|e| {
+            tracing::warn!("range: {e:#}: using the compiled-in rigs");
+            asset::rigs::builtin("metro2033").unwrap_or_default()
+        });
+        file.guns.iter().map(MetroRig::new).collect()
+    })
+}
 
 /// Metro 2033's guns from `local_assets/metro2033` (extracted by `metro-extract`), if present.
-/// The ones in [`METRO_RIGS`] are properly rigged; the rest keep the extractor's guessed points
-/// (legacy mode only).
+/// The ones with a rig (see [`metro_rigs`]) are properly rigged; the rest keep the extractor's
+/// guessed points (legacy mode only).
 pub fn metro_weapons(root: &std::path::Path) -> Vec<Weapon> {
     let dir = root.join("metro2033");
     let Ok(index) = asset::load_index(&dir) else { return Vec::new() };
@@ -900,14 +894,19 @@ pub fn metro_weapons(root: &std::path::Path) -> Vec<Weapon> {
         let arms = item.hands.as_ref().and_then(|k| asset::load_model(&dir, k).ok());
         let hands = arms.as_ref().map(model_meshes).unwrap_or_default();
         let id = out.len() as u64 + 100;
-        if let Some(r) = METRO_RIGS.iter().find(|r| r.key == item.key) {
+        // The game's own recoil, for every gun that has it (rigged or not).
+        let kicks = match asset::load_recoil(&dir, &item.key) {
+            Ok(r) => r.kicks,
+            Err(e) => {
+                tracing::info!("range: {} has no recoil of its own ({e:#}): the runtime's", item.key);
+                Vec::new()
+            }
+        };
+        if let Some(r) = metro_rigs().iter().find(|r| r.key == item.key) {
             // The arms posed for this gun (not the plain suit every unposed gun falls back to).
             let posed = arms.as_ref().filter(|_| item.hands.as_deref() != Some(ARMS_REST));
             let mut w = rigged_metro_weapon(r, item, &model, hands, posed, rest.as_ref(), id);
-            match asset::load_recoil(&dir, &item.key) {
-                Ok(r) => w.kicks = r.kicks,
-                Err(e) => tracing::info!("range: {} has no recoil of its own ({e:#}): the runtime's", item.key),
-            }
+            w.kicks = kicks;
             out.push(w);
             continue;
         }
@@ -933,6 +932,7 @@ pub fn metro_weapons(root: &std::path::Path) -> Vec<Weapon> {
             name: item.name.clone(),
             key: item.key.clone(),
             pistol,
+            stock: !pistol,
             handle: None,
             slide_locks: false,
             parts: model_meshes(&model),
@@ -953,7 +953,7 @@ pub fn metro_weapons(root: &std::path::Path) -> Vec<Weapon> {
             support_rot: None,
             recoil: if pistol { [12.0, 3.0, 0.03] } else { [6.5, 1.6, 0.022] },
             recoil_feel: [0.0; 3],
-            kicks: asset::load_recoil(&dir, &item.key).map(|r| r.kicks).unwrap_or_default(),
+            kicks,
             game_hands: [None; 2],
             mass: if pistol { 1.0 } else { 3.5 },
             mag_mass: 0.4,
@@ -963,6 +963,8 @@ pub fn metro_weapons(root: &std::path::Path) -> Vec<Weapon> {
             grip_block: None,
             trigger_blade: Vec::new(),
             game_arms: None,
+            caliber: String::new(),
+            magazine: item.key.clone(),
         });
     }
     out
@@ -973,8 +975,12 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
     let rot = Quat::from_rotation_arc((r.front_sight - r.rear_sight).normalize(), Vec3::Z);
     let fix = Mat4::from_quat(rot) * Mat4::from_translation(-r.grip);
     let p = |v: Vec3| fix.transform_point3(v);
-    let groups = split_by_bones(model, &[r.mag_bones, r.bolt_bones, &[r.trigger_bone]]);
-    let [body, mag, bolt, trigger_part]: [Vec<MeshData>; 4] = groups.try_into().unwrap_or_else(|_| unreachable!());
+    let mag_bones: Vec<&str> = r.mag_bones.iter().map(String::as_str).collect();
+    let bolt_bones: Vec<&str> = r.bolt_bones.iter().map(String::as_str).collect();
+    let trigger_bone = [r.trigger_bone.as_str()];
+    let hidden: Vec<&str> = r.hidden_bones.iter().map(String::as_str).collect();
+    let groups = split_by_bones(model, &[Group { bones: &mag_bones, meshes: &r.mag_meshes }, Group { bones: &bolt_bones, meshes: &[] }, Group { bones: &trigger_bone, meshes: &[] }, Group { bones: &hidden, meshes: &[] }]);
+    let [body, mag, bolt, trigger_part, _hidden]: [Vec<MeshData>; 5] = groups.try_into().unwrap_or_else(|_| unreachable!());
     let mut parts = body;
     let mag_parts: Vec<usize> = (parts.len()..parts.len() + mag.len()).collect();
     parts.extend(mag);
@@ -984,7 +990,7 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
     parts.extend(trigger_part);
     // The trigger swings about its bone (in the receiver): a full pull carries its face back by
     // the trigger travel.
-    let trigger_pivot = bone_position(model, r.trigger_bone).map(|b| {
+    let trigger_pivot = bone_position(model, &r.trigger_bone).map(|b| {
         let pivot = p(b);
         (pivot, TRIGGER_TRAVEL / (p(r.trigger) - pivot).length().max(0.005))
     });
@@ -992,19 +998,29 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
     let sight = p(r.rear_sight);
     // The game's own hands on it, exactly as Metro's arms hold it (no fitting: the game is the
     // truth). Where the controllers go follows from them through the one controller-to-hand
-    // mapping (the IK's `HandOffsets`), so the drawn hands land exactly on Metro's.
-    let game_hands = [0, 1].map(|side| arms.and_then(|a| GunHand::from_arms(a, rest, side, fix, None)));
-    let measured = (
-        (p(r.grip), (rot * pistol_grip(raked(r.grip_rake_deg), r.grip_twist_deg)).normalize()),
-        (p(r.foregrip), (rot * fist(r.support_tube, r.support_palm)).normalize()),
-    );
-    let ((grip, grip_rot), (foregrip, support_rot)) = match game_hands {
-        [Some(l), Some(rh)] => (controller_on(&rh, 1), controller_on(&l, 0)),
-        _ => measured,
+    // mapping (the IK's `HandOffsets`), so the drawn hands land exactly on Metro's. A pistol is
+    // held in the firing hand alone.
+    let game_hands = [0, 1].map(|side| arms.filter(|_| side == 1 || !r.pistol).and_then(|a| GunHand::from_arms(a, rest, side, fix, None)));
+    let measured_grip = (p(r.grip), (rot * pistol_grip(raked(r.grip_rake_deg), r.grip_twist_deg)).normalize());
+    let measured_fore = r.foregrip.map(|f| (p(f), (rot * fist(r.support_tube, r.support_palm)).normalize()));
+    let (grip, grip_rot) = game_hands[1].as_ref().map_or(measured_grip, |h| controller_on(h, 1));
+    let (foregrip, support_rot) = match (&game_hands[0], measured_fore) {
+        _ if r.pistol => (grip, None),
+        (Some(l), _) => {
+            let (at, q) = controller_on(l, 0);
+            (at, Some(q))
+        }
+        (None, Some((at, q))) => (at, Some(q)),
+        (None, None) => (grip, None),
     };
     let rig = WeaponRig {
         id,
-        flags: RIG_HAS_SIGHT | RIG_HAS_MUZZLE | RIG_HAS_MAG_WELL | RIG_TWO_HANDED | RIG_HAS_CHARGING_HANDLE | RIG_SIGHT_LINE,
+        flags: RIG_HAS_SIGHT
+            | RIG_HAS_MUZZLE
+            | RIG_HAS_MAG_WELL
+            | RIG_SIGHT_LINE
+            | if r.pistol { 0 } else { RIG_TWO_HANDED }
+            | if r.handle.is_some() { RIG_HAS_CHARGING_HANDLE } else { 0 },
         grip: grip.to_array(),
         foregrip: foregrip.to_array(),
         sight: sight.to_array(),
@@ -1012,15 +1028,16 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
         mag_well: p(r.mag_well).to_array(),
         sight_line_origin: sight.to_array(),
         sight_line_dir: [0.0, 0.0, 1.0],
-        charging_handle: p(r.handle).to_array(),
+        charging_handle: r.handle.map_or(grip, |(h, _)| p(h)).to_array(),
         ..Default::default()
     };
     Weapon {
-        name: item.name.clone(),
+        name: r.name.clone().unwrap_or_else(|| item.name.clone()),
         key: item.key.clone(),
-        pistol: false,
-        handle: Some((p(r.handle), r.handle_travel)),
-        slide_locks: false,
+        pistol: r.pistol,
+        stock: r.stock,
+        handle: r.handle.map(|(h, travel)| (p(h), travel)),
+        slide_locks: r.slide_locks,
         parts,
         fix,
         hands,
@@ -1030,13 +1047,13 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
         trigger_parts,
         trigger_pivot,
         mag_center,
-        mag_size: item.mag_size.unwrap_or(30).max(1),
+        mag_size: r.mag_size.or(item.mag_size).unwrap_or(30).max(1),
         rounds_per_second: r.rounds_per_second,
-        automatic: true,
-        ads_zoom: 1.1,
+        automatic: r.automatic,
+        ads_zoom: r.ads_zoom,
         from_game: true,
         grip_rot: Some(grip_rot),
-        support_rot: Some(support_rot),
+        support_rot,
         recoil: r.recoil,
         recoil_feel: r.recoil_feel,
         kicks: Vec::new(),
@@ -1049,8 +1066,10 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
         sights: Some((sight, p(r.front_sight))),
         trigger: Some(p(r.trigger)),
         grip_block: Some((p(r.grip_block.0), r.grip_block.1)),
-        trigger_blade: bone_triangles(model, r.trigger_bone, fix),
+        trigger_blade: bone_triangles(model, &r.trigger_bone, fix),
         game_arms: arms.map(|a| std::sync::Arc::new(GameArms { posed: a.clone(), rest: rest.cloned() })),
+        caliber: r.caliber.clone(),
+        magazine: r.magazine.clone(),
     }
 }
 
@@ -1095,17 +1114,33 @@ pub fn parts_bounds(parts: &[MeshData], which: &[usize], fix: Mat4) -> Option<(V
     which.iter().filter_map(|&i| parts[i].bounds(fix)).reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
 }
 
+/// A bone name matches a rig's: exactly, or up to a trailing `*`.
+fn bone_matches(pattern: &str, name: &str) -> bool {
+    match pattern.strip_suffix('*') {
+        Some(prefix) => name.starts_with(prefix),
+        None => pattern == name,
+    }
+}
+
+/// A group of a gun's skin: the named bones (and everything under them), and whole meshes (by
+/// their index in the model).
+struct Group<'a> {
+    bones: &'a [&'a str],
+    meshes: &'a [usize],
+}
+
 /// Splits a skinned model by the bones that carry its skin: a triangle goes to the first group
-/// owning at least two of its vertices (each vertex belongs to its heaviest bone; a group is the
-/// named bones and everything under them), else to the body. Returns the body, then each group,
-/// as one mesh per source mesh (and texture) that has triangles there.
-fn split_by_bones(m: &asset::Model, groups: &[&[&str]]) -> Vec<Vec<MeshData>> {
+/// whose meshes it's in or that owns at least two of its vertices (each vertex belongs to its
+/// heaviest bone; a group is the named bones and everything under them), else to the body.
+/// Returns the body, then each group, as one mesh per source mesh (and texture) that has
+/// triangles there.
+fn split_by_bones(m: &asset::Model, groups: &[Group]) -> Vec<Vec<MeshData>> {
     // Which group (1-based, 0 = body) each bone belongs to.
     let mut bone_group = vec![0usize; m.bones.len()];
     for (b, bone_group) in bone_group.iter_mut().enumerate() {
         let mut at = Some(b);
         while let Some(i) = at {
-            if let Some(g) = groups.iter().position(|names| names.contains(&m.bones[i].name.as_str())) {
+            if let Some(g) = groups.iter().position(|g| g.bones.iter().any(|p| bone_matches(p, &m.bones[i].name))) {
                 *bone_group = g + 1;
                 break;
             }
@@ -1117,13 +1152,14 @@ fn split_by_bones(m: &asset::Model, groups: &[&[&str]]) -> Vec<Vec<MeshData>> {
         if v.weights[k] == 0 { 0 } else { bone_group.get(v.bones[k] as usize).copied().unwrap_or(0) }
     };
     let mut out: Vec<Vec<MeshData>> = vec![Vec::new(); groups.len() + 1];
-    for mesh in m.meshes.iter().filter(|mesh| !mesh.indices.is_empty()) {
+    for (index, mesh) in m.meshes.iter().enumerate().filter(|(_, mesh)| !mesh.indices.is_empty()) {
         let texture = if mesh.texture.is_empty() { None } else { Some(mesh.texture.clone()) };
         let mut split: Vec<MeshData> = vec![MeshData { texture: texture.clone(), ..Default::default() }; groups.len() + 1];
         let mut remap: Vec<Vec<u32>> = vec![vec![u32::MAX; mesh.vertices.len()]; groups.len() + 1];
+        let whole = groups.iter().position(|g| g.meshes.contains(&index)).map(|g| g + 1);
         for tri in mesh.indices.as_chunks::<3>().0 {
             let g3 = tri.map(|i| vertex_group(&mesh.vertices[i as usize]));
-            let g = (1..=groups.len()).find(|&g| g3.iter().filter(|&&x| x == g).count() >= 2).unwrap_or(0);
+            let g = whole.unwrap_or_else(|| (1..=groups.len()).find(|&g| g3.iter().filter(|&&x| x == g).count() >= 2).unwrap_or(0));
             for &i in tri {
                 let slot = &mut remap[g][i as usize];
                 if *slot == u32::MAX {
@@ -1180,7 +1216,11 @@ mod tests {
     #[test]
     fn the_magazine_is_its_own_small_part() {
         for w in all().iter().filter(|w| w.rigged()) {
-            assert!(!w.mag_parts.is_empty(), "{}: no magazine part", w.key);
+            if w.mag_parts.is_empty() {
+                // (A gun whose rounds stay in it: the flamethrower's fuel.)
+                assert!(w.from_game, "{}: no magazine part", w.key);
+                continue;
+            }
             let tris = |which: &[usize]| which.iter().map(|&i| w.parts[i].indices.len() / 3).sum::<usize>();
             let body: Vec<usize> = (0..w.parts.len()).filter(|i| !w.mag_parts.contains(i) && !w.bolt_parts.contains(i)).collect();
             let (mag, gun) = (tris(&w.mag_parts), tris(&body));
@@ -1190,18 +1230,21 @@ mod tests {
             let (glo, ghi) = parts_bounds(&w.parts, &body, w.fix).unwrap();
             let (size, gun_size) = (hi - lo, ghi - glo);
             let volume = |v: Vec3| v.x * v.y * v.z;
-            // (A pistol's magazine fills its grip.)
-            let (long, share) = if w.pistol { (0.45, 0.45) } else { (0.35, 0.15) };
-            assert!(size.z < gun_size.z * long && size.max_element() < 0.3, "{}: magazine {size} in a gun {gun_size}", w.key);
+            // (A pistol's magazine fills its grip; darts and drums run long.)
+            let (long, share) = if w.pistol { (0.45, 0.45) } else { (0.75, 0.3) };
+            assert!(size.z < gun_size.z * long && size.max_element() < 0.5, "{}: magazine {size} in a gun {gun_size}", w.key);
             assert!(volume(size) < volume(gun_size) * share, "{}: magazine {size} in a gun {gun_size}", w.key);
             // The well is at the magazine's top: on its bounds, not floating away from it.
             let well = Vec3::from_array(w.rig.mag_well);
             let d = well.clamp(lo, hi).distance(well);
             assert!(d < 0.01, "{}: mag well {well} is {d} m from the magazine {lo}..{hi}", w.key);
-            if w.from_game {
+            if matches!(w.key.as_str(), "wpn_ak" | "wpn_ubludok") {
                 assert!(!w.bolt_parts.is_empty(), "{}: no bolt part", w.key);
+            }
+            if w.from_game && !w.bolt_parts.is_empty() {
+                assert!(w.handle.is_some(), "{}: a bolt without a handle", w.key);
                 let bolt = tris(&w.bolt_parts);
-                assert!(bolt > 0 && bolt * 10 < gun, "{}: bolt {bolt} triangles", w.key);
+                assert!(bolt > 0 && bolt * 2 < gun, "{}: bolt {bolt} triangles", w.key);
             }
         }
     }
@@ -1219,10 +1262,16 @@ mod tests {
         for w in rigged {
             let q = w.grip_rot.unwrap();
             assert!((q.length() - 1.0).abs() < 1e-4);
+            // A heavy gun's handles are whatever the game makes them (a spade grip, a handlebar, a
+            // side handle): its hands are checked against the game's (tests/rig.rs), not these.
+            if !w.stock && !w.pistol {
+                continue;
+            }
             // The fist runs up the pistol grip (bottom back), the back of the right hand to the right.
             let tube = q * Vec3::Z;
-            assert!(tube.y > 0.85 && tube.z > 0.15 && tube.z < 0.5, "{}: grip tube {tube}", w.key);
-            assert!((q * Vec3::X).x > 0.9, "{}", w.key);
+            // (Raked anywhere from upright to a straight stock's wrist: the game's hand decides.)
+            assert!(tube.y > 0.5 && tube.z > -0.1 && tube.z < 0.87, "{}: grip tube {tube}", w.key);
+            assert!((q * Vec3::X).x > 0.7, "{}: the back of the hand faces {}", w.key, q * Vec3::X);
             if !w.pistol {
                 // The support hand cradles the handguard: palm up (a left hand's grip +X is out of
                 // its palm), the fist's tube pointing forward (and up and left).
@@ -1240,8 +1289,12 @@ mod tests {
             assert!(front.z - rear.z > 0.1, "{}", w.key);
             // The trigger is ahead of the grip, near the top of the fist.
             let t = w.trigger.unwrap() - Vec3::from_array(w.rig.grip);
-            assert!(t.z > 0.03 && t.z < 0.09 && t.y > 0.0 && t.y < 0.06, "{}: trigger at {t} from the palm", w.key);
-            assert!(w.handle.is_some());
+            assert!(t.z > 0.03 && t.z < 0.09 && t.y > -0.03 && t.y < 0.06, "{}: trigger at {t} from the palm", w.key);
+            if let Some((h, travel)) = w.handle {
+                // The handle is on the gun, and racks a believable distance.
+                assert!(h.length() < 0.9 && (0.015..=0.15).contains(&travel), "{}: handle {h} travel {travel}", w.key);
+            }
         }
     }
 }
+

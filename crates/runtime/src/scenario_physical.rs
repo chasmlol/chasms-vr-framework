@@ -62,10 +62,11 @@ fn seated_body() -> Body {
     b
 }
 
-/// The plain rifle on the table at your right hand (the nearer of the two).
+/// The plain rifle on the table at your right hand (the nearer of the two). (In front of you: the
+/// range's armory bench behind you has guns too.)
 fn near_rifle(objs: &[ObjSnap]) -> Option<ObjSnap> {
     objs.iter()
-        .filter(|o| o.kind == OBJ_WEAPON && o.flags & OS_HOLSTERED == 0 && (0.4..1.6).contains(&o.pos.x) && o.pos.z < 1.1 && o.pos.y > 0.7)
+        .filter(|o| o.kind == OBJ_WEAPON && o.flags & OS_HOLSTERED == 0 && (0.4..1.6).contains(&o.pos.x) && (0.2..1.1).contains(&o.pos.z) && o.pos.y > 0.7)
         .min_by(|a, b| a.pos.z.total_cmp(&b.pos.z))
         .copied()
 }
@@ -73,7 +74,7 @@ fn near_rifle(objs: &[ObjSnap]) -> Option<ObjSnap> {
 /// The nearest gun on that table that kicks the way its game does (Metro's Kalash).
 fn near_game_rifle(objs: &[ObjSnap]) -> Option<ObjSnap> {
     objs.iter()
-        .filter(|o| o.kind == OBJ_WEAPON && o.kicks > 0 && o.flags & OS_HOLSTERED == 0 && (0.4..1.6).contains(&o.pos.x) && o.pos.y > 0.7)
+        .filter(|o| o.kind == OBJ_WEAPON && o.kicks > 0 && o.flags & OS_HOLSTERED == 0 && (0.4..1.6).contains(&o.pos.x) && (0.2..1.6).contains(&o.pos.z) && o.pos.y > 0.7)
         .min_by(|a, b| a.pos.z.total_cmp(&b.pos.z))
         .copied()
 }
