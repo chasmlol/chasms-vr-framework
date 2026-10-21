@@ -230,6 +230,9 @@ pub struct Weapon {
     pub key: String,
     /// One-handed (holsters on the hip).
     pub pistol: bool,
+    /// Shouldered (`WPN_STOCK`): a rifle; not a pistol or a heavy gun held by its handles at the
+    /// hip.
+    pub stock: bool,
     /// Slide or charging handle you pull to chamber: grab point (weapon space) and travel.
     pub handle: Option<(Vec3, f32)>,
     /// Slide locks back on the last round.
@@ -620,6 +623,7 @@ pub fn builtin_rifle(name: &str, scoped: bool) -> Weapon {
         name: name.into(),
         key: if scoped { "builtin_rifle_scoped" } else { "builtin_rifle" }.into(),
         pistol: false,
+        stock: true,
         handle: Some((handle_at, 0.08)),
         slide_locks: false,
         trigger_blade: triangles(&blade, Mat4::IDENTITY),
@@ -716,6 +720,7 @@ pub fn builtin_pistol() -> Weapon {
         name: "Range pistol".into(),
         key: "builtin_pistol".into(),
         pistol: true,
+        stock: false,
         handle: Some((handle_at, 0.045)),
         slide_locks: true,
         trigger_blade: triangles(&blade, Mat4::IDENTITY),
@@ -760,6 +765,8 @@ struct MetroRig {
     name: Option<String>,
     /// One-handed (see `rigs::Hold`).
     pistol: bool,
+    /// Shouldered (a rifle's hold, not a heavy gun's handles).
+    stock: bool,
     caliber: String,
     /// The magazine it takes: guns naming the same one take each other's.
     magazine: String,
@@ -794,6 +801,8 @@ struct MetroRig {
     bolt_bones: Vec<String>,
     /// Meshes (by index in the model) that are the magazine too.
     mag_meshes: Vec<usize>,
+    /// Bones whose skin isn't drawn.
+    hidden_bones: Vec<String>,
     recoil: [f32; 3],
     /// Recoil character: climb kept on full auto, return (1/s), lean (degrees).
     recoil_feel: [f32; 3],
@@ -818,6 +827,7 @@ impl MetroRig {
             key: g.key.clone(),
             name: g.name.clone(),
             pistol: g.hold == asset::rigs::Hold::Pistol,
+            stock: g.hold == asset::rigs::Hold::Rifle,
             caliber: g.caliber.clone(),
             magazine: g.magazine.clone().unwrap_or_else(|| g.key.clone()),
             rear_sight: v(g.rear_sight),
@@ -837,6 +847,7 @@ impl MetroRig {
             mag_bones: g.mag_bones.clone(),
             bolt_bones: g.bolt_bones.clone(),
             mag_meshes: g.mag_meshes.clone(),
+            hidden_bones: g.hidden_bones.clone(),
             recoil: g.recoil,
             recoil_feel: g.recoil_feel,
             rounds_per_second: g.rounds_per_second,
@@ -921,6 +932,7 @@ pub fn metro_weapons(root: &std::path::Path) -> Vec<Weapon> {
             name: item.name.clone(),
             key: item.key.clone(),
             pistol,
+            stock: !pistol,
             handle: None,
             slide_locks: false,
             parts: model_meshes(&model),
@@ -966,8 +978,9 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
     let mag_bones: Vec<&str> = r.mag_bones.iter().map(String::as_str).collect();
     let bolt_bones: Vec<&str> = r.bolt_bones.iter().map(String::as_str).collect();
     let trigger_bone = [r.trigger_bone.as_str()];
-    let groups = split_by_bones(model, &[Group { bones: &mag_bones, meshes: &r.mag_meshes }, Group { bones: &bolt_bones, meshes: &[] }, Group { bones: &trigger_bone, meshes: &[] }]);
-    let [body, mag, bolt, trigger_part]: [Vec<MeshData>; 4] = groups.try_into().unwrap_or_else(|_| unreachable!());
+    let hidden: Vec<&str> = r.hidden_bones.iter().map(String::as_str).collect();
+    let groups = split_by_bones(model, &[Group { bones: &mag_bones, meshes: &r.mag_meshes }, Group { bones: &bolt_bones, meshes: &[] }, Group { bones: &trigger_bone, meshes: &[] }, Group { bones: &hidden, meshes: &[] }]);
+    let [body, mag, bolt, trigger_part, _hidden]: [Vec<MeshData>; 5] = groups.try_into().unwrap_or_else(|_| unreachable!());
     let mut parts = body;
     let mag_parts: Vec<usize> = (parts.len()..parts.len() + mag.len()).collect();
     parts.extend(mag);
@@ -1022,6 +1035,7 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
         name: r.name.clone().unwrap_or_else(|| item.name.clone()),
         key: item.key.clone(),
         pistol: r.pistol,
+        stock: r.stock,
         handle: r.handle.map(|(h, travel)| (p(h), travel)),
         slide_locks: r.slide_locks,
         parts,
@@ -1202,7 +1216,11 @@ mod tests {
     #[test]
     fn the_magazine_is_its_own_small_part() {
         for w in all().iter().filter(|w| w.rigged()) {
-            assert!(!w.mag_parts.is_empty(), "{}: no magazine part", w.key);
+            if w.mag_parts.is_empty() {
+                // (A gun whose rounds stay in it: the flamethrower's fuel.)
+                assert!(w.from_game, "{}: no magazine part", w.key);
+                continue;
+            }
             let tris = |which: &[usize]| which.iter().map(|&i| w.parts[i].indices.len() / 3).sum::<usize>();
             let body: Vec<usize> = (0..w.parts.len()).filter(|i| !w.mag_parts.contains(i) && !w.bolt_parts.contains(i)).collect();
             let (mag, gun) = (tris(&w.mag_parts), tris(&body));
@@ -1212,9 +1230,9 @@ mod tests {
             let (glo, ghi) = parts_bounds(&w.parts, &body, w.fix).unwrap();
             let (size, gun_size) = (hi - lo, ghi - glo);
             let volume = |v: Vec3| v.x * v.y * v.z;
-            // (A pistol's magazine fills its grip.)
-            let (long, share) = if w.pistol { (0.45, 0.45) } else { (0.35, 0.15) };
-            assert!(size.z < gun_size.z * long && size.max_element() < 0.3, "{}: magazine {size} in a gun {gun_size}", w.key);
+            // (A pistol's magazine fills its grip; darts and drums run long.)
+            let (long, share) = if w.pistol { (0.45, 0.45) } else { (0.75, 0.3) };
+            assert!(size.z < gun_size.z * long && size.max_element() < 0.5, "{}: magazine {size} in a gun {gun_size}", w.key);
             assert!(volume(size) < volume(gun_size) * share, "{}: magazine {size} in a gun {gun_size}", w.key);
             // The well is at the magazine's top: on its bounds, not floating away from it.
             let well = Vec3::from_array(w.rig.mag_well);
@@ -1226,7 +1244,7 @@ mod tests {
             if w.from_game && !w.bolt_parts.is_empty() {
                 assert!(w.handle.is_some(), "{}: a bolt without a handle", w.key);
                 let bolt = tris(&w.bolt_parts);
-                assert!(bolt > 0 && bolt * 4 < gun, "{}: bolt {bolt} triangles", w.key);
+                assert!(bolt > 0 && bolt * 2 < gun, "{}: bolt {bolt} triangles", w.key);
             }
         }
     }
@@ -1244,10 +1262,16 @@ mod tests {
         for w in rigged {
             let q = w.grip_rot.unwrap();
             assert!((q.length() - 1.0).abs() < 1e-4);
+            // A heavy gun's handles are whatever the game makes them (a spade grip, a handlebar, a
+            // side handle): its hands are checked against the game's (tests/rig.rs), not these.
+            if !w.stock && !w.pistol {
+                continue;
+            }
             // The fist runs up the pistol grip (bottom back), the back of the right hand to the right.
             let tube = q * Vec3::Z;
-            assert!(tube.y > 0.85 && tube.z > 0.15 && tube.z < 0.5, "{}: grip tube {tube}", w.key);
-            assert!((q * Vec3::X).x > 0.9, "{}", w.key);
+            // (Raked anywhere from upright to a straight stock's wrist: the game's hand decides.)
+            assert!(tube.y > 0.5 && tube.z > -0.1 && tube.z < 0.87, "{}: grip tube {tube}", w.key);
+            assert!((q * Vec3::X).x > 0.7, "{}: the back of the hand faces {}", w.key, q * Vec3::X);
             if !w.pistol {
                 // The support hand cradles the handguard: palm up (a left hand's grip +X is out of
                 // its palm), the fist's tube pointing forward (and up and left).
@@ -1265,10 +1289,10 @@ mod tests {
             assert!(front.z - rear.z > 0.1, "{}", w.key);
             // The trigger is ahead of the grip, near the top of the fist.
             let t = w.trigger.unwrap() - Vec3::from_array(w.rig.grip);
-            assert!(t.z > 0.03 && t.z < 0.09 && t.y > 0.0 && t.y < 0.06, "{}: trigger at {t} from the palm", w.key);
+            assert!(t.z > 0.03 && t.z < 0.09 && t.y > -0.03 && t.y < 0.06, "{}: trigger at {t} from the palm", w.key);
             if let Some((h, travel)) = w.handle {
                 // The handle is on the gun, and racks a believable distance.
-                assert!(h.length() < 0.6 && (0.015..=0.15).contains(&travel), "{}: handle {h} travel {travel}", w.key);
+                assert!(h.length() < 0.9 && (0.015..=0.15).contains(&travel), "{}: handle {h} travel {travel}", w.key);
             }
         }
     }

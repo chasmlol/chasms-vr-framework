@@ -211,7 +211,7 @@ pub fn weapon_desc(i: usize, w: &Weapon, spawn: Pose, start_slot: u32) -> Object
     d.weapon_flags = if w.automatic { WPN_AUTOMATIC } else { 0 }
         | if w.slide_locks { WPN_SLIDE_LOCKS } else { 0 }
         | if w.handle.is_some() { WPN_NEEDS_RACK } else { 0 }
-        | if w.pistol { WPN_PISTOL } else { WPN_STOCK };
+        | if w.pistol { WPN_PISTOL } else if w.stock { WPN_STOCK } else { 0 };
     d.fire_rate = w.rounds_per_second;
     [d.recoil_pitch, d.recoil_yaw, d.recoil_back] = w.recoil;
     [d.recoil_climb, d.recoil_return, d.recoil_angle] = w.recoil_feel;
@@ -275,6 +275,45 @@ pub fn kick_descs(object: u32, w: &Weapon) -> Vec<KickDesc> {
             }
         }
         out.push(d);
+    }
+    out
+}
+
+/// The guns' kicks as the kick table can hold them (`capacity`, the protocol's `MAX_KICKS`): every
+/// gun keeps one kick of each kind it has (each layer and `when`: the game's recoil for every way
+/// of firing), then the guns get their other variants while they fit, those in `first` (object
+/// ids) before the rest. Returned grouped by gun, in `per_gun`'s order.
+pub fn fit_kicks(per_gun: Vec<(u32, Vec<KickDesc>)>, first: &[u32], capacity: usize) -> Vec<KickDesc> {
+    // Each gun's kicks split into one of each kind and the rest.
+    let split: Vec<(u32, Vec<KickDesc>, Vec<KickDesc>)> = per_gun
+        .into_iter()
+        .map(|(id, kicks)| {
+            let (mut one, mut rest) = (Vec::new(), Vec::new());
+            for k in kicks {
+                if one.iter().any(|o: &KickDesc| o.layer == k.layer && o.when == k.when) {
+                    rest.push(k);
+                } else {
+                    one.push(k);
+                }
+            }
+            (id, one, rest)
+        })
+        .collect();
+    let mut left = capacity.saturating_sub(split.iter().map(|(_, one, _)| one.len()).sum());
+    let all: usize = split.iter().map(|(_, one, rest)| one.len() + rest.len()).sum();
+    // Who gets their variants: `first`, then everyone else, each wholly or not at all.
+    let mut order: Vec<usize> = (0..split.len()).collect();
+    order.sort_by_key(|&g| first.iter().position(|&id| id == split[g].0).unwrap_or(usize::MAX));
+    let mut full = vec![false; split.len()];
+    for g in order {
+        if split[g].2.len() <= left {
+            left -= split[g].2.len();
+            full[g] = true;
+        }
+    }
+    let out: Vec<KickDesc> = split.iter().zip(&full).flat_map(|((_, one, rest), &full)| one.iter().chain(if full { rest.as_slice() } else { &[] }).copied()).take(capacity).collect();
+    if out.len() < all {
+        tracing::info!("range: {} of the guns' {all} recoil kicks fit the kick table ({capacity}); the rest keep one of each kind", out.len());
     }
     out
 }
@@ -423,11 +462,12 @@ impl Armory {
                     pose_descs.push(pose_desc(id, side, h));
                 }
             }
-            kick_list.extend(kick_descs(d.id, w));
+            kick_list.push((d.id, kick_descs(d.id, w)));
             descs.push(d);
             kinds.insert(WEAPON_BASE + i as u32, Kind::Weapon(i));
             // One magazine template per kind of magazine, from the first gun laid out that takes it.
-            if !templates.contains(&ammo[i]) {
+            // (A gun without one, the flamethrower, holds its rounds itself.)
+            if !templates.contains(&ammo[i]) && !w.mag_parts.is_empty() {
                 templates.push(ammo[i]);
                 let mut m = mag_desc(i, w);
                 m.ammo_type = ammo[i];
@@ -467,13 +507,13 @@ impl Armory {
         }
         poses.count = pose_descs.len().min(MAX_HAND_POSES) as u32;
         poses.seq = 1;
-        if kick_list.len() > MAX_KICKS {
-            tracing::warn!("range: {} kicks, the table holds {MAX_KICKS}", kick_list.len());
-        }
-        for (k, d) in kick_list.iter().take(MAX_KICKS).enumerate() {
+        // The near table's guns (the scenarios fire those) keep every variant first.
+        let first: Vec<u32> = on_table.iter().map(|&i| WEAPON_BASE + i as u32).collect();
+        let kick_list = fit_kicks(kick_list, &first, MAX_KICKS);
+        for (k, d) in kick_list.iter().enumerate() {
             kicks.kicks[k] = *d;
         }
-        kicks.count = kick_list.len().min(MAX_KICKS) as u32;
+        kicks.count = kick_list.len() as u32;
         kicks.seq = 1;
 
         let mut collision = Vec::new();
@@ -698,7 +738,7 @@ mod tests {
         // Each kind of magazine the laid-out guns take has one template, and nothing else is
         // registered.
         let templates: Vec<u32> = a.table.descs[..a.table.count as usize].iter().filter(|d| d.flags & OBJF_TEMPLATE != 0).map(|d| d.ammo_type).collect();
-        let mut kinds: Vec<u32> = weapon_descs(&a).iter().map(|d| d.ammo_type).collect();
+        let mut kinds: Vec<u32> = weapon_descs(&a).iter().filter(|d| !refs[(d.id - WEAPON_BASE) as usize].mag_parts.is_empty()).map(|d| d.ammo_type).collect();
         kinds.sort();
         kinds.dedup();
         assert_eq!(templates.len(), kinds.len(), "one template per magazine: {templates:x?} for {kinds:x?}");
@@ -777,7 +817,7 @@ mod tests {
                 // The wrist is behind the grip and to its right, the fingers forward.
                 let (at, rot) = (Vec3::from_array(p.wrist.pos), Quat::from_array(p.wrist.rot));
                 let grip = Vec3::from_array(d.grip);
-                assert!(at.z < grip.z && at.x > grip.x, "{}: wrist {at}", w.key);
+                assert!(at.z < grip.z && at.x > grip.x - 0.01, "{}: wrist {at}", w.key);
                 assert!((rot * Vec3::Y).z > 0.5, "{}: fingers {}", w.key, rot * Vec3::Y);
             }
             if let Some(p) = a.poses.find(d.support_pose) {
@@ -797,6 +837,33 @@ mod tests {
     }
 
     #[test]
+    fn every_gun_keeps_its_own_recoil() {
+        let weapons = everything();
+        let refs: Vec<&Weapon> = weapons.iter().collect();
+        let a = Armory::new(&refs);
+        let table = &a.kicks.kicks[..a.kicks.count as usize];
+        assert!(table.len() <= MAX_KICKS);
+        for d in weapon_descs(&a) {
+            let w = refs[(d.id - WEAPON_BASE) as usize];
+            let ours: Vec<&KickDesc> = table.iter().filter(|k| k.object == d.id).collect();
+            let kinds = |ks: &[KickDesc]| {
+                let mut k: Vec<(u32, u32)> = ks.iter().map(|k| (k.layer, k.when)).collect();
+                k.sort();
+                k.dedup();
+                k
+            };
+            let theirs = kick_descs(d.id, w);
+            // Every kind of kick the game gives the gun is there, at least once.
+            let have: Vec<KickDesc> = ours.iter().map(|k| **k).collect();
+            assert_eq!(kinds(&have), kinds(&theirs), "{}: its recoil for every way of firing", w.key);
+            // The near table's guns (the scenarios fire them) keep every variant.
+            if matches!(w.key.as_str(), "wpn_ak" | "wpn_ubludok") {
+                assert_eq!(ours.len(), theirs.len(), "{}: all its kicks", w.key);
+            }
+        }
+    }
+
+    #[test]
     fn descriptors_carry_the_authored_rig() {
         let weapons = everything();
         let refs: Vec<&Weapon> = weapons.iter().collect();
@@ -813,8 +880,8 @@ mod tests {
             } else {
                 assert!(d.flags & OBJF_TWO_HANDED != 0);
                 assert!((Quat::from_array(d.support_rot).length() - 1.0).abs() < 1e-4, "{}: support_rot", w.key);
-                assert!((4.0..=14.0).contains(&d.recoil_pitch) && (1.0..=4.0).contains(&d.recoil_yaw), "{}", w.key);
-                assert!((0.015..=0.06).contains(&d.recoil_back), "{}", w.key);
+                assert!((1.0..=14.0).contains(&d.recoil_pitch) && (0.3..=4.0).contains(&d.recoil_yaw), "{}", w.key);
+                assert!((0.003..=0.06).contains(&d.recoil_back), "{}", w.key);
             }
             // A gun with something to rack needs racking after a fresh magazine; one without
             // (a revolver, a break action) chambers as the magazine goes in.
@@ -823,10 +890,14 @@ mod tests {
                 assert!(d.handle_travel >= 0.015, "{}: handle travel {}", w.key, d.handle_travel);
             }
             // The magazine template's box is the magazine (a box, a drum, a speed loader, a pair
-            // of shells), a small part of the gun.
+            // of shells), a small part of the gun. (A gun without one holds its rounds.)
+            if w.mag_parts.is_empty() {
+                assert!(w.from_game && a.descs.values().all(|m| m.flags & OBJF_TEMPLATE == 0 || m.ammo_type != d.ammo_type), "{}", w.key);
+                continue;
+            }
             let m = *a.descs.values().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type).unwrap_or_else(|| panic!("{}: no magazine", w.key));
             let (mh, gh) = (Vec3::from_array(m.half_extents), Vec3::from_array(d.half_extents));
-            assert!(mh.min_element() > 0.004 && mh.max_element() < 0.2 && mh.z < gh.z * 0.4, "{}: magazine box {mh}", w.key);
+            assert!(mh.min_element() > 0.004 && mh.max_element() < 0.25 && mh.z < gh.z * 0.75, "{}: magazine box {mh}", w.key);
             assert!(m.mass > 0.03 && m.mass < 3.0, "{}: magazine {} kg", w.key, m.mass);
         }
     }

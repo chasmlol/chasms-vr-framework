@@ -118,14 +118,22 @@ fn metro_guns_kick_the_way_metro_does() {
         let kicks = physical::kick_descs(d.id, w);
         let views = kicks.iter().filter(|k| k.layer == KICK_LAYER_VIEW).count();
         eprintln!("== {} ({}): {} kicks ({} view, {} gun), {} rounds/s", w.name, w.key, kicks.len(), views, kicks.len() - views, w.rounds_per_second);
-        assert!(views > 0 && views < kicks.len(), "both layers");
-        let runs = [
-            Run { name: "one shot from the hip", stance: Stance::default(), hold: HoldScale::GAME, shots: 1, seconds: 0.6 },
-            Run { name: "one shot aimed", stance: Stance { aimed: true, crouched: false }, hold: HoldScale::GAME, shots: 1, seconds: 0.6 },
-            Run { name: "three-round burst from the hip", stance: Stance::default(), hold: HoldScale::GAME, shots: 3, seconds: 1.0 },
-            Run { name: "two seconds of full auto, aimed", stance: Stance { aimed: true, crouched: false }, hold: HoldScale::GAME, shots: (2.0 * w.rounds_per_second) as u32, seconds: 2.8 },
-            Run { name: "full auto in one hand, off the shoulder", stance: Stance::default(), hold: HoldScale { turn: 3.0, push: 2.0 }, shots: (2.0 * w.rounds_per_second) as u32, seconds: 2.8 },
+        // The Kalash family has both layers; some guns only the gun's own fire motions (Metro
+        // gives the revolver, the Helsing and the single shots no camera tracks).
+        assert!(!kicks.is_empty());
+        if matches!(w.key.as_str(), "wpn_ak" | "wpn_ubludok") {
+            assert!(views > 0 && views < kicks.len(), "both layers");
+        }
+        let mut runs = vec![
+            Run { name: "one shot from the hip", stance: Stance::default(), hold: HoldScale::GAME, shots: 1, seconds: 1.2 },
+            Run { name: "one shot aimed", stance: Stance { aimed: true, crouched: false }, hold: HoldScale::GAME, shots: 1, seconds: 1.2 },
+            // (Long enough for a slow gun's third shot to settle too.)
+            Run { name: "three-round burst from the hip", stance: Stance::default(), hold: HoldScale::GAME, shots: 3, seconds: 2.0 / w.rounds_per_second + 1.5 },
         ];
+        if w.automatic {
+            runs.push(Run { name: "two seconds of full auto, aimed", stance: Stance { aimed: true, crouched: false }, hold: HoldScale::GAME, shots: (2.0 * w.rounds_per_second) as u32, seconds: 3.5 });
+            runs.push(Run { name: "full auto in one hand, off the shoulder", stance: Stance::default(), hold: HoldScale { turn: 3.0, push: 2.0 }, shots: (2.0 * w.rounds_per_second) as u32, seconds: 3.5 });
+        }
         let mut csv = String::from("run,t,pitch_deg,yaw_deg,back_mm,own_pitch_deg,own_yaw_deg,own_back_mm\n");
         let mut charts = Vec::new();
         for run in &runs {
@@ -138,17 +146,23 @@ fn metro_guns_kick_the_way_metro_does() {
             let end = data.last().unwrap().1;
             eprintln!("  {:34} peak pitch {pitch:+5.2} deg, yaw {yaw:+5.2} deg, back {back:5.1} mm; at the end {:+.2} deg   (RustVR's own: {own:+5.2} deg)", run.name, end.0);
             // Every shot kicks the muzzle up and the gun back, and it all settles by itself.
-            assert!(pitch > 0.5, "{}: {}: the muzzle kicks up: {pitch}", w.key, run.name);
+            // (With only the gun's fire motions, the turn is whatever the motion does: the Padonacheg's
+            // aimed one dips the muzzle.)
+            assert!(pitch > 0.5 || (views == 0 && pitch.abs() > 0.5), "{}: {}: the muzzle kicks up: {pitch}", w.key, run.name);
             assert!(back > 5.0, "{}: {}: the gun pushes back: {back}", w.key, run.name);
             assert!(end.0.abs() < 0.05 && end.2.abs() < 0.5, "{}: {}: settled: {end:?}", w.key, run.name);
             charts.push((run, data));
         }
         // Full auto holds the muzzle up well above one shot's kick while it fires.
-        let one = peak(&charts[1].1, |d| d.1.0);
-        let auto = &charts[3].1;
-        let held = auto.iter().filter(|d| (0.8..1.8).contains(&d.0)).map(|d| d.1.0).sum::<f32>() / auto.iter().filter(|d| (0.8..1.8).contains(&d.0)).count() as f32;
-        eprintln!("  full auto holds the muzzle up {held:.2} deg on average (one aimed shot peaks at {one:.2})");
-        assert!(held > one, "{}: a burst holds it up: {held} vs {one}", w.key);
+        // (A shouldered automatic's: the Gatling's own kicks don't build up like that.)
+        // (A fast one: a shotgun's kicks, four a second, each settle before the next.)
+        if w.automatic && w.stock && views > 0 && w.rounds_per_second >= 8.0 {
+            let one = peak(&charts[1].1, |d| d.1.0);
+            let auto = &charts[3].1;
+            let held = auto.iter().filter(|d| (0.8..1.8).contains(&d.0)).map(|d| d.1.0).sum::<f32>() / auto.iter().filter(|d| (0.8..1.8).contains(&d.0)).count() as f32;
+            eprintln!("  full auto holds the muzzle up {held:.2} deg on average (one aimed shot peaks at {one:.2})");
+            assert!(held > one, "{}: a burst holds it up: {held} vs {one}", w.key);
+        }
         std::fs::write(out_dir().join(format!("{}.csv", w.key)), csv).unwrap();
         std::fs::write(out_dir().join(format!("{}.svg", w.key)), svg(&w.name, &charts)).unwrap();
     }

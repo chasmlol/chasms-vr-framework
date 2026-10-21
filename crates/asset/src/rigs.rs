@@ -36,11 +36,14 @@ impl RigFile {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Hold {
-    /// Two hands: the firing hand on the pistol grip, the support hand on the foregrip.
+    /// Two hands: the firing hand on the pistol grip, the support hand on the foregrip; shouldered.
     #[default]
     Rifle,
     /// One hand (it holsters on the hip).
     Pistol,
+    /// Two hands on handles rather than a pistol grip and a handguard (a spade grip, a side
+    /// handle, a lever trigger), fired from the hip: no stock to shoulder.
+    Heavy,
 }
 
 /// A box: its centre and half sizes.
@@ -115,6 +118,11 @@ pub struct GunRig {
     /// mounted on a locator whose bone isn't the magazine's (rig_probe's `parts` lists them).
     #[serde(default)]
     pub mag_meshes: Vec<usize>,
+    /// Bones (with their children) whose skin isn't drawn: parts the game only shows in an
+    /// animation or with an upgrade (a round held in the hand while reloading, an ejected case,
+    /// the shells of barrels the stock gun doesn't have).
+    #[serde(default)]
+    pub hidden_bones: Vec<String>,
     /// The runtime's own recoil, for when the game's isn't loaded: muzzle climb (deg), sideways
     /// scatter (deg), push back (m); and its character: climb kept on full auto, return (1/s),
     /// lean (deg).
