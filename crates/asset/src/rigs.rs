@@ -46,6 +46,55 @@ pub enum Hold {
     Heavy,
 }
 
+/// How a gun is worked between shots (the protocol's `ACTION_*`).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    /// It cycles itself (self-loading, semi or full auto): the handle only racks it after a reload.
+    #[default]
+    Auto,
+    /// A bolt action: the bolt's handle (`handle`) is lifted (`bolt_turn`), pulled back and pushed
+    /// home after every shot.
+    Bolt,
+    /// A pump action: the forend (`handle`) is pulled back and pushed forward after every shot.
+    Pump,
+    /// A break action: the barrels tip down about the `hinge` (model +X) by `open_deg`.
+    Break,
+    /// A swing-out action: the barrel or cylinder swings out sideways about the `hinge` (a pin along
+    /// the bore, model +Z) by `open_deg` (positive: its top to the left).
+    Swing,
+}
+
+/// An air gun's pressure: what the pump builds, a shot spends, and the gauge that shows it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Pressure {
+    /// What one full stroke of the pump (the gun's `handle`) adds and one shot spends, as fractions
+    /// of full; below `min` it doesn't fire.
+    pub pump: f32,
+    pub shot: f32,
+    pub min: f32,
+    /// The gauge's moving part: its bone (and its children), and how it shows the pressure: turned
+    /// about the bone's own X axis (`gauge_turn`, degrees) or slid along it (`gauge_slide`, metres),
+    /// from empty to full, relative to the model's pose (the game's own poses for it).
+    #[serde(default)]
+    pub gauge_bone: Option<String>,
+    #[serde(default)]
+    pub gauge_turn: Option<[f32; 2]>,
+    #[serde(default)]
+    pub gauge_slide: Option<[f32; 2]>,
+}
+
+/// A handle that swings about a pivot (a lever) rather than sliding straight back.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HandleSwing {
+    /// The lever's pivot (model space); it swings about model +X through it, `deg` at full travel
+    /// (positive: its far end goes down and back).
+    pub pivot: [f32; 3],
+    pub deg: f32,
+}
+
 /// A box: its centre and half sizes.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +195,35 @@ pub struct GunRig {
     /// Zoom while aiming down the sights (above 1.4 opens a magnified scope); 1.1 when left out.
     #[serde(default)]
     pub ads_zoom: Option<f32>,
+    /// How it's worked between shots (`auto` when left out).
+    #[serde(default)]
+    pub action: Action,
+    /// Break and swing actions: a point on the hinge's pin (the barrels' bone's origin, which the
+    /// game's own motion turns them about), how far they open (degrees: the game's own motion's
+    /// furthest), and the bones that turn with them (and their children).
+    #[serde(default)]
+    pub hinge: Option<[f32; 3]>,
+    #[serde(default)]
+    pub open_deg: f32,
+    #[serde(default)]
+    pub barrel_bones: Vec<String>,
+    /// Guns loaded round by round into their chambers (a double barrel, a single shot): each
+    /// chamber's round, a bone (with its children) whose origin is the round's base at the chamber's
+    /// mouth, in the order they fire. Such a gun has no magazine (`mag_bones` stays empty): its
+    /// "magazine" is one round, the first chamber's.
+    #[serde(default)]
+    pub chamber_bones: Vec<String>,
+    /// Bolt actions: the bolt's turn about the bore (degrees about model +Z, positive lifting a
+    /// handle on the right), closed and open, from the model's pose (the game's own motion's
+    /// poses for it).
+    #[serde(default)]
+    pub bolt_turn: Option<[f32; 2]>,
+    /// The handle is a lever that swings rather than slides (`bolt_bones` are the lever).
+    #[serde(default)]
+    pub handle_swing: Option<HandleSwing>,
+    /// Air guns: the pressure its pump (`handle`) builds and its shots spend.
+    #[serde(default)]
+    pub pressure: Option<Pressure>,
 }
 
 fn default_twist() -> f32 {
@@ -162,6 +240,19 @@ pub fn parse(text: &str) -> Result<RigFile> {
         anyhow::ensure!(file.guns.iter().filter(|o| o.key == g.key).count() == 1, "{} is rigged twice", g.key);
         anyhow::ensure!(g.hold == Hold::Pistol || g.foregrip.is_some(), "{}: a two-handed gun needs a foregrip", g.key);
         anyhow::ensure!(g.handle.is_none() || g.handle_travel > 0.0, "{}: a handle needs its travel", g.key);
+        let hinged = matches!(g.action, Action::Break | Action::Swing);
+        anyhow::ensure!(!hinged || (g.hinge.is_some() && g.open_deg != 0.0 && !g.barrel_bones.is_empty()), "{}: a hinged action needs its hinge, open_deg and barrel_bones", g.key);
+        anyhow::ensure!(hinged || (g.hinge.is_none() && g.barrel_bones.is_empty()), "{}: a hinge on a gun that isn't a break or swing action", g.key);
+        anyhow::ensure!(!hinged || g.handle.is_none(), "{}: a hinged action has nothing to rack (its hinge is its moving part)", g.key);
+        anyhow::ensure!(!matches!(g.action, Action::Bolt | Action::Pump) || g.handle.is_some(), "{}: a bolt or pump action needs its handle", g.key);
+        anyhow::ensure!(g.bolt_turn.is_none() || g.action == Action::Bolt, "{}: bolt_turn is for bolt actions", g.key);
+        anyhow::ensure!(g.chamber_bones.is_empty() || g.mag_bones.is_empty(), "{}: loaded into its chambers or from a magazine, not both", g.key);
+        anyhow::ensure!(g.chamber_bones.is_empty() || g.mag_size.is_none_or(|n| n as usize == g.chamber_bones.len()), "{}: one chamber bone per chamber", g.key);
+        if let Some(p) = &g.pressure {
+            anyhow::ensure!(g.handle.is_some(), "{}: an air gun needs its pump (the handle)", g.key);
+            anyhow::ensure!(p.pump > 0.0 && p.shot > 0.0 && (0.0..1.0).contains(&p.min), "{}: pressure pump and shot above 0, min in 0..1", g.key);
+            anyhow::ensure!(p.gauge_bone.is_none() || (p.gauge_turn.is_some() != p.gauge_slide.is_some()), "{}: a gauge turns or slides", g.key);
+        }
     }
     Ok(file)
 }
@@ -223,5 +314,29 @@ mod tests {
         assert!(parse(&format!("game = \"x\"\n[[gun]]\n{gun}")).is_err(), "a rifle without a foregrip");
         assert!(parse(&format!("game = \"x\"\n[[gun]]\nhold = \"pistol\"\n{gun}")).is_ok());
         assert!(parse(&format!("game = \"x\"\n[[gun]]\nhold = \"pistol\"\nbogus = 1\n{gun}")).is_err(), "unknown fields");
+        let pistol = |extra: &str| parse(&format!("game = \"x\"\n[[gun]]\nhold = \"pistol\"\n{extra}\n{gun}"));
+        assert!(pistol("action = \"break\"").is_err(), "a break action without its hinge");
+        assert!(pistol("action = \"break\"\nhinge = [0, 0, 0.5]\nopen_deg = 45\nbarrel_bones = [\"b\"]").is_ok());
+        assert!(pistol("hinge = [0, 0, 0.5]").is_err(), "a hinge on a self-loading gun");
+        assert!(pistol("action = \"bolt\"").is_err(), "a bolt action without a handle");
+        assert!(pistol("action = \"bolt\"\nhandle = [0.1, 0, 0]\nhandle_travel = 0.08\nbolt_turn = [0, 90]").is_ok());
+        assert!(pistol("chamber_bones = [\"a\"]\nmag_bones = [\"m\"]").is_err(), "chambers and a magazine");
+        assert!(pistol("pressure = { pump = 0.25, shot = 0.1, min = 0.1 }").is_err(), "an air gun without its pump");
+        let air = "handle = [0, -0.1, 0.5]\nhandle_travel = 0.08\npressure = { pump = 0.25, shot = 0.1, min = 0.1, gauge_bone = \"g\", gauge_turn = [0, 270] }";
+        assert!(pistol(air).is_ok());
+    }
+
+    #[test]
+    fn the_metro_guns_that_dont_cycle_themselves_say_how_they_work() {
+        let f = builtin("metro2033").unwrap();
+        let g = |k: &str| f.gun(k).unwrap_or_else(|| panic!("{k} is rigged"));
+        assert_eq!(g("wpn_duplet").action, Action::Break);
+        assert_eq!(g("wpn_duplet").chamber_bones.len(), 2);
+        assert_eq!(g("wpn_ashot").action, Action::Swing);
+        assert_eq!(g("wpn_revolver").action, Action::Swing);
+        assert_eq!(g("wpn_preved").action, Action::Bolt);
+        assert_eq!(g("wpn_ventil").action, Action::Bolt);
+        assert!(g("wpn_tihar").pressure.is_some() && g("wpn_helsing").pressure.is_some());
+        assert_eq!(g("wpn_ak").action, Action::Auto);
     }
 }

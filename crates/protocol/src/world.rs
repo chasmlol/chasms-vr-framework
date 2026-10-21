@@ -13,6 +13,17 @@
 //! throwing, a knife's flight and where it sticks); the game owns the explosion and the damage.
 //! Its explosions push what the runtime simulates through [`crate::EV_BLAST`].
 //!
+//! # Actions
+//!
+//! A gun that doesn't cycle itself says how it's worked ([`ObjectDesc::action`], `ACTION_*`): a
+//! bolt or a pump worked by hand after every shot, a break action whose barrels tip open about a
+//! hinge, a barrel or cylinder that swings out; and how it's loaded and powered (`WPN_*`): round by
+//! round into its chambers ([`WPN_LOADS_CHAMBERS`]), or with air its pump builds
+//! ([`WPN_PNEUMATIC`]). The runtime works them with the player's hands and reports where the
+//! moving parts are (`slide`, `fuse`, [`OS_ACTION_OPEN`]) and what's in the chambers
+//! (`chambered`), so the game draws them; the game still only fires each shot. All of it lives in
+//! what used to be padding: a table written without it (zeros) gets self-loading guns, as before.
+//!
 //! An object the player holds (or has holstered) is reported in *tracking space* ([`OS_TRACKING`]),
 //! so the adapter maps it with the same `View` as the hands and it never lags behind them while
 //! the player moves. Everything else is reported in the world.
@@ -226,26 +237,45 @@ pub struct ObjectDesc {
     pub radius: f32,
     /// Collider centre in object space.
     pub center: [f32; 3],
-    pub _p1: f32,
+    /// Weapons with an [`ObjectDesc::action`]: how far its moving part turns, radians. A break
+    /// action's barrels open this far about weapon +X through the hinge (`handle`; positive tips
+    /// the muzzle down), a swing action's barrel or cylinder swings out this far about weapon +Z
+    /// through it (positive swings its top to the left); a bolt's handle lifts this far about the
+    /// bore (the line through `muzzle` along +Z; positive lifts a handle on the right side) before
+    /// it slides back (0: a straight pull).
+    pub action_angle: f32,
     /// Where the palm holds it (guns: the pistol grip; knives: the handle). The held object keeps
     /// its +Z along the controller's aim.
     pub grip: [f32; 3],
-    pub _p2: f32,
-    /// Where the other hand holds a two-handed gun.
+    /// Air guns ([`WPN_PNEUMATIC`]): the pressure one full stroke of the pump (the handle) adds, as
+    /// a fraction of full (1).
+    pub pump_pressure: f32,
+    /// Where the other hand holds a two-handed gun. A break action's foregrip ahead of its hinge is
+    /// on the barrels: while they're open it turns with them, and the hand on it opens and shuts
+    /// them instead of steering the gun.
     pub foregrip: [f32; 3],
-    pub _p3: f32,
-    /// Weapon: where a magazine's top goes in. Magazine: its top (the insertion point).
+    /// Air guns: the pressure a shot spends (fraction of full).
+    pub shot_pressure: f32,
+    /// Weapon: where a magazine's top goes in; guns loaded round by round into their chambers
+    /// ([`WPN_LOADS_CHAMBERS`]): the first chamber's mouth (where a round's base sits when it's
+    /// in). Magazine: its top (the insertion point); a round: its base.
     pub mag_well: [f32; 3],
-    pub _p4: f32,
+    /// [`WPN_LOADS_CHAMBERS`]: how far each chamber's mouth is from the one before, along weapon +X
+    /// (side-by-side barrels; 0 for one chamber): chamber `k` is at `mag_well + k * chamber_step`
+    /// (on the barrels, so it turns with them).
+    pub chamber_step: f32,
     /// Guns: the muzzle. Throwing knives: the blade's tip (the blade runs from `grip` to it).
     pub muzzle: [f32; 3],
-    pub _p5: f32,
+    /// Air guns: below this pressure (fraction of full) it doesn't fire (the trigger only hisses).
+    pub min_pressure: f32,
     /// A point on the line of sight (the line runs along +Z through it).
     pub sight: [f32; 3],
     pub _p6: f32,
     /// Charging handle / slide grab point; pulling it back `handle_travel` metres racks the gun.
-    /// Grenades with [`THROW_PIN`]: the pin's ring (or a fuse's end); pulling it `handle_travel`
-    /// away (0: 5 cm) pulls it.
+    /// Bolt and pump actions: the bolt's handle or the pump's forend, worked back and forward after
+    /// every shot. Air guns: the pump. Break and swing actions: a point on the hinge's pin (with
+    /// `handle_travel` 0: there's nothing to pull). Grenades with [`THROW_PIN`]: the pin's ring (or
+    /// a fuse's end); pulling it `handle_travel` away (0: 5 cm) pulls it.
     pub handle: [f32; 3],
     pub handle_travel: f32,
     /// Weapons and magazines with the same ammo type fit together.
@@ -288,7 +318,9 @@ pub struct ObjectDesc {
     /// hand); 0 = none (the runtime curls the fingers itself). Weapons with an authored `grip_rot`.
     pub grip_pose: u32,
     pub support_pose: u32,
-    pub _p7: u32,
+    /// Weapons: how it's worked between shots and loaded (`ACTION_*`; 0: it cycles itself, as a
+    /// self-loading gun does).
+    pub action: u32,
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;
@@ -317,6 +349,41 @@ pub const WPN_NEEDS_RACK: u32 = 1 << 2;
 pub const WPN_PISTOL: u32 = 1 << 3;
 /// Shoulder-fired: the virtual stock may anchor it.
 pub const WPN_STOCK: u32 = 1 << 4;
+/// An air gun: its shots spend pressure (`shot_pressure`) that strokes of its pump (the handle)
+/// build (`pump_pressure`); below `min_pressure` it doesn't fire. It starts empty. The runtime
+/// reports the pressure in [`ObjectState::fuse`]; a shot's strength is the pressure it was fired
+/// at (the value reported before `shots` went up).
+pub const WPN_PNEUMATIC: u32 = 1 << 5;
+/// Loaded round by round straight into its `capacity` chambers (a double barrel's two, a single
+/// shot's one): no magazine. Its ammo template is one round (an [`OBJ_MAGAZINE`] of capacity 1)
+/// that goes into an empty chamber when its base is brought to the chamber's mouth (see
+/// [`ObjectDesc::chamber_step`]); it fires the chambers in order, and their spent cases stay in
+/// them until the action is opened.
+pub const WPN_LOADS_CHAMBERS: u32 = 1 << 6;
+
+/// [`ObjectDesc::action`]: it cycles itself (self-loading, semi or full auto): the default.
+pub const ACTION_SELF_LOADING: u32 = 0;
+/// A bolt action: after every shot the bolt's handle (`handle`) is lifted (`action_angle`), pulled
+/// back (`handle_travel`: the case flies out) and pushed forward and down again (chambering the
+/// next round) before it fires again.
+pub const ACTION_BOLT: u32 = 1;
+/// A pump action: the forend (`handle`) is pulled back and pushed forward after every shot.
+pub const ACTION_PUMP: u32 = 2;
+/// A break action: the barrels tip down about a hinge (`handle`, weapon +X) by `action_angle` when
+/// unlatched (B or A on the gun hand, a flick down, or the other hand on the barrels' foregrip
+/// pulling them), falling open under their weight; opened, spent cases fly out and the chambers can
+/// be loaded; they shut with a flick up, under their weight with the muzzle down, or pushed by the
+/// other hand, and latch. It fires only shut.
+pub const ACTION_BREAK: u32 = 3;
+/// A swing-out action: the barrel or cylinder swings out sideways about a pin along the bore
+/// (`handle`, weapon +Z) by `action_angle`, otherwise as a break action. A magazine-fed one (a
+/// revolver's cylinder and its speed loader) takes and drops its magazine only while it's out.
+pub const ACTION_SWING: u32 = 4;
+
+/// [`ObjectState::chambered`]: bits 0..15 are the chambers holding a live round, bits 16..31 the
+/// ones holding a spent case (chamber `k` is bit `k`; a gun with one chamber uses bit 0).
+pub const CHAMBER_SPENT_SHIFT: u32 = 16;
+pub const CHAMBER_LIVE_MASK: u32 = 0xFFFF;
 
 /// [`ObjectDesc::throw_flags`]: a grenade. The runtime arms it, times its fuse (or waits for its
 /// impact) and tells the game when it goes off ([`ObjectState::shots`], [`OS_SPENT`]); the game
@@ -366,13 +433,19 @@ pub struct ObjectState {
     /// Weapons: rounds fired so far (each increase is one shot from the muzzle). Grenades: times it
     /// went off (each increase is one explosion at `pose`, for the game to make).
     pub shots: u32,
-    /// Weapons: a round is chambered.
+    /// Weapons: which chambers hold a live round and which a spent case (see
+    /// [`CHAMBER_SPENT_SHIFT`]); `chambered & CHAMBER_LIVE_MASK != 0`: a round is chambered. (A gun
+    /// that cycles itself only ever sets bit 0.)
     pub chambered: u32,
-    /// Weapons: slide / charging handle position, 0 forward .. 1 fully back.
+    /// Weapons: slide / charging handle / bolt / pump position, 0 forward .. 1 fully back. Break and
+    /// swing actions: how far the barrels (or cylinder) are open, 0 shut .. 1 fully open
+    /// (`action_angle`).
     pub slide: f32,
     /// Which [`ObjectDesc`] to draw it with (itself, or the template it was spawned from).
     pub desc: u32,
-    /// Grenades: seconds left on a burning fuse the runtime times ([`OS_ARMED`]), else 0.
+    /// Grenades: seconds left on a burning fuse the runtime times ([`OS_ARMED`]), else 0. Air guns
+    /// ([`WPN_PNEUMATIC`]): the pressure, 0 empty .. 1 full. Bolt actions: how far the bolt's handle
+    /// is lifted, 0 down .. 1 up (`action_angle`).
     pub fuse: f32,
 }
 /// The runtime is moving it: draw it at `pose`.
@@ -402,6 +475,9 @@ pub const OS_THROWN: u32 = 1 << 12;
 pub const OS_STUCK: u32 = 1 << 13;
 /// Went off: inert, the game hides it until it respawns it (`spawn_seq`) or removes it.
 pub const OS_SPENT: u32 = 1 << 14;
+/// Weapons: the action is open and won't fire: a break or swing action unlatched, a bolt lifted or
+/// back, a pump back.
+pub const OS_ACTION_OPEN: u32 = 1 << 15;
 
 pub const SLOT_HIP_RIGHT: u32 = 0;
 pub const SLOT_HIP_LEFT: u32 = 1;

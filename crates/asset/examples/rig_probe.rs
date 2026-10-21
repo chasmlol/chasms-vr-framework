@@ -11,6 +11,9 @@
 //!     cross-sections: the bounds of where the triangles cross each plane (after the filters);
 //! `cargo run -p rustvr-asset --example rig_probe -- <game> <key> hand`
 //!     canonical hand frames (Y to the middle finger base, Z the thumb side) from the bind pose;
+//! `cargo run -p rustvr-asset --example rig_probe -- <game> <key> bones`
+//!     every bone's bind pose (model space): its origin, the pivot the game's animations turn its
+//!     skin about (a break action's hinge, a lever's pivot), and its axes;
 //! `cargo run -p rustvr-asset --example rig_probe -- <game> <key> survey`
 //!     the common measurements of a gun in one go (see docs/RIGGING.md): its parts (bones, with
 //!     numbered siblings folded together) and locators, the sight profile along the game's aim
@@ -195,6 +198,16 @@ fn main() -> anyhow::Result<()> {
                 let x = [y[1] * z[2] - y[2] * z[1], y[2] * z[0] - y[0] * z[2], y[0] * z[1] - y[1] * z[0]];
                 println!("{side}: wrist {h:?}");
                 println!("   X {x:?}\n   Y {y:?}\n   Z {z:?}");
+            }
+        }
+        "bones" => {
+            // Every bone's bind pose in model space: where it is (the pivot the game's animations
+            // turn its skin about) and its axes, with its parent.
+            for (i, b) in m.bones.iter().enumerate() {
+                let c = &b.model_matrix;
+                let axis = |k: usize| [c[4 * k], c[4 * k + 1], c[4 * k + 2]];
+                let f = |a: [f32; 3]| format!("({:7.4}, {:7.4}, {:7.4})", a[0], a[1], a[2]);
+                println!("bone {i:3} {:24} under {:24} at {}  X {}  Y {}  Z {}", b.name, name(b.parent.max(0) as usize).to_string() + if b.parent < 0 { " (root)" } else { "" }, f(axis(3)), f(axis(0)), f(axis(1)), f(axis(2)));
             }
         }
         "survey" => survey::run(&dir, &args[1], &m)?,
