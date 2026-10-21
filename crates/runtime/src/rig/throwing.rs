@@ -19,6 +19,9 @@
 //! * **Spin**: 0.75 of the hand's (between Auto Hand's 0.5 and XRI's 1), capped at 20 rad/s (40 for
 //!   a spinning knife). The wrist's spin adds `0.8 * w x r` at the object once it passes 3 rad/s
 //!   (HVR's gate, ramped in), so flicks help without turning the hand into a catapult.
+//!
+//! (The release itself: mid-swing the rig lets go as the grip eases a quarter off its hardest
+//! squeeze, Deck's fix for late releases; see `Rig::hand_input`.)
 
 use glam::Vec3;
 use std::collections::VecDeque;

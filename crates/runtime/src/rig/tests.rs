@@ -275,6 +275,41 @@ fn landing_objects_make_impacts() {
 }
 
 #[test]
+fn a_swing_lets_go_as_the_grip_eases_but_a_still_hand_or_a_gun_holds_on() {
+    let mut s = Sim::new();
+    s.move_hand(0, s.pos(BOTTLE) + Vec3::new(0.0, 0.15, 0.0), 30);
+    s.grip(0, 1.0);
+    s.move_hand(0, Vec3::new(-0.2, 1.3, -0.1), 30);
+    s.step(10);
+    // Still, easing to 0.7 keeps it.
+    s.grip(0, 0.7);
+    assert_eq!(s.rig.held(0), Some(BOTTLE), "a still hand keeps it");
+    s.grip(0, 1.0);
+    // Swinging, easing to 0.7 throws it, and the grip doesn't snatch it back.
+    let mut p = s.hand_pos(0);
+    for k in 0..8 {
+        p.z += 5.0 * DT;
+        s.set_hand(0, p);
+        s.f.hands[0].squeeze = if k < 6 { 1.0 } else { 0.7 };
+        s.step(1);
+    }
+    assert_eq!(s.rig.held(0), None, "let go mid-swing");
+    assert_eq!(s.rig.debug.throws, 1);
+    s.step(5);
+    assert_eq!(s.rig.held(0), None, "not grabbed again until the grip opens");
+    // A gun swung about at 0.7 stays in the hand.
+    s.take_rifle();
+    s.grip(1, 0.7);
+    let mut p = s.hand_pos(1);
+    for _ in 0..8 {
+        p.z += 4.0 * DT;
+        s.set_hand(1, p);
+        s.step(1);
+    }
+    assert_eq!(s.rig.held(1), Some(RIFLE));
+}
+
+#[test]
 fn grip_hysteresis_keeps_a_relaxed_hand_holding() {
     let mut s = Sim::new();
     s.move_hand(0, s.pos(BOTTLE) + Vec3::new(0.0, 0.15, 0.0), 30);
@@ -1021,4 +1056,24 @@ fn the_games_blasts_push_loose_things_not_held_ones() {
     s.rig.impulse(FAR_BOTTLE, Vec3::new(0.0, 0.0, 2.0), far);
     s.step(6);
     assert!(s.pos(FAR_BOTTLE).z > far.z + 0.05);
+}
+
+#[test]
+fn a_knife_in_a_loose_crate_rides_with_it() {
+    let mut c = obj(9, OBJ_PROP, Vec3::new(0.0, 0.25, 2.2), [0.25, 0.25, 0.25], 4.0);
+    c.flags = OBJF_GRABBABLE;
+    let mut s = Sim::with(&[knife(), c]);
+    s.take(1, KNIFE);
+    s.move_hand(1, Vec3::new(0.1, 1.3, 0.2), 30);
+    s.step(20);
+    s.throw(1, Vec3::new(-0.05, -0.32, 1.0), 8.0);
+    s.step(45);
+    let st = s.state(KNIFE);
+    assert!(st.flags & OS_STUCK != 0 && st.parent == 9, "stuck in the crate: {:#x} parent {}", st.flags, st.parent);
+    let (k0, c0) = (s.pos(KNIFE), s.pos(9));
+    s.rig.impulse(9, Vec3::new(6.0, 0.0, 0.0), c0);
+    s.step(30);
+    let moved = s.pos(9) - c0;
+    assert!(moved.x > 0.05, "the crate moved: {moved:?}");
+    assert!((s.pos(KNIFE) - k0 - moved).length() < 0.03, "and the knife with it");
 }

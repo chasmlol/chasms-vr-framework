@@ -2,7 +2,8 @@
 //! holster, reload and fire. The range registers them (with its static collision, and the game's
 //! own hand poses on the guns: Metro's first-person arms, see `content::GunHand`), then each frame
 //! draws them where the runtime says they are, the trigger of a held gun following its hand's, and
-//! turns their shot counters into bullets.
+//! turns their shot counters into bullets. Other modules add their own objects to the table
+//! (`add_objects`: the throwables, which `throwables` draws).
 
 use bytemuck::Zeroable;
 use glam::{Mat3, Mat4, Quat, Vec3};
@@ -31,12 +32,18 @@ pub enum Kind {
     /// A magazine for weapon `i`, drawn with that weapon's magazine part (or a box).
     Mag(usize),
     Prop { color: [f32; 4] },
+    /// Throwable `i` (drawn by `throwables`).
+    Throwable(usize),
 }
 
-/// A bullet to fire: world origin and direction.
+/// A bullet to fire: world origin and direction, and the gun (weapon index, world pose and
+/// velocity) it came from.
 pub struct Shot {
     pub origin: Vec3,
     pub dir: Vec3,
+    pub weapon: usize,
+    pub gun: (Vec3, Quat),
+    pub vel: Vec3,
 }
 
 pub struct Armory {
@@ -53,6 +60,8 @@ pub struct Armory {
     /// How many of `collision` the runtime has (the ring can fill up mid-way).
     sent: usize,
     pub registered: bool,
+    /// The table changed (an object respawned): send it again.
+    dirty: bool,
 }
 
 /// What a draw list needs: (mesh id, model, tint, emissive, two-sided).
@@ -407,11 +416,63 @@ impl Armory {
             collision,
             sent: 0,
             registered: false,
+            dirty: false,
+        }
+    }
+
+    /// Adds objects of other kinds (before registering).
+    pub fn add_objects(&mut self, items: &[(ObjectDesc, Kind)]) {
+        for (d, kind) in items {
+            let n = self.table.count as usize;
+            if n >= MAX_OBJECTS {
+                tracing::warn!("range: the object table is full, {} left out", name_str(&d.name));
+                break;
+            }
+            self.table.descs[n] = *d;
+            self.table.count += 1;
+            self.kinds.insert(d.id, *kind);
+            self.descs.insert(d.id, *d);
+        }
+    }
+
+    /// More static collision (min, max boxes).
+    pub fn add_collision(&mut self, boxes: &[(Vec3, Vec3)]) {
+        let mut id = self.collision.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+        for (min, max) in boxes {
+            self.collision.push(col_box(id, *min, *max));
+            id += 1;
+        }
+    }
+
+    /// Puts object `id` back where it started (its spawn pose or slot): the game respawning it.
+    pub fn respawn(&mut self, id: u32) {
+        let n = self.table.count as usize;
+        if let Some(d) = self.table.descs[..n].iter_mut().find(|d| d.id == id) {
+            d.spawn_seq = d.spawn_seq.wrapping_add(1).max(1);
+            self.dirty = true;
+        }
+    }
+
+    pub fn desc(&self, id: u32) -> Option<&ObjectDesc> {
+        self.descs.get(&id)
+    }
+
+    /// Which throwable a desc is.
+    pub fn throwable(&self, desc: u32) -> Option<usize> {
+        match self.kinds.get(&desc) {
+            Some(Kind::Throwable(i)) => Some(*i),
+            _ => None,
         }
     }
 
     /// (Re-)registers everything with a newly connected runtime.
     pub fn register(&mut self, adapter: &rustvr_adapter::Adapter) {
+        if self.registered && self.dirty {
+            self.table.seq = self.table.seq.wrapping_add(1).max(1);
+            if adapter.write_objects(&self.table) {
+                self.dirty = false;
+            }
+        }
         if !self.registered {
             self.table.seq = self.table.seq.wrapping_add(1).max(1);
             // The poses first: when the runtime sees the objects, their poses are there.
@@ -441,11 +502,12 @@ impl Armory {
         adapter.read_object_states(&mut self.states)
     }
 
-    fn states(&self) -> &[ObjectState] {
+    pub fn states(&self) -> &[ObjectState] {
         &self.states.states[..(self.states.count as usize).min(MAX_OBJECTS)]
     }
 
-    fn world_pose(s: &ObjectState, v: &View) -> (Vec3, Quat) {
+    /// Where an object is in the world (held ones are reported in tracking space).
+    pub fn world_pose(s: &ObjectState, v: &View) -> (Vec3, Quat) {
         let p = Vec3::from_array(s.pose.pos);
         let q = Quat::from_array(s.pose.rot).normalize();
         if s.flags & OS_TRACKING != 0 { (v.point(p), v.rot(q)) } else { (p, q) }
@@ -455,7 +517,7 @@ impl Armory {
     pub fn shots(&mut self, v: &View) -> Vec<Shot> {
         let mut out = Vec::new();
         for s in &self.states.states[..(self.states.count as usize).min(MAX_OBJECTS)] {
-            let Some(Kind::Weapon(_)) = self.kinds.get(&s.desc) else { continue };
+            let Some(&Kind::Weapon(weapon)) = self.kinds.get(&s.desc) else { continue };
             let seen = self.shots_seen.entry(s.id).or_insert(s.shots);
             let new = s.shots.wrapping_sub(*seen).min(4);
             *seen = s.shots;
@@ -464,8 +526,10 @@ impl Armory {
             }
             let (p, q) = Self::world_pose(s, v);
             let d = &self.descs[&s.desc];
+            let vel = Vec3::from_array(s.lin_vel);
+            let vel = if s.flags & OS_TRACKING != 0 { v.dir(vel) } else { vel };
             for _ in 0..new {
-                out.push(Shot { origin: p + q * Vec3::from_array(d.sight), dir: q * Vec3::Z });
+                out.push(Shot { origin: p + q * Vec3::from_array(d.sight), dir: q * Vec3::Z, weapon, gun: (p, q), vel });
             }
         }
         out
@@ -538,6 +602,7 @@ impl Armory {
                     let m = model * Mat4::from_translation(Vec3::from_array(d.center)) * Mat4::from_scale(Vec3::from_array(d.half_extents) * 2.0);
                     out.push((200, m, color, glow, false));
                 }
+                Kind::Throwable(_) => {}
             }
         }
         out

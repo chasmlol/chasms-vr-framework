@@ -8,8 +8,12 @@
 //!
 //! Physical mode (the default): guns, magazines and props are objects for the runtime's hands
 //! (see `physical`); the range draws them where the runtime puts them and fires the shots it
-//! counts. `--legacy` instead glues the current gun to the firing hand and drives it from intents,
-//! the way an adapter for a game without object support works.
+//! counts. Grenades and throwing knives too (`throwables`): the runtime arms and throws them, the
+//! range makes their explosions. `--legacy` instead glues the current gun to the firing hand and
+//! drives it from intents, the way an adapter for a game without object support works.
+//!
+//! Either way the range shows what a game would (`effects`): muzzle flashes, smoke, tracers,
+//! bullet holes and sparks where the shots hit (`hits`), ejected casings, explosions.
 //!
 //! Options: `--weapon <name|scoped|first>` picks the starting gun (legacy); `--fps <n>` caps the
 //! frame rate when the runtime isn't in lockstep (to test a game slower than the headset).
@@ -17,8 +21,11 @@
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
 mod content;
+mod effects;
+mod hits;
 mod physical;
 mod render;
+mod throwables;
 
 use anyhow::Result;
 use glam::{Mat4, Quat, Vec3};
@@ -32,7 +39,10 @@ use std::collections::VecDeque;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM;
 
 use content::{MeshData, Weapon};
+use effects::{BitKind, Casing, Effects};
+use hits::Surface;
 use render::{Draw, Mesh, Renderer};
+use std::collections::HashMap;
 
 const STAND_EYE: f32 = 1.7;
 const CROUCH_EYE: f32 = 1.1;
@@ -54,6 +64,10 @@ struct Scene {
     cube: Mesh,
     hand_box: Mesh,
     weapons: Vec<GpuWeapon>,
+    /// Each throwable's parts.
+    throwables: Vec<Vec<Mesh>>,
+    /// Effect meshes: the casings (`Casing` order: rifle, pistol, shell).
+    fx: Vec<Mesh>,
 }
 
 struct Game {
@@ -89,6 +103,12 @@ struct Game {
     connections: u32,
     /// Physical mode: the gun in a hand, if any (index, rounds, chambered).
     held: Option<(usize, u32, bool)>,
+    /// Physical mode's throwables, and what's happened to them.
+    throwables: Vec<throwables::Throwable>,
+    watch: throwables::Watch,
+    /// What the game shows (explosions, their debris and smoke), and the room it all lands in.
+    effects: Effects,
+    world: hits::World,
 }
 
 fn main() -> Result<()> {
@@ -149,7 +169,34 @@ impl Game {
             name => weapons.iter().position(|g| g.w.name.to_lowercase().contains(&name.to_lowercase())).unwrap_or(0),
         };
 
-        let armory = (!legacy).then(|| physical::Armory::new(&weapons.iter().map(|g| &g.w).collect::<Vec<_>>()));
+        let mut armory = (!legacy).then(|| physical::Armory::new(&weapons.iter().map(|g| &g.w).collect::<Vec<_>>()));
+        // Grenades and knives (physical mode): on their own table at your left hand, and in the
+        // pouches.
+        let throw_list = if legacy { Vec::new() } else { throwables::all(&assets) };
+        let mut scenery = scenery;
+        if let Some(a) = &mut armory {
+            let placed = throwables::layout(&throw_list);
+            a.add_objects(&placed.iter().map(|(i, d)| (*d, physical::Kind::Throwable(*i))).collect::<Vec<_>>());
+            let table = throwables::furniture();
+            a.add_collision(&table.iter().map(|(lo, hi, _)| (*lo, *hi)).collect::<Vec<_>>());
+            let mut m = MeshData::default();
+            for (lo, hi, c) in table {
+                m.add_box(lo, hi, c);
+            }
+            scenery.push(renderer.upload(&gpu, &m)?);
+            let names: Vec<&str> = throw_list.iter().map(|t| t.name.as_str()).collect();
+            tracing::info!("range: {} throwables ({}), {} placed", throw_list.len(), names.join(", "), placed.len());
+        }
+        let throw_meshes = throw_list.iter().map(|t| t.parts.iter().map(|p| renderer.upload(&gpu, p)).collect::<Result<Vec<_>>>()).collect::<Result<Vec<_>>>()?;
+        let fx_meshes = [Casing::Rifle, Casing::Pistol, Casing::Shell].iter().map(|c| renderer.upload(&gpu, &effects::casing_mesh(*c))).collect::<Result<Vec<_>>>()?;
+        let sprites = effects::Sprites::load(|key, fallback| renderer.fx_texture(&gpu, key, fallback));
+        tracing::info!("range: effect sprites {}", if sprites.flash.from_game { "from Metro 2033" } else { "built in" });
+        // What bullets hit: the room (stone), the furniture (wood, the steel rails metal), the plates.
+        let mut boxes: Vec<(Vec3, Vec3, Surface)> = content::shell().into_iter().map(|(lo, hi)| (lo, hi, Surface::Stone)).collect();
+        for (lo, hi, c) in content::furniture().into_iter().chain(if legacy { Vec::new() } else { throwables::furniture() }) {
+            boxes.push((lo, hi, if c[2] > c[0] { Surface::Metal } else { Surface::Wood }));
+        }
+        let world = hits::World::new(boxes, targets.iter().map(|t| (t.center, t.radius)).collect());
         let mut cfg = AdapterConfig::new("range");
         cfg.request = TargetRequest {
             color_format: DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32,
@@ -168,7 +215,7 @@ impl Game {
             gpu,
             adapter,
             renderer,
-            scene: Scene { scenery, target_meshes, cube, hand_box, weapons },
+            scene: Scene { scenery, target_meshes, cube, hand_box, weapons, throwables: throw_meshes, fx: fx_meshes },
             target_flash: vec![-10.0; targets.len()],
             targets,
             weapon,
@@ -194,6 +241,10 @@ impl Game {
             armory,
             connections: 0,
             held: None,
+            throwables: throw_list,
+            watch: throwables::Watch::default(),
+            effects: Effects::new(sprites),
+            world,
         })
     }
 
@@ -244,6 +295,7 @@ impl Game {
             if self.adapter.connections() != self.connections {
                 self.connections = self.adapter.connections();
                 a.reset();
+                self.watch.reset();
             }
             a.register(&self.adapter);
             a.update(&self.adapter);
@@ -269,7 +321,11 @@ impl Game {
             self.cursor_was_down = down;
         } else if let Some(v) = &view {
             self.gameplay(f, v, &presses, dt);
+            self.throwables(v, now);
+            let objects = self.object_poses(v);
+            self.effects.update(dt, &self.world, &|id| objects.get(&id).copied());
         }
+        self.stats_f[rs::F_FX_LIVE] = self.effects.live() as f32;
         if let Some(until) = self.reload_until
             && now >= until {
                 self.ammo = self.scene.weapons[self.weapon].w.mag_size;
@@ -413,6 +469,77 @@ impl Game {
         }
     }
 
+    /// Where each object is (world), for what rides on them.
+    fn object_poses(&self, v: &View) -> HashMap<u32, (Vec3, Quat)> {
+        let Some(a) = &self.armory else { return HashMap::new() };
+        a.states().iter().filter(|s| s.flags & OS_SPENT == 0).map(|s| (s.id, physical::Armory::world_pose(s, v))).collect()
+    }
+
+    /// The throwables: explosions (effects, the blast's push, damage to the plates), knives in the
+    /// plates, lit fuses, and spent grenades put back.
+    fn throwables(&mut self, v: &View, now: f64) {
+        let Some(a) = &mut self.armory else { return };
+        let states: Vec<(ObjectState, Vec3, Quat)> = a
+            .states()
+            .iter()
+            .filter(|s| a.throwable(s.desc).is_some())
+            .map(|s| {
+                let (p, q) = physical::Armory::world_pose(s, v);
+                (*s, p, q)
+            })
+            .collect();
+        let kinds: HashMap<u32, usize> = states.iter().filter_map(|(s, _, _)| Some((s.desc, a.throwable(s.desc)?))).collect();
+        let events = self.watch.update(&states, &|d| kinds.get(&d).copied(), &self.throwables, now);
+        for id in self.watch.due(now) {
+            a.respawn(id);
+        }
+        for e in events {
+            match e {
+                throwables::Event::Exploded { at, blast, .. } => {
+                    self.effects.explosion(at, blast);
+                    let (damage, (radius, impulse)) = match blast {
+                        effects::Blast::Frag => (throwables::FRAG_DAMAGE, throwables::FRAG_PUSH),
+                        effects::Blast::Fire => (throwables::FIRE_DAMAGE, throwables::FIRE_PUSH),
+                    };
+                    self.adapter.blast(at.to_array(), radius, impulse);
+                    self.stats_f[rs::F_EXPLOSIONS] += 1.0;
+                    for (i, t) in self.targets.iter().enumerate() {
+                        if t.center.distance(at) <= damage + t.radius {
+                            self.target_flash[i] = self.time;
+                            self.stats_f[rs::F_BLAST_HITS] += 1.0;
+                        }
+                    }
+                    tracing::info!("range: an explosion at {at:.2} ({blast:?})");
+                }
+                throwables::Event::Stuck { tip, .. } => {
+                    let plate = self.targets.iter().position(|t| throwables::in_plate(tip, (t.center, t.radius)));
+                    if let Some(i) = plate {
+                        self.stats_f[rs::F_KNIFE_HITS] += 1.0;
+                        self.target_flash[i] = self.time;
+                    }
+                    self.effects.knife_hit(tip, plate.is_some());
+                    tracing::info!("range: a knife stuck at {tip:.2}{}", if plate.is_some() { " in a target" } else { "" });
+                }
+            }
+        }
+        // Lit fuses sputter; the frag's countdown light blinks faster at the end.
+        for (s, p, q) in &states {
+            if s.flags & OS_ARMED == 0 || s.flags & OS_SPENT != 0 {
+                continue;
+            }
+            let t = &self.throwables[kinds[&s.desc]];
+            if let Some(f) = t.fuse_at {
+                self.effects.fuse(*p + *q * f);
+            }
+            if let Some(led) = t.led {
+                let period = if s.fuse <= 1.5 { 0.15 } else { 0.5 };
+                if (s.fuse / period).fract() < 0.5 {
+                    self.effects.blink(*p + *q * led, [3.0, 0.2, 0.1]);
+                }
+            }
+        }
+    }
+
     fn shoot(&mut self, origin: Vec3, dir: Vec3) {
         // Nearest target plate the ray crosses, and how far from that plate's centre.
         let mut best: Option<(f32, usize, f32, Vec3)> = None;
@@ -462,9 +589,30 @@ impl Game {
         let gun_draws_start = draws.len();
         let g = &self.scene.weapons[self.weapon];
         let gun = v.weapon_to_world(&it) * g.w.fix;
+        // Casings and debris.
+        for (kind, p, q, k) in self.effects.bits() {
+            match kind {
+                BitKind::Casing(c) => draws.push((30_000 + c as usize, Mat4::from_scale_rotation_translation(Vec3::splat(k), q, p), [1.0; 4], 0.0, false)),
+                BitKind::Debris => draws.push((200, Mat4::from_scale_rotation_translation(Vec3::splat(0.022 * k), q, p), [0.2, 0.18, 0.16, 1.0], 0.0, false)),
+            }
+        }
         if let Some(a) = &self.armory {
             let ws: Vec<&Weapon> = self.scene.weapons.iter().map(|g| &g.w).collect();
             draws.extend(a.draws(v, &ws, f.hands.map(|h| h.trigger)));
+            // The throwables: without the pin once it's out, the lever once it's flown.
+            for s in a.states() {
+                let Some(i) = a.throwable(s.desc).filter(|_| s.flags & OS_SPENT == 0) else { continue };
+                let t = &self.throwables[i];
+                let (p, q) = physical::Armory::world_pose(s, v);
+                let model = Mat4::from_rotation_translation(q, p) * t.fix;
+                let glow = if s.flags & OS_HOVERED != 0 { 0.25 } else { 0.0 };
+                for part in 0..t.parts.len() {
+                    let gone = (s.flags & OS_PIN_PULLED != 0 && t.pin_parts.contains(&part)) || (s.flags & OS_ARMED != 0 && t.lever_parts.contains(&part));
+                    if !gone {
+                        draws.push((throwables::part_id(i, part), model, [1.0; 4], glow, t.from_game));
+                    }
+                }
+            }
             // The runtime's hands (where its physics put them), and a ghost where a wall holds one back,
             // unless the runtime draws the player's body itself.
             if let Some(body) = self.adapter.read_body().filter(|_| f.flags & RT_DRAWS_BODY == 0) {
@@ -520,6 +668,8 @@ impl Game {
         let eyes: Vec<_> = slot.eyes.iter().map(|e| (e.rtv.clone().unwrap(), e.width, e.height)).collect();
         let depths: Option<Vec<_>> = slot.depth.as_ref().map(|d| d.iter().map(|t| t.rtv.clone().unwrap()).collect());
         let weapon = self.weapon;
+        let fx = self.effects.sprites();
+        let lights = self.effects.lights();
 
         let mut flags = SLOT_HUD;
         if !paused {
@@ -530,7 +680,7 @@ impl Game {
                 let (eye_world, eye_rot) = v.pose(&f.eyes[e]);
                 let list = to_draws(&self.scene, weapon, &draws);
                 let depth = depths.as_ref().map(|d| &d[e]);
-                self.renderer.render(&self.gpu, rtv, depth, *w, *h, vp, eye_world, eye_rot * Vec3::Z, &list)?;
+                self.renderer.render_scene(&self.gpu, rtv, depth, *w, *h, vp, eye_world, eye_rot * Vec3::Z, &list, &fx, &lights)?;
             }
             if depths.is_some() {
                 flags |= SLOT_DEPTH;
@@ -540,7 +690,7 @@ impl Game {
                 let aspect = *w as f32 / *h as f32;
                 let vp = projection(&symmetric_fov(it.scope_vfov_deg, aspect), 0.05, FAR) * view_matrix(p, r);
                 let list = to_draws(&self.scene, weapon, &draws[..gun_draws_start]);
-                self.renderer.render(&self.gpu, rtv, None, *w, *h, vp, p, r * Vec3::Z, &list)?;
+                self.renderer.render_scene(&self.gpu, rtv, None, *w, *h, vp, p, r * Vec3::Z, &list, &fx, &lights)?;
                 flags |= SLOT_AUX;
                 self.stats_f[rs::F_SCOPE_FRAMES] += 1.0;
             }
@@ -608,12 +758,15 @@ impl Game {
 
 
 /// Resolves the frame's draw list (mesh ids by range: 0 scenery, 100 targets, 200 cube, 300 gun parts,
-/// 400 gun hands, 500 hand box) against the scene.
+/// 400 gun hands, 500 hand box, 10 000 physical guns' parts, 20 000 throwables' parts, 30 000
+/// effect meshes) against the scene.
 fn to_draws<'a>(scene: &'a Scene, weapon: usize, list: &[(usize, Mat4, [f32; 4], f32, bool)]) -> Vec<Draw<'a>> {
     list.iter()
         .map(|(id, m, t, e, two)| {
             let mesh = match *id {
-                10_000.. => &scene.weapons[(id - 10_000) / 100].parts[(id - 10_000) % 100],
+                30_000.. => &scene.fx[id - 30_000],
+                20_000..30_000 => &scene.throwables[(id - 20_000) / 100][(id - 20_000) % 100],
+                10_000..20_000 => &scene.weapons[(id - 10_000) / 100].parts[(id - 10_000) % 100],
                 0..100 => &scene.scenery[*id],
                 100..200 => &scene.target_meshes[id - 100],
                 200..300 => &scene.cube,

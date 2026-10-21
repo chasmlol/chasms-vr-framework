@@ -187,6 +187,10 @@ struct Hand {
     /// Pulling the other hand's grenade's pin: which, and where the hand took it.
     pin: Option<(u32, Vec3)>,
     trigger_was: f32,
+    /// The hardest squeeze since the grip closed, and whether an easing grip let a throw go (it
+    /// must open past the release threshold before it can grab again).
+    squeeze_peak: f32,
+    eased: bool,
     euro: OneEuro,
     blocked: bool,
     /// Controller grip target in the world, and the aim rotation.
@@ -292,6 +296,10 @@ const FOREGRIP_REACH: f32 = 0.14;
 const FOREGRIP_BREAK: f32 = 0.3;
 /// Letting go of something faster than this throws it rather than holstering it.
 const HOLSTER_MAX_SPEED: f32 = 1.2;
+/// A throw lets go when the grip eases this far off its hardest squeeze while the hand swings
+/// faster than this (m/s).
+const THROW_EASE: f32 = 0.25;
+const THROW_EASE_SPEED: f32 = 1.5;
 const HANDLE_REACH: f32 = 0.09;
 /// A gun fired with its sights this close to the eye is aimed (the game's aimed recoil).
 const AIMED_SIGHT: f32 = 0.15;
@@ -745,6 +753,8 @@ impl Rig {
                 history: ThrowHistory::default(),
                 pin: None,
                 trigger_was: 0.0,
+                squeeze_peak: 0.0,
+                eased: false,
                 euro: OneEuro::new(1.0, 8.0, 1.0),
                 blocked: false,
                 target: (Vec3::ZERO, Quat::IDENTITY),
@@ -872,10 +882,29 @@ impl Rig {
     fn hand_input(&mut self, i: usize, inp: &RigInput, zones: &[Zone; SLOT_COUNT_BODY], _dom: usize) {
         let s = &inp.settings.interaction;
         let c = &inp.frame.hands[i];
+        // Something to throw in a swinging hand (not a gun or a magazine, which you hold on to).
+        let throwing = {
+            let h = &self.hands.as_ref().unwrap()[i];
+            h.holding.and_then(|id| self.objects.get(&id)).is_some_and(|o| o.desc.kind != OBJ_WEAPON && o.desc.kind != OBJ_MAGAZINE) && h.history.recent().length() > THROW_EASE_SPEED
+        };
         let (pressed, released) = {
             let h = &mut self.hands.as_mut().unwrap()[i];
             let analog = c.squeeze;
-            let down = if h.grip_down { analog > s.grip_release } else { analog > s.grip_press };
+            let mut down = if h.grip_down { analog > s.grip_release } else { analog > s.grip_press && !h.eased };
+            if analog <= s.grip_release {
+                h.eased = false;
+            }
+            // Deck's release: mid-swing the grip lets go as it eases a quarter off its hardest
+            // squeeze, not only once it's nearly open (a late release is the top throwing complaint).
+            if h.grip_down {
+                h.squeeze_peak = h.squeeze_peak.max(analog);
+                if down && !s.grip_toggle && throwing && analog < h.squeeze_peak * (1.0 - THROW_EASE) {
+                    down = false;
+                    h.eased = true;
+                }
+            } else {
+                h.squeeze_peak = analog;
+            }
             let was = h.grip_down;
             h.grip_down = down;
             let edge_down = down && !was;
