@@ -1013,6 +1013,7 @@ dependencies = [
  "glam 0.34.1",
  "retour",
  "rustvr-adapter",
+ "rustvr-asset",
  "rustvr-gpu",
  "rustvr-protocol",
  "serde",
