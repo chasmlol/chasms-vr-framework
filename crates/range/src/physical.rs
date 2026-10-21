@@ -836,6 +836,36 @@ mod tests {
         assert!(ids.iter().all(|&id| id != 0));
     }
 
+    /// The pouch hands each gun a magazine of its kind (the template its ammo type names), and
+    /// seated it sits where the gun's own magazine does: the magazine drawn in the gun covers the
+    /// gun's own (a shared one, the Kalash's in the AKSU, within a few millimetres).
+    #[test]
+    fn every_gun_gets_a_magazine_that_fits_it() {
+        let weapons = everything();
+        let refs: Vec<&Weapon> = weapons.iter().collect();
+        let a = Armory::new(&refs);
+        for d in weapon_descs(&a) {
+            let i = (d.id - WEAPON_BASE) as usize;
+            let w = refs[i];
+            if w.mag_parts.is_empty() {
+                continue;
+            }
+            let t = a.descs.values().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type).unwrap_or_else(|| panic!("{}: no magazine", w.key));
+            let Some(Kind::Mag(j)) = a.kinds.get(&t.id) else { panic!("{}: its magazine draws as nothing", w.key) };
+            let from = refs[*j];
+            assert_eq!(from.magazine, w.magazine, "{}: takes {}'s magazine", w.key, from.key);
+            // Seated, the magazine object sits at the gun's pose moved by (gun well - its well), in
+            // the gun's weapon space (the runtime's `Holder::InWeapon`), and draws `from`'s parts.
+            let shift = Vec3::from_array(d.mag_well) - Vec3::from_array(t.mag_well);
+            let (lo, hi) = mag_bounds(from).unwrap();
+            let (own_lo, own_hi) = mag_bounds(w).unwrap();
+            let off = ((lo + hi) * 0.5 + shift).distance((own_lo + own_hi) * 0.5);
+            let size = ((hi - lo) - (own_hi - own_lo)).abs().max_element();
+            assert!(off < 0.005 && size < 0.005, "{}: {}'s magazine sits {:.1} mm off its own, {:.1} mm different", w.key, from.key, off * 1000.0, size * 1000.0);
+            assert_eq!(t.capacity, w.mag_size, "{}: its magazine holds its rounds", w.key);
+        }
+    }
+
     #[test]
     fn every_gun_keeps_its_own_recoil() {
         let weapons = everything();
