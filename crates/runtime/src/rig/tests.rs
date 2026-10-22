@@ -1284,6 +1284,28 @@ fn a_double_barrel_breaks_open_throws_its_cases_takes_two_shells_and_snaps_shut(
 }
 
 #[test]
+fn a_live_shell_comes_back_out_of_an_open_chamber_and_live_ones_stay_in_as_it_opens() {
+    let mut s = Sim::with(&[double(), shell()]);
+    s.take_gun(DOUBLE);
+    s.tap(1, CTRL_B);
+    s.step(90);
+    assert_eq!(s.rig.debug.case_ejects, 0, "unfired shells aren't thrown out");
+    assert_eq!(s.weapon(DOUBLE).chamber_bits(), 0b11);
+    // The left hand on the first chamber's mouth: grip pulls its shell out.
+    let d = double();
+    let (gp, gq) = s.rig.object_world_pose(DOUBLE).unwrap();
+    let angle = s.weapon(DOUBLE).hinge.unwrap().angle;
+    let mouth = gp + gq * actions::on_barrels(&d, angle, actions::chamber_mouth(&d, 0));
+    s.move_hand(0, mouth + Vec3::new(0.0, 0.01, 0.0), 30);
+    s.grip(0, 1.0);
+    let round = s.rig.held(0).expect("the shell is in the hand");
+    assert!(s.rig.weapon_state(round).is_none());
+    assert_eq!(s.weapon(DOUBLE).chamber_bits(), 0b10, "the first chamber is empty");
+    assert_eq!(s.rig.debug.unloads, 1);
+    assert!(s.cues.contains(&Cue::ShellOut));
+}
+
+#[test]
 fn the_support_hand_pulls_the_barrels_open_and_pushes_them_shut() {
     let mut s = Sim::with(&[double(), shell()]);
     s.take_gun(DOUBLE);
