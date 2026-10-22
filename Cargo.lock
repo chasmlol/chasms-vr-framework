@@ -1704,6 +1704,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "glam 0.34.1",
+ "png",
  "rustvr-asset",
  "rustvr-gpu",
  "rustvr-protocol",

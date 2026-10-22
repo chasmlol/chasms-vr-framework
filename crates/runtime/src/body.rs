@@ -3,7 +3,7 @@
 //! game's picture by the avatar (`rustvr_avatar`), hidden behind the game's geometry using its depth.
 
 use glam::{Quat, Vec3};
-use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput, HeldHand};
+use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput, GameShading, HeldHand};
 use rustvr_gpu::Gpu;
 use rustvr_ik::{BodyParams, BodySolver, Calibration, FingerInput, FingerSolver, HandOffsets, HoldShape, Side, TrackedInput};
 use rustvr_protocol::*;
@@ -218,7 +218,7 @@ impl PlayerBody {
             self.avatar_tried = true;
             let dir = rustvr_asset::default_root().join("metro2033");
             let source = if dir.join("models").join("body_miller.rvm").exists() {
-                AvatarSource::Model { dir, body: "body_miller".into(), hands: Some("hands_basic_suit".into()) }
+                AvatarSource::Model { dir, body: "body_miller".into(), hands: Some("hands_sviter".into()) }
             } else {
                 AvatarSource::Procedural
             };
@@ -228,6 +228,16 @@ impl PlayerBody {
             }
         }
         self.avatar.as_mut()
+    }
+
+    /// Shades the body with the game's lighting from now on (None: the runtime's own look). Once a
+    /// frame, before the eyes.
+    pub fn set_game_shading(&mut self, gpu: &Gpu, shading: Option<&GameShading>) {
+        // (Without the game's lighting there's nothing to load the avatar for yet.)
+        let avatar = if shading.is_some() { self.avatar(gpu) } else { self.avatar.as_mut() };
+        if let Some(avatar) = avatar {
+            avatar.set_game_shading(gpu, shading);
+        }
     }
 
     /// Draws the body into one eye. `light.sun_dir` must already be in tracking space.

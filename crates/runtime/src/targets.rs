@@ -47,7 +47,7 @@ impl Spec {
             eye_w,
             eye_h,
             color_format: typeless.0,
-            flags: req.flags & (TGT_DEPTH | TGT_HUD | TGT_AUX),
+            flags: req.flags & (TGT_DEPTH | TGT_HUD | TGT_AUX | TGT_LIGHTS),
             hud_w: if req.hud_w > 0 { req.hud_w } else { 1920 },
             hud_h: if req.hud_h > 0 { req.hud_h } else { 1080 },
             aux_w,

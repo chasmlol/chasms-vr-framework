@@ -28,7 +28,7 @@ pub const MODEL_EXT: &str = "rvm";
 pub const TEXTURE_EXT: &str = "rvt";
 pub const RECOIL_EXT: &str = "rvk";
 /// Bump when [`Model`] or [`Texture`] change shape; loaders reject other versions.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Model {
@@ -72,6 +72,14 @@ pub struct Material {
     pub params: [f32; 4],
     /// Metro's `surf_color`: albedo tint (rgb, applied ×2), w spare.
     pub color: [f32; 4],
+    /// Alpha-tested: the pixel is discarded where the base texture's alpha falls under 0.5.
+    pub alpha_test: bool,
+    /// [`Shader::Emissive`] only: the shader's fixed multiplier on `base · dot(detail, 2/3)`.
+    /// 0 otherwise.
+    pub emissive: f32,
+    /// The game's grazing-angle term is on (Metro's `use_fresnel` permutations: the skin shader's
+    /// sheen, and on [`Shader::Plain`] the sky-tinted rim of `geometry\fresnel`).
+    pub fresnel: bool,
 }
 
 /// A game's shading model for a surface (Metro's G-buffer pixel shaders).
@@ -104,6 +112,10 @@ pub struct Vertex {
     /// Indices into [`Model::bones`]; weights sum to 255. All zero weights: rigid, unskinned.
     pub bones: [u8; 4],
     pub weights: [u8; 4],
+    /// Baked ambient occlusion as the game stores it (Metro: the packed normal's top byte, which
+    /// its vertex shaders read as `NORMAL.a` of an `R8G8B8A8_UNORM` stream, i.e. `ao / 255`, and
+    /// multiply by the per-object hemi value). 255 = unoccluded, also where a game has none.
+    pub ao: u8,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

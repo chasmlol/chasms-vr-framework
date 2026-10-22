@@ -21,6 +21,12 @@
 //! Drawing happens in tracking space with each eye's pose and FOV, like the rest of the
 //! compositor, into an sRGB render target (lighting is linear).
 //!
+//! * **The game's shading:** when the game publishes its lighting ([`GameShading`]) and a mesh
+//!   carries the game's material, the mesh is shaded exactly as the game shades its own
+//!   first-person model: its G-buffer terms, its lights, ambient and occlusion, its tone curve
+//!   and colour grading, written as the code values the game would display ([`metro`]). Other
+//!   meshes, and everything when the game doesn't say, keep the runtime's own look.
+//!
 //! **Joint rotations** are read as the orientation of each joint's canonical frame in tracking
 //! space (the protocol's convention in `world.rs`), so a player standing in the reference T-pose
 //! has exactly [`pose::reference_frame`] on every joint, and a hand's +Y points along its fingers
@@ -30,22 +36,26 @@
 
 pub mod fit;
 pub mod held;
+pub mod metro;
 mod names;
 pub mod pose;
 mod procedural;
 mod render;
 mod rig;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use glam::Quat;
 use rustvr_asset as asset;
 use rustvr_gpu::Gpu;
-use rustvr_protocol::{Fingers, Fov, HandState, JOINT_COUNT, LightHint, Pose};
+use rustvr_protocol::{Fingers, Fov, GameLighting, HandState, JOINT_COUNT, LightHint, Pose};
 use windows::Win32::Graphics::Direct3D11::{ID3D11RenderTargetView, ID3D11ShaderResourceView};
 
 pub use held::{HeldHand, held_hands};
-pub use rig::{GameHand, finger_reach, game_hand};
+pub use rig::{GameHand, bind_joints, finger_reach, game_hand};
 
 /// Everything about the player's body for one frame (tracking space).
 pub struct AvatarFrame<'a> {
@@ -83,6 +93,18 @@ pub enum AvatarSource {
     /// body, and optionally first-person arms (`hands`) for the hands and arms views and the ghost
     /// hands.
     Model { dir: PathBuf, body: String, hands: Option<String> },
+    /// A model given directly, with the textures its meshes and materials name (by key).
+    Built { model: asset::Model, textures: HashMap<String, asset::Texture> },
+}
+
+/// The game's lighting for this frame, to shade the body exactly as the game shades its own
+/// first-person model (see [`metro`]).
+pub struct GameShading<'a> {
+    pub lighting: &'a GameLighting,
+    /// Tracking space to the game's world (the orientation its environment maps are in).
+    pub world_rot: Quat,
+    /// The light atlas ([`rustvr_protocol::TexKind::Lights`]), when the adapter fills one.
+    pub atlas: Option<&'a ID3D11ShaderResourceView>,
 }
 
 pub struct Avatar {
@@ -99,6 +121,11 @@ impl Avatar {
         let renderer = render::Renderer::new(gpu)?;
         let (body, arms) = match source {
             AvatarSource::Procedural => (None, None),
+            AvatarSource::Built { model, textures } => {
+                let textures: HashMap<String, Arc<asset::Texture>> = textures.into_iter().map(|(k, t)| (k, Arc::new(t))).collect();
+                let body = render::Character::new(gpu, from_model(model, |key| textures.get(key).cloned()));
+                (body.map_err(|e| tracing::warn!("avatar: {e:#}; drawing the mannequin instead")).ok(), None)
+            }
             AvatarSource::Model { dir, body, hands } => {
                 let body = load_model(&dir, &body).and_then(|s| render::Character::new(gpu, s)).with_context(|| format!("avatar body {body}"));
                 let arms = hands.map(|key| load_model(&dir, &key).and_then(|s| render::Character::new(gpu, s)).with_context(|| format!("avatar hands {key}")));
@@ -112,6 +139,12 @@ impl Avatar {
             None => render::Character::new(gpu, procedural::mannequin()).context("the built-in mannequin")?,
         };
         Ok(Avatar { renderer, body, arms })
+    }
+
+    /// Shades the body with the game's own lighting model from now on (None: the runtime's own
+    /// look). Call once a frame, before drawing the eyes.
+    pub fn set_game_shading(&mut self, gpu: &Gpu, shading: Option<&GameShading>) {
+        self.renderer.set_shading(gpu, shading);
     }
 
     /// Draws the body into `target` (an sRGB view of one eye's image, `width` x `height`) as seen
@@ -149,9 +182,31 @@ pub(crate) struct SourceMesh {
     pub name: String,
     pub vertices: Vec<asset::Vertex>,
     pub indices: Vec<u32>,
-    pub texture: Option<asset::Texture>,
+    pub texture: Option<Arc<asset::Texture>>,
     /// Linear colour multiplied with the texture.
     pub tint: [f32; 3],
+    /// How the game shades it, when that's known and its textures are all there.
+    pub material: Option<SourceMaterial>,
+}
+
+pub(crate) struct SourceMaterial {
+    pub class: metro::Class,
+    pub params: [f32; 4],
+    pub color: [f32; 4],
+    pub alpha_test: bool,
+    /// The emissive classes' multiplier (2 when the asset doesn't say).
+    pub emissive: f32,
+    /// The `use_fresnel` permutation (see [`metro::Surface::fresnel`]).
+    pub fresnel: bool,
+    pub bump: Option<Arc<asset::Texture>>,
+    pub detail: Option<Arc<asset::Texture>>,
+    pub env: Option<Arc<asset::Texture>>,
+}
+
+/// The skeleton of the built-in mannequin (Unity humanoid names, bound in the reference T-pose),
+/// for building models in memory ([`AvatarSource::Built`]).
+pub fn mannequin_skeleton() -> Vec<asset::Bone> {
+    procedural::mannequin().bones
 }
 
 /// Eye overlay shells (Metro's `eyeballenv`, the cornea, tearline and occlusion meshes of Unreal
@@ -164,16 +219,38 @@ fn is_eye_overlay(mesh_name: &str) -> bool {
 
 fn load_model(dir: &std::path::Path, key: &str) -> Result<Source> {
     let model = asset::load_model(dir, key)?;
+    let mut cache: HashMap<String, Option<Arc<asset::Texture>>> = HashMap::new();
+    Ok(from_model(model, |key| {
+        cache
+            .entry(key.to_string())
+            .or_insert_with(|| asset::load_texture(dir, key).map_err(|e| tracing::warn!("avatar: texture {key}: {e:#}")).ok().map(Arc::new))
+            .clone()
+    }))
+}
+
+/// A model with its textures looked up by key.
+fn from_model(model: asset::Model, mut texture: impl FnMut(&str) -> Option<Arc<asset::Texture>>) -> Source {
+    let mut get = |key: &str| if key.is_empty() { None } else { texture(key) };
     let meshes = model
         .meshes
         .into_iter()
         .filter(|m| !m.indices.is_empty() && !is_eye_overlay(&m.name))
         .map(|m| {
-            let texture = (!m.texture.is_empty())
-                .then(|| asset::load_texture(dir, &m.texture).map_err(|e| tracing::warn!("avatar: texture {}: {e:#}", m.texture)).ok())
-                .flatten();
-            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3] }
+            let texture = get(&m.texture);
+            let material = metro::Class::of(m.material.shader).and_then(|class| {
+                let mat = &m.material;
+                let (bump, detail, env) = (get(&mat.bump), get(&mat.detail), get(&mat.env));
+                let (need_bump, need_detail, need_env) = class.needs();
+                let missing = texture.is_none() || (need_bump && bump.is_none()) || (need_detail && detail.is_none()) || (need_env && env.is_none());
+                if missing {
+                    tracing::debug!("avatar: mesh {}: {class:?} without all its textures; drawn with the base texture alone", m.name);
+                    return None;
+                }
+                let emissive = if mat.emissive > 0.0 { mat.emissive } else { 2.0 };
+                Some(SourceMaterial { class, params: mat.params, color: mat.color, alpha_test: mat.alpha_test, emissive, fresnel: mat.fresnel, bump, detail, env })
+            });
+            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material }
         })
         .collect();
-    Ok(Source { bones: model.bones, meshes })
+    Source { bones: model.bones, meshes }
 }

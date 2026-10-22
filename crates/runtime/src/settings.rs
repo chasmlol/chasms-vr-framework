@@ -246,6 +246,9 @@ pub struct Body {
     pub arm_span: f32,
     /// Hide the head and neck (always) so they never block the view.
     pub hide_head: bool,
+    /// Shade the body with the game's own lighting model when the game publishes its lighting
+    /// (otherwise, and when off, the runtime's own look).
+    pub game_lighting: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -359,7 +362,7 @@ impl Default for Interaction {
 
 impl Default for Body {
     fn default() -> Self {
-        Body { visibility: BodyVisibility::Full, height: 0.0, arm_span: 0.0, hide_head: true }
+        Body { visibility: BodyVisibility::Full, height: 0.0, arm_span: 0.0, hide_head: true, game_lighting: true }
     }
 }
 

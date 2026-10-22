@@ -868,6 +868,18 @@ impl Skeleton {
     }
 }
 
+/// The joints that draw a model exactly in its bind pose (model space): each mapped joint at its
+/// bone's bind position, turned to its canonical frame there. A first-person arms model baked in a
+/// game's pose (relative to the game's camera) drawn with these, moved by the camera's pose, is
+/// where the game drew it.
+pub fn bind_joints(bones: &[asset::Bone]) -> [Pose; JOINT_COUNT] {
+    let s = Skeleton::new(bones);
+    std::array::from_fn(|j| match s.map.joints[j] {
+        Some(b) => Pose { pos: s.bind[b].1.to_array(), valid: 1, rot: s.canonical[j].to_array() },
+        None => Pose { pos: [0.0; 3], valid: 0, rot: [0.0, 0.0, 0.0, 1.0] },
+    })
+}
+
 /// The pose of hand `side` (0 left, 1 right) in a posed model: a game's first-person arms as it
 /// draws them holding something. Frames are found from the bones' positions the same way the
 /// avatar finds its own (see the module docs and [`segment_frame`]).

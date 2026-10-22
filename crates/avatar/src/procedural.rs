@@ -175,7 +175,7 @@ pub fn mannequin() -> Source {
 
     let meshes = [("body", body, BODY), ("joints", joints, JOINTS), ("hands", hands, HANDS)]
         .into_iter()
-        .map(|(name, m, tint)| SourceMesh { name: name.into(), vertices: m.vertices, indices: m.indices, texture: None, tint })
+        .map(|(name, m, tint)| SourceMesh { name: name.into(), vertices: m.vertices, indices: m.indices, texture: None, tint, material: None })
         .collect();
     Source { bones, meshes }
 }
@@ -245,7 +245,7 @@ impl Mesh {
         const AROUND: usize = 18;
         let first_index = self.indices.len();
         let base = self.vertices.len() as u32;
-        let vertex = |pos: Vec3| asset::Vertex { pos: pos.to_array(), normal: [0.0; 3], uv: [0.0; 2], bones: [bone as u8, 0, 0, 0], weights: [255, 0, 0, 0] };
+        let vertex = |pos: Vec3| asset::Vertex { pos: pos.to_array(), normal: [0.0; 3], uv: [0.0; 2], bones: [bone as u8, 0, 0, 0], weights: [255, 0, 0, 0], ao: 255 };
         let curve = |v: f32| v.signum() * v.abs().powf(2.0 / p);
         self.vertices.push(vertex(start));
         for &(c, a, b) in rings {

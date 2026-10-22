@@ -109,6 +109,11 @@ pub struct Session {
     hud_layout: Box<HudLayout>,
     hud_layout_seq: u32,
     hud: crate::hud::HudPlacer,
+    /// The game's lighting of its first-person model (the last consistent copy), and whether
+    /// there is one: the body is shaded with it.
+    game_lighting: Box<GameLighting>,
+    game_lighting_read: Box<GameLighting>,
+    has_game_lighting: bool,
     /// The interaction sounds (see `play_cue`).
     pub audio: Option<rustvr_audio::Audio>,
     /// Where the game's sound pack is and the objects' sound sets (the `SoundPack` region).
@@ -179,6 +184,9 @@ impl Session {
             game_shots: 0,
             hud_layout: bytemuck::zeroed_box(),
             hud_layout_seq: 0,
+            game_lighting: bytemuck::zeroed_box(),
+            game_lighting_read: bytemuck::zeroed_box(),
+            has_game_lighting: false,
             hud: Default::default(),
             audio: if opts.audio {
                 Some(rustvr_audio::Audio::new())
@@ -248,6 +256,13 @@ impl Session {
             self.was_alive = alive;
         }
         self.game = if alive { self.link.read_game_state() } else { None };
+        // A torn read (the adapter writing as we read) keeps the last good copy.
+        if !alive {
+            self.has_game_lighting = false;
+        } else if self.link.read_game_lighting_into(&mut self.game_lighting_read) {
+            std::mem::swap(&mut self.game_lighting, &mut self.game_lighting_read);
+            self.has_game_lighting = self.game_lighting.eye.valid != 0 && self.game_lighting.depth_squash > 0.0;
+        }
         let name = self.game.as_ref().map(|g| name_str(&g.name).to_owned());
         self.settings.set_profile(name.as_deref());
         if self.settings.poll() {
@@ -900,6 +915,13 @@ impl Session {
             }
             None => (1.0, LightHint::default()),
         };
+        // The game's lighting for the body (the same for both eyes).
+        let shading = (draw_body && self.has_game_lighting && s.body.game_lighting).then(|| rustvr_avatar::GameShading {
+            lighting: &self.game_lighting,
+            world_rot: self.game.as_ref().map_or(Quat::IDENTITY, |g| WorldMap::from_state(&g.tracking).rot(Quat::IDENTITY)),
+            atlas: stereo.as_ref().and_then(|(slot, _)| slot.lights.as_ref()).and_then(|t| t.srv.as_ref()),
+        });
+        self.body.set_game_shading(&self.gpu, shading.as_ref());
         let body = &mut self.body;
         for e in 0..2 {
             let game = stereo.as_ref().and_then(|(slot, _)| slot.eyes[e].srv.as_ref());

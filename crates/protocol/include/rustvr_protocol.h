@@ -788,6 +788,13 @@
  * space x and y over [`LIGHT_TILE_EXTENT`] metres around the view axis, [`LIGHT_TILE_SLICES`]
  * slices in view-space depth over 0..[`GameLighting::depth_squash`]·[`LIGHT_TILE_DEPTH`],
  * side by side. Texel (rgb) = the light map's colour, (a) = the shadow term (1 = lit).
+ *
+ * Exactly (T = `LIGHT_TILE`, S = `LIGHT_TILE_SLICES`, E = `LIGHT_TILE_EXTENT`): texel
+ * (s·T + i, tile·T + j) holds the game's terms at the view-space point
+ * x = −E + (i + ½)·2E/T, y = E − (j + ½)·2E/T (row 0 is the top, +y), z = s/(S − 1)·`depth_squash`
+ * ·`LIGHT_TILE_DEPTH`: the squashed depth of a point at real view depth s/(S − 1)·`LIGHT_TILE_DEPTH`
+ * (slice 0 at the camera, the last at `LIGHT_TILE_DEPTH`). Sample a slice bilinearly with u clamped
+ * to its own texel centres, and blend the two slices around the point's depth linearly.
  */
 #define RVR_LIGHT_TILE 64
 
