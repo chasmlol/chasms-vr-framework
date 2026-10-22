@@ -937,7 +937,7 @@ pub fn all() -> Vec<Scenario> {
         },
         Scenario {
             name: "gloves",
-            about: "physical: the palm towards a can on the far table, grip, flick it to you and catch it",
+            about: "physical: the arm reaching at a can on the far table, grip, flick it to you and catch it",
             duration: 2.6,
             needs_game: true,
             lockstep: true,
@@ -949,18 +949,20 @@ pub fn all() -> Vec<Scenario> {
                 latched(|t, objs, _| {
                     let mut b = Body::rest();
                     let Some(can) = prop_near(objs, Vec3::new(2.0, 0.91, 2.3)) else { return b };
-                    let hand = Vec3::new(0.3, 1.2, 0.35);
-                    let flick = hand + Vec3::new(0.0, 0.08, -0.15);
                     b.head_rot = look_rot(can.pos - Body::rest().head_pos);
+                    // The right arm reaching at it from the shoulder, the controller held as it is.
+                    let fwd = (can.pos - Body::rest().head_pos).with_y(0.0).normalize();
+                    let shoulder = Body::rest().head_pos - Vec3::Y * 0.25 + Vec3::Y.cross(fwd) * 0.18;
+                    let hand = shoulder + (can.pos - shoulder).normalize() * 0.55;
+                    let flick = hand + Vec3::new(0.0, 0.08, -0.15);
                     b.hands[1].pos = keys(t, &[(0.0, Body::rest().hands[1].pos), (0.4, hand), (0.7, hand), (0.76, flick)]);
-                    // The right palm (the grip's -X) towards it.
-                    b.hands[1].rot = look_rot(can.pos - hand) * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+                    b.hands[1].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.4, Quat::from_rotation_y(fwd.x.atan2(fwd.z)))]);
                     b.hands[1].squeeze = on(t, &[(0.6, 9.0)]);
                     b
                 })
             },
             checks: vec![
-                check(0.55, "the palm towards the can highlights it", |c| {
+                check(0.55, "reaching at the can highlights it", |c| {
                     ensure(c.objects.iter().any(|o| o.kind == OBJ_PROP && o.flags & OS_HOVERED != 0), || "nothing hovered".into())
                 }),
                 check(0.9, "the flick pulled it", |c| ensure(c.rig.pulls == 1, || format!("pulls {}", c.rig.pulls))),

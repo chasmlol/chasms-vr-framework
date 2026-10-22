@@ -364,17 +364,17 @@ fn a_game_prop_follows_the_game_until_held_and_goes_back_with_the_throw() {
     assert!(v.length() > 2.0 && v.z > 1.0, "the throw's velocity for the game: {v:?}");
 
     // Then the game has it again.
-    let p3 = Vec3::new(-0.9, 0.3, 1.3);
+    let p3 = Vec3::new(-1.1, 0.3, 1.0);
     game_at(&mut s, p3);
     s.step(30);
     assert!(s.pos(PROP).distance(p3) < 0.01, "follows the game again: {:?}", s.pos(PROP));
 
     // Out of reach on the floor: the gravity gloves bring it.
-    let from = Vec3::new(-0.4, 1.2, 0.2);
+    // (Looking down its way: the gloves only take what you're looking at.)
+    s.f.hmd.rot = (Quat::from_rotation_y(-0.83) * Quat::from_rotation_x(0.5)).to_array();
+    let from = reach_at(0, p3, -0.83);
     s.move_hand(0, from, 20);
-    s.set_rot(0, palm_towards(0, p3 - from));
-    // (Looking its way: the gloves only take what you're looking at.)
-    s.f.hmd.rot = Quat::from_rotation_y(-0.6).to_array();
+    s.set_rot(0, Quat::IDENTITY);
     s.step(15);
     assert!(s.out.hand_targeting[0], "pointing at it");
     s.grip(0, 1.0);
@@ -911,21 +911,23 @@ fn the_pouch_ignores_hands_in_front_of_the_face() {
     assert_eq!(s.rig.held(0), None);
 }
 
-/// A controller rotation that turns hand `i`'s palm towards `dir` (fingers level).
-fn palm_towards(i: usize, dir: Vec3) -> Quat {
-    // The right palm faces the grip's -X, the left one its +X.
-    look_rotation(dir, Vec3::Y) * Quat::from_rotation_y(if i == 1 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 })
+/// Where hand `i` is reaching its arm out at `target` (from its shoulder, the head at 1.7 m turned
+/// `yaw` about +Y), half a metre from the shoulder.
+fn reach_at(i: usize, target: Vec3, yaw: f32) -> Vec3 {
+    let turn = Quat::from_rotation_y(yaw);
+    let shoulder = Vec3::new(0.0, 1.45, 0.0) + turn * Vec3::new(if i == 0 { -0.18 } else { 0.18 }, 0.0, 0.0);
+    shoulder + (target - shoulder).normalize() * 0.55
 }
 
 #[test]
 fn gravity_gloves_pull_and_catch() {
     let mut s = Sim::new();
     let target = s.pos(FAR_BOTTLE);
-    let from = Vec3::new(0.2, 1.2, 0.2);
+    let from = reach_at(1, target, 0.0);
     s.move_hand(1, from, 20);
-    s.set_rot(1, palm_towards(1, target - from));
+    s.set_rot(1, Quat::IDENTITY);
     s.step(15);
-    assert!(s.out.hand_targeting[1], "the palm towards the far bottle");
+    assert!(s.out.hand_targeting[1], "reaching at the far bottle");
     s.grip(1, 1.0);
     // Flick the hand back towards the body.
     let mut p = s.hand_pos(1);
@@ -1034,21 +1036,22 @@ fn pointing_the_controller_at_a_thing_isnt_reaching_for_it() {
 }
 
 #[test]
-fn a_locked_glove_target_holds_while_the_grip_does_then_flicks_whichever_way_the_hand_faces() {
+fn a_locked_glove_target_holds_while_the_grip_does_then_flicks_from_wherever_the_hand_is() {
     let mut s = Sim::new();
     let target = s.pos(FAR_BOTTLE);
-    let from = Vec3::new(0.2, 1.2, 0.2);
+    let from = reach_at(1, target, 0.0);
     s.move_hand(1, from, 20);
-    s.set_rot(1, palm_towards(1, target - from));
+    s.set_rot(1, Quat::IDENTITY);
     s.step(15);
     s.grip(1, 1.0);
     assert!(s.out.hand_targeting[1], "locked");
-    // Turned right away, palm to the ceiling: still locked while the grip holds.
-    s.set_rot(1, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
-    s.step(30);
+    // The arm swung right away from it: still locked while the grip holds.
+    let away = s.hand_pos(1) + Vec3::new(0.45, 0.0, 0.0);
+    s.move_hand(1, away, 60);
+    s.step(10);
     assert!(s.out.hand_targeting[1], "the grip keeps the lock");
     assert_eq!(s.rig.debug.pulls, 0);
-    // The flick in towards the chest, the palm still up.
+    // The flick in towards the chest from there.
     let mut p = s.hand_pos(1);
     let head = Vec3::new(0.0, 1.7, 0.0);
     for _ in 0..6 {
@@ -1063,9 +1066,9 @@ fn a_locked_glove_target_holds_while_the_grip_does_then_flicks_whichever_way_the
 fn a_locked_glove_target_hops_and_lets_go_with_the_grip() {
     let mut s = Sim::new();
     let target = s.pos(FAR_BOTTLE);
-    let from = Vec3::new(0.2, 1.2, 0.2);
+    let from = reach_at(1, target, 0.0);
     s.move_hand(1, from, 20);
-    s.set_rot(1, palm_towards(1, target - from));
+    s.set_rot(1, Quat::IDENTITY);
     s.step(15);
     s.grip(1, 1.0);
     let y0 = s.pos(FAR_BOTTLE).y;
