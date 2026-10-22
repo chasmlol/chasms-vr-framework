@@ -841,7 +841,9 @@ impl Session {
                             quat(frame.hmd.rot),
                             frame.dt,
                             aspect,
-                            (self.hud_layout.count > 0).then_some(&*self.hud_layout),
+                            // In pieces only over the game's stereo picture: a loading screen or an
+                            // intro (flat frames) is one screen.
+                            (self.hud_layout.count > 0 && info.flags & SLOT_STEREO != 0).then_some(&*self.hud_layout),
                             &at,
                         );
                         for piece in pieces {
