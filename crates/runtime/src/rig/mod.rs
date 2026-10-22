@@ -620,7 +620,12 @@ impl Rig {
         );
         // A gun arrives loaded: a seated magazine from its template, or rounds held internally (a
         // gun loaded into its chambers has them all loaded already).
-        if d.kind == OBJ_WEAPON && d.weapon_flags & WPN_LOADS_CHAMBERS == 0 {
+        if d.kind == OBJ_WEAPON && d.weapon_flags & WPN_LOADS_ROUNDS != 0 {
+            // A magazine that stays in it, full: one of its rounds chambered.
+            if let Some(w) = self.objects.get_mut(&id).and_then(|o| o.weapon.as_mut()) {
+                w.internal = Some(d.capacity.max(1) - w.chambered as u32);
+            }
+        } else if d.kind == OBJ_WEAPON && d.weapon_flags & WPN_LOADS_CHAMBERS == 0 {
             match self.template_for(d.ammo_type) {
                 Some(t) => {
                     let mag = self.spawn_mag(&t, pos, rot);
@@ -947,7 +952,9 @@ impl Rig {
         // other hand holds a magazine-fed gun.
         if hover == Hover::None {
             if let Some(wid) = self.other_weapon(i) {
-                let wants = self.objects[&wid].weapon.as_ref().is_some_and(|w| w.internal.is_none());
+                // (A magazine that stays in it takes rounds from the pouch one at a time.)
+                let o = &self.objects[&wid];
+                let wants = o.weapon.as_ref().is_some_and(|w| w.internal.is_none()) || o.desc.weapon_flags & WPN_LOADS_ROUNDS != 0;
                 let in_pouch = ammo.iter().any(|z| self.anchor.contains(z, palm_t))
                     || zones.iter().enumerate().any(|(slot, z)| self.slots[slot].is_none() && self.anchor.contains(z, palm_t));
                 if wants && in_pouch {
@@ -1417,11 +1424,12 @@ impl Rig {
     fn eject(&mut self, wid: u32, hand: usize) {
         let swing = self.objects.get(&wid).is_some_and(|o| o.desc.action == ACTION_SWING);
         let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) else { return };
-        // A revolver's chambered round is one of its cylinder's: it goes out with the loader.
-        let back_in = swing && std::mem::take(&mut w.chambered);
         let Some(mag) = w.mag.take() else { return };
-        if back_in && let Some(m) = self.objects.get_mut(&mag) {
-            m.rounds = (m.rounds + 1).min(m.desc.capacity.max(m.rounds + 1));
+        // A revolver's chambered round is one of its cylinder's: it goes out with the loader.
+        if swing && std::mem::take(&mut w.chambered)
+            && let Some(m) = self.objects.get_mut(&mag)
+        {
+            m.rounds = (m.rounds + 1).min(m.desc.capacity).max(m.rounds);
         }
         let (wp, wr) = self.obj_pose(wid).unwrap();
         let (wv, _) = self.physics.velocity(self.objects[&wid].body);
@@ -1737,7 +1745,7 @@ impl Rig {
             // A held magazine near this gun's magazine well seats itself; a round near an open
             // chamber goes in.
             if let Some(mag) = self.hands.as_ref().unwrap()[hand ^ 1].holding {
-                if d.weapon_flags & WPN_LOADS_CHAMBERS != 0 {
+                if d.weapon_flags & (WPN_LOADS_CHAMBERS | WPN_LOADS_ROUNDS) != 0 {
                     self.try_load(mag, id, inp.settings.interaction.easy_mag, hand ^ 1);
                 } else {
                     self.try_seat(mag, id, inp.settings.interaction.easy_mag, hand ^ 1);
@@ -1863,8 +1871,9 @@ impl Rig {
         }
     }
 
-    /// A held round pushed into one of an open gun's empty chambers: base to the chamber's mouth,
-    /// pointing along it. It goes in (and out of the hand) the moment it's there.
+    /// A held round pushed into one of an open gun's empty chambers, or through the port of a
+    /// magazine that stays in the gun: its base to the mouth, pointing along the bore. It goes in
+    /// (and out of the hand) the moment it's there.
     fn try_load(&mut self, round: u32, wid: u32, easy: bool, round_hand: usize) {
         let (Some(r), Some(w)) = (self.objects.get(&round), self.objects.get(&wid)) else { return };
         if !is_round(&r.desc) || r.desc.ammo_type != w.desc.ammo_type {
@@ -1872,9 +1881,13 @@ impl Rig {
         }
         let Some(ws) = w.weapon.as_ref() else { return };
         let d = w.desc;
+        // A magazine that stays in the gun: one more through its port while there's room (at any
+        // time). Chambers: an empty one, with the action open.
+        let tube = d.weapon_flags & WPN_LOADS_ROUNDS != 0;
         let angle = ws.hinge.map_or(0.0, |h| if h.latched { 0.0 } else { h.angle });
         let open = ws.hinge.is_some_and(|h| !h.latched && h.angle >= LOAD_OPEN.to_radians().min(0.6 * d.action_angle.abs())) || ws.cycle.is_some_and(|c| c.back > 0.8);
-        if !open {
+        let room = ws.internal.unwrap_or(0) + (ws.chambered as u32) < d.capacity;
+        if if tube { !room } else { !open } {
             return;
         }
         let (rp, rq) = self.physics.pose(r.body);
@@ -1886,16 +1899,28 @@ impl Rig {
         if along.angle_between(bore) > max_angle.to_radians() {
             return;
         }
-        let best = (0..ws.chambers.len())
-            .filter(|&k| ws.chambers[k] == Chamber::Empty)
-            .map(|k| (k, (wp + wr * actions::on_barrels(&d, angle, actions::chamber_mouth(&d, k))).distance(base)))
-            .filter(|(_, dist)| *dist < reach)
-            .min_by(|a, b| a.1.total_cmp(&b.1));
-        let Some((k, _)) = best else { return };
-        let mouth = wp + wr * actions::on_barrels(&d, angle, actions::chamber_mouth(&d, k));
-        if let Some(ws) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut())
-            && ws.load_chamber(k)
-        {
+        let mouths: Vec<(usize, Vec3)> = if tube {
+            vec![(0, wp + wr * v3(d.mag_well))]
+        } else {
+            (0..ws.chambers.len()).filter(|&k| ws.chambers[k] == Chamber::Empty).map(|k| (k, wp + wr * actions::on_barrels(&d, angle, actions::chamber_mouth(&d, k)))).collect()
+        };
+        let best = mouths.into_iter().map(|(k, at)| (k, at, at.distance(base))).filter(|(_, _, dist)| *dist < reach).min_by(|a, b| a.2.total_cmp(&b.2));
+        let Some((k, mouth, _)) = best else { return };
+        let needs_rack = d.weapon_flags & WPN_NEEDS_RACK != 0;
+        let loaded = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()).is_some_and(|ws| {
+            if !tube {
+                return ws.load_chamber(k);
+            }
+            // In through the port; a gun that cycles itself with its chamber empty takes it
+            // straight in (a revolving shotgun's cylinder turns it under the hammer).
+            *ws.internal.get_or_insert(0) += 1;
+            if !ws.chambered && !needs_rack && ws.cycle.is_none() {
+                ws.internal = ws.internal.map(|n| n - 1);
+                ws.chambered = true;
+            }
+            true
+        });
+        if loaded {
             let h = &mut self.hands.as_mut().unwrap()[round_hand];
             h.holding = None;
             let c = h.collider;

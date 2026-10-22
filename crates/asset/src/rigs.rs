@@ -217,6 +217,12 @@ pub struct GunRig {
     /// "magazine" is one round, the first chamber's.
     #[serde(default)]
     pub chamber_bones: Vec<String>,
+    /// Guns whose magazine stays in them and is loaded one round at a time (a tube, a revolving
+    /// shotgun's cylinder, a dart cluster): each of its rounds, a bone (with its children) whose
+    /// origin is the round's base, in the order they're loaded and fired. `mag_well` is the port
+    /// they go in at; no `mag_bones` then.
+    #[serde(default)]
+    pub round_bones: Vec<String>,
     /// Bolt actions: the bolt's turn about the bore (degrees about model +Z, positive lifting a
     /// handle on the right), closed and open, from the model's pose (the game's own motion's
     /// poses for it).
@@ -251,6 +257,8 @@ pub fn parse(text: &str) -> Result<RigFile> {
         anyhow::ensure!(!matches!(g.action, Action::Bolt | Action::Pump) || g.handle.is_some(), "{}: a bolt or pump action needs its handle", g.key);
         anyhow::ensure!(g.bolt_turn.is_none() || g.action == Action::Bolt, "{}: bolt_turn is for bolt actions", g.key);
         anyhow::ensure!(g.chamber_bones.is_empty() || g.mag_bones.is_empty(), "{}: loaded into its chambers or from a magazine, not both", g.key);
+        anyhow::ensure!(g.round_bones.is_empty() || (g.mag_bones.is_empty() && g.chamber_bones.is_empty()), "{}: a magazine loaded round by round has no magazine to take out", g.key);
+        anyhow::ensure!(g.round_bones.is_empty() || g.mag_size.is_none_or(|n| n as usize == g.round_bones.len()), "{}: one round bone per round", g.key);
         anyhow::ensure!(g.chamber_bones.is_empty() || g.mag_size.is_none_or(|n| n as usize == g.chamber_bones.len()), "{}: one chamber bone per chamber", g.key);
         if let Some(p) = &g.pressure {
             anyhow::ensure!(g.handle.is_some(), "{}: an air gun needs its pump (the handle)", g.key);
@@ -341,6 +349,8 @@ mod tests {
         assert_eq!(g("wpn_preved").action, Action::Bolt);
         assert_eq!(g("wpn_ventil").action, Action::Bolt);
         assert!(g("wpn_tihar").pressure.is_some() && g("wpn_helsing").pressure.is_some());
+        assert_eq!(g("wpn_uboynicheg").round_bones.len(), 6, "the revolving shotgun takes its shells one by one");
+        assert_eq!(g("wpn_helsing").round_bones.len(), 8, "and the crossbow its darts");
         assert_eq!(g("wpn_ak").action, Action::Auto);
     }
 }

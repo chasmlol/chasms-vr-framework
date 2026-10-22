@@ -18,8 +18,8 @@
 //! A gun that doesn't cycle itself says how it's worked ([`ObjectDesc::action`], `ACTION_*`): a
 //! bolt or a pump worked by hand after every shot, a break action whose barrels tip open about a
 //! hinge, a barrel or cylinder that swings out; and how it's loaded and powered (`WPN_*`): round by
-//! round into its chambers ([`WPN_LOADS_CHAMBERS`]), or with air its pump builds
-//! ([`WPN_PNEUMATIC`]). The runtime works them with the player's hands and reports where the
+//! round into its chambers ([`WPN_LOADS_CHAMBERS`]) or its fixed magazine ([`WPN_LOADS_ROUNDS`]),
+//! or with air its pump builds ([`WPN_PNEUMATIC`]). The runtime works them with the player's hands and reports where the
 //! moving parts are (`slide`, `fuse`, [`OS_ACTION_OPEN`]) and what's in the chambers
 //! (`chambered`), so the game draws them; the game still only fires each shot. All of it lives in
 //! what used to be padding: a table written without it (zeros) gets self-loading guns, as before.
@@ -258,7 +258,8 @@ pub struct ObjectDesc {
     pub shot_pressure: f32,
     /// Weapon: where a magazine's top goes in; guns loaded round by round into their chambers
     /// ([`WPN_LOADS_CHAMBERS`]): the first chamber's mouth (where a round's base sits when it's
-    /// in). Magazine: its top (the insertion point); a round: its base.
+    /// in); into their magazine ([`WPN_LOADS_ROUNDS`]): its loading port. Magazine: its top (the
+    /// insertion point); a round: its base.
     pub mag_well: [f32; 3],
     /// [`WPN_LOADS_CHAMBERS`]: how far each chamber's mouth is from the one before, along weapon +X
     /// (side-by-side barrels; 0 for one chamber): chamber `k` is at `mag_well + k * chamber_step`
@@ -360,6 +361,11 @@ pub const WPN_PNEUMATIC: u32 = 1 << 5;
 /// [`ObjectDesc::chamber_step`]); it fires the chambers in order, and their spent cases stay in
 /// them until the action is opened.
 pub const WPN_LOADS_CHAMBERS: u32 = 1 << 6;
+/// Its magazine stays in it (a tube, a cylinder, a dart cluster: `capacity` rounds) and is loaded
+/// one round at a time through its port at `mag_well`: its ammo template is one round, which goes in
+/// when its base is brought to the port pointing along weapon +Z. It arrives full.
+/// [`ObjectState::rounds`] is how many the magazine holds.
+pub const WPN_LOADS_ROUNDS: u32 = 1 << 7;
 
 /// [`ObjectDesc::action`]: it cycles itself (self-loading, semi or full auto): the default.
 pub const ACTION_SELF_LOADING: u32 = 0;

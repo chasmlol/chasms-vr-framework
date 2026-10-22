@@ -193,7 +193,7 @@ impl Scene<'_> {
         let state = view.state.unwrap_or_else(|| content::PartsState::at_rest(w));
         let mats = w.part_matrices(&state);
         let a = &w.action;
-        let chamber = |i: usize| a.chamber_parts.iter().any(|c| c.contains(&i));
+        let chamber = |i: usize| a.chamber_parts.iter().chain(&a.round_parts).any(|c| c.contains(&i));
         let gauge = |i: usize| a.gauge.as_ref().is_some_and(|g| g.parts.contains(&i));
         let tint = |i: usize| match () {
             _ if !view.parts => [1.0; 4],
@@ -539,6 +539,12 @@ fn renders() {
                     shots.push(View { state: Some(content::PartsState { slide, ..rest }), ..view(name, cam, wide, BODYVIS_HANDS) });
                 }
             }
+        }
+        if !a.round_parts.is_empty() {
+            // A magazine that stays in it, with two of its rounds left (parts view: rounds green).
+            let two = content::PartsState { rounds: 1, chambered: 1, ..rest };
+            let port = gun.transform_point3(a.port.unwrap_or(mid));
+            shots.push(View { state: Some(two), ..view("two_rounds", look_at(port + Vec3::new(0.25, 0.2, -0.3), port, Vec3::Y), close, BODYVIS_HANDS) });
         }
         if let Some(g) = &a.gauge {
             // The gauge empty, half and full, looking at its face (the side its parts are thinnest

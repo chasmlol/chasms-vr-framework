@@ -327,6 +327,10 @@ pub struct WeaponAction {
     /// Loaded round by round: each chamber's mouth (its round's base), and its round's parts.
     pub chambers: Vec<Vec3>,
     pub chamber_parts: Vec<Vec<usize>>,
+    /// A magazine that stays in it, loaded one round at a time: each of its rounds' parts (in the
+    /// order they're loaded and fired), and the port they go in at (the first's base).
+    pub round_parts: Vec<Vec<usize>>,
+    pub port: Option<Vec3>,
     /// Bolt actions: the bolt's turn about the bore (the line through the muzzle along +Z) closed
     /// and open, radians from the model's pose.
     pub bolt_turn: Option<[f32; 2]>,
@@ -371,6 +375,8 @@ pub struct PartsState {
     pub chambered: u32,
     pub fuse: f32,
     pub trigger: f32,
+    /// Rounds in a magazine that stays in the gun (`ObjectState::rounds`).
+    pub rounds: u32,
 }
 
 impl PartsState {
@@ -378,7 +384,7 @@ impl PartsState {
     #[allow(dead_code)] // (the rig renders use it)
     pub fn at_rest(w: &Weapon) -> PartsState {
         let loaded = (1u32 << w.action.chambers.len().max(1)) - 1;
-        PartsState { chambered: loaded, ..Default::default() }
+        PartsState { chambered: loaded, rounds: w.action.round_parts.len().saturating_sub(1) as u32, ..Default::default() }
     }
 }
 
@@ -427,6 +433,11 @@ impl Weapon {
                     let full = s.chambered & (1 << k | 1 << (k as u32 + CHAMBER_SPENT_SHIFT)) != 0;
                     return full.then(|| barrels * self.fix);
                 }
+                // A magazine that stays in it shows the rounds it holds (with the chambered one).
+                if let Some(k) = a.round_parts.iter().position(|r| r.contains(&i)) {
+                    let held = s.rounds + (s.chambered & CHAMBER_LIVE_MASK != 0) as u32;
+                    return ((k as u32) < held).then_some(self.fix);
+                }
                 Some(match () {
                     _ if self.bolt_parts.contains(&i) => bolt,
                     _ if self.trigger_parts.contains(&i) => trigger,
@@ -441,10 +452,16 @@ impl Weapon {
     /// The parts a magazine of this gun is drawn with: its magazine's, or for a gun loaded round by
     /// round, its first chamber's round.
     pub fn round_parts(&self) -> &[usize] {
-        match self.action.chamber_parts.first() {
+        match self.action.chamber_parts.first().or(self.action.round_parts.first()) {
             Some(c) if self.mag_parts.is_empty() => c,
             _ => &self.mag_parts,
         }
+    }
+
+    /// Loaded one round at a time (into its chambers or its magazine): the pouch hands it rounds,
+    /// and this is where a round's base sits in it (the first chamber's mouth, the port).
+    pub fn round_base(&self) -> Option<Vec3> {
+        self.action.chambers.first().copied().or(self.action.port)
     }
 }
 
@@ -975,6 +992,7 @@ struct MetroRig {
     open_deg: f32,
     barrel_bones: Vec<String>,
     chamber_bones: Vec<String>,
+    round_bones: Vec<String>,
     bolt_turn: Option<[f32; 2]>,
     handle_swing: Option<asset::rigs::HandleSwing>,
     pressure: Option<asset::rigs::Pressure>,
@@ -1028,6 +1046,7 @@ impl MetroRig {
             open_deg: g.open_deg,
             barrel_bones: g.barrel_bones.clone(),
             chamber_bones: g.chamber_bones.clone(),
+            round_bones: g.round_bones.clone(),
             bolt_turn: g.bolt_turn,
             handle_swing: g.handle_swing,
             pressure: g.pressure.clone(),
@@ -1156,6 +1175,7 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
     let barrel_bones: Vec<&str> = r.barrel_bones.iter().map(String::as_str).collect();
     let gauge_bone: Vec<&str> = r.pressure.as_ref().and_then(|p| p.gauge_bone.as_deref()).into_iter().collect();
     let chamber_bones: Vec<[&str; 1]> = r.chamber_bones.iter().map(|b| [b.as_str()]).collect();
+    let round_bones: Vec<[&str; 1]> = r.round_bones.iter().map(|b| [b.as_str()]).collect();
     // The groups, in order: magazine, bolt, trigger, hidden, barrels, gauge, then each chamber's
     // round. (A bone goes to the group that names it or its nearest named ancestor: rounds under
     // the barrels are rounds.)
@@ -1167,7 +1187,7 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
         Group { bones: &barrel_bones, meshes: &[] },
         Group { bones: &gauge_bone, meshes: &[] },
     ];
-    list.extend(chamber_bones.iter().map(|b| Group { bones: b, meshes: &[] }));
+    list.extend(chamber_bones.iter().chain(&round_bones).map(|b| Group { bones: b, meshes: &[] }));
     let mut groups = split_by_bones(model, &list).into_iter();
     let mut parts = groups.next().unwrap_or_default();
     let take = |parts: &mut Vec<MeshData>, g: Vec<MeshData>| {
@@ -1181,10 +1201,13 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
     let _hidden = groups.next();
     let barrel_parts = take(&mut parts, groups.next().unwrap_or_default());
     let gauge_parts = take(&mut parts, groups.next().unwrap_or_default());
-    let chamber_parts: Vec<Vec<usize>> = groups.map(|g| take(&mut parts, g)).collect();
+    let mut loose: Vec<Vec<usize>> = groups.map(|g| take(&mut parts, g)).collect();
+    let round_parts = loose.split_off(r.chamber_bones.len().min(loose.len()));
+    let chamber_parts = loose;
     // How it's worked, in weapon space.
     let muzzle_w = p(r.muzzle);
-    let mut action = WeaponAction { barrel_parts, chamber_parts, ..Default::default() };
+    let mut action = WeaponAction { barrel_parts, chamber_parts, round_parts, ..Default::default() };
+    action.port = r.round_bones.first().map(|b| bone_position(model, b).map_or(p(r.mag_well), p));
     action.kind = match r.action {
         asset::rigs::Action::Auto => ACTION_SELF_LOADING,
         asset::rigs::Action::Bolt => ACTION_BOLT,
@@ -1461,6 +1484,20 @@ mod tests {
                     assert!(d < 0.005, "{}: chamber {k}'s mouth {mouth} is {d} m from its round {lo}..{hi}", w.key);
                 }
                 assert!(w.mag_parts.is_empty(), "{}: chambers and a magazine", w.key);
+                continue;
+            }
+            if let Some(port) = w.action.port {
+                // A magazine that stays in it: each of its rounds its own small part, the port at
+                // the first's base.
+                assert!(!w.action.round_parts.is_empty() && w.mag_parts.is_empty(), "{}", w.key);
+                for (k, parts) in w.action.round_parts.iter().enumerate() {
+                    let (lo, hi) = parts_bounds(&w.parts, parts, w.fix).unwrap_or_else(|| panic!("{}: round {k} has no part", w.key));
+                    assert!(tris(parts) > 0 && (hi - lo).max_element() < 0.5, "{}: round {k} {lo}..{hi}", w.key);
+                    if k == 0 {
+                        let d = port.clamp(lo, hi).distance(port);
+                        assert!(d < 0.005, "{}: the port {port} is {d} m from the first round {lo}..{hi}", w.key);
+                    }
+                }
                 continue;
             }
             if w.mag_parts.is_empty() {

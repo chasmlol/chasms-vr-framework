@@ -142,7 +142,8 @@ impl WeaponState {
             return if self.chambers.contains(&Chamber::Live) { Fire::Shot } else { Fire::LastShot };
         }
         let manual = self.cycle.is_some();
-        let racking = self.handle.is_some() && !manual;
+        // A hand on the charging handle holds the gun off (an air gun's pump only while it's out).
+        let racking = self.handle.is_some() && !manual && !(self.air.is_some() && self.slide < 0.1);
         if !self.chambered || self.slide_locked || racking {
             // A dry click only on the press, not every auto cycle.
             return if pressed { Fire::Empty } else { Fire::None };

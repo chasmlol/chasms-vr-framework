@@ -1464,6 +1464,70 @@ fn a_revolvers_cylinder_swings_out_drops_its_cases_takes_a_speed_loader_and_flic
     assert_eq!(s.rig.debug.shots, 7, "it fires from the fresh loader");
 }
 
+const TUBE: u32 = 25;
+const TUBE_SHELL: u32 = 125;
+
+/// A revolving shotgun whose six shells go in one at a time through a port at the top of its
+/// cylinder's back.
+fn tube_gun() -> ObjectDesc {
+    let mut d = bolt_rifle();
+    d.id = TUBE;
+    d.handle = [0.0; 3];
+    d.handle_travel = 0.0;
+    d.action = ACTION_SELF_LOADING;
+    d.action_angle = 0.0;
+    d.mag_well = [0.0, 0.02, 0.2];
+    d.weapon_flags = WPN_LOADS_ROUNDS | WPN_STOCK;
+    d.ammo_type = 12;
+    d.capacity = 6;
+    d.fire_rate = 3.0;
+    d
+}
+
+fn tube_shell() -> ObjectDesc {
+    let mut d = shell();
+    d.id = TUBE_SHELL;
+    d.mag_well = [0.0, 0.02, 0.2];
+    d.center = [0.0, 0.02, 0.235];
+    d.ammo_type = 12;
+    d
+}
+
+#[test]
+fn a_magazine_that_stays_in_the_gun_takes_its_rounds_one_at_a_time() {
+    let mut s = Sim::with(&[tube_gun(), tube_shell()]);
+    s.take_gun(TUBE);
+    assert_eq!(s.rig.weapon_rounds(TUBE), Some((5, true, false)), "arrives full: five in it, one chambered");
+    for _ in 0..7 {
+        s.fire_once();
+    }
+    assert_eq!(s.rig.debug.shots, 6, "six, then a click");
+    let d = tube_gun();
+    for n in 1..=2 {
+        let round = s.from_the_pouch();
+        let (gp, gq) = s.rig.object_world_pose(TUBE).unwrap();
+        let port = gp + gq * v3(d.mag_well);
+        let rot = (gq * held_round_rot().inverse()).normalize();
+        s.set_rot(0, rot);
+        let hand_at = |base: Vec3| base - rot * HELD_ROUND_BASE;
+        s.move_hand(0, hand_at(port - gq * Vec3::Z * 0.12), 30);
+        s.step(5);
+        assert_eq!(s.rig.held(0), Some(round));
+        s.move_hand(0, hand_at(port + gq * Vec3::Z * 0.01), 15);
+        s.step(3);
+        assert_eq!(s.rig.held(0), None, "shell {n} went in");
+        s.grip(0, 0.0);
+        s.set_rot(0, Quat::IDENTITY);
+        s.move_hand(0, Vec3::new(-0.2, 1.1, 0.2), 15);
+    }
+    assert_eq!(s.rig.weapon_rounds(TUBE), Some((1, true, false)), "the first went straight under the hammer");
+    assert_eq!(s.state(TUBE).rounds, 1);
+    s.fire_once();
+    s.fire_once();
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 8, "the two it was given");
+}
+
 #[test]
 fn a_pump_action_needs_its_forend_worked_between_shots() {
     let mut s = Sim::with(&[pump_gun(), pump_mag()]);

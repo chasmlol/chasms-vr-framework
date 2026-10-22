@@ -477,6 +477,14 @@
 #define RVR_WPN_LOADS_CHAMBERS (1 << 6)
 
 /**
+ * Its magazine stays in it (a tube, a cylinder, a dart cluster: `capacity` rounds) and is loaded
+ * one round at a time through its port at `mag_well`: its ammo template is one round, which goes in
+ * when its base is brought to the port pointing along weapon +Z. It arrives full.
+ * [`ObjectState::rounds`] is how many the magazine holds.
+ */
+#define RVR_WPN_LOADS_ROUNDS (1 << 7)
+
+/**
  * [`ObjectDesc::action`]: it cycles itself (self-loading, semi or full auto): the default.
  */
 #define RVR_ACTION_SELF_LOADING 0

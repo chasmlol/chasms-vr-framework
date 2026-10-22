@@ -239,6 +239,7 @@ pub fn weapon_desc(i: usize, w: &Weapon, spawn: Pose, start_slot: u32) -> Object
         | if racks { WPN_NEEDS_RACK } else { 0 }
         | if a.air.is_some() { WPN_PNEUMATIC } else { 0 }
         | if a.chambers.is_empty() { 0 } else { WPN_LOADS_CHAMBERS }
+        | if a.round_parts.is_empty() { 0 } else { WPN_LOADS_ROUNDS }
         | if w.pistol { WPN_PISTOL } else if w.stock { WPN_STOCK } else { 0 };
     d.action = a.kind;
     match a.kind {
@@ -254,6 +255,10 @@ pub fn weapon_desc(i: usize, w: &Weapon, spawn: Pose, start_slot: u32) -> Object
         d.capacity = a.chambers.len() as u32;
         d.mag_well = a.chambers[0].to_array();
         d.chamber_step = a.chambers.get(1).map_or(0.0, |c1| c1.x - a.chambers[0].x);
+    }
+    if let (Some(port), false) = (a.port, a.round_parts.is_empty()) {
+        d.capacity = a.round_parts.len() as u32;
+        d.mag_well = port.to_array();
     }
     if let Some([pump, shot, min]) = a.air {
         [d.pump_pressure, d.shot_pressure, d.min_pressure] = [pump, shot, min];
@@ -414,7 +419,7 @@ pub fn ammo_types(weapons: &[&Weapon]) -> Vec<u32> {
 /// has it, so its part draws in place. Its collider is the magazine mesh's box. A gun loaded round
 /// by round gets one round (its first chamber's), its base at that chamber's mouth.
 fn mag_desc(i: usize, w: &Weapon) -> ObjectDesc {
-    let round = !w.action.chambers.is_empty();
+    let round = w.round_base().is_some();
     let (min, max) = parts_bounds(w, |p| w.round_parts().contains(&p)).unwrap_or((w.mag_center - Vec3::new(0.016, 0.07, 0.03), w.mag_center + Vec3::new(0.016, 0.07, 0.03)));
     let mut d = ObjectDesc::zeroed();
     d.id = MAG_BASE + i as u32;
@@ -424,7 +429,7 @@ fn mag_desc(i: usize, w: &Weapon) -> ObjectDesc {
     d.mass = w.mag_mass;
     d.half_extents = ((max - min) * 0.5).to_array();
     d.center = ((max + min) * 0.5).to_array();
-    d.mag_well = if round { w.action.chambers[0].to_array() } else { w.rig.mag_well };
+    d.mag_well = w.round_base().unwrap_or(Vec3::from_array(w.rig.mag_well)).to_array();
     d.ammo_type = i as u32 + 1;
     d.capacity = if round { 1 } else { w.mag_size };
     d.rounds = d.capacity;
@@ -823,7 +828,7 @@ impl Armory {
                         OS_HELD_RIGHT => triggers[1],
                         _ => 0.0,
                     };
-                    let state = content::PartsState { slide: s.slide, chambered: s.chambered, fuse: s.fuse, trigger: pull };
+                    let state = content::PartsState { slide: s.slide, chambered: s.chambered, fuse: s.fuse, trigger: pull, rounds: s.rounds };
                     for (part, m) in w.part_matrices(&state).into_iter().enumerate() {
                         if let Some(m) = m {
                             out.push((part_id(i, part), model * m, [1.0; 4], glow, w.from_game));
@@ -1048,13 +1053,15 @@ mod tests {
                 continue;
             }
             let t = a.descs.values().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type).unwrap_or_else(|| panic!("{}: no magazine", w.key));
-            if !w.action.chambers.is_empty() {
+            if w.round_base().is_some() {
                 // Loaded round by round: the pouch hands one round, its base at the first
-                // chamber's mouth; the gun has a chamber per round.
+                // chamber's mouth (or the magazine's port); the gun has a chamber (or a place in
+                // its magazine) per round.
                 assert_eq!((t.capacity, t.rounds), (1, 1), "{}: one round", w.key);
                 assert_eq!(t.mag_well, d.mag_well, "{}", w.key);
-                assert_eq!(d.capacity as usize, w.action.chambers.len(), "{}", w.key);
-                assert!(d.weapon_flags & WPN_LOADS_CHAMBERS != 0, "{}", w.key);
+                let (slots, flag) = if w.action.chambers.is_empty() { (w.action.round_parts.len(), WPN_LOADS_ROUNDS) } else { (w.action.chambers.len(), WPN_LOADS_CHAMBERS) };
+                assert_eq!(d.capacity as usize, slots, "{}", w.key);
+                assert!(d.weapon_flags & flag != 0, "{}", w.key);
                 continue;
             }
             let Some(Kind::Mag(j)) = a.kinds.get(&t.id) else { panic!("{}: its magazine draws as nothing", w.key) };
@@ -1148,7 +1155,8 @@ mod tests {
             let m = *a.descs.values().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type).unwrap_or_else(|| panic!("{}: no magazine", w.key));
             let (mh, gh) = (Vec3::from_array(m.half_extents), Vec3::from_array(d.half_extents));
             assert!(mh.min_element() > 0.004 && mh.max_element() < 0.25 && mh.z < gh.z * 0.75, "{}: magazine box {mh}", w.key);
-            assert!(m.mass > 0.03 && m.mass < 3.0, "{}: magazine {} kg", w.key, m.mass);
+            // (A round alone: a dart 30 g, a shell 45 g.)
+            assert!(m.mass >= 0.02 && m.mass < 3.0, "{}: magazine {} kg", w.key, m.mass);
         }
     }
 }
