@@ -1011,6 +1011,13 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::Explosion => (E::Explosion, S::ShotShotgun),
         C::KnifeStick => (E::KnifeStick, S::Impact),
         C::ExplosionRumble => return None,
+        // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
+        // reload sounds) until the audio crate gives them events of their own by the same names.
+        C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),
+        C::BreakClose | C::SwingClose | C::BoltForward | C::BoltDown | C::PumpForward => (E::BoltForward, S::SlideForward),
+        C::ShellIn => (E::MagIn, S::MagSeat),
+        C::ShellOut | C::CaseEject => (E::MagOut, S::MagEject),
+        C::AirHiss => (E::DryFire, S::EmptyClick),
     })
 }
 
@@ -1046,7 +1053,8 @@ mod tests {
         let cues = [
             C::Grab, C::Release, C::HolsterIn, C::HolsterOut, C::MagEject, C::MagSeat, C::SlideBack, C::SlideForward, C::LastRound, C::EmptyClick,
             C::Fail, C::GloveHover, C::GloveLock, C::GloveFlick, C::GloveCatch, C::Impact, C::ZoneTick, C::Pouch, C::ShotPistol, C::ShotRifle,
-            C::ShotShotgun, C::Melee,
+            C::ShotShotgun, C::Melee, C::BreakOpen, C::BreakClose, C::SwingOpen, C::SwingClose, C::ShellIn, C::ShellOut, C::CaseEject, C::BoltUp,
+            C::BoltBack, C::BoltForward, C::BoltDown, C::PumpBack, C::PumpForward, C::Pump, C::AirHiss,
         ];
         for c in cues {
             let Some((event, fallback)) = event_of(c) else { continue };

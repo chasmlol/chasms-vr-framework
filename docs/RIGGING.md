@@ -115,6 +115,14 @@ Every field of a `[[gun]]` (`rustvr_asset::rigs::GunRig`); points are model spac
 | `mag_meshes` | Whole meshes (by index) that are the magazine too: one the extractor mounted on a bone that isn't the magazine's | `rig_probe parts` lists meshes |
 | `bolt_bones` | Bones whose skin moves back with the handle | The parts list |
 | `hidden_bones` | Bones whose skin isn't drawn: what the game shows only in an animation or with an upgrade (a shell in the hand, an ejected case, an upgrade's barrels' shells) | The survey renders (things floating, or doubled) |
+| `hidden_meshes` | Whole meshes (by index) not drawn: glass the test range can't draw see-through (a gauge's, over its needle) | `rig_probe parts` lists meshes and their textures (`wpn_obves`) |
+| `action` | How it's worked between shots: `auto` (default: it cycles itself), `bolt`, `pump`, `break`, `swing` (§4.4) | What the gun really is, and the game's motions |
+| `hinge`, `open_deg`, `barrel_bones` | Break and swing actions: a point on the hinge's pin, how far it opens (degrees; a break action about model +X tipping the muzzle down, a swing about +Z, positive to the left) and the bones that turn (with their children) | The barrels' bone's origin (`rig_probe bones`) and the game's reload's furthest turn of it (`export_viewmodel --peaks`) |
+| `chamber_bones` | Guns loaded round by round into their chambers: each chamber's round (a bone whose origin is its base at the chamber's mouth), in the order they fire. No `mag_bones` then; `mag_well` is the first chamber's mouth, `mag_size` the chambers | The parts list (`patron_stvol_*`) and `rig_probe bones` |
+| `round_bones` | Guns whose magazine stays in them and is loaded one round at a time (a revolving shotgun's cylinder, a dart cluster, a tube): each of its rounds (a bone whose origin is its base), in the order they're loaded and fired. No `mag_bones` then; `mag_well` is the port (the first's base), `mag_size` the rounds | The parts list and `rig_probe bones`; the game's reload (does it load one at a time?) |
+| `bolt_turn` | Bolt actions: the bolt's turn about the bore (degrees about model +Z, positive lifting a handle on the right) closed and open, from the model's pose. `handle` is the knob in the model's pose | The game's cycling motion (`export_viewmodel --peaks`), else the real gun's lift |
+| `handle_swing` | A handle that's a lever: its pivot (model space) and swing (degrees about model +X, positive its far end down and back) at full travel; `bolt_bones` are the lever, `handle_travel` how far the handle comes back over the swing | The lever's bone origin and the game's pump motion |
+| `pressure` | Air guns: `pump` (what a whole stroke of the `handle` adds) and `shot` (what a shot spends), fractions of full, and `min` (below it the trigger hisses); `gauge_bone` with `gauge_turn` (degrees about the bone's own X) or `gauge_slide` (metres along it), empty and full, from the model's pose | The game's gauge poses (`export_viewmodel --peaks` on its needle motions); the numbers from the game's config if it names them, else documented guesses |
 | `recoil`, `recoil_feel` | The runtime's own recoil, used only when the game's kicks aren't loaded: climb (deg), scatter (deg), push (m); climb kept on auto, return (1/s), lean (deg) | By class: rifles about `[7, 1.8, 0.025]`, shotguns `[10, 2.5, 0.04]`, pistols `[12, 3, 0.03]` |
 | `rounds_per_second` | Rate of fire | The game's config (§5) |
 | `automatic` | Full auto (default true) | The game's recoil: guns with long-burst tracks are automatic (§5) |
@@ -157,9 +165,10 @@ trigger, so does ours.
 
 ### 4.3 Moving parts, magazines and handles
 
-The magazine is the part that comes out: a box, a drum, a tube of balls or darts, or, for guns
-loaded round by round, the rounds themselves taken as one (a revolver's six rounds with their
-cases, a revolving shotgun's six shells, a double barrel's two shells: a speed loader). Seated, it
+The magazine is the part that comes out: a box, a drum, a tube of balls or darts, or the rounds
+of a cylinder taken as one (a revolver's six rounds with their cases, a revolving shotgun's six
+shells: a speed loader). Guns loaded straight into their chambers (a double barrel) have
+`chamber_bones` instead (§4.4). Seated, it
 sits exactly where the model has it (magazine space is the gun's own), and the runtime seats a
 held magazine when its well point comes within 9 cm and 45° of the gun's. Guns naming the same
 `magazine` share one magazine template (and ammo type: `caliber << 8 | magazine`, both numbered in
@@ -167,23 +176,56 @@ order of first appearance), so give it only to guns whose magazines are the same
 place. A gun without `mag_bones` keeps its rounds (the flamethrower's fuel) and has no reload.
 
 `handle` is whatever is pulled back to chamber: the runtime moves `bolt_bones` straight back by the
-pull. Map a **pump** to its forend (the Helsing's pump `nasos`: its back end, 13 cm behind the
-support hand, so reaching for the handguard doesn't grab it instead) and a **bolt** to its knob.
-Leave `handle` out for guns that chamber by themselves (a double-action revolver, a revolving
-shotgun) and for break actions: a fresh magazine then chambers as it goes in.
+pull (a lever's swing about its pivot with `handle_swing`). Map a **pump** to its forend (the
+Helsing's pump `nasos`: its back end, 13 cm behind the support hand, so reaching for the handguard
+doesn't grab it instead) and a **bolt** to its knob. Leave `handle` out for guns that chamber by
+themselves (a double-action revolver, a revolving shotgun) and for hinged actions: a fresh
+magazine then chambers as it goes in.
+
+### 4.4 Actions: guns worked by hand
+
+`action` says how a gun that doesn't cycle itself is worked; the runtime does the rest
+(`crates/runtime/src/rig/actions.rs`, DESIGN.md §6b) and reports where the parts are, so the game
+(and the range) draws them. Measure the moving part's **pivot** on the model (`rig_probe <gun>
+bones`: every bone's origin, the point the game's motions turn its skin about) and its **travel**
+from the game's own motion (`export_viewmodel <gun> --peaks <motion>`: each bone's turn from its
+bind pose about its own axis, and its slide, through the motion; `list_motions <gun>` names them).
+
+* **`break`** (the Duplet): the barrels' bone and its children turn about `hinge`, model +X,
+  `open_deg` (the game's reload holds the Duplet's at 106.5°, hanging straight down). A foregrip
+  ahead of the hinge is on the barrels: the support hand on it opens and shuts them.
+* **`swing`** (the Ashot, the revolver): the same about a pin along the bore, model +Z, positive to
+  the left. Check it's really a swing: the Ashot's reload turns its barrel 90° about its own axis
+  line under the bore (`--peaks` says about which axis), not a tip-down break.
+* **`chamber_bones`**: a gun loaded round by round (the Duplet's two lower shells, the Ashot's
+  one), in the order it fires them (the right barrel first). The pouch hands one round, its mesh
+  the first chamber's.
+* **`round_bones`**: a magazine that stays in the gun and takes its rounds one at a time, at any
+  time, through its port (the Uboynicheg's six shells into the top chamber of its cylinder, the
+  Helsing's eight darts into its cluster, as the game loads them); the pouch hands one round, the
+  range draws as many as the gun holds.
+* **`bolt`** (the Preved, the Ventil): `bolt_turn` is where the game's cycling motion has the bolt
+  closed and lifted, relative to the model's own pose (the Preved's model has it neither:
+  closed -29.8°, open +17.2°), `handle_travel` how far it comes back (15.7 cm). With no game
+  motion, the real gun's (a Mosin-Nagant's 90° lift).
+* **`pump`**: a pump action's forend (none in Metro 2033: the runtime supports it for other games).
+* **`pressure`** (the Tihar, the Helsing): an air gun; its `handle` pumps. The gauge's poses are the
+  game's (the Tihar's `tihar_arrow_0`..`_4` needle poses span its dial from 0 to 12), the
+  pressure's numbers ours when the game's config keeps no names: say so in the comment.
+
+Check them in the renders (§6): `<gun>_open.png`, `_half_open.png`, `_open_parts.png` (barrels
+orange, chambers' rounds green), `_open_empty.png`, `_breech.png`; `_bolt_closed.png`,
+`_bolt_up.png`, `_bolt_back.png`; `_pump_home.png`, `_half_pumped.png`, `_pumped.png`;
+`_gauge_empty.png`, `_gauge_half.png`, `_gauge_full.png` (gauge blue in the parts view);
+`_two_rounds.png` (a magazine loaded round by round with two left).
 
 What the runtime can't do yet, so rigs approximate it:
 
-* **break actions** (the Duplet, the Ashot): no hinge to open (the barrels tipping down about their
-  pin, the extractor lifting the shells, closing it to fire); the shells go in at the closed
-  breech;
-* **bolt actions** (the Ventil, the Preved): no cycling between shots (lift, back, forward, down);
-  the bolt racks after a reload only;
-* **levers and cranks** (the Kalash 2012's `pumpachka`, the Tihar's pump lever, the Abzats's crank):
-  parts that swing rather than slide stay still (no `bolt_bones`), though the handle still racks;
-* **pressure** (the Tihar, the Helsing): the game pumps air that drops with each shot; here the pump
-  only racks;
-* **loading round by round** and **swinging a cylinder out**: magazines go in whole;
+* **cranks and swinging levers that aren't pumps** (the Kalash 2012's `pumpachka`, the Abzats's
+  crank): parts that swing rather than slide stay still (no `bolt_bones`), though the handle racks;
+* **over-under barrels** (the Duplet's four-barrel upgrade): `chamber_step` runs across only;
+* **a cylinder turning** as it fires (the Uboynicheg's, the revolver's): the rounds it holds are
+  drawn in their places in order, the cylinder itself stays still;
 * **a cupping support hand** on a pistol, and **support hands in the game's aiming pose** (the
   VSV's support hand, in its hip pose, covers the front of its sight picture).
 
@@ -227,8 +269,9 @@ checks every rig and renders it held the way the runtime holds it into `captures
 * `<gun>_grip.png`, `_grip_left.png`, `_grip_below.png`, `_grip_section*.png`: the firing hand and
   the trigger finger (the game's pose);
 * `<gun>_support.png`, `_support_right.png`: the support hand;
-* `<gun>_parts.png`: the moving parts tinted (magazine red, bolt or handle cyan, trigger yellow):
-  nothing missing, nothing extra;
+* `<gun>_parts.png`: the moving parts tinted (magazine red, bolt or handle cyan, trigger yellow,
+  barrels or cylinder orange, chambers' rounds green, gauge blue): nothing missing, nothing extra;
+* the action worked (§4.4): `<gun>_open.png` and the rest, the parts where the runtime puts them;
 * `<gun>_markers.png`: the rig's points (red grip, yellow trigger, green line of sight, blue
   foregrip, magenta well, white muzzle, cyan handle);
 * `bench_top.png`, `bench_player.png`, `table_*.png`: where the range lays the guns out.
@@ -236,8 +279,11 @@ checks every rig and renders it held the way the runtime holds it into `captures
 The numbers checked: the line of sight passes through both sights; the hands drawn are exactly
 the game's (`metro_arms_hold_their_guns`, `tests/handpose.rs`: the same trigger contact and
 fingertip depths as the game's own arms); the magazine is its own small part with the well on it;
-the guns lie apart on the tables; every gun keeps its recoil (`tests/recoil.rs` plays it). Then the
-physical scenarios, which pick guns up, aim, reload and fire through the real runtime:
+the guns lie apart on the tables; every gun keeps its recoil (`tests/recoil.rs` plays it); a gun
+loaded into its chambers has a small round for each with its mouth on it. Then the physical
+scenarios, which pick guns up, aim, reload and fire through the real runtime (`break_reload`,
+`bolt_cycle` and `pump` work the Duplet, the Ventil and the Tihar: the range's `--table <key>` lays
+a gun nearest on the table at your right hand):
 
 ```sh
 cargo build --release -p rustvr-runtime -p rustvr-range

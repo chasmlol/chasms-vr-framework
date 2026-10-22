@@ -473,6 +473,72 @@
 #define RVR_WPN_STOCK (1 << 4)
 
 /**
+ * An air gun: its shots spend pressure (`shot_pressure`) that strokes of its pump (the handle)
+ * build (`pump_pressure`); below `min_pressure` it doesn't fire. It starts empty. The runtime
+ * reports the pressure in [`ObjectState::fuse`]; a shot's strength is the pressure it was fired
+ * at (the value reported before `shots` went up).
+ */
+#define RVR_WPN_PNEUMATIC (1 << 5)
+
+/**
+ * Loaded round by round straight into its `capacity` chambers (a double barrel's two, a single
+ * shot's one): no magazine. Its ammo template is one round (an [`OBJ_MAGAZINE`] of capacity 1)
+ * that goes into an empty chamber when its base is brought to the chamber's mouth (see
+ * [`ObjectDesc::chamber_step`]); it fires the chambers in order, and their spent cases stay in
+ * them until the action is opened.
+ */
+#define RVR_WPN_LOADS_CHAMBERS (1 << 6)
+
+/**
+ * Its magazine stays in it (a tube, a cylinder, a dart cluster: `capacity` rounds) and is loaded
+ * one round at a time through its port at `mag_well`: its ammo template is one round, which goes in
+ * when its base is brought to the port pointing along weapon +Z. It arrives full.
+ * [`ObjectState::rounds`] is how many the magazine holds.
+ */
+#define RVR_WPN_LOADS_ROUNDS (1 << 7)
+
+/**
+ * [`ObjectDesc::action`]: it cycles itself (self-loading, semi or full auto): the default.
+ */
+#define RVR_ACTION_SELF_LOADING 0
+
+/**
+ * A bolt action: after every shot the bolt's handle (`handle`) is lifted (`action_angle`), pulled
+ * back (`handle_travel`: the case flies out) and pushed forward and down again (chambering the
+ * next round) before it fires again.
+ */
+#define RVR_ACTION_BOLT 1
+
+/**
+ * A pump action: the forend (`handle`) is pulled back and pushed forward after every shot.
+ */
+#define RVR_ACTION_PUMP 2
+
+/**
+ * A break action: the barrels tip down about a hinge (`handle`, weapon +X) by `action_angle` when
+ * unlatched (B or A on the gun hand, a flick down, or the other hand on the barrels' foregrip
+ * pulling them), falling open under their weight; opened, spent cases fly out and the chambers can
+ * be loaded; they shut with a flick up, under their weight with the muzzle down, or pushed by the
+ * other hand, and latch. It fires only shut.
+ */
+#define RVR_ACTION_BREAK 3
+
+/**
+ * A swing-out action: the barrel or cylinder swings out sideways about a pin along the bore
+ * (`handle`, weapon +Z) by `action_angle`, otherwise as a break action. A magazine-fed one (a
+ * revolver's cylinder and its speed loader) takes and drops its magazine only while it's out.
+ */
+#define RVR_ACTION_SWING 4
+
+/**
+ * [`ObjectState::chambered`]: bits 0..15 are the chambers holding a live round, bits 16..31 the
+ * ones holding a spent case (chamber `k` is bit `k`; a gun with one chamber uses bit 0).
+ */
+#define RVR_CHAMBER_SPENT_SHIFT 16
+
+#define RVR_CHAMBER_LIVE_MASK 65535
+
+/**
  * [`ObjectDesc::throw_flags`]: a grenade. The runtime arms it, times its fuse (or waits for its
  * impact) and tells the game when it goes off ([`ObjectState::shots`], [`OS_SPENT`]); the game
  * does the explosion.
@@ -577,6 +643,12 @@
  * Went off: inert, the game hides it until it respawns it (`spawn_seq`) or removes it.
  */
 #define RVR_OS_SPENT (1 << 14)
+
+/**
+ * Weapons: the action is open and won't fire: a break or swing action unlatched, a bolt lifted or
+ * back, a pump back.
+ */
+#define RVR_OS_ACTION_OPEN (1 << 15)
 
 #define RVR_SLOT_HIP_RIGHT 0
 

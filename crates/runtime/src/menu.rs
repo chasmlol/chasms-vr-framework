@@ -331,6 +331,14 @@ fn help(ui: &mut egui::Ui) {
         ("B on the gun hand", "drop a locked-back slide"),
         ("Hold B, empty hand", "weapon wheel (games that have one)"),
     ]);
+    section(ui, "Guns worked by hand", &[
+        ("B on a double barrel or a revolver", "open it: the barrels drop (the cylinder swings out); a flick down works too"),
+        ("Flick it up (roll a revolver back)", "snap it shut; or push the barrels home with the other hand"),
+        ("Grip at your chest or belt", "one shell (or dart) at a time: push it base first into a chamber or the port"),
+        ("A with the cylinder out", "drop a revolver's cases"),
+        ("Bolt: lift, pull back, push, turn down", "after every shot (the case flies out, the next goes in)"),
+        ("Pump an air gun", "each whole stroke builds pressure (watch the gauge); empty, it only hisses"),
+    ]);
     section(ui, "Grenades and knives", &[
         ("Grip at either side of your chest, or the belt", "a grenade or knife from its pouch"),
         ("Other hand on the pin + pull", "pull the pin (Hands tab: or the trigger arms it)"),

@@ -280,14 +280,19 @@ mag_mass = 0.7
 # * sights: none (a plain sleeve, no bead): the line of sight is the game's aim line, 2.8 cm over
 #   the sleeve's top, between the barrels;
 # * grip: 1.5 cm wide, 5.5 cm deep, nearly upright (5°);
-# * "magazine": the two shells in the lower barrels (`patron_stvol_left_d`, `_right_d`), their
-#   rims at the breech; they come out and go in together. The upper barrels' shells (`_u`, for the
-#   four-barrel upgrade the stock gun doesn't have) and the reload's copies of all four
-#   (`patron_1`..`_4`, two of them floating over the receiver) are hidden;
-# * no handle: a break action has nothing to rack. What the runtime lacks for it: a hinge (the
-#   barrels tipping down about `shtir` to open the breech, the extractor lifting the shells, and
-#   closing it before it fires); here the shells just go in at the closed breech.
-# Fire rate: the game's 300 rpm, one barrel at a time. Mass: a double-barrelled 12 gauge's 3.2 kg.
+# * action: a break action. The barrels (`stvol`, with the shells under it) turn about that bone's
+#   origin, the hinge pin under the barrels at the front of the action (`rig_probe bones`), about
+#   model +X: the game's own reload tips them 106.5° open, hanging straight down, and holds them
+#   there while the shells go in (`export_viewmodel duplet --peaks anim_reload_begin_0`; its
+#   closing motion swings them to 124° on the way, a flourish). The foregrip is on the barrels
+#   (ahead of the hinge): the support hand pulls them open and pushes them shut;
+# * chambers: the lower barrels' shells, the right barrel's first (it fires first), each bone's
+#   origin its base at the breech face (z 0.6116); `mag_well` is the first's. A shell from the
+#   pouch goes into each. The upper barrels' shells (`_u`, for the four-barrel upgrade the stock
+#   gun doesn't have) and the reload's copies of all four (`patron_1`..`_4`, two of them floating
+#   over the receiver) are hidden.
+# Fire rate: the game's 300 rpm, one barrel at a time. Mass: a double-barrelled 12 gauge's 3.2 kg;
+# a 12 gauge shell 45 g.
 [[gun]]
 key = "wpn_duplet"
 caliber = "12 gauge"
@@ -298,10 +303,9 @@ grip_rake_deg = 5.0
 trigger = [0.1140, -0.1409, 0.5400]
 grip_block = { centre = [0.1127, -0.1500, 0.4750], half = [0.0075, 0.027, 0.03] }
 foregrip = [0.0775, -0.1415, 0.6959]
-mag_well = [0.1129, -0.0786, 0.6118]
+mag_well = [0.1325, -0.0789, 0.6116]
 muzzle = [0.1132, -0.0839, 1.0133]
 trigger_bone = "kurok_1"
-mag_bones = ["patron_stvol_left_d", "patron_stvol_right_d"]
 hidden_bones = ["patron_stvol_left_u", "patron_stvol_right_u", "patron_1", "patron_2", "patron_3", "patron_4"]
 recoil = [11.0, 2.5, 0.045]
 recoil_feel = [0.3, 6.0, 10.0]
@@ -309,18 +313,25 @@ rounds_per_second = 5.0
 automatic = false
 mag_size = 2
 mass = 3.2
-mag_mass = 0.09
+mag_mass = 0.045
+action = "break"
+hinge = [0.1133, -0.1409, 0.6210]
+open_deg = 106.5
+barrel_bones = ["stvol"]
+chamber_bones = ["patron_stvol_right_d", "patron_stvol_left_d"]
 
 # Uboynicheg: a six-shot revolving shotgun (a cylinder `baraban` in front of the trigger).
 # * sights: notch at z 0.764 (shoulders -0.0276) and post tip -0.0267 at z 0.987 (5 mm from the
 #   game's camera, the nearest pair);
 # * grip: 2.1 cm wide, 4.9 cm deep, raked 17.5°;
-# * "magazine": the six shells in the cylinder (`patron_0`..`_5`), taken out and put back as one
-#   (a speed loader), their rims at the cylinder's back; `patron_hend` (a shell in the hand while
-#   reloading) and `patron_shoot` are hidden. The runtime has no shell-by-shell loading;
+# * magazine: the cylinder stays in the gun; its six shells (`patron_0`..`_5`, each bone's origin
+#   its base at the cylinder's back) go in one at a time, as the game loads them (its reload pushes
+#   a shell, `patron_hend`, into the top chamber): `round_bones`, the port at the top chamber's back
+#   (`patron_0`'s base, the one in line with the barrel). `patron_hend` and `patron_shoot` are
+#   hidden;
 # * no handle: the cylinder turns itself.
 # Fire rate: the game's 180 rpm, full auto (long-burst tracks). Mass: a guess for a heavy
-# revolving shotgun, 4.5 kg; six shells 0.27 kg.
+# revolving shotgun, 4.5 kg; a shell 45 g.
 [[gun]]
 key = "wpn_uboynicheg"
 caliber = "12 gauge"
@@ -331,17 +342,17 @@ grip_rake_deg = 17.5
 trigger = [0.1148, -0.1070, 0.5702]
 grip_block = { centre = [0.1150, -0.1663, 0.5170], half = [0.0105, 0.0239, 0.0315] }
 foregrip = [0.0743, -0.1490, 0.8784]
-mag_well = [0.1152, -0.1048, 0.6441]
+mag_well = [0.1152, -0.0648, 0.6442]
 muzzle = [0.1150, -0.0640, 1.1201]
 trigger_bone = "kurok"
-mag_bones = ["patron_0", "patron_1", "patron_2", "patron_3", "patron_4", "patron_5"]
 hidden_bones = ["patron_hend", "patron_shoot"]
 recoil = [10.0, 2.5, 0.04]
 recoil_feel = [0.4, 6.5, 12.0]
 rounds_per_second = 3.0
 mag_size = 6
 mass = 4.5
-mag_mass = 0.27
+mag_mass = 0.045
+round_bones = ["patron_0", "patron_1", "patron_2", "patron_3", "patron_4", "patron_5"]
 
 # Abzats: a heavy automatic shotgun fired from the hip: the right hand on a vertical handle at the
 # back right, the left on top of the receiver's front; a box of belted shells under it.
@@ -419,10 +430,17 @@ mag_mass = 0.27
 # * sights: notch at z 0.526 (shoulders -0.0132) and post tip -0.0168 at z 1.016, on the game's
 #   camera line (0.2 mm);
 # * grip: none the survey could isolate (it joins the stock), so the game's palm with a 15° rake;
-# * magazine well: the top of the tube;
-# * handle: the pump's handle `ruchka` (on the lever `richag`), pulled 8 cm: pumping it chambers.
-#   The game pumps pressure that falls with each shot; the runtime has no pressure, only the rack,
-#   and the lever (which swings) stays still.
+# * magazine well: the top of the tube; the balls feed themselves (no rack);
+# * pump: the handle `ruchka` on the lever `richag`, which swings down and back 81.3° about its
+#   bone's origin (model +X) in the game's pump motion (`export_viewmodel tihar --peaks
+#   tihar_pamp_0`): the handle comes 17.6 cm back over it (`handle_travel`, the hand's pull; the
+#   lever is drawn swung to match). Each whole stroke builds pressure, each shot spends it;
+# * pressure: the gauge's needle `monometr` turns about its own X axis: the game's five needle
+#   poses (`tihar_arrow_0`..`_4`, empty to full) are 9.6°, 79°, 147°, 217° and 277° from the
+#   model's. The game's config keeps no names, so the pressure's numbers are ours: four strokes
+#   fill it (the gauge's four steps), a shot spends 8% (about ten from full, 15 balls a tube),
+#   below 15% it only hisses. The gauge's glass (mesh 2, `wpn_obves`) is hidden: the test range
+#   draws no glass, and it would cover the needle;
 # Fire rate: the game's 360 rpm, full auto (long-burst tracks). Mass: a guess, 3.5 kg; 15 balls and
 # the tube 0.35 kg.
 [[gun]]
@@ -438,14 +456,18 @@ foregrip = [0.0869, -0.1269, 0.7690]
 mag_well = [0.1221, -0.0261, 0.6536]
 muzzle = [0.1240, -0.0701, 1.3379]
 handle = [0.1240, -0.1280, 1.1600]
-handle_travel = 0.08
+handle_travel = 0.176
 trigger_bone = "kurok"
 mag_bones = ["magazin"]
+bolt_bones = ["richag"]
+hidden_meshes = [2]
 recoil = [4.5, 1.2, 0.015]
 recoil_feel = [0.5, 10.0, 10.0]
 rounds_per_second = 6.0
 mass = 3.5
 mag_mass = 0.35
+handle_swing = { pivot = [0.1235, -0.0679, 1.0227], deg = 81.3 }
+pressure = { pump = 0.25, shot = 0.08, min = 0.15, gauge_bone = "monometr", gauge_turn = [9.6, 277.0] }
 
 # Helsing: a pneumatic crossbow firing steel darts from an eight-shot revolving cluster
 # (`strela_*`), with a pump `nasos` under the barrel where the support hand rests.
@@ -453,11 +475,17 @@ mag_mass = 0.35
 #   front sight; no notch-and-post pair lines up with the game's camera, which looks through the
 #   post, so the line of sight runs level 0.6 mm higher, over the post's tip (the sights render);
 # * grip: 2.3 cm wide, raked forward (-16°), as a crossbow stock's;
-# * "magazine": the eight darts, out and in as one (the game loads them one by one);
-# * handle: the pump's back end, 13 cm behind the support hand (so reaching for the handguard
-#   doesn't grab it), pulled 10 cm: pumping chambers a dart (the game pumps pressure; the runtime
-#   only racks).
-# Fire rate: the game's 120 rpm. Mass: a guess, 4 kg; eight darts 0.24 kg.
+# * magazine: the cluster of eight darts (`strela_0`..`_7`, each bone's origin its back end at the
+#   cluster's back, z 0.6059) stays in the gun and takes them one at a time, as the game loads them
+#   (`helsing_reload_in_0`..`_7`): `round_bones`, the port at the first's back. The cluster turns
+#   the next one up by itself (no rack);
+# * pump: the pump's back end, 13 cm behind the support hand (so reaching for the handguard
+#   doesn't grab it), pulled 10 cm: each whole stroke builds pressure, each shot spends it;
+# * pressure: the gauge's marker `mono` slides along its own X axis (up), from 8.8 mm down
+#   (empty) to 7.5 mm up (full) of the model's, the game's two poses for it
+#   (`helsing_gradusnik_min_0`, `_max_0`). The numbers are ours (the config keeps no names): four
+#   strokes fill it, a dart spends 15% (five or six from full), below 20% it only hisses.
+# Fire rate: the game's 120 rpm. Mass: a guess, 4 kg; a dart 30 g.
 [[gun]]
 key = "wpn_helsing"
 caliber = "steel darts"
@@ -468,12 +496,11 @@ grip_rake_deg = -16.4
 trigger = [0.1295, -0.1245, 0.5363]
 grip_block = { centre = [0.1297, -0.1668, 0.4574], half = [0.0113, 0.0213, 0.0261] }
 foregrip = [0.0949, -0.1450, 0.8047]
-mag_well = [0.1307, -0.0518, 0.6059]
+mag_well = [0.1144, -0.0359, 0.6059]
 muzzle = [0.1307, -0.0289, 0.9037]
 handle = [0.1296, -0.1270, 0.6692]
 handle_travel = 0.10
 trigger_bone = "kurok"
-mag_bones = ["strela_*"]
 bolt_bones = ["nasos"]
 recoil = [4.0, 1.0, 0.015]
 recoil_feel = [0.3, 10.0, 8.0]
@@ -481,7 +508,9 @@ rounds_per_second = 2.0
 automatic = false
 mag_size = 8
 mass = 4.0
-mag_mass = 0.24
+mag_mass = 0.03
+round_bones = ["strela_0", "strela_1", "strela_2", "strela_3", "strela_4", "strela_5", "strela_6", "strela_7"]
+pressure = { pump = 0.25, shot = 0.15, min = 0.2, gauge_bone = "mono", gauge_slide = [-0.0088, 0.0075] }
 
 # Hellbreath: an electric rifle firing ball bearings from a tube on its right side (`bone17`, the
 # balls `patron_*`, `spring`); its bones are unnamed (`bone01`..).
@@ -524,9 +553,11 @@ mag_mass = 0.3
 #   so the post's tip shows over the notch's bottom (the sights render). The game's aim line runs
 #   3 cm over them (its scope's);
 # * grip: the stock's wrist under the game's palm, raked 20° (none the survey could isolate);
-# * handle: the bolt's knob `zatvor` on the right, pulled 8 cm. The runtime chambers each round by
-#   itself after a shot: what's missing for a bolt action is having to work the bolt (lift, back,
-#   forward, down) between shots;
+# * action: a bolt action, worked by hand after every shot: the knob of `zatvor` on the right is
+#   lifted, pulled back 8 cm (the case flies out), pushed home (the next round goes in) and turned
+#   down. The bolt turns about the bore (its bone's origin, on it). The game has no motions for this
+#   gun, so the turn is the real gun's: a Mosin-Nagant's handle lifts 90° from the model's pose,
+#   which is closed;
 # * `gilza` (the ejected case) and `patron_stvol` (the round in the open breech) are hidden.
 # Fire rate: a bolt worked quickly, 60 rpm (the game's config doesn't name this gun's model).
 # Mass: a Mosin-Nagant's 4 kg; ten rounds and the box 0.25 kg.
@@ -556,6 +587,8 @@ mag_size = 10
 mass = 4.0
 mag_mass = 0.25
 left_side_up = true
+action = "bolt"
+bolt_turn = [0.0, 90.0]
 
 # Preved: a 12.7 mm bolt-action anti-materiel rifle with a five-round box under it (the box is
 # mesh 1, the extractor's mounted `wpn_obves`; its rounds `patron_*` under `prujina_m`).
@@ -563,7 +596,11 @@ left_side_up = true
 #   is the line of sight (the iron posts lower down run 3 cm under the game's camera);
 # * grip: 2.7 cm wide, raked 6°;
 # * magazine: the game has a one-round and a five-round version; the model's is the five's;
-# * handle: the bolt's knob `zatvor` on the right, 10 cm (a bolt action: see the Ventil);
+# * action: a bolt action (see the Ventil), as the game's own cycling motion works it
+#   (`export_viewmodel preved --peaks preved_attack_patron_one_0`): the bolt `zatvor` turns about
+#   the bore (its bone's origin, on it), closed at -29.8° from the model's pose (its idle's: the
+#   handle angled down) and lifted to +17.2° (47° up), then slides 15.7 cm back (8.5 mm forward of
+#   the model's pose to 148.1 mm back of it). `handle` is the knob in the model's pose;
 #   `gilza` and `hunya` (the ejected case) are hidden.
 # Fire rate: the game's 150 rpm. Mass: a guess for a 12.7 mm rifle, 12 kg; five rounds 0.8 kg.
 [[gun]]
@@ -579,7 +616,7 @@ foregrip = [0.0696, -0.1574, 0.8243]
 mag_well = [0.1200, -0.0993, 0.6380]
 muzzle = [0.1187, -0.1070, 1.5872]
 handle = [0.2350, -0.1103, 0.4924]
-handle_travel = 0.10
+handle_travel = 0.157
 trigger_bone = "kurok"
 mag_bones = ["prujina_m"]
 mag_meshes = [1]
@@ -592,6 +629,8 @@ automatic = false
 mag_size = 5
 mass = 12.0
 mag_mass = 0.8
+action = "bolt"
+bolt_turn = [-29.8, 17.2]
 
 # Vyhlop: a suppressed 12.7 mm bullpup (like the real VSSK Vykhlop) with a collimator sight and
 # its five-round magazine behind the grip.
@@ -696,8 +735,13 @@ mag_mass = 1.0
 #   game's camera);
 # * grip: 1.4 cm wide, 4.5 cm deep, raked 29°;
 # * "magazine": the six rounds in the cylinder with their cases (`patron_*`, `gilza_*`), out and in
-#   as one (a speed loader) at the cylinder's back; the cylinder (`baraban`) stays. What the
-#   runtime lacks: the cylinder swinging out to load;
+#   as one (a speed loader) at the cylinder's back;
+# * action: the cylinder swings out to the left on its crane: `rot` (with the crane arm `rott`,
+#   the cylinder `baraban` and the rounds under them) turns about its bone's origin, under the
+#   cylinder's front, about model +Z, 105.2° in the game's reload (`export_viewmodel revolver
+#   --peaks revolver_reload_0`; its motions are in `hud\weapon\a_revolver`). B (or A) lets it go,
+#   A drops the speed loader once it's out, a fresh one goes in only then, and a flick or the
+#   other hand swings it back;
 # * no handle: double action (the hammer `boyek` isn't cocked by hand).
 # Fire rate: the game's 280 rpm. Mass: a six-inch revolver's 1.2 kg; six rounds and a loader 0.16.
 [[gun]]
@@ -721,6 +765,10 @@ automatic = false
 mag_size = 6
 mass = 1.2
 mag_mass = 0.16
+action = "swing"
+hinge = [0.0736, -0.1277, 1.0061]
+open_deg = 105.2
+barrel_bones = ["rot"]
 
 # Padonacheg: a machine pistol with its magazine ahead of the trigger guard (like a Mauser C96)
 # and a bolt `boiok` on top. It fires the revolver's rounds (the game's `bullet_medium`) though
@@ -758,12 +806,16 @@ mag_size = 8
 mass = 1.3
 mag_mass = 0.18
 
-# Ashot: a single-shot 12 gauge pistol, a break action like the Duplet.
+# Ashot: a single-shot 12 gauge pistol whose barrel swings out sideways to load.
 # * sights: notch at z 0.907 (shoulders -0.0191) and post tip -0.0185 at z 1.197 (1.8 mm from the
 #   game's camera);
 # * grip: 3 cm wide, raked 15°;
-# * "magazine": the one shell (`patron`, in the barrel `stvol`), its rim at the breech; no handle
-#   (see the Duplet for what a break action lacks).
+# * action: the barrel (`stvol`, with the shell and the sights on it) swings out to the left about
+#   a pin along the bore, its bone's origin 4.4 cm under the bore: 90° about model +Z in the game's
+#   reload (`export_viewmodel ashot --peaks ashot_reload_0`, the barrel's middle going 5 cm left and
+#   4.6 cm down; it isn't a tip-down break action);
+# * chamber: the one shell (`patron`, its bone's origin its base at the breech), loaded by hand
+#   from the pouch with the barrel out.
 # Fire rate: irrelevant (one shot); the game's config says 700 rpm. Mass: a guess, 1.4 kg.
 [[gun]]
 key = "wpn_ashot"
@@ -775,10 +827,9 @@ grip = [0.0814, -0.1036, 0.8201]
 grip_rake_deg = 15.2
 trigger = [0.0814, -0.1296, 0.8935]
 grip_block = { centre = [0.0814, -0.1436, 0.8092], half = [0.0149, 0.0272, 0.0311] }
-mag_well = [0.0821, -0.0488, 0.9309]
+mag_well = [0.0823, -0.0491, 0.9313]
 muzzle = [0.0821, -0.0488, 1.2119]
 trigger_bone = "kurok"
-mag_bones = ["patron"]
 recoil = [13.0, 3.5, 0.035]
 recoil_feel = [0.3, 10.0, 10.0]
 rounds_per_second = 11.667
@@ -786,3 +837,8 @@ automatic = false
 mag_size = 1
 mass = 1.4
 mag_mass = 0.045
+action = "swing"
+hinge = [0.0818, -0.0924, 0.9630]
+open_deg = 90.0
+barrel_bones = ["stvol"]
+chamber_bones = ["patron"]

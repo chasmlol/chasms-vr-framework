@@ -211,6 +211,57 @@ fn throw_gain(class: crate::rig::throwing::ThrowClass, speed: f32) -> f32 {
     crate::rig::throwing::gain(class, speed)
 }
 
+// ---- guns worked by hand (`rig::actions`) --------------------------------------------------------
+
+/// The gun the range laid nearest on the table at your right hand (`--table <key>` puts it there).
+fn table_gun(objs: &[ObjSnap]) -> Option<ObjSnap> {
+    objs.iter()
+        .filter(|o| o.kind == OBJ_WEAPON && o.flags & OS_HOLSTERED == 0 && (0.0..2.0).contains(&o.pos.x) && (0.2..1.1).contains(&o.pos.z) && o.pos.y > 0.7)
+        .min_by(|a, b| a.pos.z.total_cmp(&b.pos.z))
+        .copied()
+}
+
+/// A hinged gun's chamber `k` as it is now (open by its `slide`): its mouth and the way it points
+/// (tracking space).
+fn chamber_at(gun: &ObjSnap, k: usize) -> (Vec3, Vec3) {
+    let hinge = gun.handle;
+    let axis = if gun.action == ACTION_SWING { Vec3::Z } else { Vec3::X };
+    let turn = Quat::from_axis_angle(axis, gun.action_angle * gun.slide);
+    let mouth = gun.mag_well + Vec3::X * gun.chamber_step * k as f32;
+    (gun.at(hinge + turn * (mouth - hinge)), (gun.rot * turn * Vec3::Z).normalize())
+}
+
+/// A swung-out cylinder's well (where its speed loader's top goes, tracking space) and the turn
+/// it's swung out by (tracking space rotation of the gun's frame).
+fn cylinder_well(gun: &ObjSnap) -> (Vec3, Quat) {
+    let turn = Quat::from_rotation_z(gun.action_angle * gun.slide);
+    (gun.at(gun.handle + turn * (gun.mag_well - gun.handle)), (gun.rot * turn).normalize())
+}
+
+/// The hand holding a round from the pouch with its base at `base`, pointing along `dir`.
+fn round_in_hand(base: Vec3, dir: Vec3) -> (Vec3, Quat) {
+    let rot = (look_rot(dir) * crate::rig::held_round_rot().inverse()).normalize();
+    (base - rot * crate::rig::HELD_ROUND_BASE, rot)
+}
+
+/// A bolt's knob (tracking space) lifted by `lift` and back by `back` (0..1 each): turned about
+/// the bore, then slid back (see `rig::actions::Cycle::knob`).
+fn knob_at(gun: &ObjSnap, lift: f32, back: f32) -> Vec3 {
+    let home = gun.handle;
+    let axis = Vec3::new(gun.muzzle.x, gun.muzzle.y, home.z);
+    gun.at(axis + Quat::from_rotation_z(gun.action_angle * lift) * (home - axis) - Vec3::Z * back * gun.handle_travel)
+}
+
+/// The held gun in the live snapshot.
+fn held_gun(c: &Ctx) -> Option<ObjSnap> {
+    c.objects.iter().find(|o| o.kind == OBJ_WEAPON && o.flags & OS_HELD_RIGHT != 0).copied()
+}
+
+/// A gun pose `rot` turned by `deg` about its own +X (positive: the muzzle down).
+fn pitched(rot: Quat, deg: f32) -> Quat {
+    (rot * Quat::from_rotation_x(deg.to_radians())).normalize()
+}
+
 pub fn all() -> Vec<Scenario> {
     vec![
         Scenario {
@@ -1029,6 +1080,314 @@ pub fn all() -> Vec<Scenario> {
             },
             checks: vec![check(1.5, "the hand was held back by the table", |c| ensure(c.rig.blocked_frames > 20, || format!("blocked {} frames", c.rig.blocked_frames)))],
             captures: vec![(1.4, "ghost")],
+        },
+        Scenario {
+            name: "break_reload",
+            about: "physical: Metro's Duplet (a break action): both barrels fired, the lever lets them fall open and the cases fly out, two shells from the pouch one into each chamber, a flick up snaps it shut, both barrels again",
+            duration: 11.0,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec!["--table", "wpn_duplet"],
+            physical: true,
+            start: Body::rest,
+            // Hands only: the arms would hide the breech in the captures.
+            settings: |s| s.body.visibility = crate::settings::BodyVisibility::Hands,
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(gun) = table_gun(objs) else { return b };
+                    let eye = Body::rest().eye(1);
+                    let aim = aim_gun(&gun, eye, TARGET_AHEAD, 0.15);
+                    let aim_rot = gun_rot_in(&gun, aim.1);
+                    // Loading: the gun low in front, the muzzle 20 degrees down and turned a little
+                    // left so the open breech faces you.
+                    let load_rot = (Quat::from_rotation_y(-0.35) * pitched(aim_rot, 20.0)).normalize();
+                    let load = (Vec3::new(0.1, 1.28, 0.42), hand_rot_for(&gun, load_rot));
+                    // The flick that shuts it: the muzzle snapped up 35 degrees and back.
+                    let flick = hand_rot_for(&gun, pitched(aim_rot, -35.0));
+                    let (p, r) = take_rifle(t, &gun);
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0), (3.6, aim.0), (4.2, load.0), (8.6, load.0), (9.0, aim.0)]) };
+                    b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1), (3.6, aim.1), (4.2, load.1), (8.6, load.1), (9.0, aim.1), (9.2, aim.1), (9.245, flick), (9.35, aim.1)]) };
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    // Two barrels, then a click; later both again.
+                    b.hands[1].trigger = on(t, &[(1.9, 1.96), (2.4, 2.46), (2.9, 2.96), (9.8, 9.86), (10.3, 10.36)]);
+                    b.hands[1].buttons = if between(t, 3.3, 3.4) { CTRL_B } else { 0 };
+                    // The left hand: a shell from the pouch over the shoulder into each chamber,
+                    // base first along the bore.
+                    let now = live(see, gun.id).unwrap_or(gun);
+                    let rest = Body::rest().hands[0];
+                    let pouch = Vec3::new(-0.27, 1.56, -0.05);
+                    let into = |k: usize, depth: f32| {
+                        let (mouth, bore) = chamber_at(&now, k);
+                        round_in_hand(mouth + bore * depth, bore)
+                    };
+                    let (above0, in0, above1, in1) = (into(0, -0.12), into(0, 0.02), into(1, -0.12), into(1, 0.02));
+                    b.hands[0].pos = keys(
+                        t,
+                        &[(4.2, rest.pos), (4.7, pouch), (4.9, pouch), (5.6, above0.0), (5.75, above0.0), (6.1, in0.0), (6.25, in0.0), (6.7, pouch), (6.9, pouch), (7.6, above1.0), (7.75, above1.0), (8.1, in1.0), (8.25, in1.0), (8.7, rest.pos)],
+                    );
+                    b.hands[0].rot = match () {
+                        _ if t < 4.9 => Quat::IDENTITY,
+                        _ if t < 5.6 => Quat::IDENTITY.slerp(above0.1, ramp(t, 4.9, 5.6)),
+                        _ if t < 6.25 => above0.1,
+                        _ if t < 6.9 => above0.1.slerp(Quat::IDENTITY, ramp(t, 6.25, 6.7)),
+                        _ if t < 7.6 => Quat::IDENTITY.slerp(above1.1, ramp(t, 6.9, 7.6)),
+                        _ if t < 8.25 => above1.1,
+                        _ => above1.1.slerp(Quat::IDENTITY, ramp(t, 8.25, 8.7)),
+                    };
+                    b.hands[0].squeeze = on(t, &[(4.8, 6.3), (6.8, 8.3)]);
+                    // Watch the breech while loading.
+                    let breech = chamber_at(&now, 0).0;
+                    let look = look_rot(breech - Body::rest().head_pos);
+                    b.head_rot = qkeys(t, &[(0.0, Quat::from_rotation_x(0.5)), (1.2, Quat::IDENTITY), (3.6, Quat::IDENTITY), (4.2, look), (8.6, look), (9.0, Quat::IDENTITY)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.0, "the Duplet is in the right hand", |c| {
+                    let g = held_gun(c).ok_or("no gun in hand (run metro-extract?)")?;
+                    ensure(g.action == ACTION_BREAK && g.capacity == 2, || format!("action {} capacity {}", g.action, g.capacity))
+                }),
+                check(3.2, "one barrel a pull, two shots, then a click", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.shots == 2 && c.rig.dry_fires >= 1 && g.chambered == 0b11 << CHAMBER_SPENT_SHIFT, || format!("shots {} dry {} chambers {:#x}", c.rig.shots, c.rig.dry_fires, g.chambered))
+                }),
+                check(4.0, "the lever let the barrels fall open and threw both cases out", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(g.flags & OS_ACTION_OPEN != 0 && g.slide > 0.7 && c.rig.opens == 1 && c.rig.case_ejects == 2 && g.chambered == 0, || {
+                        format!("open {} slide {:.2} opens {} ejected {} chambers {:#x}", g.flags & OS_ACTION_OPEN != 0, g.slide, c.rig.opens, c.rig.case_ejects, g.chambered)
+                    })
+                }),
+                check(6.3, "the first shell went into the right barrel", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.loads == 1 && g.chambered == 0b01, || format!("loads {} chambers {:#x}", c.rig.loads, g.chambered))
+                }),
+                check(8.4, "and the second into the left", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.loads == 2 && g.chambered == 0b11 && c.rig.mags_spawned == 2, || format!("loads {} chambers {:#x} from the pouch {}", c.rig.loads, g.chambered, c.rig.mags_spawned))
+                }),
+                check(9.7, "a flick up snapped it shut", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.closes == 1 && g.flags & OS_ACTION_OPEN == 0 && g.slide == 0.0, || format!("closes {} open {} slide {:.2}", c.rig.closes, g.flags & OS_ACTION_OPEN != 0, g.slide))
+                }),
+                // (The second barrel of a pair goes off with the first's kick still in the gun.)
+                check(10.1, "the first barrel after the reload hits", |c| {
+                    ensure(c.rig.shots == 3 && c.stat(rs::HITS) >= 2, || format!("shots {} hits {}", c.rig.shots, c.stat(rs::HITS)))
+                }),
+                check(10.9, "both barrels again", |c| ensure(c.rig.shots == 4 && c.stat(rs::SHOTS) == 4, || format!("shots {} (range {})", c.rig.shots, c.stat(rs::SHOTS)))),
+            ],
+            captures: vec![(1.92, "break_fire"), (3.9, "break_open"), (5.7, "break_shell"), (6.2, "break_shell_in"), (8.4, "break_loaded"), (9.6, "break_shut"), (9.83, "break_fire_again")],
+        },
+        Scenario {
+            name: "bolt_cycle",
+            about: "physical: Metro's Ventil (a bolt action): a shot, the trigger again does nothing, the left hand lifts the bolt, pulls it back (the case flies out), pushes it home and turns it down, and it fires again",
+            duration: 6.6,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec!["--table", "wpn_ventil"],
+            physical: true,
+            start: Body::rest,
+            settings: |s| s.body.visibility = crate::settings::BodyVisibility::Hands,
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(gun) = table_gun(objs) else { return b };
+                    let aim = aim_gun(&gun, Body::rest().eye(1), TARGET_AHEAD, 0.15);
+                    let (p, r) = take_rifle(t, &gun);
+                    // Lowered from the eye a little to work the bolt, then back up to aim.
+                    let low = aim.0 + Vec3::new(0.0, -0.14, 0.04);
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0), (2.5, aim.0), (2.75, low), (4.7, low), (5.0, aim.0)]) };
+                    b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1)]) };
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    b.hands[1].trigger = on(t, &[(1.9, 1.96), (2.4, 2.46), (5.2, 5.26), (5.8, 5.86)]);
+                    // The left hand on the knob (2 cm to its right): up, back, home, down; the knob
+                    // follows the hand round the bore and along it.
+                    let now = live(see, gun.id).unwrap_or(gun);
+                    let off = now.rot * Vec3::new(0.02, 0.0, 0.0);
+                    let (lift, back) = match () {
+                        _ if t < 3.1 => (0.0, 0.0),
+                        _ if t < 3.5 => (ramp(t, 3.1, 3.4), 0.0),
+                        _ if t < 3.9 => (1.0, ramp(t, 3.5, 3.8)),
+                        _ if t < 4.3 => (1.0, 1.0 - ramp(t, 3.9, 4.2)),
+                        _ => (1.0 - ramp(t, 4.3, 4.5), 0.0),
+                    };
+                    let rest = Body::rest().hands[0].pos;
+                    let knob = knob_at(&now, lift, back) + off;
+                    b.hands[0].pos = match () {
+                        _ if t < 2.6 => rest,
+                        _ if t < 3.0 => rest.lerp(knob, ramp(t, 2.6, 3.0)),
+                        _ if t < 4.6 => knob,
+                        _ => knob.lerp(rest, ramp(t, 4.6, 5.0)),
+                    };
+                    b.hands[0].squeeze = on(t, &[(3.0, 4.6)]);
+                    // Watch the bolt.
+                    let look = look_rot(knob_at(&now, 0.0, 0.0) - Body::rest().head_pos);
+                    b.head_rot = qkeys(t, &[(0.0, Quat::from_rotation_x(0.5)), (1.2, Quat::IDENTITY), (2.5, Quat::IDENTITY), (2.8, look), (4.7, look), (5.0, Quat::IDENTITY)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.0, "the Ventil is in the right hand", |c| {
+                    let g = held_gun(c).ok_or("no gun in hand (run metro-extract?)")?;
+                    ensure(g.action == ACTION_BOLT && g.action_angle > 1.0, || format!("action {} lift {:.2}", g.action, g.action_angle))
+                }),
+                check(2.2, "the first shot", |c| ensure(c.rig.shots == 1 && c.stat(rs::SHOTS) == 1, || format!("shots {}", c.rig.shots))),
+                check(2.8, "no second shot without the bolt: the case is still in the chamber", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.shots == 1 && g.chambered == 1 << CHAMBER_SPENT_SHIFT, || format!("shots {} chambers {:#x}", c.rig.shots, g.chambered))
+                }),
+                check(3.45, "the bolt turned up", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(g.fuse > 0.85 && g.flags & OS_ACTION_OPEN != 0 && g.slide < 0.05, || format!("lift {:.2} back {:.2}", g.fuse, g.slide))
+                }),
+                check(3.85, "pulled back, the case flew out", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(g.slide > 0.9 && c.rig.case_ejects == 1 && g.chambered == 0, || format!("back {:.2} ejected {} chambers {:#x}", g.slide, c.rig.case_ejects, g.chambered))
+                }),
+                check(4.7, "home and turned down: the next round is in", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    // (It arrived with ten in the magazine and one chambered: that one fired, the next in.)
+                    ensure(c.rig.cycles == 1 && g.flags & OS_ACTION_OPEN == 0 && g.chambered == 1 && g.rounds == 9, || {
+                        format!("cycles {} open {} chambers {:#x} rounds {}", c.rig.cycles, g.flags & OS_ACTION_OPEN != 0, g.chambered, g.rounds)
+                    })
+                }),
+                check(5.5, "it fires again", |c| ensure(c.rig.shots == 2 && c.stat(rs::HITS) >= 1, || format!("shots {} hits {}", c.rig.shots, c.stat(rs::HITS)))),
+                check(6.5, "and only once", |c| ensure(c.rig.shots == 2, || format!("shots {}", c.rig.shots))),
+            ],
+            captures: vec![(1.92, "bolt_fire"), (2.8, "bolt_closed"), (3.45, "bolt_up"), (3.85, "bolt_back"), (4.55, "bolt_home")],
+        },
+        Scenario {
+            name: "pump",
+            about: "physical: Metro's Tihar (an air rifle): without pressure the trigger only hisses; four strokes of its pump lever fill the gauge, and it fires, each shot spending some",
+            duration: 6.6,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec!["--table", "wpn_tihar"],
+            physical: true,
+            start: Body::rest,
+            settings: |s| s.body.visibility = crate::settings::BodyVisibility::Hands,
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(gun) = table_gun(objs) else { return b };
+                    let aim = aim_gun(&gun, Body::rest().eye(1), TARGET_AHEAD, 0.15);
+                    let (p, r) = take_rifle(t, &gun);
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0)]) };
+                    b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1)]) };
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    b.hands[1].trigger = on(t, &[(1.9, 1.96), (5.5, 5.56), (5.9, 5.96)]);
+                    // The left hand on the pump's handle, four strokes back along the barrel.
+                    let now = live(see, gun.id).unwrap_or(gun);
+                    let handle = now.at(gun.handle) - Vec3::Y * 0.02;
+                    let stroke = now.rot * Vec3::Z * -(gun.handle_travel + 0.01);
+                    let rest = Body::rest().hands[0].pos;
+                    let pumped = (0..4).map(|k| 2.8 + 0.5 * k as f64).map(|t0| ramp(t, t0, t0 + 0.22) - ramp(t, t0 + 0.25, t0 + 0.47)).sum::<f32>();
+                    b.hands[0].pos = match () {
+                        _ if t < 2.2 => rest,
+                        _ if t < 2.7 => rest.lerp(handle, ramp(t, 2.2, 2.7)),
+                        _ if t < 4.9 => handle + stroke * pumped,
+                        _ => handle.lerp(rest, ramp(t, 4.9, 5.3)),
+                    };
+                    b.hands[0].squeeze = on(t, &[(2.7, 4.85)]);
+                    // Watch the lever, then the gauge (by the rear sight).
+                    let lever = look_rot(handle - Body::rest().head_pos);
+                    b.head_rot = qkeys(t, &[(0.0, Quat::from_rotation_x(0.5)), (1.2, Quat::IDENTITY), (2.2, Quat::IDENTITY), (2.6, lever), (4.9, lever), (5.2, Quat::IDENTITY)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.0, "the Tihar is in the right hand", |c| {
+                    let g = held_gun(c).ok_or("no gun in hand (run metro-extract?)")?;
+                    ensure(g.weapon_flags & WPN_PNEUMATIC != 0 && g.fuse == 0.0, || format!("flags {:#x} pressure {:.2}", g.weapon_flags, g.fuse))
+                }),
+                check(2.2, "no pressure: the trigger only hissed", |c| ensure(c.rig.shots == 0 && c.rig.hisses >= 1 && c.stat(rs::SHOTS) == 0, || format!("shots {} hisses {}", c.rig.shots, c.rig.hisses))),
+                check(3.05, "the lever down: half a stroke", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(g.slide > 0.9 && c.rig.pumps == 0, || format!("pump {:.2} strokes {}", g.slide, c.rig.pumps))
+                }),
+                check(4.95, "four whole strokes: full", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.pumps == 4 && (g.fuse - 1.0).abs() < 1e-3, || format!("strokes {} pressure {:.3}", c.rig.pumps, g.fuse))
+                }),
+                check(6.4, "it fires, each shot spending some", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.shots == 2 && c.stat(rs::HITS) >= 1 && (g.fuse - 0.84).abs() < 1e-3 && (c.rig.last_strength - 0.92).abs() < 1e-3, || {
+                        format!("shots {} hits {} pressure {:.3} last strength {:.3}", c.rig.shots, c.stat(rs::HITS), g.fuse, c.rig.last_strength)
+                    })
+                }),
+            ],
+            captures: vec![(2.75, "pump_home"), (3.05, "pump_back"), (4.95, "pumped"), (5.52, "air_shot")],
+        },
+        Scenario {
+            name: "cylinder_reload",
+            about: "physical: Metro's revolver: six shots and a click, B swings the cylinder out, A drops the cases, a speed loader from the pouch goes into the swung-out cylinder, a roll of the wrist swings it home, and it fires",
+            duration: 8.2,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec!["--table", "wpn_revolver"],
+            physical: true,
+            start: Body::rest,
+            settings: |s| s.body.visibility = crate::settings::BodyVisibility::Hands,
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(gun) = table_gun(objs) else { return b };
+                    let aim = aim_gun(&gun, Body::rest().eye(1), TARGET_AHEAD, 0.4);
+                    let aim_rot = gun_rot_in(&gun, aim.1);
+                    // Loading: low in front, the muzzle 35 degrees down, the swung-out cylinder's
+                    // back towards you.
+                    let load = (Vec3::new(0.15, 1.25, 0.4), hand_rot_for(&gun, pitched(aim_rot, 35.0)));
+                    // The roll that swings it home: the top to the right, 35 degrees, and back.
+                    let roll = hand_rot_for(&gun, (aim_rot * Quat::from_rotation_z(-35f32.to_radians())).normalize());
+                    let (p, r) = take_rifle(t, &gun);
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0), (4.6, aim.0), (5.0, load.0), (6.8, load.0), (7.1, aim.0)]) };
+                    b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1), (4.6, aim.1), (5.0, load.1), (6.8, load.1), (7.1, aim.1), (7.2, aim.1), (7.245, roll), (7.35, aim.1)]) };
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    b.hands[1].trigger = on(t, &[(1.8, 1.86), (2.1, 2.16), (2.4, 2.46), (2.7, 2.76), (3.0, 3.06), (3.3, 3.36), (3.6, 3.66), (7.7, 7.76)]);
+                    b.hands[1].buttons = if between(t, 3.9, 4.0) { CTRL_B } else if between(t, 4.4, 4.5) { CTRL_A } else { 0 };
+                    // The left hand: a speed loader from the pouch into the swung-out cylinder, from
+                    // behind along its axis, upright in the cylinder's frame.
+                    let now = live(see, gun.id).unwrap_or(gun);
+                    let (well, frame) = cylinder_well(&now);
+                    let rot = (frame * crate::rig::held_mag_rot().inverse()).normalize();
+                    let at = |back: f32| well - rot * crate::rig::HELD_MAG_TOP - frame * Vec3::Z * back;
+                    let rest = Body::rest().hands[0];
+                    let pouch = Vec3::new(-0.27, 1.56, -0.05);
+                    b.hands[0].pos = keys(t, &[(4.6, rest.pos), (5.1, pouch), (5.3, pouch), (6.0, at(0.15)), (6.1, at(0.15)), (6.45, at(-0.01)), (6.6, at(-0.01)), (7.0, rest.pos)]);
+                    b.hands[0].rot = match () {
+                        _ if t < 5.3 => Quat::IDENTITY,
+                        _ if t < 6.0 => Quat::IDENTITY.slerp(rot, ramp(t, 5.3, 6.0)),
+                        _ if t < 6.6 => rot,
+                        _ => rot.slerp(Quat::IDENTITY, ramp(t, 6.6, 7.0)),
+                    };
+                    b.hands[0].squeeze = on(t, &[(5.2, 6.6)]);
+                    let look = look_rot(well - Body::rest().head_pos);
+                    b.head_rot = qkeys(t, &[(0.0, Quat::from_rotation_x(0.5)), (1.2, Quat::IDENTITY), (3.8, Quat::IDENTITY), (4.1, look), (6.8, look), (7.1, Quat::IDENTITY)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.0, "the revolver is in the right hand", |c| {
+                    let g = held_gun(c).ok_or("no gun in hand (run metro-extract?)")?;
+                    ensure(g.action == ACTION_SWING && g.rounds == 5 && g.chambered == 1, || format!("action {} rounds {} chambered {:#x}", g.action, g.rounds, g.chambered))
+                }),
+                check(3.8, "six shots, then a click", |c| ensure(c.rig.shots == 6 && c.rig.dry_fires >= 1 && c.stat(rs::HITS) >= 4, || format!("shots {} dry {} hits {}", c.rig.shots, c.rig.dry_fires, c.stat(rs::HITS)))),
+                check(4.35, "B swung the cylinder out, the loader with it", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(g.flags & OS_ACTION_OPEN != 0 && g.slide > 0.9 && c.rig.opens == 1, || format!("open {} slide {:.2}", g.flags & OS_ACTION_OPEN != 0, g.slide))
+                }),
+                check(4.7, "A dropped the cases out", |c| ensure(c.rig.ejects == 1, || format!("ejects {}", c.rig.ejects))),
+                check(6.7, "a fresh speed loader went into the swung-out cylinder", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.seats == 1 && g.rounds == 5 && g.chambered == 1, || format!("seats {} rounds {} chambered {:#x}", c.rig.seats, g.rounds, g.chambered))
+                }),
+                check(7.6, "a roll of the wrist swung it home", |c| {
+                    let g = held_gun(c).ok_or("no gun")?;
+                    ensure(c.rig.closes == 1 && g.flags & OS_ACTION_OPEN == 0, || format!("closes {} open {}", c.rig.closes, g.flags & OS_ACTION_OPEN != 0))
+                }),
+                check(8.1, "it fires from the fresh loader", |c| ensure(c.rig.shots == 7, || format!("shots {}", c.rig.shots))),
+            ],
+            captures: vec![(1.82, "rev_fire"), (4.35, "rev_open"), (4.75, "rev_cases_out"), (6.3, "rev_loading"), (6.75, "rev_loaded"), (7.5, "rev_shut")],
         },
     ]
 }

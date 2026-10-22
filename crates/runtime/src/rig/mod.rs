@@ -17,6 +17,7 @@
 //! Physics runs in world metres. Held and holstered objects are reported in tracking space, so the
 //! adapter maps them with the same view as the hands and they never trail behind while walking.
 
+pub mod actions;
 pub mod feedback;
 pub mod filters;
 pub mod kick;
@@ -34,6 +35,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::backend::HmdFrame;
 use crate::settings::{GrenadeArming, Settings};
+use actions::{Chamber, Cycle, CycleEvent, HingeEvent};
 use feedback::{Cue, Feedback};
 use filters::OneEuro;
 use physics::{Physics, groups_free, groups_hand, groups_held, groups_none};
@@ -155,6 +157,19 @@ enum Hover {
     Handle(u32),
     /// The other hand's grenade's pin.
     Pin(u32),
+    /// The other hand's gun's open barrels (or swung-out cylinder), to swing them shut (or further).
+    Barrels(u32),
+    /// A live round in one of the other hand's gun's open chambers, to pull out.
+    Chamber(u32, usize),
+}
+
+/// A hand holding a hinged action's barrels: which gun, where on them it took them (weapon space,
+/// shut) and how far open they were then.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BarrelGrab {
+    gun: u32,
+    at: Vec3,
+    angle: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -186,6 +201,11 @@ struct Hand {
     history: ThrowHistory,
     /// Pulling the other hand's grenade's pin: which, and where the hand took it.
     pin: Option<(u32, Vec3)>,
+    /// Holding the other hand's gun's open barrels.
+    barrels: Option<BarrelGrab>,
+    /// The controller's turn rate (world, rad/s) from its last two rotations: the wrist's flicks
+    /// (whatever a heavy gun in it manages to follow).
+    turn_rate: Vec3,
     trigger_was: f32,
     /// The hardest squeeze since the grip closed, and whether an easing grip let a throw go (it
     /// must open past the release threshold before it can grab again).
@@ -264,6 +284,19 @@ pub struct RigDebug {
     /// Where the last grenade went off, and where the last knife's tip went in (tracking space).
     pub last_detonation: Option<Vec3>,
     pub last_stick: Option<Vec3>,
+    /// Hinged actions opened and latched shut; rounds pushed into chambers and pulled out; cases
+    /// (or rounds) thrown out of chambers.
+    pub opens: u32,
+    pub closes: u32,
+    pub loads: u32,
+    pub unloads: u32,
+    pub case_ejects: u32,
+    /// Bolt and pump strokes (back and home again, each a round chambered or not).
+    pub cycles: u32,
+    /// Air guns: pump strokes, trigger pulls without the pressure, and the last shot's strength.
+    pub pumps: u32,
+    pub hisses: u32,
+    pub last_strength: f32,
 }
 
 /// A push from the game (its explosion, a bullet), applied on the next step.
@@ -301,6 +334,16 @@ const HOLSTER_MAX_SPEED: f32 = 1.2;
 const THROW_EASE: f32 = 0.25;
 const THROW_EASE_SPEED: f32 = 1.5;
 const HANDLE_REACH: f32 = 0.09;
+/// A hand this near open barrels' middle (or the foregrip on them) takes them; this near an open
+/// chamber holding a live round, pulls it out.
+const BARREL_REACH: f32 = 0.1;
+const CHAMBER_REACH: f32 = 0.035;
+/// A round goes into an open chamber when its base is this near the chamber's mouth and it points
+/// within this of the chamber's axis (easy, the default; strict mode half that).
+const ROUND_SEAT: f32 = 0.05;
+const ROUND_SEAT_ANGLE: f32 = 50.0;
+/// A break action has to be open this far (or most of the way, if it opens less) to load it.
+const LOAD_OPEN: f32 = 35.0;
 /// A gun fired with its sights this close to the eye is aimed (the game's aimed recoil).
 const AIMED_SIGHT: f32 = 0.15;
 const SNAP_BLEND: f64 = 0.12;
@@ -377,6 +420,18 @@ pub fn held_mag_rot() -> Quat {
     Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)
 }
 pub const HELD_MAG_TOP: Vec3 = Vec3::new(0.0, 0.0, 0.06);
+
+/// How a round from the pouch (a magazine of one) sits in the hand: nose first along the fist's
+/// axis (+Z, out past the thumb), its base just inside the fist, ready to push into a chamber.
+pub fn held_round_rot() -> Quat {
+    Quat::IDENTITY
+}
+pub const HELD_ROUND_BASE: Vec3 = Vec3::new(0.0, 0.0, -0.005);
+
+/// A magazine of one round is a round.
+fn is_round(d: &ObjectDesc) -> bool {
+    d.kind == OBJ_MAGAZINE && d.capacity == 1
+}
 
 /// A quaternion field, if it's set (all zero means "not authored").
 fn authored(a: [f32; 4]) -> Option<Quat> {
@@ -532,7 +587,7 @@ impl Rig {
     fn add(&mut self, d: ObjectDesc, draw_desc: u32, spawned: bool, pos: Vec3, rot: Quat) {
         let (body, collider) = self.physics.add_object(&d, pos, rot);
         let weapon = (d.kind == OBJ_WEAPON).then(|| {
-            let mut w = WeaponState::new(true);
+            let mut w = WeaponState::for_desc(&d);
             w.recoil = recoil::Recoil::new(d.id.wrapping_mul(2654435761));
             w.game = kick::GameRecoil::new(d.id.wrapping_mul(2246822519));
             w
@@ -563,8 +618,14 @@ impl Rig {
                 throw: ThrowState::new(&d),
             },
         );
-        // A gun arrives loaded: a seated magazine from its template, or rounds held internally.
-        if d.kind == OBJ_WEAPON {
+        // A gun arrives loaded: a seated magazine from its template, or rounds held internally (a
+        // gun loaded into its chambers has them all loaded already).
+        if d.kind == OBJ_WEAPON && d.weapon_flags & WPN_LOADS_ROUNDS != 0 {
+            // A magazine that stays in it, full: one of its rounds chambered.
+            if let Some(w) = self.objects.get_mut(&id).and_then(|o| o.weapon.as_mut()) {
+                w.internal = Some(d.capacity.max(1) - w.chambered as u32);
+            }
+        } else if d.kind == OBJ_WEAPON && d.weapon_flags & WPN_LOADS_CHAMBERS == 0 {
             match self.template_for(d.ammo_type) {
                 Some(t) => {
                     let mag = self.spawn_mag(&t, pos, rot);
@@ -613,6 +674,9 @@ impl Rig {
                     }
                     if h.pin.is_some_and(|(g, _)| g == id) {
                         h.pin = None;
+                    }
+                    if h.barrels.is_some_and(|b| b.gun == id) {
+                        h.barrels = None;
                     }
                 }
             }
@@ -679,6 +743,9 @@ impl Rig {
             let hands = self.hands.as_mut().unwrap();
             for (i, h) in hands.iter_mut().enumerate() {
                 let c = &inp.frame.hands[i];
+                let turned = (q4(c.grip.rot) * h.grip_t.1.inverse()).normalize();
+                let turned = if turned.w < 0.0 { -turned } else { turned };
+                h.turn_rate = map.rot(Quat::IDENTITY) * turned.to_scaled_axis() / dt;
                 h.grip_t = (v3(c.grip.pos), q4(c.grip.rot));
                 h.aim_t = (v3(c.aim.pos), q4(c.aim.rot));
                 h.vel_t = v3(c.vel);
@@ -752,6 +819,8 @@ impl Rig {
                 glove_hop: 0.0,
                 history: ThrowHistory::default(),
                 pin: None,
+                barrels: None,
+                turn_rate: Vec3::ZERO,
                 trigger_was: 0.0,
                 squeeze_peak: 0.0,
                 eased: false,
@@ -780,6 +849,34 @@ impl Rig {
         self.objects.get(&id).map(|o| self.physics.pose(o.body))
     }
 
+    /// How far a hinged gun's barrels are open (radians, by size; 0 shut or for any other gun).
+    fn hinge_angle(&self, id: u32) -> f32 {
+        self.objects.get(&id).and_then(|o| o.weapon.as_ref()?.hinge).map_or(0.0, |h| h.angle)
+    }
+
+    /// Where the gun's handle is now (weapon space): a bolt lifted and back, a pump or an air gun's
+    /// pump back, a slide at rest (a self-loading gun's handle is grabbed at rest).
+    fn handle_now(&self, id: u32) -> Vec3 {
+        let Some(o) = self.objects.get(&id) else { return Vec3::ZERO };
+        let home = v3(o.desc.handle);
+        match &o.weapon {
+            Some(w) if w.cycle.is_some() => w.cycle.unwrap().knob(&o.desc, home),
+            Some(w) if w.air.is_some() => home - Vec3::Z * w.slide * o.desc.handle_travel,
+            _ => home,
+        }
+    }
+
+    /// Where a hand holding these barrels is drawn (weapon space): its grab point turned with them.
+    fn barrel_point(&self, g: &BarrelGrab) -> Vec3 {
+        let Some(o) = self.objects.get(&g.gun) else { return g.at };
+        actions::on_barrels(&o.desc, self.hinge_angle(g.gun), g.at)
+    }
+
+    /// The foregrip of a break action ahead of its hinge is on its barrels.
+    fn foregrip_on_barrels(d: &ObjectDesc) -> bool {
+        d.action == ACTION_BREAK && d.flags & OBJF_TWO_HANDED != 0 && d.foregrip[2] > d.handle[2]
+    }
+
     /// The weapon in the other hand, if any.
     fn other_weapon(&self, hand: usize) -> Option<u32> {
         let id = self.hands.as_ref()?[hand ^ 1].holding?;
@@ -790,7 +887,7 @@ impl Rig {
     fn update_hover(&mut self, i: usize, s: &Settings, zones: &[Zone; SLOT_COUNT_BODY], ammo: &[Zone; 2]) {
         let hands = self.hands.as_ref().unwrap();
         let h = &hands[i];
-        if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() {
+        if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() {
             self.hands.as_mut().unwrap()[i].hover = Hover::None;
             return;
         }
@@ -811,12 +908,34 @@ impl Rig {
         if let (Hover::None, Some(wid)) = (hover, self.other_weapon(i)) {
             let o = &self.objects[&wid];
             let (wp, wr) = self.physics.pose(o.body);
-            let handle = wp + wr * v3(o.desc.handle);
+            let handle = wp + wr * self.handle_now(wid);
             let fore = wp + wr * foregrip_point(&o.desc, wr.inverse() * (palm - wp));
-            let needs_rack = o.weapon.as_ref().is_some_and(|w| !w.chambered || w.slide_locked);
-            if o.desc.handle_travel > 0.0 && palm.distance(handle) < HANDLE_REACH * if needs_rack { 1.3 } else { 1.0 } {
+            let w = o.weapon.as_ref();
+            let needs_rack = w.is_some_and(|w| !w.chambered || w.slide_locked || w.spent);
+            let open = w.and_then(|w| w.hinge).filter(|h| !h.latched).map(|h| h.angle);
+            // An open hinged action: a live round in a chamber (to pull out), or the barrels.
+            let chamber = open.and_then(|angle| {
+                let w = w?;
+                (0..w.chambers.len())
+                    .filter(|&k| w.chambers[k] == Chamber::Live)
+                    .map(|k| (k, (wp + wr * actions::on_barrels(&o.desc, angle, actions::chamber_mouth(&o.desc, k))).distance(palm)))
+                    .filter(|(_, d)| *d < CHAMBER_REACH)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(k, _)| k)
+            });
+            let barrels = open.is_some_and(|angle| {
+                let h = v3(o.desc.handle);
+                let mid = wp + wr * actions::on_barrels(&o.desc, angle, h + actions::barrels_centre(&o.desc));
+                let fore_on = Self::foregrip_on_barrels(&o.desc).then(|| wp + wr * actions::on_barrels(&o.desc, angle, v3(o.desc.foregrip)));
+                palm.distance(mid) < BARREL_REACH || fore_on.is_some_and(|f| palm.distance(f) < FOREGRIP_REACH)
+            });
+            if let Some(k) = chamber {
+                hover = Hover::Chamber(wid, k);
+            } else if barrels {
+                hover = Hover::Barrels(wid);
+            } else if o.desc.handle_travel > 0.0 && palm.distance(handle) < HANDLE_REACH * if needs_rack { 1.3 } else { 1.0 } {
                 hover = Hover::Handle(wid);
-            } else if o.desc.flags & OBJF_TWO_HANDED != 0 && palm.distance(fore) < FOREGRIP_REACH {
+            } else if o.desc.flags & OBJF_TWO_HANDED != 0 && open.is_none() && palm.distance(fore) < FOREGRIP_REACH {
                 hover = Hover::Foregrip(wid);
             }
         }
@@ -833,7 +952,9 @@ impl Rig {
         // other hand holds a magazine-fed gun.
         if hover == Hover::None {
             if let Some(wid) = self.other_weapon(i) {
-                let wants = self.objects[&wid].weapon.as_ref().is_some_and(|w| w.internal.is_none());
+                // (A magazine that stays in it takes rounds from the pouch one at a time.)
+                let o = &self.objects[&wid];
+                let wants = o.weapon.as_ref().is_some_and(|w| w.internal.is_none()) || o.desc.weapon_flags & WPN_LOADS_ROUNDS != 0;
                 let in_pouch = ammo.iter().any(|z| self.anchor.contains(z, palm_t))
                     || zones.iter().enumerate().any(|(slot, z)| self.slots[slot].is_none() && self.anchor.contains(z, palm_t));
                 if wants && in_pouch {
@@ -941,11 +1062,26 @@ impl Rig {
         // Buttons on the gun hand: A/X ejects the magazine, B/Y drops a locked slide.
         if let Some(id) = self.hands.as_ref().unwrap()[i].holding {
             if self.objects.get(&id).is_some_and(|o| o.desc.kind == OBJ_WEAPON) {
-                if tapped(CTRL_A) {
-                    self.eject(id, i);
-                }
-                if tapped(CTRL_B) {
-                    self.slide_release(id, i);
+                // A hinged action: B (or A, when there's no magazine to drop) is the lever that
+                // lets the barrels go; A drops a revolver's speed loader once its cylinder is out.
+                let hinge = self.objects[&id].weapon.as_ref().and_then(|w| w.hinge);
+                match hinge {
+                    Some(h) => {
+                        let has_mag = self.objects[&id].weapon.as_ref().is_some_and(|w| w.mag.is_some());
+                        if tapped(CTRL_B) || (tapped(CTRL_A) && (h.latched || !has_mag)) {
+                            self.open_action(id, i);
+                        } else if tapped(CTRL_A) {
+                            self.eject(id, i);
+                        }
+                    }
+                    None => {
+                        if tapped(CTRL_A) {
+                            self.eject(id, i);
+                        }
+                        if tapped(CTRL_B) {
+                            self.slide_release(id, i);
+                        }
+                    }
                 }
             }
         }
@@ -994,11 +1130,38 @@ impl Rig {
                 self.emit(Cue::Grab, Some(i), Some(wid), palm, 0.7);
             }
             Hover::Handle(wid) => {
+                // Where the knob is from the hand (weapon space), so the handle follows the hand
+                // wherever the gun goes.
+                let knob = self.handle_now(wid);
+                let (wp, wr) = self.obj_pose(wid).unwrap_or((Vec3::ZERO, Quat::IDENTITY));
+                let offset = knob - wr.inverse() * (palm - wp);
                 if let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) {
-                    w.handle = Some(HandleGrab { hand: i, start: palm });
+                    w.handle = Some(HandleGrab { hand: i, start: palm, offset });
                 }
                 self.hands.as_mut().unwrap()[i].handle = Some(wid);
                 self.emit(Cue::Grab, Some(i), Some(wid), palm, 0.6);
+            }
+            Hover::Barrels(wid) => {
+                let (wp, wr) = self.obj_pose(wid).unwrap_or((Vec3::ZERO, Quat::IDENTITY));
+                let angle = self.hinge_angle(wid);
+                let d = self.objects[&wid].desc;
+                // Where on the barrels (shut) the hand has them.
+                let at = actions::on_barrels(&d, -angle, wr.inverse() * (palm - wp));
+                self.hands.as_mut().unwrap()[i].barrels = Some(BarrelGrab { gun: wid, at, angle });
+                self.emit(Cue::Grab, Some(i), Some(wid), palm, 0.6);
+            }
+            Hover::Chamber(wid, k) => {
+                // A live round out of an open chamber, into the hand.
+                let ammo_type = self.objects[&wid].desc.ammo_type;
+                if let Some(t) = self.template_for(ammo_type) {
+                    if let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) {
+                        w.chambers[k] = Chamber::Empty;
+                    }
+                    let id = self.spawn_mag(&t, palm, grip_rot);
+                    self.take(id, i, true);
+                    self.debug.unloads += 1;
+                    self.emit(Cue::ShellOut, Some(i), Some(wid), palm, 1.0);
+                }
             }
             Hover::Pin(gid) => {
                 self.hands.as_mut().unwrap()[i].pin = Some((gid, palm));
@@ -1028,6 +1191,10 @@ impl Rig {
             let g = if i == 0 { mirror_grip(g) } else { g };
             let rel = inverse((v3(o.desc.grip), g));
             Attach::Fixed(rel.0, rel.1)
+        } else if snap && is_round(&o.desc) {
+            // A round sits nose first along the fist's axis, its base in the fist.
+            let rot = held_round_rot();
+            Attach::Fixed(HELD_ROUND_BASE - rot * v3(o.desc.mag_well), rot)
         } else if snap && o.desc.kind == OBJ_MAGAZINE {
             // A fresh magazine sits in the fist along the grip pose's +Z (the fist's axis, little
             // finger to thumb), its top 6 cm out past the thumb, ready to push into a well.
@@ -1067,6 +1234,11 @@ impl Rig {
         // Support grip / handle / pin / glove lock end with the grip.
         {
             let h = &mut self.hands.as_mut().unwrap()[i];
+            if h.barrels.take().is_some() {
+                let c = h.collider;
+                self.physics.set_groups(c, groups_hand(i));
+                return;
+            }
             if h.support.take().is_some() || h.pin.take().is_some() {
                 return;
             }
@@ -1250,7 +1422,15 @@ impl Rig {
     }
 
     fn eject(&mut self, wid: u32, hand: usize) {
-        let Some(mag) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()).and_then(|w| w.mag.take()) else { return };
+        let swing = self.objects.get(&wid).is_some_and(|o| o.desc.action == ACTION_SWING);
+        let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) else { return };
+        let Some(mag) = w.mag.take() else { return };
+        // A revolver's chambered round is one of its cylinder's: it goes out with the loader.
+        if swing && std::mem::take(&mut w.chambered)
+            && let Some(m) = self.objects.get_mut(&mag)
+        {
+            m.rounds = (m.rounds + 1).min(m.desc.capacity).max(m.rounds);
+        }
         let (wp, wr) = self.obj_pose(wid).unwrap();
         let (wv, _) = self.physics.velocity(self.objects[&wid].body);
         self.debug.ejects += 1;
@@ -1273,6 +1453,34 @@ impl Rig {
         if let Some(body) = self.objects.get(&mag).map(|m| m.body) {
             self.free_body(mag, groups_free());
             self.physics.set_velocity(body, wv - wr * Vec3::Y * 1.2, Vec3::ZERO);
+        }
+    }
+
+    /// A hinged action's latch lets go (the lever under the thumb, a flick): the barrels start to
+    /// fall open. A support hand on a break action's foregrip now has the barrels.
+    fn open_action(&mut self, wid: u32, hand: usize) {
+        let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) else { return };
+        let Some(h) = &mut w.hinge else { return };
+        if !h.unlatch() {
+            return;
+        }
+        self.opened(wid, Some(hand));
+    }
+
+    /// The cue for a hinged action that just let go, and the support hand taking its barrels.
+    fn opened(&mut self, wid: u32, hand: Option<usize>) {
+        let d = self.objects[&wid].desc;
+        let p = self.obj_pose(wid).map_or(Vec3::ZERO, |(p, q)| p + q * v3(d.handle));
+        self.debug.opens += 1;
+        self.emit(if d.action == ACTION_SWING { Cue::SwingOpen } else { Cue::BreakOpen }, hand, Some(wid), p, 1.0);
+        if Self::foregrip_on_barrels(&d) {
+            for i in 0..2 {
+                if self.hands.as_ref().unwrap()[i].support == Some(wid) {
+                    let h = &mut self.hands.as_mut().unwrap()[i];
+                    h.support = None;
+                    h.barrels = Some(BarrelGrab { gun: wid, at: v3(d.foregrip), angle: 0.0 });
+                }
+            }
         }
     }
 
@@ -1491,15 +1699,29 @@ impl Rig {
                     if fired == Fire::LastShot {
                         self.emit(Cue::LastRound, None, Some(id), wp, 1.0);
                     }
+                    if let Some(w) = self.objects[&id].weapon.as_ref().filter(|w| w.air.is_some()) {
+                        self.debug.last_strength = w.last_strength;
+                    }
                 }
                 Fire::Empty => {
                     self.debug.dry_fires += 1;
                     self.emit(Cue::EmptyClick, Some(hand), Some(id), wp, 1.0);
                 }
+                Fire::NoAir => {
+                    self.debug.hisses += 1;
+                    self.emit(Cue::AirHiss, Some(hand), Some(id), wp + wr * v3(d.muzzle), 1.0);
+                }
                 Fire::None => {}
             }
+            // A hinged action: its barrels swing on the gun.
+            self.hinge_frame(id, hand, dt);
+            // A bolt or a pump worked by the other hand, or an air gun's pump.
+            let manual = self.objects[&id].weapon.as_ref().is_some_and(|w| w.cycle.is_some() || w.air.is_some());
+            if manual {
+                self.cycle_frame(id);
+            }
             // Racking: the other hand on the charging handle pulls it back along the barrel.
-            let grab = self.objects[&id].weapon.as_ref().unwrap().handle;
+            let grab = self.objects[&id].weapon.as_ref().unwrap().handle.filter(|_| !manual);
             if let Some(g) = grab {
                 let hand_pos = self.hands.as_ref().unwrap()[g.hand].target.0;
                 let pull_m = (g.start - hand_pos).dot(wr * Vec3::Z).max(0.0);
@@ -1520,9 +1742,198 @@ impl Rig {
                     }
                 }
             }
-            // A held magazine near this gun's magazine well seats itself.
+            // A held magazine near this gun's magazine well seats itself; a round near an open
+            // chamber goes in.
             if let Some(mag) = self.hands.as_ref().unwrap()[hand ^ 1].holding {
-                self.try_seat(mag, id, inp.settings.interaction.easy_mag, hand ^ 1);
+                if d.weapon_flags & (WPN_LOADS_CHAMBERS | WPN_LOADS_ROUNDS) != 0 {
+                    self.try_load(mag, id, inp.settings.interaction.easy_mag, hand ^ 1);
+                } else {
+                    self.try_seat(mag, id, inp.settings.interaction.easy_mag, hand ^ 1);
+                }
+            }
+        }
+    }
+
+    /// A held hinged gun's barrels for one frame: their weight swings them (gravity in the gun's
+    /// frame), a flick of the gun lets them go or throws them shut, a hand holding them carries
+    /// them. Opened far enough the spent cases fly out; back home, they latch.
+    fn hinge_frame(&mut self, id: u32, hand: usize, dt: f32) {
+        let Some(o) = self.objects.get(&id) else { return };
+        let Some(h) = o.weapon.as_ref().and_then(|w| w.hinge) else { return };
+        let d = o.desc;
+        let (wp, wr) = self.physics.pose(o.body);
+        // The flick is the wrist's: the controller's turn about the hinge (a heavy gun lags it).
+        let ang = self.hands.as_ref().unwrap()[hand].turn_rate;
+        let (axis, sign) = actions::hinge_axis(&d);
+        let flick = sign * (wr.inverse() * ang).dot(axis);
+        let gravity = wr.inverse() * Vec3::new(0.0, -9.81, 0.0);
+        let pull = actions::gravity_pull(&d, h.angle, gravity);
+        // A hand on the barrels (the other one: the gun hand holds the grip).
+        let grab = (0..2).find_map(|i| self.hands.as_ref().unwrap()[i].barrels.filter(|b| b.gun == id).map(|b| (i, b)));
+        let carried = grab.map(|(i, b)| {
+            let palm = self.hands.as_ref().unwrap()[i].target.0;
+            let took = actions::on_barrels(&d, b.angle, b.at);
+            actions::hand_angle(&d, took, b.angle, wr.inverse() * (palm - wp))
+        });
+        let mut events = Vec::new();
+        let Some(w) = self.objects.get_mut(&id).and_then(|o| o.weapon.as_mut()) else { return };
+        let Some(hinge) = &mut w.hinge else { return };
+        hinge.step(dt, d.action_angle, pull, flick, carried, &mut events);
+        w.slide = hinge.fraction(d.action_angle);
+        for e in events {
+            match e {
+                HingeEvent::Unlatched => self.opened(id, Some(hand)),
+                HingeEvent::Eject => {
+                    // The extractor throws the spent cases out (live rounds stay, lifted).
+                    let angle = self.hinge_angle(id);
+                    let out = self.objects.get_mut(&id).and_then(|o| o.weapon.as_mut()).map(|w| w.throw_out_cases()).unwrap_or_default();
+                    for k in out {
+                        self.debug.case_ejects += 1;
+                        let at = wp + wr * actions::on_barrels(&d, angle, actions::chamber_mouth(&d, k));
+                        self.emit(Cue::CaseEject, None, Some(id), at, 0.8);
+                    }
+                }
+                HingeEvent::Latched => {
+                    self.debug.closes += 1;
+                    let at = wp + wr * v3(d.handle);
+                    self.emit(if d.action == ACTION_SWING { Cue::SwingClose } else { Cue::BreakClose }, Some(hand), Some(id), at, 1.0);
+                    // A hand that pushed them home lets go of them, or holds the gun's foregrip
+                    // again if that's where it had them.
+                    if let Some((i, b)) = grab {
+                        let h = &mut self.hands.as_mut().unwrap()[i];
+                        h.barrels = None;
+                        if Self::foregrip_on_barrels(&d) && b.at.distance(v3(d.foregrip)) < FOREGRIP_REACH {
+                            h.support = Some(id);
+                            h.euro.reset();
+                        } else {
+                            let c = h.collider;
+                            self.physics.set_groups(c, groups_hand(i));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The other hand working a bolt or a pump (or an air gun's pump) for one frame: the handle goes
+    /// where the hand takes it along its path, and the stroke throws the case out and chambers the
+    /// next round (or builds the pressure).
+    fn cycle_frame(&mut self, id: u32) {
+        let Some(o) = self.objects.get(&id) else { return };
+        let Some(w) = o.weapon.as_ref() else { return };
+        let Some(g) = w.handle else { return };
+        let d = o.desc;
+        let (wp, wr) = self.physics.pose(o.body);
+        let hand_pos = self.hands.as_ref().unwrap()[g.hand].target.0;
+        let knob = wr.inverse() * (hand_pos - wp) + g.offset;
+        let home = v3(d.handle);
+        let (lift, back) = Cycle::from_knob(&d, home, knob);
+        let at = wp + wr * self.handle_now(id);
+        if w.air.is_some() {
+            let gain = d.pump_pressure;
+            let stroke = self.objects.get_mut(&id).and_then(|o| o.weapon.as_mut()).is_some_and(|w| w.pump(back, gain));
+            if stroke {
+                self.debug.pumps += 1;
+                self.emit(Cue::Pump, Some(g.hand), Some(id), at, 1.0);
+            }
+        } else {
+            let lifts = d.action == ACTION_BOLT && d.action_angle.abs() > 1e-3;
+            let mut events = Vec::new();
+            let thrown = self.with_rounds(id, |w, _, r| w.work(lift, back, lifts, r, &mut events)).flatten();
+            let pump = d.action == ACTION_PUMP;
+            for e in events {
+                let cue = match e {
+                    CycleEvent::Unlocked => Cue::BoltUp,
+                    CycleEvent::Back => {
+                        self.debug.racks += 1;
+                        if pump { Cue::PumpBack } else { Cue::BoltBack }
+                    }
+                    CycleEvent::Home => {
+                        self.debug.cycles += 1;
+                        if pump { Cue::PumpForward } else { Cue::BoltForward }
+                    }
+                    CycleEvent::Locked => Cue::BoltDown,
+                };
+                self.emit(cue, Some(g.hand), Some(id), at, 1.0);
+            }
+            if thrown.is_some() {
+                self.debug.case_ejects += 1;
+                self.emit(Cue::CaseEject, None, Some(id), at, 0.8);
+            }
+        }
+        // Pulling the hand well away from the handle lets go of it (it stays where it is).
+        let knob_now = wp + wr * self.handle_now(id);
+        if hand_pos.distance(knob_now) > 0.25 {
+            self.hands.as_mut().unwrap()[g.hand].handle = None;
+            if let Some(w) = self.objects.get_mut(&id).and_then(|o| o.weapon.as_mut()) {
+                w.let_go_handle();
+            }
+        }
+    }
+
+    /// A held round pushed into one of an open gun's empty chambers, or through the port of a
+    /// magazine that stays in the gun: its base to the mouth, pointing along the bore. It goes in
+    /// (and out of the hand) the moment it's there.
+    fn try_load(&mut self, round: u32, wid: u32, easy: bool, round_hand: usize) {
+        let (Some(r), Some(w)) = (self.objects.get(&round), self.objects.get(&wid)) else { return };
+        if !is_round(&r.desc) || r.desc.ammo_type != w.desc.ammo_type {
+            return;
+        }
+        let Some(ws) = w.weapon.as_ref() else { return };
+        let d = w.desc;
+        // A magazine that stays in the gun: one more through its port while there's room (at any
+        // time). Chambers: an empty one, with the action open.
+        let tube = d.weapon_flags & WPN_LOADS_ROUNDS != 0;
+        let angle = ws.hinge.map_or(0.0, |h| if h.latched { 0.0 } else { h.angle });
+        let open = ws.hinge.is_some_and(|h| !h.latched && h.angle >= LOAD_OPEN.to_radians().min(0.6 * d.action_angle.abs())) || ws.cycle.is_some_and(|c| c.back > 0.8);
+        let room = ws.internal.unwrap_or(0) + (ws.chambered as u32) < d.capacity;
+        if if tube { !room } else { !open } {
+            return;
+        }
+        let (rp, rq) = self.physics.pose(r.body);
+        let (wp, wr) = self.physics.pose(w.body);
+        let base = rp + rq * v3(r.desc.mag_well);
+        let along = rq * Vec3::Z;
+        let bore = wr * actions::hinge_rot(&d, angle) * Vec3::Z;
+        let (reach, max_angle) = if easy { (ROUND_SEAT, ROUND_SEAT_ANGLE) } else { (ROUND_SEAT * 0.5, ROUND_SEAT_ANGLE * 0.5) };
+        if along.angle_between(bore) > max_angle.to_radians() {
+            return;
+        }
+        let mouths: Vec<(usize, Vec3)> = if tube {
+            vec![(0, wp + wr * v3(d.mag_well))]
+        } else {
+            (0..ws.chambers.len()).filter(|&k| ws.chambers[k] == Chamber::Empty).map(|k| (k, wp + wr * actions::on_barrels(&d, angle, actions::chamber_mouth(&d, k)))).collect()
+        };
+        let best = mouths.into_iter().map(|(k, at)| (k, at, at.distance(base))).filter(|(_, _, dist)| *dist < reach).min_by(|a, b| a.2.total_cmp(&b.2));
+        let Some((k, mouth, _)) = best else { return };
+        let needs_rack = d.weapon_flags & WPN_NEEDS_RACK != 0;
+        let loaded = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()).is_some_and(|ws| {
+            if !tube {
+                return ws.load_chamber(k);
+            }
+            // In through the port; a gun that cycles itself with its chamber empty takes it
+            // straight in (a revolving shotgun's cylinder turns it under the hammer).
+            *ws.internal.get_or_insert(0) += 1;
+            if !ws.chambered && !needs_rack && ws.cycle.is_none() {
+                ws.internal = ws.internal.map(|n| n - 1);
+                ws.chambered = true;
+            }
+            true
+        });
+        if loaded {
+            let h = &mut self.hands.as_mut().unwrap()[round_hand];
+            h.holding = None;
+            let c = h.collider;
+            self.physics.set_groups(c, groups_hand(round_hand));
+            self.remove(round);
+            self.debug.loads += 1;
+            self.emit(Cue::ShellIn, Some(round_hand), Some(wid), mouth, 1.0);
+            let holder = match self.objects[&wid].holder {
+                Holder::Held(h) => Some(h),
+                _ => None,
+            };
+            if let Some(h) = holder {
+                self.emit(Cue::ShellIn, Some(h), Some(wid), mouth, 0.5);
             }
         }
     }
@@ -1535,17 +1946,23 @@ impl Rig {
         if w.weapon.as_ref().is_none_or(|ws| ws.mag.is_some() || ws.internal.is_some()) {
             return;
         }
+        // A swing-out cylinder takes its speed loader only while it's out.
+        let hinge = w.weapon.as_ref().and_then(|ws| ws.hinge);
+        if hinge.is_some_and(|h| h.latched || h.angle < LOAD_OPEN.to_radians().min(0.6 * w.desc.action_angle.abs())) {
+            return;
+        }
+        let turn = actions::hinge_rot(&w.desc, hinge.map_or(0.0, |h| h.angle));
         let (mp, mr) = self.physics.pose(m.body);
         let (wp, wr) = self.physics.pose(w.body);
         let top = mp + mr * v3(m.desc.mag_well);
-        let well = wp + wr * v3(w.desc.mag_well);
+        let well = wp + wr * actions::on_barrels(&w.desc, hinge.map_or(0.0, |h| h.angle), v3(w.desc.mag_well));
         if !m.seat_armed {
             if top.distance(well) > 0.12 {
                 self.objects.get_mut(&mag).unwrap().seat_armed = true;
             }
             return;
         }
-        let angle = (mr * Vec3::Y).angle_between(wr * Vec3::Y);
+        let angle = (mr * Vec3::Y).angle_between(wr * turn * Vec3::Y);
         // Easy (default) 9 cm / 45 degrees, strict 4 cm / 25 degrees.
         let (radius, max_angle) = if easy { (0.09, 45f32.to_radians()) } else { (0.04, 25f32.to_radians()) };
         if top.distance(well) < radius && angle < max_angle {
@@ -1827,7 +2244,7 @@ impl Rig {
         let s = &inp.settings.interaction;
         let now = self.now;
         let h = &self.hands.as_ref().unwrap()[i];
-        if !s.gravity_gloves || h.holding.is_some() || h.support.is_some() || h.handle.is_some() {
+        if !s.gravity_gloves || h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.barrels.is_some() {
             if !matches!(h.glove, Glove::Flight(_)) {
                 self.set_glove(i, Glove::Idle);
             }
@@ -2001,8 +2418,14 @@ impl Rig {
                     let Some((wp, wr)) = self.obj_pose(wid) else { continue };
                     let w = &self.objects[&wid];
                     let o = &self.objects[id];
-                    let p = wp + wr * (v3(w.desc.mag_well) - v3(o.desc.mag_well));
-                    self.physics.move_kinematic(o.body, p, wr);
+                    // In a swung-out cylinder it swings out with it.
+                    let angle = self.hinge_angle(wid);
+                    let turn = actions::hinge_rot(&w.desc, angle);
+                    let h = v3(w.desc.handle);
+                    let offset = v3(w.desc.mag_well) - v3(o.desc.mag_well);
+                    let local = if angle > 0.0 { h + turn * (offset - h) } else { offset };
+                    let rot = if angle > 0.0 { (wr * turn).normalize() } else { wr };
+                    self.physics.move_kinematic(o.body, wp + wr * local, rot);
                 }
                 Holder::Pulled { hand, t0, dur, gravity } => {
                     let palm = self.hands.as_ref().unwrap()[hand].target.0;
@@ -2056,7 +2479,7 @@ impl Rig {
         let now = self.now;
         let hands = self.hands.as_mut().unwrap();
         for (i, h) in hands.iter_mut().enumerate() {
-            if h.holding.is_some() || h.support.is_some() {
+            if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() {
                 continue;
             }
             let (pos, _) = self.physics.pose(h.body);
@@ -2148,6 +2571,24 @@ impl Rig {
             self.physics.set_pose(body, on_gun, rot);
             self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
         }
+        // A hand holding open barrels sits where it took them, turning with them; pulled 30 cm away
+        // from them it lets go.
+        for i in 0..2 {
+            let Some(b) = self.hands.as_ref().unwrap()[i].barrels else { continue };
+            let Some((wp, wr)) = self.obj_pose(b.gun) else { continue };
+            let on = wp + wr * self.barrel_point(&b);
+            let h = &self.hands.as_ref().unwrap()[i];
+            let (body, collider, target) = (h.body, h.collider, h.target);
+            if on.distance(target.0) > FOREGRIP_BREAK {
+                self.hands.as_mut().unwrap()[i].barrels = None;
+                self.physics.set_groups(collider, groups_hand(i));
+                self.emit(Cue::Release, Some(i), Some(b.gun), target.0, 0.6);
+                continue;
+            }
+            self.physics.set_groups(collider, groups_none());
+            self.physics.set_pose(body, on, target.1);
+            self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
+        }
         // A holding hand sits on its object: where the object is, minus the hold offset.
         let hands = self.hands.as_mut().unwrap();
         for (i, h) in hands.iter_mut().enumerate() {
@@ -2173,7 +2614,7 @@ impl Rig {
                     self.physics.set_velocity(h.body, Vec3::ZERO, Vec3::ZERO);
                     h.blocked = hold.0.distance(h.target.0) > BLOCKED * 2.0;
                 }
-            } else if h.support.is_some() {
+            } else if h.support.is_some() || h.barrels.is_some() {
                 h.blocked = false;
             } else {
                 let (pos, _) = self.physics.pose(h.body);
@@ -2197,22 +2638,23 @@ impl Rig {
                 pose: pose(pt, qt),
                 flags: HAND_TRACKED
                     | if h.blocked { HAND_BLOCKED } else { 0 }
-                    | if h.holding.is_some() || h.support.is_some() { HAND_HOLDING } else { 0 },
-                holding: h.holding.or(h.support).unwrap_or(0),
+                    | if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() { HAND_HOLDING } else { 0 },
+                holding: h.holding.or(h.support).or(h.barrels.map(|b| b.gun)).unwrap_or(0),
                 _pad: [0; 2],
             };
             if h.blocked {
                 out.ghosts[i] = Some(pose(h.grip_t.0, h.grip_t.1));
             }
-            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some();
+            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::PistolGrip,
+                Some(o) if is_round(&o.desc) => rustvr_ik::HoldShape::Small,
                 Some(o) if o.desc.kind == OBJ_MAGAZINE => rustvr_ik::HoldShape::Magazine,
                 // A knife's handle in the fist.
                 Some(o) if o.throw.as_ref().is_some_and(|t| t.is_knife()) => rustvr_ik::HoldShape::Foregrip,
                 Some(o) if o.desc.half_extents.iter().fold(0.0f32, |a, b| a.max(*b)) < 0.07 => rustvr_ik::HoldShape::Small,
                 Some(_) => rustvr_ik::HoldShape::Large,
-                None if h.support.is_some() || h.handle.is_some() => rustvr_ik::HoldShape::Foregrip,
+                None if h.support.is_some() || h.handle.is_some() || h.barrels.is_some() => rustvr_ik::HoldShape::Foregrip,
                 None if h.pin.is_some() => rustvr_ik::HoldShape::Small,
                 None => rustvr_ik::HoldShape::None,
             };
@@ -2289,9 +2731,17 @@ impl Rig {
                     if w.slide_locked {
                         flags |= OS_SLIDE_LOCKED;
                     }
-                    (rounds, w.shots, w.chambered as u32, w.slide)
+                    if !w.action_closed() {
+                        flags |= OS_ACTION_OPEN;
+                    }
+                    (rounds, w.shots, w.chamber_bits(), w.slide)
                 }
                 None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(0), 0, 0.0),
+            };
+            // An air gun's pressure, a bolt's lift; a grenade's fuse.
+            let fuse = match &o.weapon {
+                Some(w) => w.air.map(|a| a.pressure).or(w.cycle.map(|c| c.lift)).unwrap_or(0.0),
+                None => o.throw.as_ref().map(|t| t.fuse_left(self.now)).unwrap_or(0.0),
             };
             let slot = match o.holder {
                 Holder::Holstered(s) | Holder::Returning { slot: s, .. } => s,
@@ -2315,7 +2765,7 @@ impl Rig {
                 chambered,
                 slide,
                 desc: o.draw_desc,
-                fuse: o.throw.as_ref().map(|t| t.fuse_left(self.now)).unwrap_or(0.0),
+                fuse,
             };
             out.count += 1;
         }
@@ -2327,6 +2777,11 @@ impl Rig {
         let w = o.weapon.as_ref()?;
         let rounds = w.internal.or_else(|| w.mag.and_then(|m| self.objects.get(&m)).map(|m| m.rounds))?;
         Some((rounds, w.chambered, w.slide_locked))
+    }
+
+    /// A gun's own state (its chambers, action and pressure), for tests.
+    pub fn weapon_state(&self, id: u32) -> Option<&WeaponState> {
+        self.objects.get(&id)?.weapon.as_ref()
     }
 
     pub fn object_world_pose(&self, id: u32) -> Option<(Vec3, Quat)> {
@@ -2377,10 +2832,21 @@ pub struct ObjSnap {
     pub support_rot: Option<Quat>,
     /// How many recoil kicks its game gave it (0: the runtime's own recoil).
     pub kicks: usize,
-    /// Throwables: `THROW_*`, the tip (knives, object space) and the seconds left on its fuse.
+    /// Throwables: `THROW_*`, the tip (knives, object space) and the seconds left on its fuse (an
+    /// air gun's pressure, a bolt's lift).
     pub throw_flags: u32,
     pub muzzle: Vec3,
     pub fuse: f32,
+    /// Guns: how they're worked (`ACTION_*`, `WPN_*`, the action's angle, the chambers' spacing and
+    /// count), and what the action and the chambers are doing (`ObjectState::slide`, `chambered`).
+    pub action: u32,
+    pub weapon_flags: u32,
+    pub action_angle: f32,
+    pub chamber_step: f32,
+    pub capacity: u32,
+    pub handle_travel: f32,
+    pub slide: f32,
+    pub chambered: u32,
 }
 
 impl ObjSnap {
@@ -2421,6 +2887,14 @@ impl Rig {
                     throw_flags: d.throw_flags,
                     muzzle: v3(d.muzzle),
                     fuse: s.fuse,
+                    action: d.action,
+                    weapon_flags: d.weapon_flags,
+                    action_angle: d.action_angle,
+                    chamber_step: d.chamber_step,
+                    capacity: d.capacity,
+                    handle_travel: d.handle_travel,
+                    slide: s.slide,
+                    chambered: s.chambered,
                 })
             })
             .collect()
