@@ -183,32 +183,31 @@ GPU-timed compositor.
 4. waits for the script to end;
 5. copies the runtime's and the adapter's logs into `<dir>` (default `captures\xrsim`).
 
-Environment variables pass through to the runtime, for example `RUSTVR_TRACE_GUN=1` (the gun's state
-twice a second). Put `background = true` in the game folder's `rustvr-metro.toml` so that Metro
-doesn't take focus or show its window while you work.
+Environment variables pass through to the runtime. Put `background = true` in the game folder's
+`rustvr-metro.toml` so that Metro doesn't take focus or show its window while you work.
 
-`tools\xrsim\metro_smoke.toml` is the smoke test. It does the following in order:
+There are two scripts.
 
-1. presses A through the intros and the main menu;
-2. raises the gun to the eye;
-3. turns the head right and left;
-4. opens the pause menu and closes it again.
+**`tools\xrsim\metro_hands.toml`** presses A through the intros and the main menu into the first
+level. It then captures the runtime's hands in Metro's world in three poses:
 
-It captures every step, so after a change look at:
+| Capture | Hands |
+|---|---|
+| `hands_down` | At the hips |
+| `hands_out` | Stretched out in front |
+| `hands_apart` | Spread to the sides |
 
-- `boot20`, `boot25` and `boot30`: the main menu;
-- `aim` and `aim2`: the gun at the eye;
-- `turning_*` and `look_*`: the gun stays in the hand while the head turns;
-- `menu` and `menu2`: the pause menu;
-- `resumed`: the gun back in the hand.
+The hands must follow the controllers, and Metro's own arms and gun must not show.
 
-`tools\xrsim\metro_hands.toml` checks that the arms follow the controllers. It captures the hands
-at the hips (`hands_down`), stretched out in front (`hands_out`) and spread apart (`hands_apart`).
-If the three captures look alike, the viewmodel isn't following the hands.
+**`tools\xrsim\metro_smoke.toml`** also presses through the menus, then turns the head right and
+left and opens and closes the pause menu. It captures each step:
 
-With `debug_probe_weapon = true` in the game folder's `rustvr-metro.toml`, the adapter logs what its
-viewmodel hooks see each second. That covers each HUD item: where it arrives, whether it was
-re-attached to the hand, and which camera it was given.
+| Captures | Moment |
+|---|---|
+| `boot*` | The menus on their panel |
+| `turning_*`, `look_*` | The head turns |
+| `menu*` | The pause menu |
+| `resumed` | Back in the game |
 
 ## For AI agents
 

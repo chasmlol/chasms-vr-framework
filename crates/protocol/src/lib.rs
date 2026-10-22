@@ -569,6 +569,9 @@ pub const GS_PAUSED: u32 = 1 << 7;
 pub const GS_DRAWS_BODY: u32 = 1 << 8;
 /// Magazines from the ammo pouch never run out.
 pub const GS_INFINITE_AMMO: u32 = 1 << 9;
+/// The game wants the runtime's player controller (hands, body) even with no objects registered:
+/// what the player sees of themself is the runtime's, drawn over the game's picture.
+pub const GS_PLAYER_RIG: u32 = 1 << 10;
 
 /// Linear-light colours.
 #[repr(C)]

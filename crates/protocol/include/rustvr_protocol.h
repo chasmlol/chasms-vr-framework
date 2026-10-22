@@ -202,6 +202,12 @@
  */
 #define RVR_GS_INFINITE_AMMO (1 << 9)
 
+/**
+ * The game wants the runtime's player controller (hands, body) even with no objects registered:
+ * what the player sees of themself is the runtime's, drawn over the game's picture.
+ */
+#define RVR_GS_PLAYER_RIG (1 << 10)
+
 #define RVR_RIG_HAS_SIGHT (1 << 0)
 
 #define RVR_RIG_HAS_MUZZLE (1 << 1)

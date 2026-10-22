@@ -44,7 +44,7 @@ headset ◀─ OpenXR ─┐
                    │  game process
                    │    crates/adapter      the adapter SDK: connect, tracking -> world, slots
                    │    crates/range        test range (a fake game)
-                   │    crates/metro-adapter  Metro 2033 Redux (dinput8.dll proxy)
+                   │    crates/metro        Metro 2033 Redux (dinput8.dll proxy)
 ```
 
 Supporting crates:
@@ -387,18 +387,13 @@ Adapters can be written in any language: Rust (hook-and-offset games like Metro,
   them (`tests/rig.rs`, `captures/rig/`) and its effects close up and from the side
   (`tests/fx.rs`, `captures/fx/`: a shot's flash and tracer, a casing on the floor, holes in a
   plate, an explosion's flash, fire and smoke), with checks that each one shows.
-- **The real game:** `tools\metro_cycle.ps1 <scenario>` runs a scenario against Metro 2033 Redux
-  itself, the simulated headset attached to the game's adapter (`rustvr --sim <scenario> --attach`):
-  `metro_boot` (through the intro and menus into the game, a capture every 5 s) and `metro_play`
-  (aim down the sights, bursts with Metro's recoil, a reload by hand, crouch, turn, the pause menu,
-  walk; each checked). These, and `live`, run only by name, never in `all` (see
-  [METRO.md](METRO.md)).
 - **The emulated headset:** `crates/xrsim` is an OpenXR runtime with no hardware behind it
   ([XRSIM.md](XRSIM.md)). The runtime, or a game through it, runs its real OpenXR path on it. A
   script drives the head and controllers, and captures save what each eye would see.
   `tools\xrsim_metro.ps1` runs Metro on it with one of two scripts:
-  - `tools\xrsim\metro_smoke.toml`: the menus, the gun in the hand, head turns, the pause menu.
-  - `metro_hands.toml`: the hands at the hips, then out in front, then apart.
+  - `tools\xrsim\metro_hands.toml`: the runtime's hands in Metro's world, at the hips, then out
+    in front, then apart.
+  - `metro_smoke.toml`: the menus, head turns, the pause menu.
 - **Nothing opens a window.** Nothing launches a game, Steam, SteamVR or Virtual Desktop. The
   range renders offscreen, and builds and child processes run at below-normal priority.
 
@@ -450,7 +445,7 @@ committed or redistributed.**
 | # | Phase | Done when |
 |---|---|---|
 | 0 | **Loop** | Protocol, SDK, runtime, sim headset and test range; all scenarios pass headless |
-| 1 | **Metro adapter** | The Metro 2033 Redux adapter runs in the game, and Metro plays as well as the C++ mod or better |
+| 1 | **Metro adapter** | Metro's world in the headset with the runtime's player controller in it (as SkyCraft does it: the game supplies the world, the runtime the player); then its collision, actors and guns |
 | 2 | **Headset** | The OpenXR backend is tested on the user's headset (Virtual Desktop); the HUD moves to quad layers; reprojection is verified |
 | 3 | **Second game** | Metro Exodus Enhanced Edition, same engine family: the new adapter takes days, not months |
 | 4 | **Second engine** | Skyrim SE through CommonLibSSE (C++ adapter on the generated header), reusing SkyCraft's camera and actor code |

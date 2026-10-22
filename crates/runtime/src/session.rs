@@ -387,7 +387,7 @@ impl Session {
             }
         }
         self.update_sound_pack(alive);
-        let rig_active = alive && self.rig.has_objects() && self.game.is_some();
+        let rig_active = alive && self.game.as_ref().is_some_and(|g| self.rig.has_objects() || g.flags & GS_PLAYER_RIG != 0);
         // The game's floor in tracking space: the adapter maps the tracking origin onto the game's
         // eye (plus the height compensation and offset the runtime asked for).
         let floor = match &self.game {
