@@ -8,9 +8,9 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 5
+#define RVR_VERSION 6
 
-#define RVR_MAPPING_BYTES 5046272
+#define RVR_MAPPING_BYTES 5177344
 
 #define RVR_OFF_HEADER 0
 
@@ -517,6 +517,22 @@
 #define RVR_SHAPE_CAPSULE 1
 
 #define RVR_SHAPE_SPHERE 2
+
+/**
+ * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
+ * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ */
+#define RVR_SHAPE_HULL 3
+
+/**
+ * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
+ * whenever the objects offered change (before they're published).
+ */
+#define RVR_OFF_GAME_HULLS 5046272
+
+#define RVR_MAX_GAME_HULLS 48
+
+#define RVR_MAX_HULL_POINTS 128
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 

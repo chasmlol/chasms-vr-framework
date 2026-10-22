@@ -241,6 +241,46 @@ fn walls_stop_the_hand_and_show_a_ghost_however_far_it_reaches_through() {
 }
 
 #[test]
+fn a_hand_reached_round_a_corner_goes_round_it() {
+    let mut s = Sim::new();
+    // A wall on the right, its near end 30 cm ahead: round its end is out of the head's sight.
+    world_box(&mut s.rig, 3, [0.55, 1.3, 0.75], [0.05, 0.6, 0.45]);
+    let head = Vec3::new(0.0, 1.7, 0.0);
+    let behind = Vec3::new(0.85, 1.3, 0.7);
+    s.step(1);
+    assert!(!s.rig.physics.reachable(head, behind), "the place behind the wall is out of sight");
+    // Out to the right in front of the wall's end, then round it and along behind it, at an
+    // ordinary reach's pace, in the air all the way.
+    s.move_hand(1, Vec3::new(0.3, 1.3, 0.1), 30);
+    s.move_hand(1, Vec3::new(0.85, 1.3, 0.15), 30);
+    s.move_hand(1, behind, 30);
+    s.step(20);
+    let h = v3(s.out.hands[1].pose.pos);
+    assert!(h.distance(behind) < 0.05, "the hand is round the corner with the controller: {h:?}");
+    assert!(s.out.ghosts[1].is_none(), "no ghost: nothing holds it back");
+    // Back out the way it went.
+    s.move_hand(1, Vec3::new(0.85, 1.3, 0.15), 30);
+    s.move_hand(1, Vec3::new(0.3, 1.3, 0.1), 30);
+    s.step(10);
+    assert!(v3(s.out.hands[1].pose.pos).distance(s.hand_pos(1)) < 0.02, "and back");
+}
+
+#[test]
+fn a_hand_reached_tight_round_a_corner_clipping_it_still_gets_round() {
+    let mut s = Sim::new();
+    world_box(&mut s.rig, 3, [0.55, 1.3, 0.75], [0.05, 0.6, 0.45]);
+    s.step(1);
+    // Round the wall's end hugging it: the controller cuts 3 cm into the corner on the way.
+    let behind = Vec3::new(0.85, 1.3, 0.7);
+    s.move_hand(1, Vec3::new(0.3, 1.3, 0.1), 30);
+    s.move_hand(1, Vec3::new(0.62, 1.3, 0.33), 20);
+    s.move_hand(1, behind, 25);
+    s.step(20);
+    let h = v3(s.out.hands[1].pose.pos);
+    assert!(h.distance(behind) < 0.05, "the hand got round with the controller: {h:?}");
+}
+
+#[test]
 fn the_leash_frees_a_hand_snagged_behind_something_the_head_sees_past() {
     let mut s = Sim::new();
     // A thin post, low beside the player: the hand catches on it, the head sees past it.
@@ -436,6 +476,50 @@ fn a_fingertip_alone_pushes_a_game_cable() {
     assert!(!pushes.is_empty(), "the finger touched it");
     let n = Vec3::from_slice(&pushes[0].normal[..3]);
     assert!(n.dot(along) > 0.9, "pushed the way the finger points: {n:?} vs {along:?}");
+}
+
+#[test]
+fn a_game_prop_collides_as_the_game_shapes_it_not_as_its_box() {
+    // A thin rod lying diagonally, 1.1 m long: its box is 80 cm across, the rod 3 cm thick.
+    const ROD: u32 = 33;
+    let at = Vec3::new(-0.3, 1.2, 0.1);
+    let mut d = obj(ROD, OBJ_PROP, at, [0.4, 0.4, 0.015], 10.0);
+    d.flags |= OBJF_GAME_SIMULATED;
+    d.shape = SHAPE_HULL;
+    let mut s = Sim::with(&[d]);
+    let mut hulls: Box<GameHulls> = bytemuck::zeroed_box();
+    hulls.count = 1;
+    hulls.hulls[0].id = ROD;
+    let corners: Vec<[f32; 4]> = [-1.0f32, 1.0]
+        .iter()
+        .flat_map(|&e| [(-0.015f32, -0.015f32), (0.015, -0.015), (-0.015, 0.015), (0.015, 0.015)].map(move |(a, z)| [0.4 * e + a, 0.4 * e - a, z, 0.0]))
+        .collect();
+    hulls.hulls[0].count = corners.len() as u32;
+    hulls.hulls[0].points[..corners.len()].copy_from_slice(&corners);
+    s.rig.set_game_hulls(&hulls);
+    let mut poses: Box<GamePoses> = bytemuck::zeroed_box();
+    poses.count = 1;
+    poses.poses[0] = GamePose { id: ROD, pose: pose(at, Quat::IDENTITY), ..Default::default() };
+    let pushes = |s: &Sim| s.rig.game_pushes.iter().filter(|p| p.id == ROD).count();
+    // In the box's empty corner, 40 cm off the rod: nothing.
+    s.rig.set_game_poses(&poses);
+    s.move_hand(0, at + Vec3::new(0.3, -0.3, 0.0), 40);
+    let mut near = 0;
+    for _ in 0..30 {
+        s.rig.set_game_poses(&poses);
+        s.step(1);
+        near += pushes(&s);
+    }
+    assert_eq!(near, 0, "the hand is nowhere near the rod itself");
+    // On the rod: pushed.
+    s.move_hand(0, at + Vec3::new(0.05, 0.05, 0.0), 30);
+    let mut on = 0;
+    for _ in 0..10 {
+        s.rig.set_game_poses(&poses);
+        s.step(1);
+        on += pushes(&s);
+    }
+    assert!(on > 0, "the hand on the rod pushes it");
 }
 
 #[test]

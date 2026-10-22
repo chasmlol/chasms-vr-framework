@@ -141,15 +141,26 @@ impl Physics {
     }
 
     // ---- bodies ---------------------------------------------------------------------------------
-    /// A dynamic body with the object's collider.
-    pub fn add_object(&mut self, d: &ObjectDesc, pos: V3, rot: Q) -> (RigidBodyHandle, ColliderHandle) {
+    /// A dynamic body with the object's collider (`hull`: its points, for [`SHAPE_HULL`]).
+    pub fn add_object(&mut self, d: &ObjectDesc, pos: V3, rot: Q, hull: Option<&[V3]>) -> (RigidBodyHandle, ColliderHandle) {
         let body = RigidBodyBuilder::dynamic()
             .pose(to_pose(pos, rot))
             .ccd_enabled(true)
             .linear_damping(0.05)
             .angular_damping(0.2);
-        let c = object_collider(d).collision_groups(groups_free());
+        let c = object_collider(d, hull).collision_groups(groups_free());
         self.world.insert(body, c)
+    }
+
+    /// Gives an object's collider the convex hull of `points` (object space) and `mass`. False if
+    /// they make no hull.
+    pub fn set_hull(&mut self, c: ColliderHandle, points: &[V3], mass: f32) -> bool {
+        let pts: Vec<Vector> = points.iter().map(|p| to_v(*p)).collect();
+        let (Some(shape), Some(col)) = (SharedShape::convex_hull(&pts), self.world.colliders.get_mut(c)) else { return false };
+        col.set_shape(shape);
+        col.set_translation_wrt_parent(Vector::ZERO);
+        col.set_mass(mass.max(0.02));
+        true
     }
 
     /// A hand: a light dynamic palm box with no gravity, driven by velocity.
@@ -179,6 +190,34 @@ impl Physics {
         let (a, b) = (self.world.colliders.get(pusher)?, self.world.colliders.get(other)?);
         let c = rapier3d::parry::query::contact(a.position(), a.shape(), b.position(), b.shape(), 0.0).ok()??;
         (c.dist < 0.0).then(|| (from_v(c.point2), from_v(c.normal1), -c.dist))
+    }
+
+    /// Every collider's surface as world triangles (the framework view): `tint` gives each its
+    /// colour, or leaves it out.
+    pub fn surface_triangles(&self, mut tint: impl FnMut(ColliderHandle, &Collider) -> Option<[f32; 3]>, out: &mut Vec<([V3; 3], [f32; 3])>) {
+        for (h, c) in self.world.colliders.iter() {
+            let Some(color) = tint(h, c) else { continue };
+            let s = c.shape();
+            let (verts, idx) = if let Some(s) = s.as_cuboid() {
+                s.to_trimesh()
+            } else if let Some(s) = s.as_ball() {
+                s.to_trimesh(12, 8)
+            } else if let Some(s) = s.as_capsule() {
+                s.to_trimesh(10, 6)
+            } else if let Some(s) = s.as_convex_polyhedron() {
+                s.to_trimesh()
+            } else if let Some(s) = s.as_trimesh() {
+                (s.vertices().to_vec(), s.indices().to_vec())
+            } else if let Some(s) = s.as_heightfield() {
+                s.to_trimesh()
+            } else {
+                continue;
+            };
+            let pose = c.position();
+            for t in idx {
+                out.push((t.map(|i| from_v(pose.transform_point(verts[i as usize]))), color));
+            }
+        }
     }
 
     /// The first collider of `body`.
@@ -375,8 +414,12 @@ impl Physics {
     }
 }
 
-pub fn object_collider(d: &ObjectDesc) -> ColliderBuilder {
+pub fn object_collider(d: &ObjectDesc, hull: Option<&[V3]>) -> ColliderBuilder {
     let he = d.half_extents;
+    let hull = hull.filter(|_| d.shape == SHAPE_HULL).and_then(|h| ColliderBuilder::convex_hull(&h.iter().map(|p| to_v(*p)).collect::<Vec<_>>()));
+    if let Some(b) = hull {
+        return b.mass(d.mass.max(0.02)).friction(0.7).restitution(0.15);
+    }
     let shape = match d.shape {
         SHAPE_CAPSULE => ColliderBuilder::capsule_y(he[1].max(0.001), d.radius.max(0.001)),
         SHAPE_SPHERE => ColliderBuilder::ball(d.radius.max(0.001)),
@@ -443,7 +486,7 @@ mod tests {
     fn objects_fall_and_rest_on_the_floor() {
         let mut p = Physics::default();
         floor(&mut p);
-        let (b, _) = p.add_object(&crate_desc(), V3::new(0.0, 1.0, 0.0), Q::IDENTITY);
+        let (b, _) = p.add_object(&crate_desc(), V3::new(0.0, 1.0, 0.0), Q::IDENTITY, None);
         p.set_dt(1.0 / 90.0);
         for _ in 0..180 {
             p.step();

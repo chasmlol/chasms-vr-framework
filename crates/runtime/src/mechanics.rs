@@ -161,6 +161,8 @@ struct Btn {
 }
 
 const LONG_PRESS: f64 = 0.45;
+/// How long a lone stick click waits for the other stick (both together: the framework view).
+const STICK_CHORD: f64 = 0.12;
 
 impl Btn {
     fn update(&mut self, d: bool, now: f64) {
@@ -295,6 +297,14 @@ pub struct Mechanics {
     btn_a: [Btn; 2],
     btn_b: [Btn; 2],
     btn_stick: [Btn; 2],
+    /// A lone stick click waiting out [`STICK_CHORD`] (since when), the two clicked together
+    /// (until both are let go), and the lone clicks that go through this frame.
+    stick_pending: [Option<f64>; 2],
+    stick_chord: bool,
+    stick_fire: [bool; 2],
+    /// Both sticks clicked together swap the game's picture for the runtime's physics world
+    /// (`crate::physics_view`).
+    pub framework_view: bool,
     btn_menu: [Btn; 2],
     btn_grip: [Btn; 2],
     btn_trig: [Btn; 2],
@@ -339,6 +349,10 @@ impl Default for Mechanics {
             btn_a: Default::default(),
             btn_b: Default::default(),
             btn_stick: Default::default(),
+            stick_pending: [None; 2],
+            stick_chord: false,
+            stick_fire: [false; 2],
+            framework_view: false,
             btn_menu: Default::default(),
             btn_grip: Default::default(),
             btn_trig: Default::default(),
@@ -402,6 +416,38 @@ impl Mechanics {
     }
 
     /// One headset frame. Haptics requested this frame are appended to `self.haptics`.
+    /// Both sticks clicked together toggle the framework view; a lone click goes through as itself
+    /// once it's clear it isn't half of that (`STICK_CHORD` later, or let go sooner).
+    fn sticks(&mut self, now: f64) {
+        self.stick_fire = [false; 2];
+        if self.stick_chord {
+            if !self.btn_stick[0].down && !self.btn_stick[1].down {
+                self.stick_chord = false;
+            }
+            return;
+        }
+        for h in 0..2 {
+            if self.btn_stick[h].pressed() {
+                self.stick_pending[h] = Some(now);
+            }
+        }
+        if self.btn_stick[0].down && self.btn_stick[1].down && self.stick_pending.iter().any(Option::is_some) {
+            self.framework_view = !self.framework_view;
+            self.stick_chord = true;
+            self.stick_pending = [None; 2];
+            tracing::info!("framework view {}", if self.framework_view { "on" } else { "off" });
+            return;
+        }
+        for h in 0..2 {
+            if let Some(t) = self.stick_pending[h]
+                && (now - t >= STICK_CHORD || !self.btn_stick[h].down)
+            {
+                self.stick_fire[h] = true;
+                self.stick_pending[h] = None;
+            }
+        }
+    }
+
     pub fn update(&mut self, inp: &MechInput) -> MechOutput {
         let f = inp.frame;
         let c = inp.settings;
@@ -417,6 +463,7 @@ impl Mechanics {
             self.btn_grip[h].update(hand.squeeze > 0.7, now);
             self.btn_trig[h].update(hand.trigger > 0.6, now);
         }
+        self.sticks(now);
 
         let mut out = MechOutput {
             tracking: TrackingControl {
@@ -764,7 +811,7 @@ impl Mechanics {
         if self.btn_b[dom].down && !rig_mode {
             held |= Action::Jump.bit();
         }
-        if self.btn_stick[dom].pressed() {
+        if self.stick_fire[dom] {
             self.press(Action::Crouch);
             self.crouch_by_phys = false;
         }
@@ -781,7 +828,7 @@ impl Mechanics {
         if self.btn_b[off].long_fired && self.btn_b[off].down && !(rig_mode && busy[off]) {
             held |= Action::FlashlightHold.bit();
         }
-        if self.btn_stick[off].pressed() {
+        if self.stick_fire[off] {
             self.sprint_toggle = !self.sprint_toggle;
         }
         if my.abs() < 0.2 && mx.abs() < 0.2 {
@@ -1266,6 +1313,50 @@ mod tests {
         let mut m2 = Mechanics::default();
         let none = run_firing(&mut m2, &f, &g, &off, 0.0, 1, &kicks).weapon.unwrap().aim_dir;
         assert!(none.angle_between(still) < 1e-4);
+    }
+
+    #[test]
+    fn both_sticks_together_swap_the_view_and_a_lone_click_still_crouches() {
+        let (mut m, s, g) = (Mechanics::default(), Settings::default(), game());
+        let dom = s.dominant();
+        let mut f = standing();
+        let mut t = 0.0;
+        let mut step = |m: &mut Mechanics, f: &HmdFrame, n: usize| {
+            let mut out = None;
+            for _ in 0..n {
+                out = Some(run(m, f, &g, &s, t));
+                t += 1.0 / 90.0;
+            }
+            out.unwrap()
+        };
+        let crouches = |o: &MechOutput| o.intents.presses[Action::Crouch as usize];
+        let base = crouches(&step(&mut m, &f, 2));
+        // Both clicked, a frame apart: the view swaps, nothing crouches or sprints.
+        f.hands[dom].buttons |= CTRL_STICK_CLICK;
+        step(&mut m, &f, 1);
+        f.hands[dom ^ 1].buttons |= CTRL_STICK_CLICK;
+        let o = step(&mut m, &f, 30);
+        assert!(m.framework_view, "both sticks: the framework view");
+        assert_eq!(crouches(&o), base, "and no crouch");
+        assert!(!m.sprint_toggle, "and no sprint");
+        f.hands[0].buttons = 0;
+        f.hands[1].buttons = 0;
+        step(&mut m, &f, 5);
+        f.hands[0].buttons = CTRL_STICK_CLICK;
+        f.hands[1].buttons = CTRL_STICK_CLICK;
+        step(&mut m, &f, 5);
+        assert!(!m.framework_view, "again: back to the game");
+        f.hands[0].buttons = 0;
+        f.hands[1].buttons = 0;
+        step(&mut m, &f, 5);
+        // A lone click on the dominant stick: a crouch, a moment later.
+        let before = crouches(&step(&mut m, &f, 1));
+        f.hands[dom].buttons = CTRL_STICK_CLICK;
+        let o = step(&mut m, &f, 1);
+        assert_eq!(crouches(&o), before, "not yet: it might be half of the pair");
+        let o = step(&mut m, &f, 15);
+        assert_eq!(crouches(&o), before.wrapping_add(1), "a lone click crouches");
+        assert!(!m.framework_view);
     }
 
     #[test]

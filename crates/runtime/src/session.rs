@@ -87,6 +87,11 @@ pub struct Session {
     pub settings: SettingsStore,
     pub mech: Mechanics,
     comp: Compositor,
+    /// The runtime's physics world, shown instead of the game's picture (`Mechanics::framework_view`).
+    physics_view: crate::physics_view::PhysicsView,
+    physics_tris: Vec<([Vec3; 3], [f32; 3])>,
+    /// The rig ran this step (there's a physics world to show).
+    rig_active_last: bool,
     menu: RuntimeMenu,
     layout: panels::Layout,
     targets: Option<SharedTargets>,
@@ -120,6 +125,8 @@ pub struct Session {
     game_poses: Box<GamePoses>,
     /// Where the hands push them (see `Rig::game_pushes`).
     game_pushes: Box<GamePushes>,
+    /// Their convex collision (see `Rig::set_game_hulls`).
+    game_hulls: Box<GameHulls>,
     hud: crate::hud::HudPlacer,
     /// The game's lighting of its first-person model (the last consistent copy), and whether
     /// there is one: the body is shaded with it.
@@ -168,6 +175,9 @@ impl Session {
         tracing::info!("runtime: {} on {} ({}), link {}", backend.name(), gpu.adapter_name(), backend.recommended_size().0, opts.mapping);
         Ok(Session {
             comp: Compositor::new(&gpu)?,
+            physics_view: crate::physics_view::PhysicsView::new(&gpu)?,
+            physics_tris: Vec::new(),
+            rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
             gpu,
             link,
@@ -200,6 +210,7 @@ impl Session {
             hud_layout_seq: 0,
             game_poses: bytemuck::zeroed_box(),
             game_pushes: bytemuck::zeroed_box(),
+            game_hulls: bytemuck::zeroed_box(),
             game_lighting: bytemuck::zeroed_box(),
             game_lighting_read: bytemuck::zeroed_box(),
             has_game_lighting: false,
@@ -421,6 +432,7 @@ impl Session {
         }
         self.update_sound_pack(alive);
         let rig_active = alive && self.game.as_ref().is_some_and(|g| self.rig.has_objects() || g.flags & GS_PLAYER_RIG != 0);
+        self.rig_active_last = rig_active;
         // The game's floor in tracking space: the adapter maps the tracking origin onto the game's
         // eye (plus the height compensation and offset the runtime asked for).
         let floor = match &self.game {
@@ -434,6 +446,9 @@ impl Session {
         self.floor = floor;
         if rig_active {
             // Where the game has its own simulated props now.
+            if self.link.read_game_hulls_into(&mut self.game_hulls) {
+                self.rig.set_game_hulls(&self.game_hulls);
+            }
             if self.link.read_game_poses_into(&mut self.game_poses) {
                 self.rig.set_game_poses(&self.game_poses);
             }
@@ -992,8 +1007,20 @@ impl Session {
         let held = if draw_body { self.held_objects.draws() } else { Vec::new() };
         self.stats.held_drawn = held.len() as u32;
         self.stats.held_drawn_frames += (!held.is_empty()) as u64;
+        // The framework view: the physics world in tracking space instead of the game's picture.
+        let framework = self.mech.framework_view && self.rig_active_last;
+        if framework {
+            let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
+            self.physics_tris.clear();
+            self.rig.physics_triangles(&mut self.physics_tris);
+            let tris = self.physics_tris.iter().map(|(t, c)| (map.as_ref().map_or(*t, |m| t.map(|p| m.inv_point(p))), *c));
+            if let Err(e) = self.physics_view.set_triangles(&self.gpu, tris) {
+                tracing::warn!("framework view: {e:#}");
+            }
+        }
+        let physics_view = &mut self.physics_view;
         for e in 0..2 {
-            let game = stereo.as_ref().and_then(|(slot, _)| slot.eyes[e].srv.as_ref());
+            let game = stereo.as_ref().and_then(|(slot, _)| slot.eyes[e].srv.as_ref()).filter(|_| !framework);
             let mut depth = stereo
                 .as_ref()
                 .filter(|(_, info)| info.flags & SLOT_DEPTH != 0)
@@ -1003,7 +1030,11 @@ impl Session {
             let target = &eyes[e];
             let (eye, fov) = (&poses[e], &fovs[e]);
             self.comp.draw_eye(&self.gpu, target, eye, fov, game, &layers, &mut |gpu| {
-                if draw_body {
+                if framework {
+                    if let Err(e) = physics_view.draw(gpu, target, eye, fov) {
+                        tracing::warn!("framework view: {e:#}");
+                    }
+                } else if draw_body {
                     body.draw(gpu, target, eye, fov, light, depth.take(), &held);
                 }
             });

@@ -446,6 +446,17 @@ impl Adapter {
         }
     }
 
+    /// The game objects' convex collision (see [`GameHulls`]): before publishing them.
+    pub fn write_game_hulls(&self, hulls: &GameHulls) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_game_hulls(hulls);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Where the game's own simulated objects are now (see [`GamePoses`]): every frame.
     pub fn write_game_poses(&self, poses: &GamePoses) -> bool {
         match &self.link {

@@ -424,6 +424,36 @@ pub struct GamePoses {
 pub const SHAPE_BOX: u32 = 0;
 pub const SHAPE_CAPSULE: u32 = 1;
 pub const SHAPE_SPHERE: u32 = 2;
+/// The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
+/// convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+pub const SHAPE_HULL: u32 = 3;
+
+/// The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
+/// whenever the objects offered change (before they're published).
+pub const OFF_GAME_HULLS: usize = 0x004D_0000;
+pub const MAX_GAME_HULLS: usize = 48;
+pub const MAX_HULL_POINTS: usize = 128;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GameHull {
+    /// The object's [`ObjectDesc::id`].
+    pub id: u32,
+    pub count: u32,
+    pub _pad: [u32; 2],
+    /// Object space, metres (`[3]` unused).
+    pub points: [[f32; 4]; MAX_HULL_POINTS],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GameHulls {
+    /// Seqlock word.
+    pub seq: u32,
+    pub count: u32,
+    pub _pad: [u32; 14],
+    pub hulls: [GameHull; MAX_GAME_HULLS],
+}
 
 pub const WPN_AUTOMATIC: u32 = 1 << 0;
 /// The slide or bolt locks back after the last round.
@@ -815,7 +845,9 @@ const _: () = {
     assert!(OFF_GAME_POSES + size_of::<GamePoses>() <= OFF_GAME_PUSHES);
     assert!(size_of::<GamePush>() == 48);
     assert!(OFF_GAME_PUSHES.is_multiple_of(64));
-    assert!(OFF_GAME_PUSHES + size_of::<GamePushes>() <= crate::hud::OFF_HUD_LAYOUT);
+    assert!(OFF_GAME_PUSHES + size_of::<GamePushes>() <= OFF_GAME_HULLS);
+    assert!(size_of::<GameHull>() == 16 + 16 * MAX_HULL_POINTS);
+    assert!(OFF_GAME_HULLS + size_of::<GameHulls>() <= crate::hud::OFF_HUD_LAYOUT);
     assert!(OFF_OBJECTS + size_of::<ObjectTable>() <= OFF_OBJECT_STATES);
     assert!(OFF_OBJECT_STATES + size_of::<ObjectStates>() <= OFF_HAND_POSES);
     assert!(size_of::<HandPoseDesc>() == 432);

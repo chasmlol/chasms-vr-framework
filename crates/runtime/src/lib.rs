@@ -12,6 +12,7 @@ pub mod menu;
 pub mod held_objects;
 pub mod hud;
 pub mod panels;
+pub mod physics_view;
 pub mod rig;
 pub mod scenario;
 pub mod scenario_physical;

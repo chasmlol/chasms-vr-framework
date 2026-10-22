@@ -286,6 +286,14 @@ impl Link {
     pub fn read_game_pushes_into(&self, out: &mut GamePushes) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_GAME_PUSHES), out) }
     }
+    /// Adapter: the game objects' convex collision (see [`GameHulls`]).
+    pub fn write_game_hulls(&self, v: &GameHulls) {
+        unsafe { seq_write(self.base.add(OFF_GAME_HULLS), v) }
+    }
+    /// Runtime: read the game objects' convex collision into `out`.
+    pub fn read_game_hulls_into(&self, out: &mut GameHulls) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_GAME_HULLS), out) }
+    }
     /// Runtime: read the game's simulated objects' poses into `out`.
     pub fn read_game_poses_into(&self, out: &mut GamePoses) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_GAME_POSES), out) }

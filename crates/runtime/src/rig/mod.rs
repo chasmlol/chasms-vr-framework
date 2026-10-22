@@ -375,6 +375,8 @@ pub struct Rig {
     game_poses: HashMap<u32, (Vec3, Quat)>,
     /// Where the hands push the game's own free objects after this step (see [`GamePush`]).
     pub game_pushes: Vec<GamePush>,
+    /// The game's convex collision for its objects ([`SHAPE_HULL`]), object space.
+    game_hulls: HashMap<u32, Vec<Vec3>>,
     hands: Option<[Hand; 2]>,
     anchor: BodyAnchor,
     slots: [Option<u32>; SLOT_COUNT_BODY],
@@ -404,6 +406,7 @@ impl Default for Rig {
             next_spawn: SPAWN_BASE,
             game_poses: HashMap::new(),
             game_pushes: Vec::new(),
+            game_hulls: HashMap::new(),
             templates: Vec::new(),
             feedback: Vec::new(),
             debug: RigDebug::default(),
@@ -577,6 +580,50 @@ impl Rig {
         }
     }
 
+    /// The physics world as world triangles, coloured by what each thing is: the game's collision
+    /// grey, its props orange, the runtime's loose objects green and held ones cyan, the palms blue
+    /// and the fingers light blue (dim while they touch nothing). For the framework view.
+    pub fn physics_triangles(&self, out: &mut Vec<([Vec3; 3], [f32; 3])>) {
+        let mut tints: HashMap<ColliderHandle, [f32; 3]> = HashMap::new();
+        for o in self.objects.values() {
+            let c = if o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free {
+                [1.0, 0.55, 0.15]
+            } else if matches!(o.holder, Holder::Free | Holder::Stuck { .. }) {
+                [0.3, 0.85, 0.35]
+            } else {
+                [0.2, 0.9, 0.9]
+            };
+            tints.insert(o.collider, c);
+        }
+        for h in self.hands.iter().flatten() {
+            tints.insert(h.collider, [0.25, 0.5, 1.0]);
+            for f in h.fingers {
+                if let Some(c) = self.physics.collider_of(f) {
+                    tints.insert(c, if h.fingers_solid || h.fingers_on { [0.6, 0.85, 1.0] } else { [0.25, 0.35, 0.45] });
+                }
+            }
+        }
+        self.physics.surface_triangles(|h, c| Some(tints.get(&h).copied().unwrap_or(if c.parent().is_some() { [0.75, 0.75, 0.75] } else { [0.55, 0.57, 0.62] })), out);
+    }
+
+    /// The game's convex collision for its objects: kept for the ones still to come, and given to
+    /// the ones already here whose hull is new.
+    pub fn set_game_hulls(&mut self, hulls: &GameHulls) {
+        for h in &hulls.hulls[..(hulls.count as usize).min(MAX_GAME_HULLS)] {
+            let points: Vec<Vec3> = h.points[..(h.count as usize).min(MAX_HULL_POINTS)].iter().map(|p| Vec3::new(p[0], p[1], p[2])).filter(|p| p.is_finite()).collect();
+            if h.id == 0 || points.len() < 4 || self.game_hulls.get(&h.id) == Some(&points) {
+                continue;
+            }
+            if let Some(o) = self.objects.get(&h.id)
+                && o.desc.shape == SHAPE_HULL
+            {
+                let (c, mass) = (o.collider, o.desc.mass);
+                self.physics.set_hull(c, &points, mass);
+            }
+            self.game_hulls.insert(h.id, points);
+        }
+    }
+
     pub fn sync(&mut self, table: &ObjectTable) {
         if table.seq == self.table_seq {
             return;
@@ -624,7 +671,7 @@ impl Rig {
     }
 
     fn add(&mut self, d: ObjectDesc, draw_desc: u32, spawned: bool, pos: Vec3, rot: Quat) {
-        let (body, collider) = self.physics.add_object(&d, pos, rot);
+        let (body, collider) = self.physics.add_object(&d, pos, rot, self.game_hulls.get(&d.id).map(Vec::as_slice));
         let weapon = (d.kind == OBJ_WEAPON).then(|| {
             let mut w = WeaponState::for_desc(&d);
             w.recoil = recoil::Recoil::new(d.id.wrapping_mul(2654435761));
