@@ -31,6 +31,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for how it fits together.
 | `crates/adapter` | The adapter SDK every game adapter uses |
 | `crates/gpu` | Direct3D 11 helpers: devices, shared textures, shaders, PNGs, egui painting |
 | `crates/range` | `rustvr-range.exe`: a fake game for testing (an empty range with targets and guns) |
+| `crates/xrsim` | `rustvr-xrsim`: an emulated headset (an OpenXR runtime) for playtesting any VR app without one ([docs/XRSIM.md](docs/XRSIM.md)) |
 | `crates/metro-adapter` | The Metro 2033 Redux adapter (`dinput8.dll`) |
 | `crates/metro-assets` | `metro-extract`: copies Metro's guns, hands, props and sounds from your install into `local_assets/` |
 | `crates/asset` | The format of `local_assets/` |
@@ -65,6 +66,11 @@ gloves, pushes its hand into a table, crouches, makes gestures, turns, walks aro
 the menus and looks through a scope, and the run checks that the game did the right thing.
 Each scenario saves what the headset would have shown into `captures/<scenario>/*.png`.
 `rustvr --list` lists them. Nothing opens a window.
+
+To playtest a real VR app without a headset, run it on the emulated headset. This covers the
+runtime's real OpenXR path, or a game through it. A script moves the head and controllers, and the
+emulator saves what each eye would see. See [docs/XRSIM.md](docs/XRSIM.md); for Metro, use
+`tools\xrsim_metro.ps1`.
 
 To use Metro 2033's own guns in the range (optional; you need the game installed):
 

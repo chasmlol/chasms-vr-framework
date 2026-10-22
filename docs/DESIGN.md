@@ -393,6 +393,12 @@ Adapters can be written in any language: Rust (hook-and-offset games like Metro,
   (aim down the sights, bursts with Metro's recoil, a reload by hand, crouch, turn, the pause menu,
   walk; each checked). These, and `live`, run only by name, never in `all` (see
   [METRO.md](METRO.md)).
+- **The emulated headset:** `crates/xrsim` is an OpenXR runtime with no hardware behind it
+  ([XRSIM.md](XRSIM.md)). The runtime, or a game through it, runs its real OpenXR path on it. A
+  script drives the head and controllers, and captures save what each eye would see.
+  `tools\xrsim_metro.ps1` runs Metro on it with one of two scripts:
+  - `tools\xrsim\metro_smoke.toml`: the menus, the gun in the hand, head turns, the pause menu.
+  - `metro_hands.toml`: the hands at the hips, then out in front, then apart.
 - **Nothing opens a window.** Nothing launches a game, Steam, SteamVR or Virtual Desktop. The
   range renders offscreen, and builds and child processes run at below-normal priority.
 

@@ -449,6 +449,10 @@ impl Mechanics {
         // accept (and nothing should fire or move while it's up).
         let loading = inp.game.is_some_and(|g| g.flags & GS_LOADING != 0);
         if inp.menu_mode || inp.runtime_menu || loading {
+            if std::env::var_os("RUSTVR_TRACE_GUN").is_some() && now - self.insane_logged > 0.5 {
+                self.insane_logged = now;
+                tracing::info!("gun trace: menu controls (game menu {}, runtime menu {}, loading {loading})", inp.menu_mode, inp.runtime_menu);
+            }
             self.menu_controls(inp, &mut out);
             self.following = false;
             self.debug.following = false;
