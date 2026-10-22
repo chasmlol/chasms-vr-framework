@@ -62,15 +62,17 @@ pub mod link;
 pub mod hud;
 pub mod sound;
 pub mod world;
+pub mod lighting;
 
 pub use hud::*;
 pub use sound::*;
 pub use world::*;
+pub use lighting::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
 pub const VERSION: u32 = 4;
 pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v4";
-pub const MAPPING_BYTES: usize = 0x004B_0000;
+pub const MAPPING_BYTES: usize = 0x004C_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;
@@ -156,6 +158,8 @@ pub struct Targets {
 pub const TGT_DEPTH: u32 = 1 << 0;
 pub const TGT_HUD: u32 = 1 << 1;
 pub const TGT_AUX: u32 = 1 << 2;
+/// The light atlas (`LIGHT_ATLAS_W` x `LIGHT_ATLAS_H` RGBA8, see [`lighting`]).
+pub const TGT_LIGHTS: u32 = 1 << 3;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,11 +173,13 @@ pub enum TexKind {
     Hud = 4,
     /// Extra camera view, e.g. a magnified scope picture.
     Aux = 5,
+    /// The light atlas: the game's light-map and shadow terms per light (see [`lighting`]).
+    Lights = 6,
 }
 
 impl TexKind {
-    pub const ALL: [TexKind; 6] =
-        [TexKind::EyeLeft, TexKind::EyeRight, TexKind::DepthLeft, TexKind::DepthRight, TexKind::Hud, TexKind::Aux];
+    pub const ALL: [TexKind; 7] =
+        [TexKind::EyeLeft, TexKind::EyeRight, TexKind::DepthLeft, TexKind::DepthRight, TexKind::Hud, TexKind::Aux, TexKind::Lights];
 
     pub fn tag(self) -> &'static str {
         match self {
@@ -183,6 +189,7 @@ impl TexKind {
             TexKind::DepthRight => "depthR",
             TexKind::Hud => "hud",
             TexKind::Aux => "aux",
+            TexKind::Lights => "lights",
         }
     }
 }

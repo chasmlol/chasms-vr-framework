@@ -28,7 +28,7 @@ pub const MODEL_EXT: &str = "rvm";
 pub const TEXTURE_EXT: &str = "rvt";
 pub const RECOIL_EXT: &str = "rvk";
 /// Bump when [`Model`] or [`Texture`] change shape; loaders reject other versions.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Model {
@@ -52,6 +52,48 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     /// The game's own name for the part, if it has one (useful to hide e.g. a scope lens).
     pub name: String,
+    /// How the game shades it.
+    pub material: Material,
+}
+
+/// How the game shades a surface: its shading model, the textures it binds beside the base
+/// colour, and its constants, all as the game's own shaders take them (Metro: the `surf_*`
+/// constants, see docs/research/metro-viewmodel-lighting.md section 2.4).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Material {
+    pub shader: Shader,
+    /// Texture keys (stems under `textures/`), empty for none: the bump map (height in alpha,
+    /// gloss in green, specular in green, detail selector in red), the detail map and the
+    /// environment cube.
+    pub bump: String,
+    pub detail: String,
+    pub env: String,
+    /// Metro's `surf_params`: (detail tiling u, v, normal weight, parallax/detail strength).
+    pub params: [f32; 4],
+    /// Metro's `surf_color`: albedo tint (rgb, applied ×2), w spare.
+    pub color: [f32; 4],
+}
+
+/// A game's shading model for a surface (Metro's G-buffer pixel shaders).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Shader {
+    /// Not known: drawn with the base texture alone.
+    #[default]
+    Unknown,
+    /// Opaque, no environment term (or alpha-tested).
+    Plain,
+    /// Metal with the environment reflection baked into the albedo (5622).
+    MetalEnv,
+    /// Cloth and skin: Lambert, the fake subsurface tint, grey specular (5608).
+    ClothSkin,
+    /// Glossy glass (5634).
+    GlossyGlass,
+    /// Emissive, unlit (5696/5699/5751).
+    Emissive,
+    /// Forward glass, tint only (5732).
+    GlassTint,
+    /// Forward glass with reflection (5734).
+    GlassReflect,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -96,8 +138,11 @@ pub struct Texture {
     pub width: u32,
     pub height: u32,
     pub format: TexFormat,
-    /// Largest mip first. Each level is tightly packed (block rows for BC formats).
+    /// Largest mip first. Each level is tightly packed (block rows for BC formats). A cube map
+    /// stores its six faces one after another (+X, -X, +Y, -Y, +Z, -Z), each with all its mips.
     pub mips: Vec<Vec<u8>>,
+    /// 1, or 6 for a cube map.
+    pub faces: u32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -386,6 +431,7 @@ mod tests {
                 vertices: vec![Vertex { pos: [1.0, 2.0, 3.0], ..Default::default() }],
                 indices: vec![0, 0, 0],
                 name: "m".into(),
+                material: Default::default(),
             }],
             ..Default::default()
         };

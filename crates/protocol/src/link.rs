@@ -313,6 +313,15 @@ impl Link {
     pub fn kicks_seq(&self) -> u32 {
         self.u32_at(OFF_KICKS).load(Ordering::Acquire)
     }
+    /// Adapter: publish this frame's lighting (see [`GameLighting`]).
+    pub fn write_game_lighting(&self, v: &GameLighting) {
+        unsafe { seq_write(self.base.add(OFF_GAME_LIGHTING), v) }
+    }
+    /// Runtime: read the game's lighting into `out`. False if nothing was ever written or no
+    /// consistent copy was obtained.
+    pub fn read_game_lighting_into(&self, out: &mut GameLighting) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_GAME_LIGHTING), out) }
+    }
     /// Adapter: describe the HUD's pieces (see [`HudLayout`]).
     pub fn write_hud_layout(&self, v: &HudLayout) {
         unsafe { seq_write(self.base.add(OFF_HUD_LAYOUT), v) }

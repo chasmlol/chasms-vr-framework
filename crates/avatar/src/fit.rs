@@ -548,7 +548,7 @@ mod tests {
     /// The mannequin as a posed model (its bind pose: arms out, palms down, fingers straight).
     fn mannequin_model() -> asset::Model {
         let m = crate::procedural::mannequin();
-        let meshes = m.meshes.into_iter().map(|s| asset::Mesh { texture: String::new(), vertices: s.vertices, indices: s.indices, name: s.name }).collect();
+        let meshes = m.meshes.into_iter().map(|s| asset::Mesh { texture: String::new(), vertices: s.vertices, indices: s.indices, name: s.name, material: Default::default() }).collect();
         asset::Model { version: asset::FORMAT_VERSION, bones: m.bones, meshes, ..Default::default() }
     }
 

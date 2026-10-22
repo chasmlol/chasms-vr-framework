@@ -61,11 +61,12 @@ pub struct Slot {
     pub depth: Option<[Texture; 2]>,
     pub hud: Option<Texture>,
     pub aux: Option<Texture>,
+    pub lights: Option<Texture>,
 }
 
 impl Slot {
     fn all(&self) -> impl Iterator<Item = &Texture> {
-        self.eyes.iter().chain(self.depth.iter().flatten()).chain(self.hud.iter()).chain(self.aux.iter())
+        self.eyes.iter().chain(self.depth.iter().flatten()).chain(self.hud.iter()).chain(self.aux.iter()).chain(self.lights.iter())
     }
 
     /// Takes every texture's keyed mutex; on failure releases what it took.
@@ -114,7 +115,13 @@ impl SharedTargets {
             };
             let hud = if spec.flags & TGT_HUD != 0 { Some(make(TexKind::Hud, s, color(spec.hud_w, spec.hud_h))?) } else { None };
             let aux = if spec.flags & TGT_AUX != 0 { Some(make(TexKind::Aux, s, color(spec.aux_w, spec.aux_h))?) } else { None };
-            slots.push(Slot { eyes, depth, hud, aux });
+            let lights = if spec.flags & TGT_LIGHTS != 0 {
+                let d = TexDesc { width: LIGHT_ATLAS_W, height: LIGHT_ATLAS_H, format: DXGI_FORMAT_R8G8B8A8_UNORM, rtv: Some(DXGI_FORMAT_R8G8B8A8_UNORM), srv: Some(DXGI_FORMAT_R8G8B8A8_UNORM), dsv: None, mips: 1 };
+                Some(make(TexKind::Lights, s, d)?)
+            } else {
+                None
+            };
+            slots.push(Slot { eyes, depth, hud, aux, lights });
         }
         Ok(SharedTargets { spec, generation, slots })
     }

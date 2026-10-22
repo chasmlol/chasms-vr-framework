@@ -28,7 +28,7 @@ pub use tracking::{Anchor, TrackingMapper, View};
 use rustvr_gpu::{Gpu, Texture, texture::color_family};
 use rustvr_protocol::link::Link;
 use rustvr_protocol::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R32_FLOAT};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32_FLOAT};
 
 pub struct AdapterConfig {
     /// Adapter name: shown in logs and selects the runtime's settings profile.
@@ -51,6 +51,7 @@ pub struct SlotTextures {
     pub depth: Option<[Texture; 2]>,
     pub hud: Option<Texture>,
     pub aux: Option<Texture>,
+    pub lights: Option<Texture>,
 }
 
 impl SlotTextures {
@@ -60,6 +61,7 @@ impl SlotTextures {
             .chain(self.depth.iter().flatten())
             .chain(self.hud.iter())
             .chain(self.aux.iter())
+            .chain(self.lights.iter())
     }
 }
 
@@ -350,6 +352,17 @@ impl Adapter {
 
     /// Says which part of the HUD texture is what (subtitles, prompts, ammo...), so the runtime
     /// places each piece where VR games do (see [`HudLayout`]). Call again after a reconnect.
+    /// Publishes this frame's lighting (see [`GameLighting`]).
+    pub fn write_game_lighting(&self, lighting: &GameLighting) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_game_lighting(lighting);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn write_hud_layout(&self, layout: &HudLayout) -> bool {
         match &self.link {
             Some(l) if self.connected => {
@@ -489,7 +502,8 @@ fn open_targets(gpu: &Gpu, mapping: &str, t: &Targets) -> anyhow::Result<Vec<Slo
         };
         let hud = if t.flags & TGT_HUD != 0 { Some(open(TexKind::Hud, unorm)?) } else { None };
         let aux = if t.flags & TGT_AUX != 0 { Some(open(TexKind::Aux, unorm)?) } else { None };
-        slots.push(SlotTextures { eyes, depth, hud, aux });
+        let lights = if t.flags & TGT_LIGHTS != 0 { Some(open(TexKind::Lights, DXGI_FORMAT_R8G8B8A8_UNORM)?) } else { None };
+        slots.push(SlotTextures { eyes, depth, hud, aux, lights });
     }
     Ok(slots)
 }

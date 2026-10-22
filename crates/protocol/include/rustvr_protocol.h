@@ -10,7 +10,7 @@
 
 #define RVR_VERSION 4
 
-#define RVR_MAPPING_BYTES 4915200
+#define RVR_MAPPING_BYTES 4980736
 
 #define RVR_OFF_HEADER 0
 
@@ -56,6 +56,11 @@
 #define RVR_TGT_HUD (1 << 1)
 
 #define RVR_TGT_AUX (1 << 2)
+
+/**
+ * The light atlas (`LIGHT_ATLAS_W` x `LIGHT_ATLAS_H` RGBA8, see [`lighting`]).
+ */
+#define RVR_TGT_LIGHTS (1 << 3)
 
 #define RVR_CTRL_A (1 << 0)
 
@@ -766,6 +771,82 @@
  */
 #define RVR_COL_BOX 3
 
+/**
+ * The region (after the HUD layout's place before it grew the mapping).
+ */
+#define RVR_OFF_GAME_LIGHTING 4915200
+
+#define RVR_GAME_LIGHTS_MAX 32
+
+/**
+ * The colour-grading table's edge (`LUT_SIZE`³ RGBA8 texels, red fastest).
+ */
+#define RVR_LUT_SIZE 16
+
+/**
+ * The light atlas: one tile per light with a texture term, [`LIGHT_TILE`] texels square in view
+ * space x and y over [`LIGHT_TILE_EXTENT`] metres around the view axis, [`LIGHT_TILE_SLICES`]
+ * slices in view-space depth over 0..[`GameLighting::depth_squash`]·[`LIGHT_TILE_DEPTH`],
+ * side by side. Texel (rgb) = the light map's colour, (a) = the shadow term (1 = lit).
+ */
+#define RVR_LIGHT_TILE 64
+
+#define RVR_LIGHT_TILE_SLICES 4
+
+#define RVR_LIGHT_TILE_EXTENT 1.2
+
+/**
+ * The depth the slices cover before squashing (metres of real view depth).
+ */
+#define RVR_LIGHT_TILE_DEPTH 1.0
+
+#define RVR_LIGHT_ATLAS_TILES 16
+
+#define RVR_LIGHT_ATLAS_W (RVR_LIGHT_TILE * RVR_LIGHT_TILE_SLICES)
+
+#define RVR_LIGHT_ATLAS_H (RVR_LIGHT_TILE * RVR_LIGHT_ATLAS_TILES)
+
+/**
+ * Omni light.
+ */
+#define RVR_GL_OMNI 0
+
+/**
+ * Light with a projected light map.
+ */
+#define RVR_GL_PROJECTED 1
+
+/**
+ * Light with a projected light map, attenuated by the surface's occlusion (`att *= |w|`).
+ */
+#define RVR_GL_PROJECTED_OCCLUDED 2
+
+/**
+ * Shadowed spot with a light map.
+ */
+#define RVR_GL_SHADOWED 3
+
+/**
+ * Shadowed spot without a light map.
+ */
+#define RVR_GL_SHADOWED_PLAIN 4
+
+/**
+ * "Ambient" omni: no N·L, no specular.
+ */
+#define RVR_GL_AMBIENT 5
+
+/**
+ * The light reaches the first-person model (its volume was shaded with depth test Always: the
+ * game's "mode A"). Others never light it.
+ */
+#define RVR_GLF_REACHES_VIEWMODEL (1 << 0)
+
+/**
+ * [`GameLight::tile`] holds this light's texture term in the light atlas.
+ */
+#define RVR_GLF_TILE (1 << 1)
+
 #define RVR_SHOTS 0
 
 #define RVR_HITS 1
@@ -880,6 +961,10 @@ enum RVR_TexKind
    * Extra camera view, e.g. a magnified scope picture.
    */
   RVR_TexKind_Aux = 5,
+  /**
+   * The light atlas: the game's light-map and shadow terms per light (see [`lighting`]).
+   */
+  RVR_TexKind_Lights = 6,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -925,7 +1010,7 @@ typedef uint32_t RVR_Joint;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
-#define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, }
+#define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, }
 
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
 
