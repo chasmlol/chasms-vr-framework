@@ -274,7 +274,8 @@ pub struct ObjectDesc {
     pub min_pressure: f32,
     /// A point on the line of sight (the line runs along +Z through it).
     pub sight: [f32; 3],
-    pub _p6: f32,
+    /// Valves ([`OBJ_VALVE`]): the torque it takes to turn it, N m (its friction).
+    pub friction: f32,
     /// Charging handle / slide grab point; pulling it back `handle_travel` metres racks the gun.
     /// Bolt and pump actions: the bolt's handle or the pump's forend, worked back and forward after
     /// every shot. Air guns: the pump. Break and swing actions: a point on the hinge's pin (with
@@ -335,6 +336,9 @@ pub const OBJ_WEAPON: u32 = 2;
 pub const OBJ_MAGAZINE: u32 = 3;
 pub const OBJ_THROWABLE: u32 = 4;
 pub const OBJ_MELEE: u32 = 5;
+/// A wheel on an axle fixed in the world, turned by hand: centre and axis (+Z) its spawn pose, the
+/// rim `radius` out, `mass` its weight, `friction` what it takes to turn (`rig::valve`).
+pub const OBJ_VALVE: u32 = 6;
 
 pub const OBJF_GRABBABLE: u32 = 1 << 0;
 /// Gravity gloves can pull it.
@@ -368,6 +372,9 @@ pub const OBJF_GAME_SIMULATED: u32 = 1 << 8;
 /// It hangs on a ball joint from the point [`ObjectDesc::handle`] (object space), fixed in the
 /// world where that point is when the object arrives: a cable, a lamp on a chain.
 pub const OBJF_HANGING: u32 = 1 << 9;
+/// With [`OBJF_GAME_SIMULATED`]: the game moves it itself (a kinematic body: a character, a door,
+/// a cable it animates), so nobody takes or pushes it; it's followed and shown.
+pub const OBJF_GAME_MOVED: u32 = 1 << 10;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 

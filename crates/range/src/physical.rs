@@ -22,6 +22,8 @@ use crate::content::{self, Weapon};
 pub const WEAPON_BASE: u32 = 1;
 pub const MAG_BASE: u32 = 1000;
 pub const PROP_BASE: u32 = 2000;
+/// (Throwables are THROW_BASE 3000 on.)
+pub const VALVE_BASE: u32 = 4000;
 
 /// Hand pose ids (the hand pose table): weapon `i`'s firing hand, and its support hand.
 pub fn grip_pose_id(i: usize) -> u32 {
@@ -39,6 +41,8 @@ pub enum Kind {
     Prop { color: [f32; 4] },
     /// Throwable `i` (drawn by `throwables`).
     Throwable(usize),
+    /// Valve `i` of `content::valves` (drawn with its wheel).
+    Valve(usize),
 }
 
 /// A bullet to fire: world origin and direction, and the gun (weapon index, world pose and
@@ -421,6 +425,22 @@ impl Armory {
             descs.push(prop(id, name, at, half, mass));
             kinds.insert(id, Kind::Prop { color });
         }
+        // The valves on the board, their axles out of it towards you.
+        for (k, v) in content::valves().iter().enumerate() {
+            let id = VALVE_BASE + k as u32;
+            let mut d = ObjectDesc::zeroed();
+            d.id = id;
+            d.kind = OBJ_VALVE;
+            d.spawn_seq = 1;
+            d.spawn_pose = Pose { pos: v.centre.to_array(), valid: 1, rot: Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2).to_array() };
+            d.radius = v.radius;
+            d.half_extents = [v.radius, v.radius, 0.02];
+            d.mass = 1.5 + 8.0 * v.radius;
+            d.friction = v.friction;
+            set_name(&mut d.name, &format!("valve {:.0} cm, {} N m", v.radius * 100.0, v.friction));
+            descs.push(d);
+            kinds.insert(id, Kind::Valve(k));
+        }
         for (k, d) in descs.iter().take(MAX_OBJECTS).enumerate() {
             table.descs[k] = *d;
         }
@@ -719,6 +739,7 @@ impl Armory {
                     let m = model * Mat4::from_translation(Vec3::from_array(d.center)) * Mat4::from_scale(Vec3::from_array(d.half_extents) * 2.0);
                     out.push((200, m, color, glow, false));
                 }
+                Kind::Valve(k) => out.push((600 + k, model, [1.0; 4], glow, false)),
                 Kind::Throwable(_) => {}
             }
         }

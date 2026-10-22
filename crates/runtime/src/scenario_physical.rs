@@ -88,6 +88,16 @@ fn holstered_gun(objs: &[ObjSnap]) -> Option<ObjSnap> {
     objs.iter().find(|o| o.kind == OBJ_WEAPON && o.flags & OS_HOLSTERED != 0).copied()
 }
 
+/// Standing at the range's valve board, facing it (+X), half a metre from it, hands low.
+fn at_valve_board() -> Body {
+    let mut b = Body::rest();
+    b.head_pos = Vec3::new(1.55, 1.6, -0.4);
+    b.head_rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    b.hands[0].pos = Vec3::new(1.85, 1.0, -0.15);
+    b.hands[1].pos = Vec3::new(1.85, 1.0, -0.65);
+    b
+}
+
 fn prop_near(objs: &[ObjSnap], p: Vec3) -> Option<ObjSnap> {
     objs.iter().filter(|o| o.kind == OBJ_PROP).min_by(|a, b| a.pos.distance(p).total_cmp(&b.pos.distance(p))).copied().filter(|o| o.pos.distance(p) < 0.3)
 }
@@ -927,7 +937,7 @@ pub fn all() -> Vec<Scenario> {
         },
         Scenario {
             name: "gloves",
-            about: "physical: point at a can on the far table, grip, flick it to you and catch it",
+            about: "physical: the palm towards a can on the far table, grip, flick it to you and catch it",
             duration: 2.6,
             needs_game: true,
             lockstep: true,
@@ -943,13 +953,14 @@ pub fn all() -> Vec<Scenario> {
                     let flick = hand + Vec3::new(0.0, 0.08, -0.15);
                     b.head_rot = look_rot(can.pos - Body::rest().head_pos);
                     b.hands[1].pos = keys(t, &[(0.0, Body::rest().hands[1].pos), (0.4, hand), (0.7, hand), (0.76, flick)]);
-                    b.hands[1].rot = look_rot(can.pos - hand);
+                    // The right palm (the grip's -X) towards it.
+                    b.hands[1].rot = look_rot(can.pos - hand) * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
                     b.hands[1].squeeze = on(t, &[(0.6, 9.0)]);
                     b
                 })
             },
             checks: vec![
-                check(0.55, "pointing at the can highlights it", |c| {
+                check(0.55, "the palm towards the can highlights it", |c| {
                     ensure(c.objects.iter().any(|o| o.kind == OBJ_PROP && o.flags & OS_HOVERED != 0), || "nothing hovered".into())
                 }),
                 check(0.9, "the flick pulled it", |c| ensure(c.rig.pulls == 1, || format!("pulls {}", c.rig.pulls))),
@@ -959,6 +970,41 @@ pub fn all() -> Vec<Scenario> {
                 }),
             ],
             captures: vec![(0.55, "target"), (1.1, "flying")],
+        },
+        Scenario {
+            name: "valve",
+            about: "physical: at the valve board, the right hand takes the free-running valve's rim and turns it a quarter round",
+            duration: 2.2,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: at_valve_board,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = at_valve_board();
+                    let Some(v) = objs.iter().filter(|o| o.kind == OBJ_VALVE).min_by(|a, b| a.pos.distance(Vec3::new(2.14, 0.95, -0.4)).total_cmp(&b.pos.distance(Vec3::new(2.14, 0.95, -0.4)))).copied() else { return b };
+                    let r = 0.18;
+                    let at = |a: f32| v.pos + Vec3::new(-0.02, r * a.cos(), r * a.sin());
+                    let circle = ((t - 0.8) / 1.0).clamp(0.0, 1.0) as f32 * std::f32::consts::FRAC_PI_2;
+                    b.hands[1].pos = if t < 0.8 { keys(t, &[(0.0, at_valve_board().hands[1].pos), (0.4, at(0.0) + Vec3::new(-0.15, 0.08, 0.0)), (0.6, at(0.0))]) } else { at(circle) };
+                    b.hands[1].rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+                    b.hands[1].squeeze = on(t, &[(0.7, 9.0)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(0.65, "the hand at the rim highlights the valve", |c| {
+                    ensure(c.objects.iter().any(|o| o.kind == OBJ_VALVE && o.flags & OS_HOVERED != 0), || "no valve hovered".into())
+                }),
+                check(2.1, "turned a quarter round with the hand", |c| {
+                    let spawn = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+                    let turned = c.objects.iter().filter(|o| o.kind == OBJ_VALVE).map(|o| o.rot.angle_between(spawn)).fold(0.0f32, f32::max);
+                    ensure((turned - std::f32::consts::FRAC_PI_2).abs() < 0.3, || format!("turned {turned:.2} rad"))
+                }),
+            ],
+            captures: vec![(1.3, "valve_turning")],
         },
         Scenario {
             name: "two_hand",

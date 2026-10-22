@@ -441,6 +441,12 @@
 
 #define RVR_OBJ_MELEE 5
 
+/**
+ * A wheel on an axle fixed in the world, turned by hand: centre and axis (+Z) its spawn pose, the
+ * rim `radius` out, `mass` its weight, `friction` what it takes to turn (`rig::valve`).
+ */
+#define RVR_OBJ_VALVE 6
+
 #define RVR_OBJF_GRABBABLE (1 << 0)
 
 /**
@@ -494,6 +500,12 @@
  * world where that point is when the object arrives: a cable, a lamp on a chain.
  */
 #define RVR_OBJF_HANGING (1 << 9)
+
+/**
+ * With [`OBJF_GAME_SIMULATED`]: the game moves it itself (a kinematic body: a character, a door,
+ * a cable it animates), so nobody takes or pushes it; it's followed and shown.
+ */
+#define RVR_OBJF_GAME_MOVED (1 << 10)
 
 /**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.

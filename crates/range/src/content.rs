@@ -30,10 +30,52 @@ pub const TABLE_SIDE: (Vec3, Vec3) = (Vec3::new(-0.95, 0.0, 0.25), Vec3::new(-0.
 /// side by side, barrels to the back wall, butts towards you.
 pub const TABLE_ARMORY: (Vec3, Vec3) = (Vec3::new(-3.6, 0.0, -2.75), Vec3::new(3.6, 0.85, -0.95));
 
+/// The valve board on your right, past the near table: a wall the valves are on.
+pub const VALVE_BOARD: (Vec3, Vec3) = (Vec3::new(2.2, 0.0, -0.8), Vec3::new(2.3, 2.2, 2.0));
+
+/// A valve on the board: its centre, rim radius (m), the torque it takes to turn (N m) and its
+/// colour. Along the top, three sizes that turn easily; along the bottom, one size from free
+/// running to more than one hand can manage.
+pub struct ValveSpec {
+    pub centre: Vec3,
+    pub radius: f32,
+    pub friction: f32,
+    pub color: [u8; 4],
+}
+
+pub fn valves() -> Vec<ValveSpec> {
+    let x = VALVE_BOARD.0.x - 0.06;
+    let top = [(0.0, 0.10, 1.0), (0.6, 0.18, 1.5), (1.35, 0.30, 2.0)];
+    let bottom = [(-0.4, 0.3, [60, 170, 70, 255]), (0.2, 5.0, [200, 180, 40, 255]), (0.8, 15.0, [220, 110, 30, 255]), (1.4, 40.0, [190, 30, 30, 255])];
+    let mut v: Vec<ValveSpec> = top.iter().map(|&(z, radius, friction)| ValveSpec { centre: Vec3::new(x, 1.55, z), radius, friction, color: [180, 40, 35, 255] }).collect();
+    v.extend(bottom.iter().map(|&(z, friction, color)| ValveSpec { centre: Vec3::new(x, 0.95, z), radius: 0.18, friction, color }));
+    v
+}
+
+/// A valve's wheel in its own frame (the axle along +Z): the rim, two spokes and the hub.
+pub fn valve_mesh(v: &ValveSpec) -> MeshData {
+    let mut m = MeshData::default();
+    let r = v.radius;
+    let tube = (r * 0.09).clamp(0.009, 0.02);
+    let n = 20;
+    let seg = std::f32::consts::TAU * r / n as f32;
+    for k in 0..n {
+        let a = std::f32::consts::TAU * k as f32 / n as f32;
+        m.add_obox(Vec3::new(r * a.cos(), r * a.sin(), 0.0), Vec3::new(tube, seg * 0.55, tube), Quat::from_rotation_z(a), v.color);
+    }
+    let grey = [90, 90, 95, 255];
+    for a in [0.0f32, std::f32::consts::FRAC_PI_2] {
+        m.add_obox(Vec3::ZERO, Vec3::new(r, tube * 0.6, tube * 0.6), Quat::from_rotation_z(a), grey);
+    }
+    m.add_obox(Vec3::new(0.0, 0.0, 0.03), Vec3::new(tube * 1.6, tube * 1.6, 0.06), Quat::IDENTITY, grey);
+    m
+}
+
 /// Solid furniture (min, max), drawn and sent to the runtime's physics as collision boxes.
 pub fn furniture() -> Vec<(Vec3, Vec3, [u8; 4])> {
     let wood = [110, 85, 60, 255];
     let mut v = vec![(TABLE_NEAR.0, TABLE_NEAR.1, wood), (TABLE_LONG.0, TABLE_LONG.1, wood), (TABLE_SIDE.0, TABLE_SIDE.1, wood), (TABLE_ARMORY.0, TABLE_ARMORY.1, wood)];
+    v.push((VALVE_BOARD.0, VALVE_BOARD.1, [95, 100, 105, 255]));
     for x in [-3.0f32, 3.0] {
         v.push((Vec3::new(x - 0.05, 0.0, 3.0), Vec3::new(x + 0.05, 1.1, 22.0), [80, 90, 100, 255]));
     }

@@ -72,6 +72,8 @@ struct Scene {
     throwables: Vec<Vec<Mesh>>,
     /// Effect meshes: the casings (`Casing` order: rifle, pistol, shell).
     fx: Vec<Mesh>,
+    /// The valves' wheels (`content::valves` order).
+    valves: Vec<Mesh>,
 }
 
 struct Game {
@@ -209,6 +211,7 @@ impl Game {
         }
         let throw_meshes = throw_list.iter().map(|t| t.parts.iter().map(|p| renderer.upload(&gpu, p)).collect::<Result<Vec<_>>>()).collect::<Result<Vec<_>>>()?;
         let fx_meshes = [Casing::Rifle, Casing::Pistol, Casing::Shell].iter().map(|c| renderer.upload(&gpu, &effects::casing_mesh(*c))).collect::<Result<Vec<_>>>()?;
+        let valve_meshes = content::valves().iter().map(|v| renderer.upload(&gpu, &content::valve_mesh(v))).collect::<Result<Vec<_>>>()?;
         let sprites = effects::Sprites::load(|key, fallback| renderer.fx_texture(&gpu, key, fallback));
         tracing::info!("range: effect sprites {}", if sprites.flash.from_game { "from Metro 2033" } else { "built in" });
         let gun_fx = weapons.iter().map(|g| effects::gun_fx(&g.w, &assets)).collect();
@@ -236,7 +239,7 @@ impl Game {
             gpu,
             adapter,
             renderer,
-            scene: Scene { scenery, target_meshes, cube, hand_box, weapons, throwables: throw_meshes, fx: fx_meshes },
+            scene: Scene { scenery, target_meshes, cube, hand_box, weapons, throwables: throw_meshes, fx: fx_meshes, valves: valve_meshes },
             target_flash: vec![-10.0; targets.len()],
             targets,
             weapon,
@@ -845,8 +848,8 @@ impl Game {
 
 
 /// Resolves the frame's draw list (mesh ids by range: 0 scenery, 100 targets, 200 cube, 300 gun parts,
-/// 400 gun hands, 500 hand box, 10 000 physical guns' parts, 20 000 throwables' parts, 30 000
-/// effect meshes) against the scene.
+/// 400 gun hands, 500 hand box, 600 valves' wheels, 10 000 physical guns' parts, 20 000 throwables'
+/// parts, 30 000 effect meshes) against the scene.
 fn to_draws<'a>(scene: &'a Scene, weapon: usize, list: &[(usize, Mat4, [f32; 4], f32, bool)]) -> Vec<Draw<'a>> {
     list.iter()
         .map(|(id, m, t, e, two)| {
@@ -859,6 +862,7 @@ fn to_draws<'a>(scene: &'a Scene, weapon: usize, list: &[(usize, Mat4, [f32; 4],
                 200..300 => &scene.cube,
                 300..400 => &scene.weapons[weapon].parts[id - 300],
                 400..500 => &scene.weapons[weapon].hands[id - 400],
+                600..700 => &scene.valves[id - 600],
                 _ => &scene.hand_box,
             };
             Draw { mesh, model: *m, tint: *t, emissive: *e, two_sided: *two }

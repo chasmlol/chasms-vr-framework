@@ -21,6 +21,7 @@ pub mod actions;
 pub mod feedback;
 pub mod filters;
 pub mod fingers;
+pub mod valve;
 pub mod kick;
 pub mod physics;
 pub mod recoil;
@@ -148,6 +149,8 @@ struct Obj {
     throw: Option<ThrowState>,
     /// What a hanging object hangs from (`OBJF_HANGING`): the fixed anchor its joint holds.
     hang: Option<RigidBodyHandle>,
+    /// A valve's wheel ([`OBJ_VALVE`]).
+    valve: Option<valve::Valve>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +167,8 @@ enum Hover {
     Barrels(u32),
     /// A live round in one of the other hand's gun's open chambers, to pull out.
     Chamber(u32, usize),
+    /// A valve's rim.
+    Valve(u32),
 }
 
 /// A hand holding a hinged action's barrels: which gun, where on them it took them (weapon space,
@@ -216,6 +221,8 @@ struct Hand {
     pin: Option<(u32, Vec3)>,
     /// Holding the other hand's gun's open barrels.
     barrels: Option<BarrelGrab>,
+    /// On a valve's rim.
+    valve: Option<valve::ValveGrip>,
     /// The controller's turn rate (world, rad/s) from its last two rotations: the wrist's flicks
     /// (whatever a heavy gun in it manages to follow).
     turn_rate: Vec3,
@@ -501,9 +508,8 @@ pub mod alyx {
     /// `vr_gg_target_select_time` / `vr_gg_target_change_time`: 0.1 s pointed at a thing takes it.
     pub const SELECT_TIME: f64 = 0.1;
     pub const CHANGE_TIME: f64 = 0.1;
-    /// `vr_hand_pull_detach_cone` 0.5: a locked target lets go when you point 60 degrees away ...
-    pub const DETACH_COS: f32 = 0.5;
-    /// ... or `vr_gg_lock_release_delay` 0.25 s after the grip lets go.
+    /// `vr_gg_lock_release_delay` 0.25 s: a locked target lets go this long after the grip does
+    /// (and only then: wherever the hand turns meanwhile, the grip holds the lock).
     pub const LOCK_RELEASE: f64 = 0.25;
     /// Locked, it hops up (m/s) and keeps straining towards the hand every so often.
     pub const LOCK_HOP: f32 = 1.2;
@@ -581,12 +587,15 @@ impl Rig {
     }
 
     /// The physics world as world triangles, coloured by what each thing is: the game's collision
-    /// grey, its props orange, the runtime's loose objects green and held ones cyan, the palms blue
-    /// and the fingers light blue (dim while they touch nothing). For the framework view.
+    /// grey, its props orange and what it moves itself magenta, the runtime's loose objects green and held
+    /// ones cyan, the palms blue and the fingers light blue (dim while they touch nothing). For the
+    /// framework view.
     pub fn physics_triangles(&self, out: &mut Vec<([Vec3; 3], [f32; 3])>) {
         let mut tints: HashMap<ColliderHandle, [f32; 3]> = HashMap::new();
         for o in self.objects.values() {
-            let c = if o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free {
+            let c = if o.desc.flags & OBJF_GAME_MOVED != 0 {
+                [0.9, 0.3, 0.85]
+            } else if o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free {
                 [1.0, 0.55, 0.15]
             } else if matches!(o.holder, Holder::Free | Holder::Stuck { .. }) {
                 [0.3, 0.85, 0.35]
@@ -703,8 +712,13 @@ impl Rig {
                 seat_armed: true,
                 throw: ThrowState::new(&d),
                 hang: None,
+                valve: (d.kind == OBJ_VALVE).then(|| valve::Valve::new(pos, rot, d.radius, d.mass, d.friction)),
             },
         );
+        // A valve's wheel turns on its axle, never anywhere else.
+        if d.kind == OBJ_VALVE {
+            self.physics.set_kinematic(body, true);
+        }
         // Hung from its point, where it is now; damped like a cable or a chain settling.
         if d.flags & OBJF_HANGING != 0 {
             let anchor = self.physics.hang(body, v3(d.handle));
@@ -953,7 +967,7 @@ impl Rig {
             let c = &inp.frame.hands[i];
             let grip = c.squeeze.clamp(0.0, 1.0);
             let curls = [grip * 0.6, c.trigger.clamp(0.0, 1.0), grip, grip, grip];
-            h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none();
+            h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none() && h.valve.is_none();
             let solid = h.fingers_on && h.hover == Hover::None && matches!(h.glove, Glove::Idle);
             if solid != h.fingers_solid {
                 h.fingers_solid = solid;
@@ -970,6 +984,29 @@ impl Rig {
                 self.physics.move_kinematic(f, at, rot);
                 h.finger_vel[k] = (at - h.finger_at[k]) / dt;
                 h.finger_at[k] = at;
+            }
+        }
+    }
+
+    /// Turns the valves: each by the hands on its rim (pulling towards their controllers) against
+    /// its friction, and puts its wheel and those hands where it's turned to.
+    fn valves(&mut self, dt: f32) {
+        let ids: Vec<u32> = self.objects.iter().filter(|(_, o)| o.valve.is_some()).map(|(id, _)| *id).collect();
+        for id in ids {
+            let hands = self.hands.as_ref();
+            let grips: Vec<(usize, valve::ValveGrip, Vec3)> = hands
+                .map(|hs| hs.iter().enumerate().filter_map(|(i, h)| h.valve.filter(|g| g.id == id).map(|g| (i, g, h.target.0))).collect())
+                .unwrap_or_default();
+            let o = self.objects.get_mut(&id).unwrap();
+            let v = o.valve.as_mut().unwrap();
+            v.step(&grips.iter().map(|(_, g, c)| (g.at, *c)).collect::<Vec<_>>(), dt);
+            let (v, body) = (*v, o.body);
+            self.physics.move_kinematic(body, v.centre, v.rot());
+            for (i, g, _) in grips {
+                let h = &self.hands.as_ref().unwrap()[i];
+                let b = h.body;
+                self.physics.set_pose(b, v.rim(g.at), (v.rot() * g.rot).normalize());
+                self.physics.set_velocity(b, Vec3::ZERO, Vec3::ZERO);
             }
         }
     }
@@ -1045,6 +1082,7 @@ impl Rig {
                 history: ThrowHistory::default(),
                 pin: None,
                 barrels: None,
+                valve: None,
                 turn_rate: Vec3::ZERO,
                 trigger_was: 0.0,
                 squeeze_peak: 0.0,
@@ -1112,7 +1150,7 @@ impl Rig {
     fn update_hover(&mut self, i: usize, s: &Settings, zones: &[Zone; SLOT_COUNT_BODY], ammo: &[Zone; 2]) {
         let hands = self.hands.as_ref().unwrap();
         let h = &hands[i];
-        if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() {
+        if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.valve.is_some() {
             self.hands.as_mut().unwrap()[i].hover = Hover::None;
             return;
         }
@@ -1185,6 +1223,13 @@ impl Rig {
                 if wants && in_pouch {
                     hover = Hover::Ammo(wid);
                 }
+            }
+        }
+        // A valve's rim within reach.
+        if hover == Hover::None {
+            let rim = self.objects.iter().filter_map(|(id, o)| Some((*id, o.valve.as_ref()?.nearest(palm).1))).filter(|(_, d)| *d < valve::REACH).min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((id, _)) = rim {
+                hover = Hover::Valve(id);
             }
         }
         // 3. The nearest free object within reach of the palm (7 cm from its surface).
@@ -1329,6 +1374,16 @@ impl Rig {
                 }
             }
             Hover::Object(id) => self.take(id, i, false),
+            Hover::Valve(id) => {
+                // The hand goes to the rim where it's nearest and holds on there, as it sits.
+                let Some(v) = self.objects.get(&id).and_then(|o| o.valve) else { return };
+                let (at, _) = v.nearest(palm);
+                let h = &mut self.hands.as_mut().unwrap()[i];
+                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot });
+                let c = h.collider;
+                self.physics.set_groups(c, groups_none());
+                self.emit(Cue::Grab, Some(i), Some(id), v.rim(at), 0.7);
+            }
             Hover::Slot(slot) => {
                 if let Some(id) = self.slots[slot as usize].take() {
                     self.take(id, i, true);
@@ -1466,6 +1521,11 @@ impl Rig {
                 return;
             }
             if h.support.take().is_some() || h.pin.take().is_some() {
+                return;
+            }
+            if h.valve.take().is_some() {
+                let c = h.collider;
+                self.physics.set_groups(c, groups_hand(i));
                 return;
             }
             if let Glove::Locked(_) = h.glove {
@@ -2428,19 +2488,18 @@ impl Rig {
     }
 
     // ---- gravity gloves (Half-Life: Alyx's) -----------------------------------------------------------
-    /// Where a hand can point the gloves: along the controller's aim, or out of the palm (a hand
-    /// reaching out, palm towards the thing). OpenXR's grip +X leaves the left palm and enters the
-    /// right one.
-    fn glove_dirs(&self, i: usize) -> [Vec3; 2] {
+    /// Where a hand points the gloves: out of the palm, as a hand reaching out for a thing beyond
+    /// its reach. OpenXR's grip +X leaves the left palm and enters the right one.
+    fn glove_dir(&self, i: usize) -> Vec3 {
         let h = &self.hands.as_ref().unwrap()[i];
         let palm = if i == 0 { Vec3::X } else { -Vec3::X };
-        [h.aim_rot * Vec3::Z, h.target.1 * palm]
+        h.target.1 * palm
     }
 
     /// The object the gloves would take: the free, pullable one nearest the middle of Alyx's cone
     /// (15 degrees about either direction, from 25 cm behind the hand, out to `range`), with a clear
     /// line to it. The current target keeps hold out to 20 degrees.
-    fn glove_target(&self, origin: Vec3, dirs: [Vec3; 2], current: Option<u32>, range: f32) -> Option<u32> {
+    fn glove_target(&self, origin: Vec3, dir: Vec3, current: Option<u32>, range: f32) -> Option<u32> {
         let mut best: Option<(u32, f32)> = None;
         for (id, o) in &self.objects {
             let pullable = o.desc.flags & OBJF_PULLABLE != 0 || (o.desc.flags & OBJF_GRABBABLE != 0 && o.desc.mass <= 8.0);
@@ -2453,7 +2512,7 @@ impl Rig {
             if d < alyx::MIN_DIST || d > range {
                 continue;
             }
-            let cos = dirs.iter().map(|&dir| dir.dot((p - (origin - dir * alyx::CONE_BACK)).normalize_or_zero())).fold(-1.0, f32::max);
+            let cos = dir.dot((p - (origin - dir * alyx::CONE_BACK)).normalize_or_zero());
             let limit = if Some(*id) == current { alyx::HOLD_COS } else { alyx::CONE_COS };
             if cos < limit || self.physics.ray_world(origin, to, d - 0.05).is_some() {
                 continue;
@@ -2470,14 +2529,14 @@ impl Rig {
         let s = &inp.settings.interaction;
         let now = self.now;
         let h = &self.hands.as_ref().unwrap()[i];
-        if !s.gravity_gloves || h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.barrels.is_some() {
+        if !s.gravity_gloves || h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.barrels.is_some() || h.valve.is_some() {
             if !matches!(h.glove, Glove::Flight(_)) {
                 self.set_glove(i, Glove::Idle);
             }
             return;
         }
         let origin = h.target.0;
-        let dirs = self.glove_dirs(i);
+        let dir = self.glove_dir(i);
         match h.glove {
             Glove::Idle | Glove::Hover(_) => {
                 if h.hover != Hover::None {
@@ -2485,7 +2544,7 @@ impl Rig {
                     return;
                 }
                 let current = if let Glove::Hover(id) = h.glove { Some(id) } else { None };
-                let best = self.glove_target(origin, dirs, current, s.glove_range);
+                let best = self.glove_target(origin, dir, current, s.glove_range);
                 let h = &mut self.hands.as_mut().unwrap()[i];
                 if best == current {
                     h.glove_pending = None;
@@ -2519,9 +2578,8 @@ impl Rig {
                 let body = o.body;
                 let (p, _) = self.physics.pose(body);
                 let to = (p - origin).normalize_or_zero();
-                // Pointing well away (60 degrees), or the grip let go for 0.25 s: it drops the lock.
-                let released = h.glove_released.is_some_and(|t| now - t > alyx::LOCK_RELEASE);
-                if released || dirs.iter().all(|d| d.dot(to) < alyx::DETACH_COS) {
+                // Locked in while the grip holds: let go for 0.25 s, it drops the lock.
+                if h.glove_released.is_some_and(|t| now - t > alyx::LOCK_RELEASE) {
                     self.set_glove(i, Glove::Idle);
                     return;
                 }
@@ -2537,13 +2595,17 @@ impl Rig {
                     }
                     self.hands.as_mut().unwrap()[i].glove_hop = now + alyx::STRAIN_EVERY;
                 }
-                // The flick: the hand yanks back towards you or up, or the wrist flicks back.
+                // The flick, whichever way the hand faces now: it yanks back from the thing, in
+                // towards you, or up; or the wrist flicks back.
                 let h = &self.hands.as_ref().unwrap()[i];
                 let v = h.history.recent();
                 let ang = self.map.vel(h.ang_t) / self.map.world_per_meter.max(1e-6);
                 let flat = Vec3::new(to.x, 0.0, to.z).normalize_or_zero();
                 let wrist = ang.dot(flat.cross(Vec3::Y));
-                if (-to).dot(v).max(v.y * 0.8) > s.glove_flick_speed || wrist > alyx::FLICK_WRIST {
+                let head = inp.map.point(v3(inp.frame.hmd.pos));
+                let inward = (head - origin).normalize_or_zero();
+                let yank = (-to).dot(v).max(inward.dot(v)).max(v.y * 0.8);
+                if yank > s.glove_flick_speed || wrist > alyx::FLICK_WRIST {
                     let palm = origin;
                     let (dur, g) = alyx_pull(p.distance(palm));
                     let o = self.objects.get_mut(&id).unwrap();
@@ -2717,12 +2779,13 @@ impl Rig {
                 Holder::Stuck { .. } | Holder::Gone => {}
             }
         }
+        self.valves(dt);
         // Empty hands follow their controllers; past the leash they snap back, unless the
         // controller is through the world (a wall, the floor): then the hand stays against it.
         let now = self.now;
         let hands = self.hands.as_mut().unwrap();
         for (i, h) in hands.iter_mut().enumerate() {
-            if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() {
+            if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() || h.valve.is_some() {
                 continue;
             }
             let (pos, _) = self.physics.pose(h.body);
@@ -2936,7 +2999,7 @@ impl Rig {
             .map(|h| {
                 h.iter()
                     .filter_map(|h| match (h.hover, h.glove) {
-                        (Hover::Object(id), _) => Some(id),
+                        (Hover::Object(id) | Hover::Valve(id), _) => Some(id),
                         (_, Glove::Hover(id) | Glove::Locked(id)) => Some(id),
                         _ => None,
                     })

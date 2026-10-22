@@ -372,7 +372,7 @@ fn a_game_prop_follows_the_game_until_held_and_goes_back_with_the_throw() {
     // Out of reach on the floor: the gravity gloves bring it.
     let from = Vec3::new(-0.4, 1.2, 0.2);
     s.move_hand(0, from, 20);
-    s.set_rot(0, look_rotation(p3 - from, Vec3::Y));
+    s.set_rot(0, palm_towards(0, p3 - from));
     s.step(15);
     assert!(s.out.hand_targeting[0], "pointing at it");
     s.grip(0, 1.0);
@@ -909,15 +909,21 @@ fn the_pouch_ignores_hands_in_front_of_the_face() {
     assert_eq!(s.rig.held(0), None);
 }
 
+/// A controller rotation that turns hand `i`'s palm towards `dir` (fingers level).
+fn palm_towards(i: usize, dir: Vec3) -> Quat {
+    // The right palm faces the grip's -X, the left one its +X.
+    look_rotation(dir, Vec3::Y) * Quat::from_rotation_y(if i == 1 { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 })
+}
+
 #[test]
 fn gravity_gloves_pull_and_catch() {
     let mut s = Sim::new();
     let target = s.pos(FAR_BOTTLE);
     let from = Vec3::new(0.2, 1.2, 0.2);
     s.move_hand(1, from, 20);
-    s.set_rot(1, look_rotation(target - from, Vec3::Y));
+    s.set_rot(1, palm_towards(1, target - from));
     s.step(15);
-    assert!(s.out.hand_targeting[1], "pointing at the far bottle");
+    assert!(s.out.hand_targeting[1], "the palm towards the far bottle");
     s.grip(1, 1.0);
     // Flick the hand back towards the body.
     let mut p = s.hand_pos(1);
@@ -1014,12 +1020,50 @@ fn pulls_fly_like_alyx() {
 }
 
 #[test]
-fn a_locked_glove_target_hops_and_lets_go_when_you_point_away() {
+fn pointing_the_controller_at_a_thing_isnt_reaching_for_it() {
     let mut s = Sim::new();
     let target = s.pos(FAR_BOTTLE);
     let from = Vec3::new(0.2, 1.2, 0.2);
     s.move_hand(1, from, 20);
+    // The controller's nose towards it, the palm side-on to it.
     s.set_rot(1, look_rotation(target - from, Vec3::Y));
+    s.step(15);
+    assert!(!s.out.hand_targeting[1], "only the palm reaches");
+}
+
+#[test]
+fn a_locked_glove_target_holds_while_the_grip_does_then_flicks_whichever_way_the_hand_faces() {
+    let mut s = Sim::new();
+    let target = s.pos(FAR_BOTTLE);
+    let from = Vec3::new(0.2, 1.2, 0.2);
+    s.move_hand(1, from, 20);
+    s.set_rot(1, palm_towards(1, target - from));
+    s.step(15);
+    s.grip(1, 1.0);
+    assert!(s.out.hand_targeting[1], "locked");
+    // Turned right away, palm to the ceiling: still locked while the grip holds.
+    s.set_rot(1, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+    s.step(30);
+    assert!(s.out.hand_targeting[1], "the grip keeps the lock");
+    assert_eq!(s.rig.debug.pulls, 0);
+    // The flick in towards the chest, the palm still up.
+    let mut p = s.hand_pos(1);
+    let head = Vec3::new(0.0, 1.7, 0.0);
+    for _ in 0..6 {
+        p += (head - p).normalize() * (2.8 * DT);
+        s.set_hand(1, p);
+        s.step(1);
+    }
+    assert_eq!(s.rig.debug.pulls, 1, "the flick pulls it");
+}
+
+#[test]
+fn a_locked_glove_target_hops_and_lets_go_with_the_grip() {
+    let mut s = Sim::new();
+    let target = s.pos(FAR_BOTTLE);
+    let from = Vec3::new(0.2, 1.2, 0.2);
+    s.move_hand(1, from, 20);
+    s.set_rot(1, palm_towards(1, target - from));
     s.step(15);
     s.grip(1, 1.0);
     let y0 = s.pos(FAR_BOTTLE).y;
@@ -1030,9 +1074,9 @@ fn a_locked_glove_target_hops_and_lets_go_when_you_point_away() {
     }
     assert!(top > y0 + 0.03, "it hops as it locks: {:.3} -> {:.3}", y0, top);
     assert!(s.out.hand_targeting[1], "still locked");
-    // Point the hand 90 degrees away: the lock goes.
-    s.set_rot(1, look_rotation(Vec3::X, Vec3::Y) * Quat::from_rotation_z(1.5));
-    s.step(3);
+    // The grip opens: a moment later the lock goes.
+    s.grip(1, 0.0);
+    s.step(30);
     assert!(!s.out.hand_targeting[1], "let go");
     assert_eq!(s.rig.debug.pulls, 0);
 }
@@ -2036,4 +2080,81 @@ fn a_game_ammo_gun_ejects_its_magazine_while_the_game_rewrites_the_table() {
     let shots = s.rig.debug.shots;
     s.fire_once();
     assert_eq!(s.rig.debug.shots, shots + 1, "and it fires from it");
+}
+
+fn valve_desc(id: u32, centre: Vec3, radius: f32, friction: f32) -> ObjectDesc {
+    let mut d = ObjectDesc::zeroed();
+    d.id = id;
+    d.kind = OBJ_VALVE;
+    d.spawn_seq = 1;
+    // On a wall ahead, its axis towards the player.
+    d.spawn_pose = pose(centre, Quat::from_rotation_y(std::f32::consts::PI));
+    d.radius = radius;
+    d.half_extents = [radius, radius, 0.02];
+    d.mass = 2.0;
+    d.friction = friction;
+    d
+}
+
+/// Takes the valve's rim at its top with the right hand, then goes a quarter turn round it.
+fn turn_valve(s: &mut Sim, centre: Vec3, radius: f32) {
+    s.move_hand(1, centre + Vec3::new(0.0, radius + 0.1, -0.15), 30);
+    s.move_hand(1, centre + Vec3::new(0.0, radius, -0.02), 20);
+    s.grip(1, 1.0);
+    for k in 1..=90 {
+        let a = std::f32::consts::FRAC_PI_2 * k as f32 / 90.0;
+        // Clockwise as the player sees it: from the top round to their right.
+        s.set_hand(1, centre + Vec3::new(radius * a.sin(), radius * a.cos(), -0.02));
+        s.step(1);
+    }
+}
+
+#[test]
+fn a_valve_turns_with_the_hand_on_its_rim() {
+    let centre = Vec3::new(0.3, 1.2, 0.6);
+    let mut s = Sim::with(&[valve_desc(40, centre, 0.2, 0.5)]);
+    s.step(5);
+    turn_valve(&mut s, centre, 0.2);
+    let v = s.rig.objects[&40].valve.unwrap();
+    assert!((v.angle.abs() - std::f32::consts::FRAC_PI_2).abs() < 0.2, "a quarter turn: {}", v.angle);
+    let hand = v3(s.out.hands[1].pose.pos);
+    assert!(hand.distance(centre) - 0.2 < 0.01, "the hand on the rim: {hand:?}");
+    assert!(hand.distance(s.hand_pos(1)) < 0.05, "with the controller");
+    // Let go: it stops, the hand's free.
+    s.grip(1, 0.0);
+    s.step(60);
+    let a = s.rig.objects[&40].valve.unwrap().angle;
+    s.step(30);
+    assert!((s.rig.objects[&40].valve.unwrap().angle - a).abs() < 1e-3, "stopped");
+}
+
+#[test]
+fn a_stiff_valve_holds_the_hand_on_its_rim_and_doesnt_turn() {
+    let centre = Vec3::new(0.3, 1.2, 0.6);
+    let mut s = Sim::with(&[valve_desc(41, centre, 0.2, 60.0)]);
+    s.step(5);
+    turn_valve(&mut s, centre, 0.2);
+    let v = s.rig.objects[&41].valve.unwrap();
+    assert!(v.angle.abs() < 1e-3, "one hand can't move it: {}", v.angle);
+    let hand = v3(s.out.hands[1].pose.pos);
+    assert!(hand.distance(centre + Vec3::new(0.0, 0.2, 0.0)) < 0.02, "the hand stays where it took hold: {hand:?}");
+    assert!(s.out.ghosts[1].is_some(), "the ghost shows the controller gone on round");
+}
+
+#[test]
+fn a_valve_on_a_board_to_the_side_is_taken_by_its_rim() {
+    // As the range has them: on a board, the axle out of it along -X.
+    let centre = Vec3::new(1.0, 1.0, 0.3);
+    let mut d = valve_desc(42, centre, 0.18, 0.3);
+    d.spawn_pose = pose(centre, Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2));
+    let mut s = Sim::with(&[d]);
+    world_box(&mut s.rig, 9, [1.11, 1.0, 0.3], [0.05, 1.0, 1.0]);
+    s.step(5);
+    let top = centre + Vec3::new(-0.02, 0.18, 0.0);
+    s.move_hand(1, top + Vec3::new(-0.15, 0.08, 0.0), 30);
+    s.move_hand(1, top, 20);
+    let hover = s.rig.hands.as_ref().unwrap()[1].hover;
+    let v = s.rig.objects[&42].valve.unwrap();
+    eprintln!("hover {hover:?}, rim distance {:?}, palm {:?}", v.nearest(s.rig.hands.as_ref().unwrap()[1].target.0), s.rig.hands.as_ref().unwrap()[1].target.0);
+    assert_eq!(hover, Hover::Valve(42));
 }

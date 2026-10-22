@@ -420,6 +420,10 @@ pub fn object_collider(d: &ObjectDesc, hull: Option<&[V3]>) -> ColliderBuilder {
     if let Some(b) = hull {
         return b.mass(d.mass.max(0.02)).friction(0.7).restitution(0.15);
     }
+    if d.kind == OBJ_VALVE {
+        // The wheel: a disc about its +Z.
+        return ColliderBuilder::cylinder(he[2].max(0.005), d.radius.max(0.02)).rotation(Vector::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0)).mass(d.mass.max(0.1)).friction(0.9);
+    }
     let shape = match d.shape {
         SHAPE_CAPSULE => ColliderBuilder::capsule_y(he[1].max(0.001), d.radius.max(0.001)),
         SHAPE_SPHERE => ColliderBuilder::ball(d.radius.max(0.001)),
