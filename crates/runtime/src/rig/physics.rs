@@ -36,6 +36,18 @@ pub fn groups_hand(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HAND[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
 }
 
+/// A finger of `hand`: it pushes free objects and nothing else.
+pub fn groups_finger(hand: usize) -> InteractionGroups {
+    InteractionGroups::new(G_HAND[hand], G_OBJECT, InteractionTestMode::And)
+}
+
+/// One of the game's own props while the game moves it (`OBJF_GAME_SIMULATED`): it touches the
+/// world and loose objects, while the hands, fingers and what they hold go through it and push it
+/// instead (`Rig::game_pushes`).
+pub fn groups_game_prop() -> InteractionGroups {
+    InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT, InteractionTestMode::And)
+}
+
 pub fn groups_none() -> InteractionGroups {
     InteractionGroups::new(Group::NONE, Group::NONE, InteractionTestMode::And)
 }
@@ -151,6 +163,55 @@ impl Physics {
         // Palm-sized box (HIGGS's hand half-extents ~0.05 x 0.015 x 0.09), 0.5 kg like LÖVR's hand.
         let c = ColliderBuilder::cuboid(0.045, 0.02, 0.07).mass(0.5).friction(1.0).collision_groups(groups_hand(hand));
         self.world.insert(body, c)
+    }
+
+    /// A finger: a kinematic capsule (along its +Y, `half_height` of straight part), touching
+    /// nothing until given [`groups_finger`].
+    pub fn add_finger(&mut self, half_height: f32) -> RigidBodyHandle {
+        let body = RigidBodyBuilder::kinematic_position_based();
+        let c = ColliderBuilder::capsule_y(half_height, super::fingers::RADIUS).friction(0.8).collision_groups(groups_none());
+        self.world.insert(body, c).0
+    }
+
+    /// Where `pusher` overlaps `other`, if it does: the point on `other` (world), the direction out
+    /// of the pusher into it, and how deep.
+    pub fn overlap(&self, pusher: ColliderHandle, other: ColliderHandle) -> Option<(V3, V3, f32)> {
+        let (a, b) = (self.world.colliders.get(pusher)?, self.world.colliders.get(other)?);
+        let c = rapier3d::parry::query::contact(a.position(), a.shape(), b.position(), b.shape(), 0.0).ok()??;
+        (c.dist < 0.0).then(|| (from_v(c.point2), from_v(c.normal1), -c.dist))
+    }
+
+    /// The first collider of `body`.
+    pub fn collider_of(&self, body: RigidBodyHandle) -> Option<ColliderHandle> {
+        self.world.bodies.get(body)?.colliders().first().copied()
+    }
+
+    /// Hangs `body` on a ball joint from the world point where its own point `local` (body space)
+    /// is now. Returns the fixed anchor the joint holds on to.
+    pub fn hang(&mut self, body: RigidBodyHandle, local: V3) -> RigidBodyHandle {
+        let (pos, rot) = self.pose(body);
+        let at = pos + rot * local;
+        let anchor = self.world.insert_body(RigidBodyBuilder::fixed().translation(to_v(at)));
+        let joint = SphericalJointBuilder::new().local_anchor1(to_v(V3::ZERO)).local_anchor2(to_v(local)).contacts_enabled(false);
+        self.world.insert_impulse_joint(anchor, body, joint);
+        anchor
+    }
+
+    /// A finger's capsule length, as it curls.
+    pub fn set_capsule_half_height(&mut self, b: RigidBodyHandle, half: f32) {
+        let Some(&c) = self.world.bodies[b].colliders().first() else { return };
+        if let Some(col) = self.world.colliders.get_mut(c)
+            && let Some(cap) = col.shape_mut().as_capsule_mut()
+        {
+            let r = cap.radius;
+            *cap = rapier3d::parry::shape::Capsule::new_y(half, r);
+        }
+    }
+
+    pub fn set_damping(&mut self, b: RigidBodyHandle, linear: f32, angular: f32) {
+        let rb = &mut self.world.bodies[b];
+        rb.set_linear_damping(linear);
+        rb.set_angular_damping(angular);
     }
 
     pub fn remove(&mut self, body: RigidBodyHandle) {

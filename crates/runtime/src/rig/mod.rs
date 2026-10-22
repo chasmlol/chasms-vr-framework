@@ -20,6 +20,7 @@
 pub mod actions;
 pub mod feedback;
 pub mod filters;
+pub mod fingers;
 pub mod kick;
 pub mod physics;
 pub mod recoil;
@@ -38,7 +39,7 @@ use crate::settings::{GrenadeArming, Settings};
 use actions::{Chamber, Cycle, CycleEvent, HingeEvent};
 use feedback::{Cue, Feedback};
 use filters::OneEuro;
-use physics::{Physics, groups_free, groups_hand, groups_held, groups_none};
+use physics::{Physics, groups_free, groups_game_prop, groups_hand, groups_held, groups_none};
 use throwable::{Flight, Fuse, KnifeMode, ThrowState};
 use throwing::{ThrowClass, ThrowHistory};
 use weapon::{Fire, HandleGrab, WeaponState};
@@ -145,6 +146,8 @@ struct Obj {
     next_impact: f64,
     /// Grenades, knives and other throwables.
     throw: Option<ThrowState>,
+    /// What a hanging object hangs from (`OBJF_HANGING`): the fixed anchor its joint holds.
+    hang: Option<RigidBodyHandle>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +186,16 @@ enum Glove {
 struct Hand {
     body: RigidBodyHandle,
     collider: ColliderHandle,
+    /// Thumb to pinky: kinematic capsules that push loose things ([`fingers`]), where each was
+    /// last step and how fast it moved.
+    fingers: [RigidBodyHandle; 5],
+    finger_at: [Vec3; 5],
+    finger_vel: [Vec3; 5],
+    /// The fingers push things only while the hand has nothing (holding, steering or working
+    /// something, they're on it); and they knock loose things about only while it isn't about to
+    /// take one (they'd nudge it out of the grab).
+    fingers_on: bool,
+    fingers_solid: bool,
     grip_down: bool,
     grip_toggled: bool,
     prev_buttons: u32,
@@ -322,6 +335,12 @@ pub struct RigInput<'a> {
 }
 
 const SPAWN_BASE: u32 = 0x8000_0000;
+/// A hand inside one of the game's props asks for this many m/s per metre of overlap, on top of
+/// its own speed into it, and never more than `PUSH_MAX` in all.
+const PUSH_OUT: f32 = 10.0;
+const PUSH_MAX: f32 = 4.0;
+/// Faster than this (m/s), a hand pushes the way it moves.
+const PUSH_MOVING: f32 = 0.2;
 const LEASH: f32 = 0.7;
 const BLOCKED: f32 = 0.04;
 const FOREGRIP_REACH: f32 = 0.14;
@@ -354,6 +373,8 @@ pub struct Rig {
     objects: BTreeMap<u32, Obj>,
     /// Where the game says its own simulated objects are (`OBJF_GAME_SIMULATED`, world space).
     game_poses: HashMap<u32, (Vec3, Quat)>,
+    /// Where the hands push the game's own free objects after this step (see [`GamePush`]).
+    pub game_pushes: Vec<GamePush>,
     hands: Option<[Hand; 2]>,
     anchor: BodyAnchor,
     slots: [Option<u32>; SLOT_COUNT_BODY],
@@ -382,6 +403,7 @@ impl Default for Rig {
             slots: [None; SLOT_COUNT_BODY],
             next_spawn: SPAWN_BASE,
             game_poses: HashMap::new(),
+            game_pushes: Vec::new(),
             templates: Vec::new(),
             feedback: Vec::new(),
             debug: RigDebug::default(),
@@ -633,8 +655,15 @@ impl Rig {
                 next_impact: 0.0,
                 seat_armed: true,
                 throw: ThrowState::new(&d),
+                hang: None,
             },
         );
+        // Hung from its point, where it is now; damped like a cable or a chain settling.
+        if d.flags & OBJF_HANGING != 0 {
+            let anchor = self.physics.hang(body, v3(d.handle));
+            self.physics.set_damping(body, 0.4, 1.5);
+            self.objects.get_mut(&id).unwrap().hang = Some(anchor);
+        }
         // A gun arrives loaded: a seated magazine from its template, or rounds held internally (a
         // gun loaded into its chambers has them all loaded already).
         if d.kind == OBJ_WEAPON && d.weapon_flags & WPN_LOADS_ROUNDS != 0 {
@@ -675,6 +704,9 @@ impl Rig {
     fn remove(&mut self, id: u32) {
         if let Some(o) = self.objects.remove(&id) {
             self.physics.remove(o.body);
+            if let Some(a) = o.hang {
+                self.physics.remove(a);
+            }
             for s in self.slots.iter_mut() {
                 if *s == Some(id) {
                     *s = None;
@@ -853,11 +885,86 @@ impl Rig {
             }
         }
         self.drive(inp, dt, &zones);
+        self.place_fingers(inp);
         self.apply_pushes();
         self.physics.set_dt(dt);
         self.physics.step();
         self.after_step(inp);
+        self.game_pushes = self.pushes();
         self.output(inp, dom)
+    }
+
+    /// The fingers onto each physics hand, curled as the controller's trigger (the index) and grip
+    /// (the rest) are held.
+    fn place_fingers(&mut self, inp: &RigInput) {
+        let Some(hands) = &mut self.hands else { return };
+        let dt = inp.dt.max(1e-4);
+        for (i, h) in hands.iter_mut().enumerate() {
+            let side = if i == 0 { rustvr_ik::Side::Left } else { rustvr_ik::Side::Right };
+            let (gp, gq) = self.physics.pose(h.body);
+            let hand = self.offsets.hand_frame(side, rustvr_ik::Pose { pos: gp, rot: gq });
+            let c = &inp.frame.hands[i];
+            let grip = c.squeeze.clamp(0.0, 1.0);
+            let curls = [grip * 0.6, c.trigger.clamp(0.0, 1.0), grip, grip, grip];
+            h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none();
+            let solid = h.fingers_on && h.hover == Hover::None && matches!(h.glove, Glove::Idle);
+            if solid != h.fingers_solid {
+                h.fingers_solid = solid;
+                for f in h.fingers {
+                    if let Some(c) = self.physics.collider_of(f) {
+                        self.physics.set_groups(c, if solid { physics::groups_finger(i) } else { groups_none() });
+                    }
+                }
+            }
+            for (k, (a, b)) in fingers::segments((hand.pos, hand.rot), i == 1, curls).into_iter().enumerate() {
+                let (at, rot, half) = fingers::capsule_pose(a, b);
+                let f = h.fingers[k];
+                self.physics.set_capsule_half_height(f, half);
+                self.physics.move_kinematic(f, at, rot);
+                h.finger_vel[k] = (at - h.finger_at[k]) / dt;
+                h.finger_at[k] = at;
+            }
+        }
+    }
+
+    /// The palms and fingers in the game's own free props, as pushes for the game: at each prop,
+    /// the deepest touch, asking the point to move along with the hand at least as fast as the
+    /// hand moves (plus enough to undo the overlap within a few frames).
+    fn pushes(&self) -> Vec<GamePush> {
+        let Some(hands) = &self.hands else { return Vec::new() };
+        let mut out = Vec::new();
+        for (id, o) in &self.objects {
+            let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && self.now - o.free_since > GAME_HANDBACK as f64;
+            if !game_free {
+                continue;
+            }
+            let mut best: Option<(f32, Vec3, Vec3, f32)> = None;
+            for h in hands {
+                let palm_vel = self.physics.velocity(h.body).0;
+                let fingers = h.fingers.iter().zip(h.finger_vel).filter(|_| h.fingers_on).map(|(f, v)| (self.physics.collider_of(*f), v));
+                let palm = (h.holding.is_none() && h.support.is_none()).then_some((Some(h.collider), palm_vel));
+                let pushers = palm.into_iter().chain(fingers);
+                for (c, vel) in pushers {
+                    let Some((point, normal, depth)) = c.and_then(|c| self.physics.overlap(c, o.collider)) else { continue };
+                    // A moving hand pushes the way it moves (deep in a thin cable, the shortest
+                    // way out can be backwards); one held still, straight out of it.
+                    let (normal, speed) = match vel.try_normalize() {
+                        Some(dir) if vel.length() > PUSH_MOVING => (dir, vel.length() + depth * PUSH_OUT),
+                        _ => (normal, depth * PUSH_OUT),
+                    };
+                    let speed = speed.min(PUSH_MAX);
+                    if best.is_none_or(|b| depth > b.0) {
+                        best = Some((depth, point, normal, speed));
+                    }
+                }
+            }
+            if let Some((_, p, n, speed)) = best
+                && out.len() < MAX_GAME_PUSHES
+            {
+                out.push(GamePush { id: *id, point: p.extend(1.0).to_array(), normal: n.extend(speed).to_array(), ..Default::default() });
+            }
+        }
+        out
     }
 
     fn ensure_hands(&mut self, f: &HmdFrame) {
@@ -867,9 +974,15 @@ impl Rig {
         let mk = |p: &mut Physics, i: usize| {
             let g = &f.hands[i].grip;
             let (body, collider) = p.add_hand(i, v3(g.pos), q4(g.rot));
+            let fingers = std::array::from_fn(|_| p.add_finger(0.02));
             Hand {
                 body,
                 collider,
+                fingers,
+                finger_at: [v3(g.pos); 5],
+                finger_vel: [Vec3::ZERO; 5],
+                fingers_on: false,
+                fingers_solid: false,
                 grip_down: false,
                 grip_toggled: false,
                 prev_buttons: 0,
@@ -2540,8 +2653,9 @@ impl Rig {
                         && self.now - o.free_since > GAME_HANDBACK as f64
                         && let Some(&(p, q)) = self.game_poses.get(id)
                     {
-                        let body = o.body;
+                        let (body, collider) = (o.body, o.collider);
                         self.physics.set_kinematic(body, true);
+                        self.physics.set_groups(collider, groups_game_prop());
                         self.physics.move_kinematic(body, p, q);
                     }
                 }

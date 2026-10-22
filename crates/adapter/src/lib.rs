@@ -437,6 +437,15 @@ impl Adapter {
         }
     }
 
+    /// Where the hands push the game's own simulated objects (see [`GamePushes`]). False when
+    /// there's no runtime.
+    pub fn read_game_pushes(&self, out: &mut GamePushes) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_game_pushes_into(out),
+            _ => false,
+        }
+    }
+
     /// Where the game's own simulated objects are now (see [`GamePoses`]): every frame.
     pub fn write_game_poses(&self, poses: &GamePoses) -> bool {
         match &self.link {

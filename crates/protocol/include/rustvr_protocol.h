@@ -481,12 +481,19 @@
 
 /**
  * The game simulates this object (one of its own physics props) and draws it: while it's free the
- * runtime keeps it where the game says ([`GamePoses`]), solid for the hands, and only moves it
- * while a hand holds or pulls it (the state says so: `OS_HELD_*`, `OS_PULLED`; the game puts its
+ * runtime keeps it where the game says ([`GamePoses`]); hands and fingers going through it push
+ * it instead ([`GamePushes`], for the game to apply to its body); and it only moves it while a
+ * hand holds or pulls it (the state says so: `OS_HELD_*`, `OS_PULLED`; the game puts its
  * own body there). Let go, it flies on in the runtime for [`GAME_HANDBACK`] seconds, its state
  * carrying the throw's velocity for the game to take it back with, then follows the game again.
  */
 #define RVR_OBJF_GAME_SIMULATED (1 << 8)
+
+/**
+ * It hangs on a ball joint from the point [`ObjectDesc::handle`] (object space), fixed in the
+ * world where that point is when the object arrives: a cable, a lamp on a chain.
+ */
+#define RVR_OBJF_HANGING (1 << 9)
 
 /**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
@@ -497,6 +504,13 @@
  * Where the game's own simulated objects ([`OBJF_GAME_SIMULATED`]) are, every frame (world space).
  */
 #define RVR_OFF_GAME_POSES 5021696
+
+/**
+ * Where the hands push the game's own simulated objects this frame (runtime -> game).
+ */
+#define RVR_OFF_GAME_PUSHES 5034112
+
+#define RVR_MAX_GAME_PUSHES 32
 
 #define RVR_SHAPE_BOX 0
 

@@ -353,6 +353,124 @@ fn a_game_prop_follows_the_game_until_held_and_goes_back_with_the_throw() {
     assert_eq!(s.rig.held(0), Some(PROP), "pulled into the hand: at {:?}", s.pos(PROP));
 }
 
+/// A hanging cable segment of the game's (`OBJF_GAME_SIMULATED`), upright in mid-air where the
+/// game holds it, and the pushes the rig sends the game for it.
+fn cable_sim() -> (Sim, Box<GamePoses>) {
+    let at = Vec3::new(-0.3, 1.2, 0.1);
+    let mut d = obj(CABLE, OBJ_PROP, at, [0.015, 0.5, 0.015], 10.0);
+    d.flags |= OBJF_GAME_SIMULATED;
+    let mut s = Sim::with(&[d]);
+    let mut poses: Box<GamePoses> = bytemuck::zeroed_box();
+    poses.count = 1;
+    poses.poses[0] = GamePose { id: CABLE, pose: pose(at, Quat::IDENTITY), ..Default::default() };
+    s.rig.set_game_poses(&poses);
+    s.step(20);
+    (s, poses)
+}
+const CABLE: u32 = 31;
+
+fn cable_pushes(s: &Sim) -> Vec<GamePush> {
+    s.rig.game_pushes.iter().filter(|p| p.id == CABLE).copied().collect()
+}
+
+#[test]
+fn an_open_hand_sweeping_through_a_game_cable_pushes_it_along_and_isnt_stopped() {
+    let (mut s, poses) = cable_sim();
+    let cable = Vec3::new(-0.3, 1.2, 0.1);
+    s.move_hand(0, cable + Vec3::new(-0.25, 0.0, 0.0), 30);
+    s.step(10);
+    assert!(cable_pushes(&s).is_empty(), "not touching yet");
+    // Through it sideways, no grip, 1.5 m/s.
+    let mut pushes = Vec::new();
+    let mut p = s.hand_pos(0);
+    for _ in 0..30 {
+        p.x += 1.5 * DT;
+        s.set_hand(0, p);
+        s.rig.set_game_poses(&poses); // (the game keeps it where it was: the push is the game's to apply)
+        s.step(1);
+        pushes.extend(cable_pushes(&s));
+    }
+    assert!(!pushes.is_empty(), "the hand went through the cable");
+    assert_eq!(s.rig.held(0), None, "pushed, not grabbed");
+    for g in &pushes {
+        let (n, speed) = (Vec3::from_slice(&g.normal[..3]), g.normal[3]);
+        assert!(n.x > 0.7, "along the hand's way: {n:?}");
+        assert!(speed > 1.0 && speed <= PUSH_MAX, "at least the hand's speed into it: {speed}");
+        assert!(Vec3::from_slice(&g.point[..3]).distance(cable) < 0.6, "on the cable: {:?}", g.point);
+    }
+    let palm = s.rig.physics.pose(s.rig.hands.as_ref().unwrap()[0].body).0;
+    assert!(palm.x > cable.x + 0.1, "the hand went on past it: {palm:?}");
+    assert!(s.pos(CABLE).distance(cable) < 0.01, "the rig's copy stays where the game has it: {:?}", s.pos(CABLE));
+}
+
+#[test]
+fn a_fingertip_alone_pushes_a_game_cable() {
+    let (mut s, mut poses) = cable_sim();
+    s.move_hand(0, Vec3::new(-0.3, 1.2, -0.3), 30);
+    s.step(10);
+    // The cable put just past the middle fingertip, along the fingers: only that finger reaches it.
+    let (palm, body, finger) = {
+        let h = &s.rig.hands.as_ref().unwrap()[0];
+        (h.collider, h.body, h.fingers[2])
+    };
+    let (tip_mid, q) = s.rig.physics.pose(finger);
+    let along = q * Vec3::Y;
+    let at = tip_mid + along * 0.045;
+    // Lying through the palm's facing, across the finger's end.
+    let facing = s.rig.physics.pose(body).1 * Vec3::X;
+    poses.poses[0].pose = pose(at, Quat::from_rotation_arc(Vec3::Y, facing));
+    s.rig.set_game_poses(&poses);
+    s.step(3);
+    let cable = s.rig.objects[&CABLE].collider;
+    assert!(s.rig.physics.overlap(palm, cable).is_none(), "the palm is clear of it");
+    // Poke it.
+    let mut pushes = Vec::new();
+    let mut p = s.hand_pos(0);
+    for _ in 0..8 {
+        p += along * (0.6 * DT);
+        s.set_hand(0, p);
+        s.rig.set_game_poses(&poses);
+        s.step(1);
+        pushes.extend(cable_pushes(&s));
+    }
+    assert!(!pushes.is_empty(), "the finger touched it");
+    let n = Vec3::from_slice(&pushes[0].normal[..3]);
+    assert!(n.dot(along) > 0.9, "pushed the way the finger points: {n:?} vs {along:?}");
+}
+
+#[test]
+fn a_hanging_cable_swings_from_the_hand_and_stays_hung() {
+    const HUNG: u32 = 32;
+    let top = Vec3::new(-0.3, 1.7, 0.1);
+    let mut d = obj(HUNG, OBJ_PROP, top - Vec3::new(0.0, 0.5, 0.0), [0.015, 0.5, 0.015], 1.0);
+    d.flags |= OBJF_HANGING;
+    d.handle = [0.0, 0.5, 0.0];
+    let mut s = Sim::with(&[d]);
+    s.step(30);
+    let hung = s.pos(HUNG);
+    assert!(hung.distance(top - Vec3::new(0.0, 0.5, 0.0)) < 0.02, "hangs still where it was: {hung:?}");
+    // Swept through by an open hand at its lower end (come at from clear of it, left to settle).
+    s.move_hand(0, Vec3::new(-0.6, 1.0, -0.4), 30);
+    s.move_hand(0, Vec3::new(-0.6, 1.0, 0.1), 30);
+    s.step(300);
+    let hung = s.pos(HUNG);
+    let mut p = s.hand_pos(0);
+    let mut furthest = 0.0f32;
+    for _ in 0..50 {
+        p.x += 1.2 * DT;
+        s.set_hand(0, p);
+        s.step(1);
+        furthest = furthest.max(s.pos(HUNG).x - hung.x);
+    }
+    assert!(furthest > 0.05, "swung away from the hand: {furthest}");
+    for _ in 0..200 {
+        s.step(1);
+        let reach = s.pos(HUNG).distance(top);
+        assert!((reach - 0.5).abs() < 0.03, "still hung from its point: {reach}");
+    }
+    assert_eq!(s.rig.held(0), None);
+}
+
 #[test]
 fn landing_objects_make_impacts() {
     let mut s = Sim::new();

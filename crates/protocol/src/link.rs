@@ -278,6 +278,14 @@ impl Link {
     pub fn write_game_poses(&self, v: &GamePoses) {
         unsafe { seq_write(self.base.add(OFF_GAME_POSES), v) }
     }
+    /// Runtime: where the hands push the game's simulated objects (see [`GamePushes`]).
+    pub fn write_game_pushes(&self, v: &GamePushes) {
+        unsafe { seq_write(self.base.add(OFF_GAME_PUSHES), v) }
+    }
+    /// Adapter: read the hands' pushes into `out`.
+    pub fn read_game_pushes_into(&self, out: &mut GamePushes) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_GAME_PUSHES), out) }
+    }
     /// Runtime: read the game's simulated objects' poses into `out`.
     pub fn read_game_poses_into(&self, out: &mut GamePoses) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_GAME_POSES), out) }

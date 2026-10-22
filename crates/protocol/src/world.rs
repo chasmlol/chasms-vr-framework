@@ -279,7 +279,8 @@ pub struct ObjectDesc {
     /// Bolt and pump actions: the bolt's handle or the pump's forend, worked back and forward after
     /// every shot. Air guns: the pump. Break and swing actions: a point on the hinge's pin (with
     /// `handle_travel` 0: there's nothing to pull). Grenades with [`THROW_PIN`]: the pin's ring (or
-    /// a fuse's end); pulling it `handle_travel` away (0: 5 cm) pulls it.
+    /// a fuse's end); pulling it `handle_travel` away (0: 5 cm) pulls it. Props with
+    /// [`OBJF_HANGING`]: the point it hangs from.
     pub handle: [f32; 3],
     pub handle_travel: f32,
     /// Weapons and magazines with the same ammo type fit together.
@@ -358,11 +359,15 @@ pub const OBJF_RUNTIME_DRAWS: u32 = 1 << 6;
 /// as its ammunition changes.
 pub const OBJF_GAME_AMMO: u32 = 1 << 7;
 /// The game simulates this object (one of its own physics props) and draws it: while it's free the
-/// runtime keeps it where the game says ([`GamePoses`]), solid for the hands, and only moves it
-/// while a hand holds or pulls it (the state says so: `OS_HELD_*`, `OS_PULLED`; the game puts its
+/// runtime keeps it where the game says ([`GamePoses`]); hands and fingers going through it push
+/// it instead ([`GamePushes`], for the game to apply to its body); and it only moves it while a
+/// hand holds or pulls it (the state says so: `OS_HELD_*`, `OS_PULLED`; the game puts its
 /// own body there). Let go, it flies on in the runtime for [`GAME_HANDBACK`] seconds, its state
 /// carrying the throw's velocity for the game to take it back with, then follows the game again.
 pub const OBJF_GAME_SIMULATED: u32 = 1 << 8;
+/// It hangs on a ball joint from the point [`ObjectDesc::handle`] (object space), fixed in the
+/// world where that point is when the object arrives: a cable, a lamp on a chain.
+pub const OBJF_HANGING: u32 = 1 << 9;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 
@@ -376,6 +381,33 @@ pub struct GamePose {
     pub id: u32,
     pub _pad: [u32; 3],
     pub pose: Pose,
+}
+
+/// Where the hands push the game's own simulated objects this frame (runtime -> game).
+pub const OFF_GAME_PUSHES: usize = 0x004C_D080;
+pub const MAX_GAME_PUSHES: usize = 32;
+
+/// A hand pushing one of the game's own objects ([`OBJF_GAME_SIMULATED`], free): the point
+/// (world space) must move along `normal` (the way the finger or palm moves, or out of it) at
+/// least `normal[3]` m/s.
+/// The game adds what its body's motion there lacks; asked again, it adds nothing more.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct GamePush {
+    pub id: u32,
+    pub _pad: [u32; 3],
+    pub point: [f32; 4],
+    pub normal: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GamePushes {
+    /// Seqlock word.
+    pub seq: u32,
+    pub count: u32,
+    pub _pad: [u32; 14],
+    pub pushes: [GamePush; MAX_GAME_PUSHES],
 }
 
 #[repr(C)]
@@ -780,7 +812,10 @@ const _: () = {
     assert!(size_of::<GamePose>() == 48);
     assert!(OFF_GAME_POSES.is_multiple_of(64));
     assert!(crate::player::OFF_PLAYER_DRAW + size_of::<crate::RtPlayerDraw>() <= OFF_GAME_POSES);
-    assert!(OFF_GAME_POSES + size_of::<GamePoses>() <= crate::hud::OFF_HUD_LAYOUT);
+    assert!(OFF_GAME_POSES + size_of::<GamePoses>() <= OFF_GAME_PUSHES);
+    assert!(size_of::<GamePush>() == 48);
+    assert!(OFF_GAME_PUSHES.is_multiple_of(64));
+    assert!(OFF_GAME_PUSHES + size_of::<GamePushes>() <= crate::hud::OFF_HUD_LAYOUT);
     assert!(OFF_OBJECTS + size_of::<ObjectTable>() <= OFF_OBJECT_STATES);
     assert!(OFF_OBJECT_STATES + size_of::<ObjectStates>() <= OFF_HAND_POSES);
     assert!(size_of::<HandPoseDesc>() == 432);

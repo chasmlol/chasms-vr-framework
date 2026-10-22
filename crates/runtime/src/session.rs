@@ -118,6 +118,8 @@ pub struct Session {
     hud_layout_seq: u32,
     /// Where the game's own simulated objects are (`OBJF_GAME_SIMULATED`).
     game_poses: Box<GamePoses>,
+    /// Where the hands push them (see `Rig::game_pushes`).
+    game_pushes: Box<GamePushes>,
     hud: crate::hud::HudPlacer,
     /// The game's lighting of its first-person model (the last consistent copy), and whether
     /// there is one: the body is shaded with it.
@@ -197,6 +199,7 @@ impl Session {
             hud_layout: bytemuck::zeroed_box(),
             hud_layout_seq: 0,
             game_poses: bytemuck::zeroed_box(),
+            game_pushes: bytemuck::zeroed_box(),
             game_lighting: bytemuck::zeroed_box(),
             game_lighting_read: bytemuck::zeroed_box(),
             has_game_lighting: false,
@@ -490,6 +493,12 @@ impl Session {
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
             }
             self.rig.write_states(&mut self.states);
+            // Where the hands push the game's own props.
+            self.game_pushes.count = self.rig.game_pushes.len().min(MAX_GAME_PUSHES) as u32;
+            for (i, p) in self.rig.game_pushes.iter().take(MAX_GAME_PUSHES).enumerate() {
+                self.game_pushes.pushes[i] = *p;
+            }
+            self.link.write_game_pushes(&self.game_pushes);
             self.link.write_object_states(&self.states);
             let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
             self.held_objects.update(&self.objects, &self.states, map.as_ref(), frame.hands.map(|h| h.trigger));
