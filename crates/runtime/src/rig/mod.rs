@@ -2409,6 +2409,9 @@ impl Rig {
     // ---- driving the bodies --------------------------------------------------------------------------
     fn drive(&mut self, inp: &RigInput, dt: f32, zones: &[Zone; SLOT_COUNT_BODY]) {
         let s = inp.settings;
+        // Where the player's eyes are: a hand (or what it holds) left behind snaps back to its
+        // controller only when the head could reach it there.
+        let head = inp.map.point(v3(inp.frame.hmd.pos));
         let ids: Vec<u32> = self.objects.keys().copied().collect();
         for id in &ids {
             let holder = self.objects[id].holder;
@@ -2439,7 +2442,7 @@ impl Rig {
                     let gain = if o.in_contact { 0.05 } else { 1.0 };
                     let ang_gain = 1.0f32;
                     let (now_pos, _) = self.physics.pose(o.body);
-                    if now_pos.distance(target.0) > LEASH {
+                    if now_pos.distance(target.0) > LEASH && self.physics.reachable(head, target.0) {
                         // Stuck behind something while the hand moved on: back into the hand.
                         self.physics.set_pose(o.body, target.0, target.1);
                         self.physics.set_velocity(o.body, Vec3::ZERO, Vec3::ZERO);
@@ -2528,7 +2531,8 @@ impl Rig {
                 Holder::Stuck { .. } | Holder::Gone => {}
             }
         }
-        // Empty hands follow their controllers; past the leash they snap back.
+        // Empty hands follow their controllers; past the leash they snap back, unless the
+        // controller is through the world (a wall, the floor): then the hand stays against it.
         let now = self.now;
         let hands = self.hands.as_mut().unwrap();
         for (i, h) in hands.iter_mut().enumerate() {
@@ -2536,7 +2540,7 @@ impl Rig {
                 continue;
             }
             let (pos, _) = self.physics.pose(h.body);
-            if pos.distance(h.target.0) > LEASH {
+            if pos.distance(h.target.0) > LEASH && self.physics.reachable(head, h.target.0) {
                 self.physics.set_pose(h.body, h.target.0, h.target.1);
                 self.physics.set_velocity(h.body, Vec3::ZERO, Vec3::ZERO);
                 h.leashed_until = now + 0.1;

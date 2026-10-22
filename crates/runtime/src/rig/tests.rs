@@ -218,7 +218,7 @@ fn hands_follow_the_controllers_in_free_space() {
 }
 
 #[test]
-fn walls_stop_the_hand_and_show_a_ghost_then_the_leash_snaps_it_back() {
+fn walls_stop_the_hand_and_show_a_ghost_however_far_it_reaches_through() {
     let mut s = Sim::new();
     world_box(&mut s.rig, 3, [0.0, 1.5, -0.4], [2.0, 1.0, 0.05]); // a wall behind the player
     s.move_hand(1, Vec3::new(0.2, 1.3, -0.2), 15);
@@ -228,8 +228,26 @@ fn walls_stop_the_hand_and_show_a_ghost_then_the_leash_snaps_it_back() {
     assert!(s.out.hands[1].flags & HAND_BLOCKED != 0);
     assert!(s.out.ghosts[1].is_some(), "a ghost hand shows where the controller is");
     assert!(s.rig.debug.blocked_frames > 0);
-    s.move_hand(1, Vec3::new(0.2, 1.3, -1.3), 10); // far past the leash
-    s.step(2);
+    // Far past the leash, the controller is still through the wall: the hand stays against it.
+    s.move_hand(1, Vec3::new(0.2, 1.3, -1.3), 10);
+    s.step(30);
+    let h = v3(s.out.hands[1].pose.pos);
+    assert!(h.z > -0.38, "never snapped through the wall: {h:?}");
+    // Back on this side, it follows again.
+    s.move_hand(1, Vec3::new(0.2, 1.3, -0.1), 20);
+    s.step(10);
+    let h = v3(s.out.hands[1].pose.pos);
+    assert!(h.distance(s.hand_pos(1)) < 0.01, "follows the controller again: {h:?}");
+}
+
+#[test]
+fn the_leash_frees_a_hand_snagged_behind_something_the_head_sees_past() {
+    let mut s = Sim::new();
+    // A thin post, low beside the player: the hand catches on it, the head sees past it.
+    world_box(&mut s.rig, 3, [0.3, 1.0, 0.4], [0.03, 0.3, 0.03]);
+    s.move_hand(1, Vec3::new(0.3, 1.0, 0.2), 15);
+    s.move_hand(1, Vec3::new(0.3, 1.0, 1.3), 10); // through the post, past the leash
+    s.step(5);
     let h = v3(s.out.hands[1].pose.pos);
     assert!(h.distance(s.hand_pos(1)) < 0.05, "snapped back to the controller: {h:?}");
 }

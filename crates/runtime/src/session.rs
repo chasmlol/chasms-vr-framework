@@ -466,6 +466,18 @@ impl Session {
                     _ => {}
                 }
             }
+            // Every two seconds: where the hands are against their controllers, in the game's world.
+            if let Some(g) = &self.game
+                && (now / 2.0).floor() != ((now - frame.dt as f64) / 2.0).floor()
+            {
+                let map = WorldMap::from_state(&g.tracking);
+                let at = |p: &Pose| map.point(Vec3::from_array(p.pos));
+                let line = |i: usize| {
+                    let h = &self.rig_out.hands[i];
+                    format!("{:.3?} for the controller at {:.3?}{}", at(&h.pose), at(&frame.hands[i].grip), if h.flags & HAND_BLOCKED != 0 { " (blocked)" } else { "" })
+                };
+                tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
+            }
             self.rig.write_states(&mut self.states);
             self.link.write_object_states(&self.states);
             let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));

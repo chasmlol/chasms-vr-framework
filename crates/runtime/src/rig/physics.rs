@@ -264,6 +264,13 @@ impl Physics {
         if proj.is_inside { 0.0 } else { (from_v(proj.point) - p).length() }
     }
 
+    /// Nothing of the static world lies between `from` and `to` (the player could reach `to`).
+    pub fn reachable(&self, from: V3, to: V3) -> bool {
+        let d = to - from;
+        let len = d.length();
+        len < 1e-4 || self.ray_world(from, d, len).is_none()
+    }
+
     /// First static-world hit along a ray, as a distance.
     pub fn ray_world(&self, origin: V3, dir: V3, max: f32) -> Option<f32> {
         let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
@@ -403,6 +410,54 @@ mod tests {
         }
         let z = p.pose(h).0.z;
         assert!(z < 0.95, "the wall stops the hand: z = {z}");
+    }
+
+    /// A collision mesh as a game streams it: a quad of two one-sided triangles (no thickness).
+    fn mesh_quad(p: &mut Physics, id: u32, corners: [[f32; 3]; 4]) {
+        let [a, b, c, d] = corners;
+        let tri = |x: [f32; 3], y: [f32; 3], z: [f32; 3]| ColTriangle { v: [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]] };
+        let mut payload = bytemuck::bytes_of(&ColMesh { id, count: 2 }).to_vec();
+        payload.extend_from_slice(bytemuck::bytes_of(&tri(a, b, c)));
+        payload.extend_from_slice(bytemuck::bytes_of(&tri(a, c, d)));
+        p.apply_collision(COL_MESH, &payload);
+    }
+
+    /// A hand driven the way the rig drives an empty hand, towards a controller held `behind` the
+    /// surface, for two seconds: where it ends up.
+    fn push_into(p: &mut Physics, start: V3, target: V3) -> Vec<V3> {
+        let (h, _) = p.add_hand(0, start, Q::IDENTITY);
+        p.set_dt(1.0 / 90.0);
+        let mut path = Vec::new();
+        for _ in 0..180 {
+            p.track(h, target, Q::IDENTITY, 1.0 / 90.0, 1.0, 1e5, 1.0, 1e5);
+            p.step();
+            path.push(p.pose(h).0);
+        }
+        path
+    }
+
+    #[test]
+    fn a_hand_stays_on_the_near_side_of_a_thin_wall_and_floor() {
+        // A wall at z = 1 and a floor at y = 0, as the game's triangle meshes (both windings).
+        for flip in [false, true] {
+            let mut p = Physics::default();
+            let mut wall = [[-2.0, -1.0, 1.0], [2.0, -1.0, 1.0], [2.0, 3.0, 1.0], [-2.0, 3.0, 1.0]];
+            let mut floor = [[-2.0, 0.0, -2.0], [2.0, 0.0, -2.0], [2.0, 0.0, 3.0], [-2.0, 0.0, 3.0]];
+            if flip {
+                wall.reverse();
+                floor.reverse();
+            }
+            mesh_quad(&mut p, 1, wall);
+            mesh_quad(&mut p, 2, floor);
+            for depth in [0.05, 0.25, 0.4] {
+                let path = push_into(&mut p, V3::new(0.0, 1.0, 0.5), V3::new(0.0, 1.0, 1.0 + depth));
+                let worst = path.iter().map(|q| q.z).fold(f32::MIN, f32::max);
+                assert!(worst < 1.0, "flip {flip}, {depth} m into the wall: the hand got to z {worst}");
+                let path = push_into(&mut p, V3::new(0.5, 0.5, 0.0), V3::new(0.5, -depth, 0.0));
+                let worst = path.iter().map(|q| q.y).fold(f32::MAX, f32::min);
+                assert!(worst > 0.0, "flip {flip}, {depth} m into the floor: the hand got to y {worst}");
+            }
+        }
     }
 
     #[test]
