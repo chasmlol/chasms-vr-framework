@@ -100,6 +100,7 @@ impl Physics {
                         let h = self.world.insert(RigidBodyBuilder::fixed(), c.collision_groups(groups_world()).friction(0.8));
                         self.meshes.insert(head.id, h);
                         self.triangles += count;
+                        tracing::info!("rig: collision mesh {:#x}: {count} triangles", head.id);
                     }
                     Err(e) => tracing::warn!("rig: collision mesh {}: {e:?}", head.id),
                 }
