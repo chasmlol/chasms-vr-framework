@@ -154,7 +154,9 @@ pub struct Interaction {
     /// A see-through hand shows where the controller really is while the hand's held back.
     pub ghost_hands: bool,
     /// Seconds a hand takes to go into the grip on what it takes (and back out letting go): the
-    /// wrist onto it, the fingers into their hold, the thing into the hand.
+    /// wrist onto it, the fingers into their hold, the thing into the hand, a hand let go of a
+    /// valve back to the controller. Over more than 20 cm it takes longer in proportion
+    /// (`rig::travel_time`); 0: at once.
     pub grab_transition: f32,
     /// Metres from the palm to an object's surface that still grab it.
     pub grab_radius: f32,

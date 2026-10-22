@@ -128,7 +128,8 @@ struct Obj {
     holder: Holder,
     attach: Attach,
     /// Ease into the hand from here (pose, start time).
-    blend: Option<(Vec3, Quat, f64)>,
+    /// Gliding into the hand that took it: from where it was, since when, and how far it goes.
+    blend: Option<(Vec3, Quat, f64, f32)>,
     spawn_seq: u32,
     spawned: bool,
     free_since: f64,
@@ -242,6 +243,9 @@ struct Hand {
     vel_t: Vec3,
     ang_t: Vec3,
     leashed_until: f64,
+    /// Letting go of something that held the hand away from its controller (a valve's rim): it
+    /// goes back to the controller from there (position, rotation), since when, over how long.
+    returning: Option<(Vec3, Quat, f64, f32)>,
 }
 
 /// What the rest of the runtime needs from the rig this frame.
@@ -485,6 +489,16 @@ fn mirror_grip(q: Quat) -> Quat {
 /// Where the support hand holds the gun (weapon space): the game's own place for it. It locks there.
 fn foregrip_point(d: &ObjectDesc, _local: Vec3) -> Vec3 {
     v3(d.foregrip)
+}
+
+/// How far a hand (or what it takes) goes in one grab transition: further takes longer in
+/// proportion, so it never moves faster than it does over this.
+pub const TRAVEL_REACH: f32 = 0.2;
+
+/// How long a hand's transition over `distance` metres takes: the grab transition setting, longer
+/// in proportion beyond [`TRAVEL_REACH`] (0: at once, whatever the distance).
+pub fn travel_time(transition: f32, distance: f32) -> f32 {
+    transition.max(0.0) * (distance / TRAVEL_REACH).max(1.0)
 }
 
 fn smooth(x: f64) -> f32 {
@@ -1015,8 +1029,9 @@ impl Rig {
             for (i, g, _) in grips {
                 let h = &self.hands.as_ref().unwrap()[i];
                 let b = h.body;
-                let k = if transition > 1e-3 { smooth((self.now - g.since) / transition as f64) } else { 1.0 };
                 let (p, q) = (v.rim(g.at), (v.rot() * g.rot).normalize());
+                let time = travel_time(transition, g.from.0.distance(p));
+                let k = if time > 1e-3 { smooth((self.now - g.since) / time as f64) } else { 1.0 };
                 self.physics.set_pose(b, g.from.0.lerp(p, k), g.from.1.slerp(q, k).normalize());
                 self.physics.set_velocity(b, Vec3::ZERO, Vec3::ZERO);
             }
@@ -1108,6 +1123,7 @@ impl Rig {
                 vel_t: Vec3::ZERO,
                 ang_t: Vec3::ZERO,
                 leashed_until: 0.0,
+                returning: None,
             }
         };
         let l = mk(&mut self.physics, 0);
@@ -1500,7 +1516,7 @@ impl Rig {
             let rel = compose(inverse((palm, grip_rot)), (pos, rot));
             Attach::Fixed(rel.0, rel.1)
         };
-        o.blend = Some((pos, rot, self.now));
+        o.blend = Some((pos, rot, self.now, pos.distance(palm)));
         if let Holder::Holstered(slot) = o.holder {
             o.home_slot = Some(slot);
         }
@@ -1538,8 +1554,11 @@ impl Rig {
                 return;
             }
             if h.valve.take().is_some() {
-                let c = h.collider;
-                self.physics.set_groups(c, groups_hand(i));
+                // Back to the controller from the rim, at a hand's pace, through whatever's between.
+                let (b, target) = (h.body, h.target.0);
+                let from = self.physics.pose(b);
+                let time = travel_time(s.grab_transition, from.0.distance(target));
+                self.hands.as_mut().unwrap()[i].returning = Some((from.0, from.1, self.now, time));
                 return;
             }
             if let Glove::Locked(_) = h.glove {
@@ -2695,10 +2714,9 @@ impl Rig {
                         Attach::Fixed(p, q) => compose(self.hands.as_ref().unwrap()[hand].target, (p, q)),
                     };
                     let o = &self.objects[id];
-                    let snap = s.interaction.grab_transition.max(0.0) as f64;
                     let target = match o.blend {
-                        Some((bp, bq, t0)) if self.now - t0 < snap => {
-                            let k = smooth((self.now - t0) / snap);
+                        Some((bp, bq, t0, d)) if self.now - t0 < travel_time(s.interaction.grab_transition, d) as f64 => {
+                            let k = smooth((self.now - t0) / travel_time(s.interaction.grab_transition, d) as f64);
                             (bp.lerp(target.0, k), bq.slerp(target.1, k))
                         }
                         _ => target,
@@ -2824,6 +2842,17 @@ impl Rig {
         for (i, h) in hands.iter_mut().enumerate() {
             if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() || h.valve.is_some() {
                 continue;
+            }
+            // Gliding back to the controller after letting go of a valve.
+            if let Some((p0, q0, t0, time)) = h.returning {
+                let k = if time > 1e-3 { smooth((now - t0) / time as f64) } else { 1.0 };
+                if k < 1.0 {
+                    self.physics.set_pose(h.body, p0.lerp(h.target.0, k), q0.slerp(h.target.1, k).normalize());
+                    self.physics.set_velocity(h.body, Vec3::ZERO, Vec3::ZERO);
+                    continue;
+                }
+                h.returning = None;
+                self.physics.set_groups(h.collider, groups_hand(i));
             }
             let (pos, _) = self.physics.pose(h.body);
             if pos.distance(h.target.0) > LEASH && self.physics.reachable(head, h.target.0) {

@@ -2203,3 +2203,37 @@ fn a_hand_glides_onto_a_valve_rim_over_the_grab_transition() {
     s.step(20);
     assert!(v3(s.out.hands[1].pose.pos).distance(rim) < 0.01, "on the rim after the transition");
 }
+
+#[test]
+fn transitions_take_longer_over_longer_distances() {
+    assert_eq!(travel_time(0.15, 0.05), 0.15, "a short way: the setting");
+    assert!((travel_time(0.15, 0.6) - 0.45).abs() < 1e-6, "three times as far, three times as long");
+    assert!((travel_time(0.3, 0.6) - 0.9).abs() < 1e-6, "a slower setting, slower all the way");
+    assert_eq!(travel_time(0.0, 0.6), 0.0, "none: at once");
+}
+
+#[test]
+fn letting_go_of_a_valve_far_from_the_controller_glides_the_hand_back_at_a_hands_pace() {
+    let centre = Vec3::new(0.3, 1.2, 0.6);
+    let mut s = Sim::with(&[valve_desc(44, centre, 0.2, 60.0)]);
+    s.step(5);
+    turn_valve(&mut s, centre, 0.2);
+    // The stiff valve held the hand on its rim; the controller went on round, and back out off
+    // the wheel towards the player.
+    let off = s.hand_pos(1) + Vec3::new(0.0, 0.0, -0.25);
+    s.move_hand(1, off, 15);
+    let hand = v3(s.out.hands[1].pose.pos);
+    let controller = s.hand_pos(1);
+    let apart = hand.distance(controller);
+    assert!(apart > 0.25, "held back: {apart}");
+    s.grip(1, 0.0);
+    let first = v3(s.out.hands[1].pose.pos);
+    assert!(first.distance(hand) < 0.05, "no jump on letting go: {:?} -> {first:?}", hand);
+    // Half the way's time in, part way there.
+    let time = travel_time(Settings::default().interaction.grab_transition, apart);
+    s.step((time * 0.5 / DT) as usize);
+    let mid = v3(s.out.hands[1].pose.pos);
+    assert!(mid.distance(controller) > 0.05 && mid.distance(controller) < apart - 0.05, "on its way: {mid:?}");
+    s.step((time * 0.6 / DT) as usize + 2);
+    assert!(v3(s.out.hands[1].pose.pos).distance(controller) < 0.01, "back with the controller");
+}

@@ -81,7 +81,12 @@ impl Grab {
     /// One frame: towards the held pose while there is one, back to the hand's own after. The
     /// hand drawn: the held pose part way from the hand's own wrist (`own`), its fingers by the same
     /// weight (`HeldHand::weight`).
-    fn step(&mut self, held: Option<HeldHand>, own: (Vec3, Quat), dt: f32, time: f32) -> Option<HeldHand> {
+    ///
+    /// `transition`: the grab transition setting; a wrist with further to go takes longer
+    /// (`rig::travel_time`).
+    fn step(&mut self, held: Option<HeldHand>, own: (Vec3, Quat), dt: f32, transition: f32) -> Option<HeldHand> {
+        let to = held.or(self.last).map_or(0.0, |h| own.0.distance(Vec3::from_array(h.wrist.pos)));
+        let time = crate::rig::travel_time(transition, to);
         let rate = if time > 1e-3 { dt / time } else { 1.0 };
         match held {
             Some(h) => {
