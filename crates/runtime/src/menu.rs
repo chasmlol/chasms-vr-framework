@@ -338,6 +338,19 @@ fn help(ui: &mut egui::Ui) {
         ("Trigger or A on the grenade hand", "arm it one-handed while the other hand holds a gun"),
         ("Throw a knife", "it flies blade first and sticks; grab it to pull it out"),
     ]);
+    section(ui, "Games that keep their own gun (Metro 2033)", &[
+        ("Trigger", "fire; raise the sights to your eye to aim down them"),
+        ("Other hand on the barrel + grip", "two-handed (one-handed kicks three times harder)"),
+        ("A on the gun hand", "drop the magazine; grip at your hip for a fresh one, push it into the gun, pull the charging handle"),
+        ("Hold A on the gun hand", "change the gas mask's filter"),
+        ("B on the gun hand", "jump"),
+        ("A on the other hand / hold it", "use / the journal and map"),
+        ("B on the other hand / hold it", "flashlight / charge it"),
+        ("Trigger on the other hand", "throw a grenade"),
+        ("Grip at your face / the top of your head", "gas mask / night vision"),
+        ("Grip over your shoulder", "next weapon"),
+        ("Other wrist up in front of your eyes", "your watch (the light and the filter's time)"),
+    ]);
     section(ui, "Holsters", &[
         ("Let go of a gun at a hip", "holster it there"),
         ("Let go of it behind your shoulder", "carry it on your back (both shoulders)"),
