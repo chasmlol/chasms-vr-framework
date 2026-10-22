@@ -23,21 +23,23 @@ pub struct Spec {
     pub aux_h: u32,
 }
 
+/// The per-eye resolution games render at: the headset's recommended size times the render scale,
+/// capped by `max_eye_size`.
+pub fn eye_size(recommended: (u32, u32), s: &Settings) -> (u32, u32) {
+    let scale = s.vr.render_scale.clamp(0.25, 3.0);
+    let (mut w, mut h) = ((recommended.0 as f32 * scale) as u32, (recommended.1 as f32 * scale) as u32);
+    let cap = s.vr.max_eye_size;
+    if cap > 0 && w.max(h) > cap {
+        let k = cap as f32 / w.max(h) as f32;
+        (w, h) = ((w as f32 * k) as u32, (h as f32 * k) as u32);
+    }
+    (w.max(16), h.max(16))
+}
+
 impl Spec {
     /// From the adapter's request, the headset's recommended size and the settings.
     pub fn new(req: &TargetRequest, recommended: (u32, u32), s: &Settings) -> Spec {
-        let (eye_w, eye_h) = if req.eye_w > 0 && req.eye_h > 0 {
-            (req.eye_w, req.eye_h)
-        } else {
-            let scale = s.vr.render_scale.clamp(0.25, 3.0);
-            let (mut w, mut h) = ((recommended.0 as f32 * scale) as u32, (recommended.1 as f32 * scale) as u32);
-            let cap = s.vr.max_eye_size;
-            if cap > 0 && w.max(h) > cap {
-                let k = cap as f32 / w.max(h) as f32;
-                (w, h) = ((w as f32 * k) as u32, (h as f32 * k) as u32);
-            }
-            (w.max(16), h.max(16))
-        };
+        let (eye_w, eye_h) = if req.eye_w > 0 && req.eye_h > 0 { (req.eye_w, req.eye_h) } else { eye_size(recommended, s) };
         let fmt = if req.color_format == 0 { DXGI_FORMAT_R8G8B8A8_UNORM } else { DXGI_FORMAT(req.color_format as i32) };
         let (typeless, _, _) = color_family(fmt);
         let (aux_w, aux_h) = if req.aux_size > 0 { (req.aux_size, req.aux_size) } else { (eye_w, eye_h) };

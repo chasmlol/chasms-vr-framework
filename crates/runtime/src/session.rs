@@ -563,6 +563,10 @@ impl Session {
             hands: frame.hands,
             tracking: out.tracking,
             intents: out.intents,
+            eye_size: {
+                let (w, h) = crate::targets::eye_size(self.backend.recommended_size(), &self.settings.current);
+                [w, h]
+            },
         };
         if frame.hmd.valid == 0 {
             rt.flags &= !RT_ACTIVE;

@@ -271,6 +271,9 @@ pub struct RtFrame {
     pub hands: [Controller; 2],
     pub tracking: TrackingControl,
     pub intents: Intents,
+    /// The headset's per-eye resolution (its recommended size times the render-scale setting): a
+    /// game that renders the eyes itself sizes its frame to match.
+    pub eye_size: [u32; 2],
 }
 /// Tracking is valid and the runtime wants the game in VR.
 pub const RT_ACTIVE: u32 = 1 << 0;
@@ -741,7 +744,7 @@ const _: () = {
     assert!(size_of::<Controller>() == 112);
     assert!(size_of::<TrackingControl>() == 32);
     assert!(size_of::<Intents>() == 328);
-    assert!(size_of::<RtFrame>() == 744);
+    assert!(size_of::<RtFrame>() == 752);
     assert!(size_of::<TrackingState>() == 64);
     assert!(size_of::<WeaponRig>() == 144);
     assert!(size_of::<TargetRequest>() == 32);
