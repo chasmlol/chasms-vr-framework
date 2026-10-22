@@ -11,7 +11,7 @@
 //! * **Visibility:** hands only, hands and arms, or the full body. In first person the head (and
 //!   everything under it) collapses onto the neck so the wearer never sees inside it.
 //! * **Ghost hands:** where a physics hand is held back by the world, a translucent hand shows
-//!   where the controller really is, hidden by the game's world like everything else.
+//!   where the controller really is.
 //! * **Held poses:** a hand holding a gun the game has its own hand pose for ([`HeldHand`], from
 //!   the protocol's hand pose table) is drawn exactly in that pose instead of the curls: the wrist
 //!   where the game's is, every finger joint as the game has it, the hand scaled to the game's

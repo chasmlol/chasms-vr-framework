@@ -260,15 +260,14 @@ float4 PSMetroGlass(VSOut i) : SV_Target {
     return float4(finish(c.rgb), m_bad(c.aaa) ? 0 : saturate(c.a));
 }
 
-// Hidden by the game's world like the real hand: through a wall or behind a crate, nothing of it
-// shows (the real hand is stopped at the near side).
 float4 PSGhost(VSOut i) : SV_Target {
     if (i.vis < 0) discard;
-    if (behind_game(i.pos, i.view_z)) discard;
     float3 n = normalize(i.normal);
     float3 v = normalize(eye_pos.xyz - i.world);
     float f = pow(1 - saturate(abs(dot(n, v))), 2);
     float a = ghost.a * (0.45 + 1.2 * f);
+    // Usually it's inside the wall that holds the real hand back: still shown, but fainter.
+    if (behind_game(i.pos, i.view_z)) a *= 0.5;
     return float4(ghost.rgb * (0.45 + 1.1 * f), saturate(a));
 }
 "#;
