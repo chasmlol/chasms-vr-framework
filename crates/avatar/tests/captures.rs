@@ -362,3 +362,27 @@ fn game_depth_hides_the_hand_behind_a_wall() {
         assert!(l_wall > 0.9, "{name}: the other hand is untouched");
     }
 }
+
+#[test]
+fn game_depth_hides_a_ghost_hand_behind_a_wall_too() {
+    let gpu = Gpu::new().unwrap();
+    let size = (400, 400);
+    let wall = wall_depth(&gpu, size, 40.0);
+    for (name, mut avatar) in avatars(&gpu) {
+        // The right controller is through the wall (its hand held back): its ghost is behind it.
+        let mut scene = Scene::new(pose::reaching_forward(HEIGHT, [0.53, 0.53]), [pose::relaxed_hand(); 2]);
+        scene.first_person = true;
+        scene.hands[1].flags |= HAND_BLOCKED;
+        scene.ghosts[1] = Some(scene.joints[Joint::RightHand as usize]);
+        let eye = scene.eye();
+        let (x, y) = project(&eye, &HEADSET, size, on_hand(&scene.joints[Joint::RightHand as usize], 0.085));
+        let right = (x.saturating_sub(6), y.saturating_sub(6), (x + 6).min(size.0), (y + 6).min(size.1));
+        let open = render(&gpu, &mut avatar, size, &eye, &HEADSET, &scene, Backdrop::Plain, None);
+        let depth = DepthInput { srv: wall.srv.as_ref().unwrap(), units_per_meter: 100.0 };
+        let walled = render(&gpu, &mut avatar, size, &eye, &HEADSET, &scene, Backdrop::Plain, Some(depth));
+        let (r_open, r_wall) = (coverage(&open, size.0, right), coverage(&walled, size.0, right));
+        eprintln!("{name}: right hand and ghost {r_open} -> {r_wall}");
+        assert!(r_open > 0.9, "{name}: drawn without the wall");
+        assert!(r_wall < 0.02, "{name}: nothing of the hand or its ghost shows through the wall");
+    }
+}
