@@ -437,6 +437,17 @@ impl Adapter {
         }
     }
 
+    /// Where the game's own simulated objects are now (see [`GamePoses`]): every frame.
+    pub fn write_game_poses(&self, poses: &GamePoses) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_game_poses(poses);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The player as the runtime posed it (see [`RtPlayerDraw`]), for an adapter that draws it in
     /// the game's frame. False when there's none.
     pub fn read_player_draw(&self, out: &mut RtPlayerDraw) -> bool {

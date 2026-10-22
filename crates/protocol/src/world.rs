@@ -357,6 +357,37 @@ pub const OBJF_RUNTIME_DRAWS: u32 = 1 << 6;
 /// less a live round already in the gun's chamber (0: the pouch is empty). The game rewrites both
 /// as its ammunition changes.
 pub const OBJF_GAME_AMMO: u32 = 1 << 7;
+/// The game simulates this object (one of its own physics props) and draws it: while it's free the
+/// runtime keeps it where the game says ([`GamePoses`]), solid for the hands, and only moves it
+/// while a hand holds or pulls it (the state says so: `OS_HELD_*`, `OS_PULLED`; the game puts its
+/// own body there). Let go, it flies on in the runtime for [`GAME_HANDBACK`] seconds, its state
+/// carrying the throw's velocity for the game to take it back with, then follows the game again.
+pub const OBJF_GAME_SIMULATED: u32 = 1 << 8;
+/// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
+pub const GAME_HANDBACK: f32 = 0.15;
+
+/// Where the game's own simulated objects ([`OBJF_GAME_SIMULATED`]) are, every frame (world space).
+pub const OFF_GAME_POSES: usize = 0x004C_A000;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct GamePose {
+    /// The object's [`ObjectDesc::id`].
+    pub id: u32,
+    pub _pad: [u32; 3],
+    pub pose: Pose,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GamePoses {
+    /// Seqlock word.
+    pub seq: u32,
+    /// Entries in use are `poses[..count]`.
+    pub count: u32,
+    pub _pad: [u32; 14],
+    pub poses: [GamePose; MAX_OBJECTS],
+}
 
 pub const SHAPE_BOX: u32 = 0;
 pub const SHAPE_CAPSULE: u32 = 1;
@@ -746,6 +777,10 @@ const _: () = {
     assert!(OFF_BODY + size_of::<RtBody>() <= OFF_OBJECTS);
     assert!(size_of::<ObjectDesc>() == 320);
     assert!(size_of::<ObjectState>() == 96);
+    assert!(size_of::<GamePose>() == 48);
+    assert!(OFF_GAME_POSES.is_multiple_of(64));
+    assert!(crate::player::OFF_PLAYER_DRAW + size_of::<crate::RtPlayerDraw>() <= OFF_GAME_POSES);
+    assert!(OFF_GAME_POSES + size_of::<GamePoses>() <= crate::hud::OFF_HUD_LAYOUT);
     assert!(OFF_OBJECTS + size_of::<ObjectTable>() <= OFF_OBJECT_STATES);
     assert!(OFF_OBJECT_STATES + size_of::<ObjectStates>() <= OFF_HAND_POSES);
     assert!(size_of::<HandPoseDesc>() == 432);

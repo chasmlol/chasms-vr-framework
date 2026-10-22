@@ -116,6 +116,8 @@ pub struct Session {
     /// What the game said its HUD's pieces are (see `hud.rs`), and where they go.
     hud_layout: Box<HudLayout>,
     hud_layout_seq: u32,
+    /// Where the game's own simulated objects are (`OBJF_GAME_SIMULATED`).
+    game_poses: Box<GamePoses>,
     hud: crate::hud::HudPlacer,
     /// The game's lighting of its first-person model (the last consistent copy), and whether
     /// there is one: the body is shaded with it.
@@ -194,6 +196,7 @@ impl Session {
             game_shots: 0,
             hud_layout: bytemuck::zeroed_box(),
             hud_layout_seq: 0,
+            game_poses: bytemuck::zeroed_box(),
             game_lighting: bytemuck::zeroed_box(),
             game_lighting_read: bytemuck::zeroed_box(),
             has_game_lighting: false,
@@ -427,6 +430,10 @@ impl Session {
         };
         self.floor = floor;
         if rig_active {
+            // Where the game has its own simulated props now.
+            if self.link.read_game_poses_into(&mut self.game_poses) {
+                self.rig.set_game_poses(&self.game_poses);
+            }
             let g = self.game.as_ref().unwrap();
             let stand = self.mech.debug.stand_h - floor;
             self.rig_out = self.rig.update(&RigInput {

@@ -479,6 +479,25 @@
  */
 #define RVR_OBJF_GAME_AMMO (1 << 7)
 
+/**
+ * The game simulates this object (one of its own physics props) and draws it: while it's free the
+ * runtime keeps it where the game says ([`GamePoses`]), solid for the hands, and only moves it
+ * while a hand holds or pulls it (the state says so: `OS_HELD_*`, `OS_PULLED`; the game puts its
+ * own body there). Let go, it flies on in the runtime for [`GAME_HANDBACK`] seconds, its state
+ * carrying the throw's velocity for the game to take it back with, then follows the game again.
+ */
+#define RVR_OBJF_GAME_SIMULATED (1 << 8)
+
+/**
+ * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
+ */
+#define RVR_GAME_HANDBACK 0.15
+
+/**
+ * Where the game's own simulated objects ([`OBJF_GAME_SIMULATED`]) are, every frame (world space).
+ */
+#define RVR_OFF_GAME_POSES 5021696
+
 #define RVR_SHAPE_BOX 0
 
 #define RVR_SHAPE_CAPSULE 1

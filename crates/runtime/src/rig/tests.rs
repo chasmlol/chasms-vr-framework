@@ -274,6 +274,85 @@ fn pick_up_carry_and_drop() {
     assert!(s.rig.debug.throws == 0, "a drop isn't a throw");
 }
 
+/// A game's own physics prop (`OBJF_GAME_SIMULATED`): it stays where the game says until a hand
+/// takes it, goes with the hand, leaves it with the throw's velocity in its state (for the game to
+/// take it back with), then follows the game again.
+#[test]
+fn a_game_prop_follows_the_game_until_held_and_goes_back_with_the_throw() {
+    const PROP: u32 = 30;
+    let mut d = obj(PROP, OBJ_PROP, Vec3::new(-0.3, 0.86, 0.5), [0.05, 0.05, 0.05], 0.4);
+    d.flags |= OBJF_GAME_SIMULATED;
+    let mut s = Sim::with(&[d]);
+    let mut poses: Box<GamePoses> = bytemuck::zeroed_box();
+    let mut game_at = |s: &mut Sim, p: Vec3| {
+        poses.count = 1;
+        poses.poses[0] = GamePose { id: PROP, pose: pose(p, Quat::IDENTITY), ..Default::default() };
+        s.rig.set_game_poses(&poses);
+    };
+    let state = |s: &Sim| {
+        let mut st: Box<ObjectStates> = bytemuck::zeroed_box();
+        s.rig.write_states(&mut st);
+        st.states[..st.count as usize].iter().find(|o| o.id == PROP).copied().unwrap()
+    };
+    // The game moves it (something knocked it): the runtime's follows.
+    let p1 = Vec3::new(-0.3, 0.86, 0.5);
+    game_at(&mut s, p1);
+    s.step(20);
+    assert!(s.pos(PROP).distance(p1) < 0.01, "where the game has it: {:?}", s.pos(PROP));
+    let p2 = Vec3::new(-0.25, 0.86, 0.52);
+    game_at(&mut s, p2);
+    s.step(2);
+    assert!(s.pos(PROP).distance(p2) < 0.01, "follows the game: {:?}", s.pos(PROP));
+
+    // Taken: the hand moves it, whatever the game last said.
+    s.move_hand(0, p2 + Vec3::new(0.0, 0.12, 0.0), 30);
+    s.grip(0, 1.0);
+    assert_eq!(s.rig.held(0), Some(PROP), "picked up");
+    s.move_hand(0, Vec3::new(-0.3, 1.4, 0.2), 30);
+    assert!(s.pos(PROP).y > 1.2, "lifted with the hand: {:?}", s.pos(PROP));
+    assert!(state(&s).flags & OS_HELD_LEFT != 0);
+
+    // Thrown: its state carries the throw for the game.
+    for k in 1..=8 {
+        s.set_hand(0, Vec3::new(-0.3, 1.4 + 0.04 * k as f32, 0.2 + 0.06 * k as f32));
+        s.step(1);
+    }
+    s.grip(0, 0.0);
+    let st = state(&s);
+    assert_eq!(st.flags & (OS_HELD_LEFT | OS_HELD_RIGHT | OS_PULLED), 0, "let go");
+    let v = v3(st.lin_vel);
+    assert!(v.length() > 2.0 && v.z > 1.0, "the throw's velocity for the game: {v:?}");
+
+    // Then the game has it again.
+    let p3 = Vec3::new(-0.9, 0.3, 1.3);
+    game_at(&mut s, p3);
+    s.step(30);
+    assert!(s.pos(PROP).distance(p3) < 0.01, "follows the game again: {:?}", s.pos(PROP));
+
+    // Out of reach on the floor: the gravity gloves bring it.
+    let from = Vec3::new(-0.4, 1.2, 0.2);
+    s.move_hand(0, from, 20);
+    s.set_rot(0, look_rotation(p3 - from, Vec3::Y));
+    s.step(15);
+    assert!(s.out.hand_targeting[0], "pointing at it");
+    s.grip(0, 1.0);
+    let mut p = s.hand_pos(0);
+    for _ in 0..6 {
+        p.z -= 2.5 * DT;
+        p.y += 1.0 * DT;
+        s.set_hand(0, p);
+        s.step(1);
+    }
+    for _ in 0..120 {
+        game_at(&mut s, p3); // (the game still says where it was: the runtime has it now)
+        s.step(1);
+        if s.rig.held(0).is_some() {
+            break;
+        }
+    }
+    assert_eq!(s.rig.held(0), Some(PROP), "pulled into the hand: at {:?}", s.pos(PROP));
+}
+
 #[test]
 fn landing_objects_make_impacts() {
     let mut s = Sim::new();

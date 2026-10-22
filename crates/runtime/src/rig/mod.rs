@@ -352,6 +352,8 @@ const RETURN_TIME: f64 = 0.3;
 pub struct Rig {
     pub physics: Physics,
     objects: BTreeMap<u32, Obj>,
+    /// Where the game says its own simulated objects are (`OBJF_GAME_SIMULATED`, world space).
+    game_poses: HashMap<u32, (Vec3, Quat)>,
     hands: Option<[Hand; 2]>,
     anchor: BodyAnchor,
     slots: [Option<u32>; SLOT_COUNT_BODY],
@@ -379,6 +381,7 @@ impl Default for Rig {
             anchor: BodyAnchor::default(),
             slots: [None; SLOT_COUNT_BODY],
             next_spawn: SPAWN_BASE,
+            game_poses: HashMap::new(),
             templates: Vec::new(),
             feedback: Vec::new(),
             debug: RigDebug::default(),
@@ -540,6 +543,16 @@ impl Rig {
     /// The gun's own recoil, if the game gave one.
     pub fn kicks(&self, id: u32) -> &[KickDesc] {
         self.kicks.get(&id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// Where the game's own simulated objects are now (`OBJF_GAME_SIMULATED`): the free ones follow.
+    pub fn set_game_poses(&mut self, poses: &GamePoses) {
+        self.game_poses.clear();
+        for p in &poses.poses[..(poses.count as usize).min(MAX_OBJECTS)] {
+            if p.id != 0 && p.pose.valid != 0 {
+                self.game_poses.insert(p.id, (v3(p.pose.pos), q4(p.pose.rot)));
+            }
+        }
     }
 
     pub fn sync(&mut self, table: &ObjectTable) {
@@ -2375,6 +2388,8 @@ impl Rig {
                     let (dur, g) = alyx_pull(p.distance(palm));
                     let o = self.objects.get_mut(&id).unwrap();
                     o.holder = Holder::Pulled { hand: i, t0: now, dur, gravity: g };
+                    // (A game's own prop followed the game until now: the runtime's while it flies.)
+                    self.physics.set_kinematic(body, false);
                     self.physics.set_gravity(body, g / GRAVITY);
                     self.physics.set_angular_damping(body, 8.0);
                     let launch = (palm - p) / dur + Vec3::Y * (0.5 * g * dur);
@@ -2518,6 +2533,16 @@ impl Rig {
                     }
                     if self.objects[id].throw.as_ref().is_some_and(|t| t.flight.is_some()) {
                         self.fly(*id, dt, s.interaction.knife_assist);
+                    }
+                    // The game's own prop: where the game has it, once it's had it back.
+                    let o = &self.objects[id];
+                    if o.desc.flags & OBJF_GAME_SIMULATED != 0
+                        && self.now - o.free_since > GAME_HANDBACK as f64
+                        && let Some(&(p, q)) = self.game_poses.get(id)
+                    {
+                        let body = o.body;
+                        self.physics.set_kinematic(body, true);
+                        self.physics.move_kinematic(body, p, q);
                     }
                 }
                 // A knife in a loose object rides with it; if that's gone, it falls.

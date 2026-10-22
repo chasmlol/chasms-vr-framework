@@ -274,6 +274,14 @@ impl Link {
     pub fn read_body(&self) -> Option<RtBody> {
         unsafe { seq_read(self.base.add(OFF_BODY)) }
     }
+    /// Adapter: where the game's own simulated objects are now (see [`GamePoses`]).
+    pub fn write_game_poses(&self, v: &GamePoses) {
+        unsafe { seq_write(self.base.add(OFF_GAME_POSES), v) }
+    }
+    /// Runtime: read the game's simulated objects' poses into `out`.
+    pub fn read_game_poses_into(&self, out: &mut GamePoses) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_GAME_POSES), out) }
+    }
     /// Runtime: publish the posed player (see [`RtPlayerDraw`]).
     pub fn write_player_draw(&self, v: &RtPlayerDraw) {
         unsafe { seq_write(self.base.add(OFF_PLAYER_DRAW), v) }
