@@ -346,6 +346,9 @@ const SPAWN_BASE: u32 = 0x8000_0000;
 /// its own speed into it, and never more than `PUSH_MAX` in all.
 const PUSH_OUT: f32 = 10.0;
 const PUSH_MAX: f32 = 4.0;
+/// Where the shoulder is from the eyes (for the gloves' reach): this far down, and out to the side.
+const SHOULDER_DROP: f32 = 0.25;
+const SHOULDER_OUT: f32 = 0.18;
 /// Faster than this (m/s), a hand pushes the way it moves.
 const PUSH_MOVING: f32 = 0.2;
 const LEASH: f32 = 0.7;
@@ -497,6 +500,13 @@ const GRAVITY: f32 = 9.81;
 pub mod alyx {
     /// `vr_hand_pull_cone` 0.965: the cone you point into (cos of 15 degrees) ...
     pub const CONE_COS: f32 = 0.965;
+    /// Only what you're looking at: `vr_gg_fov_max_for_target` 60 and `..._vert_for_target` 70
+    /// (degrees, the window's full width and height), centred `vr_gg_fov_center_vert_offset` -100
+    /// at 500 below the line of sight (server.dll `0x3F2EA0` draws it: tan(fov / 2) * 500 either
+    /// side of the point 500 ahead, the offset along the view's up).
+    pub const VIEW_HALF_WIDE: f32 = 30.0;
+    pub const VIEW_HALF_HIGH: f32 = 35.0;
+    pub const VIEW_DOWN: f32 = -100.0 / 500.0;
     /// ... starting `vr_hand_pull_coneoffset` -10 (25 cm) behind the hand, out to
     /// `vr_hand_pull_conelength` 400 (10 m, the range setting's default).
     pub const CONE_BACK: f32 = 0.254;
@@ -2488,18 +2498,37 @@ impl Rig {
     }
 
     // ---- gravity gloves (Half-Life: Alyx's) -----------------------------------------------------------
-    /// Where a hand points the gloves: out of the palm, as a hand reaching out for a thing beyond
-    /// its reach. OpenXR's grip +X leaves the left palm and enters the right one.
-    fn glove_dir(&self, i: usize) -> Vec3 {
+    /// Where a hand reaches the gloves: along the arm, from the shoulder out through the hand (a
+    /// hand reaching for a thing beyond it, held however it's naturally held), or out of the palm
+    /// turned towards it. (Alyx aims along an attachment authored on its hand model,
+    /// `vr_controller_grabbity_gun_forward_pull`, server.dll `0xD5D0E0`: a reach, not the
+    /// controller's nose.) OpenXR's grip +X leaves the left palm and enters the right one.
+    fn glove_dirs(&self, i: usize, head: (Vec3, Quat)) -> [Vec3; 2] {
         let h = &self.hands.as_ref().unwrap()[i];
         let palm = if i == 0 { Vec3::X } else { -Vec3::X };
-        h.target.1 * palm
+        // The shoulder: below the eyes and out to the hand's side, turned with the head's yaw.
+        let fwd = (head.1 * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
+        let right = Vec3::Y.cross(fwd).normalize_or(Vec3::X);
+        let shoulder = head.0 - Vec3::Y * SHOULDER_DROP + right * if i == 0 { -SHOULDER_OUT } else { SHOULDER_OUT };
+        [(h.target.0 - shoulder).normalize_or(fwd), h.target.1 * palm]
+    }
+
+    /// Whether `p` is in Alyx's targeting window: within `VIEW_HALF_*` of the point a little below
+    /// where the head looks.
+    fn in_view(head: (Vec3, Quat), p: Vec3) -> bool {
+        let local = head.1.inverse() * (p - head.0);
+        if local.z <= 0.0 {
+            return false;
+        }
+        let x = (local.x / local.z).atan().to_degrees().abs();
+        let y = (local.y / local.z - alyx::VIEW_DOWN).atan().to_degrees().abs();
+        x <= alyx::VIEW_HALF_WIDE && y <= alyx::VIEW_HALF_HIGH
     }
 
     /// The object the gloves would take: the free, pullable one nearest the middle of Alyx's cone
     /// (15 degrees about either direction, from 25 cm behind the hand, out to `range`), with a clear
     /// line to it. The current target keeps hold out to 20 degrees.
-    fn glove_target(&self, origin: Vec3, dir: Vec3, current: Option<u32>, range: f32) -> Option<u32> {
+    fn glove_target(&self, origin: Vec3, dirs: [Vec3; 2], head: (Vec3, Quat), current: Option<u32>, range: f32) -> Option<u32> {
         let mut best: Option<(u32, f32)> = None;
         for (id, o) in &self.objects {
             let pullable = o.desc.flags & OBJF_PULLABLE != 0 || (o.desc.flags & OBJF_GRABBABLE != 0 && o.desc.mass <= 8.0);
@@ -2512,7 +2541,10 @@ impl Rig {
             if d < alyx::MIN_DIST || d > range {
                 continue;
             }
-            let cos = dir.dot((p - (origin - dir * alyx::CONE_BACK)).normalize_or_zero());
+            if !Self::in_view(head, p) {
+                continue;
+            }
+            let cos = dirs.iter().map(|&dir| dir.dot((p - (origin - dir * alyx::CONE_BACK)).normalize_or_zero())).fold(-1.0, f32::max);
             let limit = if Some(*id) == current { alyx::HOLD_COS } else { alyx::CONE_COS };
             if cos < limit || self.physics.ray_world(origin, to, d - 0.05).is_some() {
                 continue;
@@ -2536,7 +2568,8 @@ impl Rig {
             return;
         }
         let origin = h.target.0;
-        let dir = self.glove_dir(i);
+        let head = (inp.map.point(v3(inp.frame.hmd.pos)), inp.map.rot(q4(inp.frame.hmd.rot)));
+        let dirs = self.glove_dirs(i, head);
         match h.glove {
             Glove::Idle | Glove::Hover(_) => {
                 if h.hover != Hover::None {
@@ -2544,7 +2577,7 @@ impl Rig {
                     return;
                 }
                 let current = if let Glove::Hover(id) = h.glove { Some(id) } else { None };
-                let best = self.glove_target(origin, dir, current, s.glove_range);
+                let best = self.glove_target(origin, dirs, head, current, s.glove_range);
                 let h = &mut self.hands.as_mut().unwrap()[i];
                 if best == current {
                     h.glove_pending = None;

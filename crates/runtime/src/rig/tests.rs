@@ -373,6 +373,8 @@ fn a_game_prop_follows_the_game_until_held_and_goes_back_with_the_throw() {
     let from = Vec3::new(-0.4, 1.2, 0.2);
     s.move_hand(0, from, 20);
     s.set_rot(0, palm_towards(0, p3 - from));
+    // (Looking its way: the gloves only take what you're looking at.)
+    s.f.hmd.rot = Quat::from_rotation_y(-0.6).to_array();
     s.step(15);
     assert!(s.out.hand_targeting[0], "pointing at it");
     s.grip(0, 1.0);
@@ -2157,4 +2159,22 @@ fn a_valve_on_a_board_to_the_side_is_taken_by_its_rim() {
     let v = s.rig.objects[&42].valve.unwrap();
     eprintln!("hover {hover:?}, rim distance {:?}, palm {:?}", v.nearest(s.rig.hands.as_ref().unwrap()[1].target.0), s.rig.hands.as_ref().unwrap()[1].target.0);
     assert_eq!(hover, Hover::Valve(42));
+}
+
+#[test]
+fn reaching_the_arm_out_at_a_thing_targets_it_however_the_controller_sits() {
+    let mut s = Sim::new();
+    let bottle = s.pos(FAR_BOTTLE);
+    // The right arm reaching out at it from the shoulder, the controller held as it naturally is
+    // (nose ahead, palm to the side): neither the nose nor the palm is on it.
+    let shoulder = Vec3::new(0.18, 1.45, 0.0);
+    let hand = shoulder + (bottle - shoulder).normalize() * 0.55;
+    s.move_hand(1, hand, 25);
+    s.set_rot(1, Quat::IDENTITY);
+    s.step(15);
+    assert!(s.out.hand_targeting[1], "the reach finds it");
+    // The same reach with the head turned well away: it isn't something you're looking at.
+    s.f.hmd.rot = Quat::from_rotation_y(-1.6).to_array();
+    s.step(15);
+    assert!(!s.out.hand_targeting[1], "only what you look at");
 }
