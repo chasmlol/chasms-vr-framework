@@ -34,12 +34,15 @@ pub struct Valve {
 }
 
 /// A hand on a valve: where on the rim (its angle in the wheel's own frame) and how the hand sits
-/// on it (its rotation in the wheel's frame).
+/// on it (its rotation in the wheel's frame); and where the hand was when it took hold, and when
+/// (it goes onto the rim over the grab transition).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ValveGrip {
     pub id: u32,
     pub at: f32,
     pub rot: Quat,
+    pub from: (Vec3, Quat),
+    pub since: f64,
 }
 
 impl Valve {

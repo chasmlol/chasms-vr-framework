@@ -320,7 +320,7 @@ fn help(ui: &mut egui::Ui) {
         ("Hold grip on it", "it locks on and hops towards you"),
         ("Flick your wrist back (or yank)", "it flies to you: keep the grip to catch it"),
         ("Let go while moving", "throw (the speed at your swing's peak counts, not the release)"),
-        ("Walls and tables", "stop your hands; a blue ghost shows the real one"),
+        ("Walls and tables", "stop your hands (a ghost of the real one is in the Hands tab)"),
     ]);
     section(ui, "Guns", &[
         ("Trigger", "fire (one-handed or off the shoulder it kicks harder)"),
@@ -374,8 +374,12 @@ fn help(ui: &mut egui::Ui) {
 
 fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rect)>) {
     let h = &mut s.interaction;
-    let r = ui.checkbox(&mut h.physics_hands, "Physics hands (walls stop them; a ghost shows your real hand)");
+    let r = ui.checkbox(&mut h.physics_hands, "Physics hands (walls stop them)");
     rects.push(("hands:physics".into(), r.rect));
+    if h.physics_hands {
+        ui.checkbox(&mut h.ghost_hands, "Ghost hands (a see-through hand where your real one is when it's held back)");
+    }
+    slider(ui, "Grab transition (fast .. slow)", &mut h.grab_transition, 0.0, 0.4, " s", 2);
     ui.checkbox(&mut h.grip_toggle, "Grip toggles (press once to hold, again to let go)");
     ui.checkbox(&mut h.auto_holster, "Guns you let go of return to their holster");
     let r = ui.checkbox(&mut h.gravity_gloves, "Gravity gloves (point, grip, flick to pull)");

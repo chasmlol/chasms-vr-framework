@@ -149,8 +149,13 @@ pub struct Weapon {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Interaction {
-    /// Hands collide with the world and objects (a ghost hand shows when they're held back).
+    /// Hands collide with the world and objects.
     pub physics_hands: bool,
+    /// A see-through hand shows where the controller really is while the hand's held back.
+    pub ghost_hands: bool,
+    /// Seconds a hand takes to go into the grip on what it takes (and back out letting go): the
+    /// wrist onto it, the fingers into their hold, the thing into the hand.
+    pub grab_transition: f32,
     /// Metres from the palm to an object's surface that still grab it.
     pub grab_radius: f32,
     /// Grip press / release thresholds (hysteresis).
@@ -334,6 +339,8 @@ impl Default for Interaction {
     fn default() -> Self {
         Interaction {
             physics_hands: true,
+            ghost_hands: false,
+            grab_transition: 0.15,
             grab_radius: 0.07,
             grip_press: 0.6,
             grip_release: 0.4,

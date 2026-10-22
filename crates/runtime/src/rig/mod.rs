@@ -375,7 +375,6 @@ const ROUND_SEAT_ANGLE: f32 = 50.0;
 const LOAD_OPEN: f32 = 35.0;
 /// A gun fired with its sights this close to the eye is aimed (the game's aimed recoil).
 const AIMED_SIGHT: f32 = 0.15;
-const SNAP_BLEND: f64 = 0.12;
 const RETURN_TIME: f64 = 0.3;
 
 pub struct Rig {
@@ -999,8 +998,9 @@ impl Rig {
     }
 
     /// Turns the valves: each by the hands on its rim (pulling towards their controllers) against
-    /// its friction, and puts its wheel and those hands where it's turned to.
-    fn valves(&mut self, dt: f32) {
+    /// its friction, and puts its wheel and those hands where it's turned to (a hand that's just
+    /// taken hold on its way there over `transition` seconds).
+    fn valves(&mut self, dt: f32, transition: f32) {
         let ids: Vec<u32> = self.objects.iter().filter(|(_, o)| o.valve.is_some()).map(|(id, _)| *id).collect();
         for id in ids {
             let hands = self.hands.as_ref();
@@ -1015,7 +1015,9 @@ impl Rig {
             for (i, g, _) in grips {
                 let h = &self.hands.as_ref().unwrap()[i];
                 let b = h.body;
-                self.physics.set_pose(b, v.rim(g.at), (v.rot() * g.rot).normalize());
+                let k = if transition > 1e-3 { smooth((self.now - g.since) / transition as f64) } else { 1.0 };
+                let (p, q) = (v.rim(g.at), (v.rot() * g.rot).normalize());
+                self.physics.set_pose(b, g.from.0.lerp(p, k), g.from.1.slerp(q, k).normalize());
                 self.physics.set_velocity(b, Vec3::ZERO, Vec3::ZERO);
             }
         }
@@ -1388,8 +1390,10 @@ impl Rig {
                 // The hand goes to the rim where it's nearest and holds on there, as it sits.
                 let Some(v) = self.objects.get(&id).and_then(|o| o.valve) else { return };
                 let (at, _) = v.nearest(palm);
+                let from = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
+                let now = self.now;
                 let h = &mut self.hands.as_mut().unwrap()[i];
-                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot });
+                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now });
                 let c = h.collider;
                 self.physics.set_groups(c, groups_none());
                 self.emit(Cue::Grab, Some(i), Some(id), v.rim(at), 0.7);
@@ -2691,9 +2695,10 @@ impl Rig {
                         Attach::Fixed(p, q) => compose(self.hands.as_ref().unwrap()[hand].target, (p, q)),
                     };
                     let o = &self.objects[id];
+                    let snap = s.interaction.grab_transition.max(0.0) as f64;
                     let target = match o.blend {
-                        Some((bp, bq, t0)) if self.now - t0 < SNAP_BLEND => {
-                            let k = smooth((self.now - t0) / SNAP_BLEND);
+                        Some((bp, bq, t0)) if self.now - t0 < snap => {
+                            let k = smooth((self.now - t0) / snap);
                             (bp.lerp(target.0, k), bq.slerp(target.1, k))
                         }
                         _ => target,
@@ -2811,7 +2816,7 @@ impl Rig {
                 Holder::Stuck { .. } | Holder::Gone => {}
             }
         }
-        self.valves(dt);
+        self.valves(dt, s.interaction.grab_transition);
         // Empty hands follow their controllers; past the leash they snap back, unless the
         // controller is through the world (a wall, the floor): then the hand stays against it.
         let now = self.now;
@@ -2980,7 +2985,7 @@ impl Rig {
                 holding: h.holding.or(h.support).or(h.barrels.map(|b| b.gun)).unwrap_or(0),
                 _pad: [0; 2],
             };
-            if h.blocked {
+            if h.blocked && inp.settings.interaction.ghost_hands {
                 out.ghosts[i] = Some(pose(h.grip_t.0, h.grip_t.1));
             }
             out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some();

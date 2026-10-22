@@ -64,6 +64,38 @@ pub struct PlayerBody {
     /// Automatic arm span: grows while a hand keeps reaching beyond the arms.
     auto_span: Option<f32>,
     unreached: [f32; 2],
+    /// Each hand on its way into a held pose or out of one (see [`Grab`]).
+    grab: [Grab; 2],
+}
+
+/// A hand going into the game's pose for what it takes, and back out letting go, over
+/// `Interaction::grab_transition`: how far it's gone (0 its own, 1 the held pose), and the held
+/// pose it's leaving (for the way out).
+#[derive(Clone, Copy, Default)]
+struct Grab {
+    weight: f32,
+    last: Option<HeldHand>,
+}
+
+impl Grab {
+    /// One frame: towards the held pose while there is one, back to the hand's own after. The
+    /// hand drawn: the held pose part way from the hand's own wrist (`own`), its fingers by the same
+    /// weight (`HeldHand::weight`).
+    fn step(&mut self, held: Option<HeldHand>, own: (Vec3, Quat), dt: f32, time: f32) -> Option<HeldHand> {
+        let rate = if time > 1e-3 { dt / time } else { 1.0 };
+        match held {
+            Some(h) => {
+                self.weight = (self.weight + rate).min(1.0);
+                self.last = Some(h);
+            }
+            None => self.weight = (self.weight - rate).max(0.0),
+        }
+        let base = held.or(self.last).filter(|_| self.weight > 0.0)?;
+        let w = self.weight * self.weight * (3.0 - 2.0 * self.weight);
+        let (p, q) = (Vec3::from_array(base.wrist.pos), quat(base.wrist.rot));
+        let wrist = Pose { pos: own.0.lerp(p, w).to_array(), valid: 1, rot: own.1.slerp(q, w).normalize().to_array() };
+        Some(HeldHand { wrist, weight: w, ..base })
+    }
 }
 
 impl Default for PlayerBody {
@@ -84,6 +116,7 @@ impl Default for PlayerBody {
             collimator: None,
             auto_span: None,
             unreached: [0.0; 2],
+            grab: [Grab::default(); 2],
         }
     }
 }
@@ -157,11 +190,17 @@ impl PlayerBody {
         });
         // Solve with the game's floor at 0, then put the body back where it stands.
         let down = Vec3::new(0.0, inp.floor, 0.0);
+        // Hands taking hold of something (or letting go) go into its pose over the transition.
+        let held = [0, 1].map(|i| {
+            let g = inp.hands.map(|h| h[i]).unwrap_or_else(|| grip_of(&f.hands[i]));
+            let own = self.offsets.hand_frame(SIDES[i], ik(g));
+            self.grab[i].step(inp.held[i], (own.pos, own.rot), f.dt.clamp(1e-4, 0.1), inp.settings.interaction.grab_transition)
+        });
         let grips = [0, 1].map(|i| {
             (f.hands[i].connected != 0 && f.hands[i].grip.valid != 0).then(|| {
                 // A hand in the game's own pose goes exactly to its wrist: the grip whose hand
                 // joint that is.
-                if let Some(h) = &inp.held[i] {
+                if let Some(h) = &held[i] {
                     let wrist = rustvr_ik::Pose { pos: Vec3::from_array(h.wrist.pos) - down, rot: quat(h.wrist.rot) };
                     return self.offsets.grip_for(SIDES[i], wrist);
                 }
@@ -221,7 +260,7 @@ impl PlayerBody {
             body.fingers[i] = self.fingers[i].update(f.dt.clamp(1e-4, 0.1), &fi, inp.holds[i]);
             self.ghosts[i] = inp.ghosts[i].map(|g| proto(self.offsets.hand_frame(SIDES[i], ik(g))));
         }
-        self.held = [0, 1].map(|i| inp.held[i].filter(|_| grips[i].is_some()));
+        self.held = [0, 1].map(|i| held[i].filter(|_| grips[i].is_some()));
         self.body = body;
         &self.body
     }
@@ -303,6 +342,43 @@ mod tests {
     use rustvr_ik::Pose as IkPose;
 
     #[test]
+    fn a_hand_takes_hold_over_the_transition_and_lets_go_the_same_way() {
+        let held = HeldHand {
+            wrist: Pose { pos: [0.3, 1.2, 0.5], valid: 1, rot: Quat::from_rotation_x(0.6).to_array() },
+            fingers: [Quat::from_rotation_z(-0.8); 15],
+            index_pulled: None,
+            trigger: 0.0,
+            size: 0.1,
+            reach: [None; 5],
+            index_reach_pulled: None,
+            weight: 1.0,
+        };
+        let own = (Vec3::new(0.2, 1.1, 0.4), Quat::IDENTITY);
+        let mut g = Grab::default();
+        let dt = 1.0 / 90.0;
+        // Taking hold: part way after the first frame, all the way after the transition.
+        let first = g.step(Some(held), own, dt, 0.15).unwrap();
+        assert!(first.weight > 0.0 && first.weight < 0.1, "{}", first.weight);
+        assert!(Vec3::from_array(first.wrist.pos).distance(own.0) < 0.01, "the wrist starts where the hand is");
+        let mut last = first;
+        for _ in 0..14 {
+            last = g.step(Some(held), own, dt, 0.15).unwrap();
+        }
+        assert_eq!(last.weight, 1.0);
+        assert_eq!(last.wrist.pos, held.wrist.pos, "all the way into the hold");
+        // Letting go: back out over the same time, then the hand's own.
+        let out = g.step(None, own, dt, 0.15).unwrap();
+        assert!(out.weight < 1.0 && out.weight > 0.9);
+        for _ in 0..14 {
+            g.step(None, own, dt, 0.15);
+        }
+        assert!(g.step(None, own, dt, 0.15).is_none(), "its own hand again");
+        // No transition: straight in.
+        let mut g = Grab::default();
+        assert_eq!(g.step(Some(held), own, dt, 0.0).unwrap().weight, 1.0);
+    }
+
+    #[test]
     fn automatic_arms_grow_to_reach_the_hands() {
         let settings = Settings::default();
         let mut body = PlayerBody::default();
@@ -346,7 +422,7 @@ mod tests {
                 f.hands[i].grip = Pose { pos: [x, 1.3 + floor, 0.4], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] };
             }
             let wrist = Pose { pos: [0.1, 1.33 + floor, 0.36], valid: 1, rot: Quat::from_euler(glam::EulerRot::YXZ, 0.3, -1.1, 1.4).to_array() };
-            let held = HeldHand { wrist, fingers: [Quat::from_rotation_z(-0.8); 15], index_pulled: None, trigger: 0.3, size: 0.1, reach: [None; 5], index_reach_pulled: None };
+            let held = HeldHand { wrist, fingers: [Quat::from_rotation_z(-0.8); 15], index_pulled: None, trigger: 0.3, size: 0.1, reach: [None; 5], index_reach_pulled: None, weight: 1.0 };
             for _ in 0..30 {
                 body.update(&BodyInput {
                     frame: &f,

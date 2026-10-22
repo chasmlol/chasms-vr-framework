@@ -132,11 +132,15 @@ pub struct PoseInput<'a> {
 /// fingertip). A hand of other proportions than the one the pose was made on bends its fingers a
 /// little to get there, so its fingertips (and the trigger finger's contact) land where the
 /// game's do.
+///
+/// `weight`: how far the hand has gone into this pose from its own (curled fingers, its own size):
+/// 1 all the way, less while it takes hold of something or lets go (see [`Rig::pose`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PosedFingers {
     pub rel: [Quat; 15],
     pub size: f32,
     pub reach: [Option<(Vec3, f32)>; 5],
+    pub weight: f32,
 }
 
 /// Results of [`Rig::pose`], allocated once and reused.
@@ -458,6 +462,23 @@ impl Rig {
                 Some(at) if bone.in_head => Mat4::from_cols(Vec4::ZERO, Vec4::ZERO, Vec4::ZERO, at.extend(1.0)),
                 _ => Mat4::from_scale_rotation_translation(Vec3::splat(scale_of(b)), out.rot[b], out.pos[b]) * bone.inv_bind,
             };
+        }
+
+        // A hand part way into a held pose (or out of one): its bones between the pose and the
+        // hand's own (its curled fingers at its own size, the wrist where the hand is), by weight.
+        for side in 0..2 {
+            let Some(w) = input.held[side].map(|h| h.weight).filter(|w| *w < 1.0 - 1e-4) else { continue };
+            let w = w.max(0.0);
+            let mut held = input.held;
+            held[side] = None;
+            let mut own = self.posed();
+            self.pose(&PoseInput { held, ..*input }, &mut own);
+            let k = hand_scale[side] * w + own.scale * (1.0 - w);
+            for b in (0..self.bones.len()).filter(|&b| self.bones[b].part == Part::Hand(side)) {
+                out.rot[b] = own.rot[b].slerp(out.rot[b], w).normalize();
+                out.pos[b] = own.pos[b].lerp(out.pos[b], w);
+                out.skin[b] = Mat4::from_scale_rotation_translation(Vec3::splat(k), out.rot[b], out.pos[b]) * self.bones[b].inv_bind;
+            }
         }
     }
 
@@ -1259,6 +1280,31 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_going_into_a_held_pose_blends_from_its_own() {
+        let source = crate::procedural::mannequin();
+        let rig = Rig::new(&source.bones, &[]).unwrap();
+        let joints = pose::t_pose(1.75);
+        let fingers = [Fingers::default(); 2];
+        let pose_with = |held: [Option<PosedFingers>; 2]| {
+            let mut posed = rig.posed();
+            rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held, chop_head: false }, &mut posed);
+            posed
+        };
+        // A fist the game holds the right hand in.
+        let fist = PosedFingers { rel: [Quat::from_rotation_z(-1.2); 15], size: 0.0, reach: [None; 5], weight: 1.0 };
+        let own = pose_with([None, None]);
+        let full = pose_with([None, Some(fist)]);
+        let none = pose_with([None, Some(PosedFingers { weight: 0.0, ..fist })]);
+        let half = pose_with([None, Some(PosedFingers { weight: 0.5, ..fist })]);
+        let hand: Vec<usize> = (0..rig.bones.len()).filter(|&b| rig.bones[b].part == Part::Hand(1)).collect();
+        let moved = |a: &Posed, b: &Posed| hand.iter().map(|&k| a.rot[k].angle_between(b.rot[k])).fold(0.0f32, f32::max);
+        assert!(moved(&own, &full) > 0.5, "the held pose differs from the hand's own");
+        assert!(moved(&own, &none) < 1e-4, "at weight 0 the hand is its own");
+        let (to_own, to_full) = (moved(&half, &own), moved(&half, &full));
+        assert!(to_own > 0.2 && to_full > 0.2, "half way between: {to_own} {to_full}");
+    }
+
+    #[test]
     fn fingers_curl_into_the_palm() {
         let source = crate::procedural::mannequin();
         let rig = Rig::new(&source.bones, &[]).unwrap();
@@ -1332,7 +1378,7 @@ mod tests {
                 let mut hands = [None, None];
                 hands[side] = Some(Pose { pos: g.wrist.0.to_array(), valid: 1, rot: g.wrist.1.to_array() });
                 let mut held = [None, None];
-                held[side] = Some(PosedFingers { rel: g.fingers, size: g.size, reach: [None; 5] });
+                held[side] = Some(PosedFingers { rel: g.fingers, size: g.size, reach: [None; 5], weight: 1.0 });
                 let fingers = [Fingers::default(); 2];
                 rig.pose(&PoseInput { joints: &joints, hands, fingers: &fingers, held, chop_head: false }, &mut posed);
                 // Every bone of that hand lands exactly where the posed model has it (carried
@@ -1366,7 +1412,7 @@ mod tests {
         let fingers = [Fingers::default(); 2];
         let hand = rig.joint_bone[HAND[1] as usize].unwrap();
         let tip = |k: f32, posed: &mut Posed| {
-            let held = [None, Some(PosedFingers { rel: g.fingers, size: g.size * k, reach: [None; 5] })];
+            let held = [None, Some(PosedFingers { rel: g.fingers, size: g.size * k, reach: [None; 5], weight: 1.0 })];
             let hands = [None, Some(Pose { pos: g.wrist.0.to_array(), valid: 1, rot: g.wrist.1.to_array() })];
             rig.pose(&PoseInput { joints: &joints, hands, fingers: &fingers, held, chop_head: false }, posed);
             let index = rig.fingers[1][1].as_ref().unwrap().count - 1;

@@ -226,7 +226,10 @@ fn walls_stop_the_hand_and_show_a_ghost_however_far_it_reaches_through() {
     let h = v3(s.out.hands[1].pose.pos);
     assert!(h.z > -0.38, "the wall holds the hand back: {h:?}");
     assert!(s.out.hands[1].flags & HAND_BLOCKED != 0);
-    assert!(s.out.ghosts[1].is_some(), "a ghost hand shows where the controller is");
+    assert!(s.out.ghosts[1].is_none(), "no ghost unless asked for");
+    s.s.interaction.ghost_hands = true;
+    s.step(1);
+    assert!(s.out.ghosts[1].is_some(), "with ghost hands on, a ghost hand shows where the controller is");
     assert!(s.rig.debug.blocked_frames > 0);
     // Far past the leash, the controller is still through the wall: the hand stays against it.
     s.move_hand(1, Vec3::new(0.2, 1.3, -1.3), 10);
@@ -2106,6 +2109,7 @@ fn turn_valve(s: &mut Sim, centre: Vec3, radius: f32) {
     s.move_hand(1, centre + Vec3::new(0.0, radius + 0.1, -0.15), 30);
     s.move_hand(1, centre + Vec3::new(0.0, radius, -0.02), 20);
     s.grip(1, 1.0);
+    s.step(20);
     for k in 1..=90 {
         let a = std::f32::consts::FRAC_PI_2 * k as f32 / 90.0;
         // Clockwise as the player sees it: from the top round to their right.
@@ -2143,7 +2147,7 @@ fn a_stiff_valve_holds_the_hand_on_its_rim_and_doesnt_turn() {
     assert!(v.angle.abs() < 1e-3, "one hand can't move it: {}", v.angle);
     let hand = v3(s.out.hands[1].pose.pos);
     assert!(hand.distance(centre + Vec3::new(0.0, 0.2, 0.0)) < 0.02, "the hand stays where it took hold: {hand:?}");
-    assert!(s.out.ghosts[1].is_some(), "the ghost shows the controller gone on round");
+    assert!(s.out.hands[1].flags & HAND_BLOCKED != 0, "the hand's held back from the controller gone on round");
 }
 
 #[test]
@@ -2180,4 +2184,22 @@ fn reaching_the_arm_out_at_a_thing_targets_it_however_the_controller_sits() {
     s.f.hmd.rot = Quat::from_rotation_y(-1.6).to_array();
     s.step(15);
     assert!(!s.out.hand_targeting[1], "only what you look at");
+}
+
+#[test]
+fn a_hand_glides_onto_a_valve_rim_over_the_grab_transition() {
+    let centre = Vec3::new(0.3, 1.2, 0.6);
+    let mut s = Sim::with(&[valve_desc(43, centre, 0.2, 0.5)]);
+    s.step(5);
+    // A hand 6 cm off the rim's top takes hold.
+    let off = centre + Vec3::new(0.0, 0.26, -0.03);
+    s.move_hand(1, off, 30);
+    s.step(5);
+    let rim = centre + Vec3::new(0.0, 0.2, 0.0);
+    let before = v3(s.out.hands[1].pose.pos);
+    s.grip(1, 1.0);
+    let first = v3(s.out.hands[1].pose.pos);
+    assert!(first.distance(before) < 0.03, "no jump the frame it takes hold: {before:?} -> {first:?}");
+    s.step(20);
+    assert!(v3(s.out.hands[1].pose.pos).distance(rim) < 0.01, "on the rim after the transition");
 }

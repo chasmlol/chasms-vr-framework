@@ -1078,7 +1078,7 @@ fn pose_input<'a>(frame: &'a AvatarFrame) -> PoseInput<'a> {
         Some(h) => Some(h.wrist).filter(|p| p.valid != 0),
         None => Some(frame.hands[i].pose).filter(|p| p.valid != 0),
     });
-    let held = frame.held.map(|h| h.map(|h| PosedFingers { rel: h.finger_rotations(), size: h.size, reach: h.reach_points() }));
+    let held = frame.held.map(|h| h.map(|h| PosedFingers { rel: h.finger_rotations(), size: h.size, reach: h.reach_points(), weight: h.weight }));
     PoseInput { joints: frame.joints, hands, fingers: &frame.fingers, held, chop_head: frame.first_person && show_of(frame) == Show::Full }
 }
 

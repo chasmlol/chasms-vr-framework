@@ -26,6 +26,9 @@ pub struct HeldHand {
     pub reach: [Option<(Vec3, f32)>; 5],
     /// The index's reach point at a full pull, when it rests on a trigger.
     pub index_reach_pulled: Option<(Vec3, f32)>,
+    /// How far the hand has gone into this pose from its own (curled fingers, its own size): 1 all
+    /// the way, less while it takes hold or lets go.
+    pub weight: f32,
 }
 
 impl HeldHand {
@@ -37,6 +40,7 @@ impl HeldHand {
         d.flags = DH_HELD;
         d.trigger = self.trigger;
         d.size = self.size;
+        d.weight = self.weight;
         d.wrist = self.wrist;
         d.fingers = self.fingers.map(q);
         if let Some(p) = self.index_pulled {
@@ -71,6 +75,7 @@ impl HeldHand {
             size: d.size,
             reach: std::array::from_fn(|k| (d.reach_mask & (1 << k) != 0).then(|| reach(d.reach[k]))),
             index_reach_pulled: (d.flags & DH_INDEX_REACH_PULLED != 0).then(|| reach(d.index_reach_pulled)),
+            weight: if d.weight > 0.0 && d.weight.is_finite() { d.weight.min(1.0) } else { 1.0 },
         })
     }
 
@@ -124,6 +129,7 @@ impl HeldHand {
             index_pulled,
             trigger,
             size: desc.size.max(0.0),
+            weight: 1.0,
         }
     }
 }
@@ -196,6 +202,7 @@ mod tests {
             size: 0.095,
             reach: [None, Some((Vec3::new(0.01, 0.08, 0.0), 0.7)), None, None, Some((Vec3::new(-0.02, 0.06, 0.01), 0.5))],
             index_reach_pulled: None,
+            weight: 0.4,
         };
         assert_eq!(HeldHand::from_drawn(&h.to_drawn()), Some(h));
         assert_eq!(HeldHand::from_drawn(&DrawnHand::zeroed()), None);

@@ -422,7 +422,9 @@ pub fn all() -> Vec<Scenario> {
                     // Fired from the hip, so the eye sees the flash, the tracers and the port from the side.
                     let aim = aim_gun(&rifle, Vec3::new(0.22, 1.34, 0.3), TARGET_AHEAD, 0.0);
                     let (p, r) = take_rifle(t, &rifle);
-                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, p), (1.6, aim.0)]) };
+                    // Lifted clear of the table first (dragged across it, a held gun lags behind).
+                    let lifted = if t < 1.0 { p } else { take_rifle(1.0, &rifle).0 + Vec3::Y * 0.3 };
+                    b.hands[1].pos = if t < 1.0 { p } else { keys(t, &[(1.0, take_rifle(1.0, &rifle).0), (1.25, lifted), (1.6, aim.0)]) };
                     b.hands[1].rot = if t < 1.0 { r } else { qkeys(t, &[(1.0, r), (1.6, aim.1)]) };
                     b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
                     b.hands[1].trigger = on(t, &[(1.9, 1.98), (2.4, 2.48), (2.9, 2.98)]);

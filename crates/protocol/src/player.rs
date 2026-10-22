@@ -51,6 +51,10 @@ pub struct DrawnHand {
     /// Where each finger's last segment reaches in the hand's frame (xyz), and how far along it (w).
     pub reach: [[f32; 4]; 5],
     pub index_reach_pulled: [f32; 4],
+    /// How far the hand has gone into this pose from its own (0..1: it's taking hold or letting
+    /// go; 1 all the way).
+    pub weight: f32,
+    pub _pad: [f32; 3],
 }
 
 /// An object drawn with the player: its model and each part's place.
@@ -111,7 +115,7 @@ impl DrawnObject {
 }
 
 const _: () = {
-    assert!(size_of::<DrawnHand>() == 16 + 32 + 16 * (15 + 3 + 5 + 1));
+    assert!(size_of::<DrawnHand>() == 16 + 32 + 16 * (15 + 3 + 5 + 1) + 16);
     assert!(OFF_PLAYER_DRAW.is_multiple_of(64));
     assert!(OFF_PLAYER_DRAW + size_of::<RtPlayerDraw>() <= crate::hud::OFF_HUD_LAYOUT);
     assert!(crate::lighting::OFF_GAME_LIGHTING + size_of::<crate::GameLighting>() <= OFF_PLAYER_DRAW);
