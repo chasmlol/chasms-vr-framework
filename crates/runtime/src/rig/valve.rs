@@ -8,7 +8,8 @@
 //! the hand pulls its point on the rim towards the controller like an arm would, up to
 //! [`ARM_FORCE`]: a light wheel follows the hand round, a stiff one needs both hands or won't
 //! give, and the hand stays on the rim either way (the ghost shows where the controller is). Let
-//! go, it spins on until its friction stops it.
+//! go, it spins on until its friction stops it. A wheel geared to something the game moves at its
+//! own pace (a gate it winds up) turns no faster than that (`ObjectDesc::fire_rate`, rad/s).
 
 use glam::{Quat, Vec3};
 
@@ -31,6 +32,8 @@ pub struct Valve {
     /// Turned this far about the axis (radians, unbounded), and how fast.
     pub angle: f32,
     pub vel: f32,
+    /// The fastest it turns, rad/s (0: as fast as it's pushed).
+    pub max_speed: f32,
 }
 
 /// A hand on a valve: where on the rim (its angle in the wheel's own frame) and how the hand sits
@@ -48,7 +51,7 @@ pub struct ValveGrip {
 impl Valve {
     pub fn new(centre: Vec3, base: Quat, radius: f32, mass: f32, friction: f32) -> Valve {
         let radius = radius.max(0.02);
-        Valve { centre, base, radius, inertia: (mass.max(0.1) * radius * radius).max(1e-4), friction: friction.max(0.0), angle: 0.0, vel: 0.0 }
+        Valve { centre, base, radius, inertia: (mass.max(0.1) * radius * radius).max(1e-4), friction: friction.max(0.0), angle: 0.0, vel: 0.0, max_speed: 0.0 }
     }
 
     /// The wheel's rotation now.
@@ -99,6 +102,9 @@ impl Valve {
             let v = self.vel + (torque - dir * self.friction) * h / self.inertia;
             // (Friction stops it; it doesn't turn it back.)
             self.vel = if self.vel != 0.0 && v.signum() != self.vel.signum() && torque.abs() <= self.friction { 0.0 } else { v };
+            if self.max_speed > 0.0 {
+                self.vel = self.vel.clamp(-self.max_speed, self.max_speed);
+            }
             self.angle += self.vel * h;
         }
     }
@@ -168,6 +174,16 @@ mod tests {
         let a = v.angle;
         v.step(&[], 1.0);
         assert_eq!(v.angle, a, "and stays");
+    }
+
+    #[test]
+    fn a_geared_wheel_turns_no_faster_than_its_gearing() {
+        // A hand going round a quarter turn a second on a wheel geared to half that: it lags.
+        let mut v = wheel(0.5);
+        v.max_speed = std::f32::consts::FRAC_PI_4;
+        turn(&mut v, &[0.0], std::f32::consts::TAU);
+        assert!(v.vel.abs() <= v.max_speed + 1e-5);
+        assert!(v.angle > 1.0 && v.angle < std::f32::consts::TAU * 0.8, "behind the hand: {}", v.angle);
     }
 
     #[test]

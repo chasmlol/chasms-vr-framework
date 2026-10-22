@@ -735,7 +735,7 @@ impl Rig {
                 seat_armed: true,
                 throw: ThrowState::new(&d),
                 hang: None,
-                valve: (d.kind == OBJ_VALVE).then(|| valve::Valve::new(pos, rot, d.radius, d.mass, d.friction)),
+                valve: (d.kind == OBJ_VALVE).then(|| valve::Valve { max_speed: d.fire_rate.max(0.0), ..valve::Valve::new(pos, rot, d.radius, d.mass, d.friction) }),
             },
         );
         // A valve's wheel turns on its axle, never anywhere else.
@@ -3075,6 +3075,8 @@ impl Rig {
         for (id, o) in self.objects.iter().take(MAX_OBJECTS) {
             let (p, q) = self.physics.pose(o.body);
             let (lv, av) = self.physics.velocity(o.body);
+            // A valve turns on its axle at its own speed (its body is only moved there).
+            let (lv, av) = o.valve.map_or((lv, av), |v| (Vec3::ZERO, v.axis() * v.vel));
             let tracking = matches!(o.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. });
             let tracking = tracking || matches!(o.holder, Holder::InWeapon(w) if self.objects.get(&w).is_some_and(|w| matches!(w.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. })));
             let pose_out = if tracking { pose(map.inv_point(p), map.inv_rot(q)) } else { pose(p, q) };
@@ -3094,6 +3096,12 @@ impl Rig {
             if hovered.contains(id) {
                 flags |= OS_HOVERED;
             }
+            // The hands on a valve's rim have it.
+            for (i, h) in hands.into_iter().flatten().enumerate() {
+                if h.valve.is_some_and(|g| g.id == *id) {
+                    flags |= if i == 0 { OS_HELD_LEFT } else { OS_HELD_RIGHT };
+                }
+            }
             if o.spawned {
                 flags |= OS_SPAWNED;
             }
@@ -3108,7 +3116,8 @@ impl Rig {
                     }
                     (rounds, w.shots, w.chamber_bits(), w.slide)
                 }
-                None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(0), 0, 0.0),
+                // A valve: how far it's turned (radians about its axis).
+                None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(0), 0, o.valve.map_or(0.0, |v| v.angle)),
             };
             // An air gun's pressure, a bolt's lift; a grenade's fuse.
             let fuse = match &o.weapon {

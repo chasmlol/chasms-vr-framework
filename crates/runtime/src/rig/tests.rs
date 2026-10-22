@@ -2138,6 +2138,36 @@ fn a_valve_turns_with_the_hand_on_its_rim() {
 }
 
 #[test]
+fn a_turning_valve_tells_the_game_who_has_it_how_far_and_how_fast() {
+    // Geared to a game's mechanism at half a radian a second.
+    let centre = Vec3::new(0.3, 1.2, 0.6);
+    let mut d = valve_desc(43, centre, 0.2, 0.5);
+    d.fire_rate = 0.5;
+    let mut s = Sim::with(&[d]);
+    s.step(5);
+    assert_eq!(s.state(43).flags & (OS_HELD_LEFT | OS_HELD_RIGHT), 0, "nobody has it yet");
+    s.move_hand(1, centre + Vec3::new(0.0, 0.3, -0.15), 30);
+    s.move_hand(1, centre + Vec3::new(0.0, 0.2, -0.02), 20);
+    s.grip(1, 1.0);
+    s.step(20);
+    for k in 1..=45 {
+        let a = std::f32::consts::FRAC_PI_2 * k as f32 / 45.0;
+        s.set_hand(1, centre + Vec3::new(0.2 * a.sin(), 0.2 * a.cos(), -0.02));
+        s.step(1);
+    }
+    let st = s.state(43);
+    let v = s.rig.objects[&43].valve.unwrap();
+    assert!(st.flags & OS_HELD_RIGHT != 0, "the right hand has it");
+    assert_eq!(st.slide, v.angle, "how far it's turned");
+    let w = v3(st.ang_vel);
+    assert!(w.dot(v.axis()).abs() > 0.4 && w.length() <= 0.5 + 1e-4, "turning along its axis, no faster than its gearing: {w:?}");
+    assert!(v.angle.abs() < 0.5, "half a second's worth at most: {}", v.angle);
+    s.grip(1, 0.0);
+    s.step(5);
+    assert_eq!(s.state(43).flags & (OS_HELD_LEFT | OS_HELD_RIGHT), 0, "let go");
+}
+
+#[test]
 fn a_stiff_valve_holds_the_hand_on_its_rim_and_doesnt_turn() {
     let centre = Vec3::new(0.3, 1.2, 0.6);
     let mut s = Sim::with(&[valve_desc(41, centre, 0.2, 60.0)]);

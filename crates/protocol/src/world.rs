@@ -294,7 +294,8 @@ pub struct ObjectDesc {
     /// them all in its magazine.
     pub rounds: u32,
     pub weapon_flags: u32, // WPN_*
-    /// Rounds per second on full auto.
+    /// Rounds per second on full auto. Valves ([`OBJ_VALVE`]): the fastest it turns, rad/s, when
+    /// it's geared to something the game moves at its own pace (0: no limit).
     pub fire_rate: f32,
     /// Recoil per shot: muzzle climb (degrees), sideways scatter (degrees), push back (metres).
     pub recoil_pitch: f32,
@@ -565,7 +566,9 @@ pub struct ObjectState {
     pub chambered: u32,
     /// Weapons: slide / charging handle / bolt / pump position, 0 forward .. 1 fully back. Break and
     /// swing actions: how far the barrels (or cylinder) are open, 0 shut .. 1 fully open
-    /// (`action_angle`).
+    /// (`action_angle`). Valves ([`OBJ_VALVE`]): how far it's turned about its axis, radians
+    /// (anticlockwise looking down +Z; `ang_vel` is how fast, along the axis). A valve with a hand
+    /// on its rim is [`OS_HELD_LEFT`] / [`OS_HELD_RIGHT`].
     pub slide: f32,
     /// Which [`ObjectDesc`] to draw it with (itself, or the template it was spawned from).
     pub desc: u32,

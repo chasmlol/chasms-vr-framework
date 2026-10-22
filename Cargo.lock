@@ -1756,6 +1756,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "glam 0.34.1",
+ "metro-assets",
  "retour",
  "rustvr-adapter",
  "rustvr-asset",
