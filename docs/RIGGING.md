@@ -115,7 +115,7 @@ Every field of a `[[gun]]` (`rustvr_asset::rigs::GunRig`); points are model spac
 | `mag_meshes` | Whole meshes (by index) that are the magazine too: one the extractor mounted on a bone that isn't the magazine's | `rig_probe parts` lists meshes |
 | `bolt_bones` | Bones whose skin moves back with the handle | The parts list |
 | `hidden_bones` | Bones whose skin isn't drawn: what the game shows only in an animation or with an upgrade (a shell in the hand, an ejected case, an upgrade's barrels' shells) | The survey renders (things floating, or doubled) |
-| `hidden_meshes` | Whole meshes (by index) not drawn: glass the test range can't draw see-through (a gauge's, over its needle) | `rig_probe parts` lists meshes and their textures (`wpn_obves`) |
+| `hidden_meshes` | Whole meshes (by index) that are glass: a gauge's (over its needle), a collimator's lens and reticle. The test range can't draw them see-through and leaves them out; the runtime draws them (`Weapon::glass`) with the game's forward shading, or leaves them to a special draw where it doesn't reproduce the game's shader | `rig_probe parts` lists meshes and their textures (`wpn_obves`) |
 | `action` | How it's worked between shots: `auto` (default: it cycles itself), `bolt`, `pump`, `break`, `swing` (§4.4) | What the gun really is, and the game's motions |
 | `hinge`, `open_deg`, `barrel_bones` | Break and swing actions: a point on the hinge's pin, how far it opens (degrees; a break action about model +X tipping the muzzle down, a swing about +Z, positive to the left) and the bones that turn (with their children) | The barrels' bone's origin (`rig_probe bones`) and the game's reload's furthest turn of it (`export_viewmodel --peaks`) |
 | `chamber_bones` | Guns loaded round by round into their chambers: each chamber's round (a bone whose origin is its base at the chamber's mouth), in the order they fire. No `mag_bones` then; `mag_well` is the first chamber's mouth, `mag_size` the chambers | The parts list (`patron_stvol_*`) and `rig_probe bones` |
@@ -158,7 +158,7 @@ the eye really is on it: shots go where the front post's tip is.
 
 The runtime draws the game's own hands: each gun's arms in their bind pose (`hands_<gun>`, the
 idle the extractor baked) are the hold, and the controllers go where the drawn hands land exactly on
-them (`GunHand`, `controller_on` in `crates/range/src/content.rs`). So `grip`, `grip_rake_deg`,
+them (`GunHand`, `controller_on` in `crates/guns`). So `grip`, `grip_rake_deg`,
 `foregrip` and the rest are the fallback for a gun without arms, and `grip` is the weapon's origin.
 Nothing is fitted or adjusted: if the game's index finger rests along the frame instead of on the
 trigger, so does ours.
@@ -292,8 +292,12 @@ target/release/rustvr --sim all --launch-range
 
 ## 7. In an adapter
 
-An adapter loads the same rigs (`rustvr_asset::rigs::load("metro2033")`) and registers each gun as
-an `ObjectDesc` the way the range does (`content::rigged_metro_weapon`, `physical::weapon_desc`):
+An adapter registers a gun exactly as the range does, through `rustvr_guns` (`crates/guns`, shared by
+the range, the adapters and the runtime): `rustvr_guns::metro::metro_gun(dir, key, ids)` loads the
+rigged gun from the asset cache and returns its registration (`desc::GunRegistration`: the gun's
+`ObjectDesc`, its magazine template, the game's hand poses and its kicks), flagged
+`OBJF_RUNTIME_DRAWS` so the runtime draws the gun and its magazines itself, from the same model
+and rig, with the game's lighting (the game draws neither). What it holds:
 weapon space from the sights and the grip, `grip_rot` and `support_rot` from the game's hands (or
 the measured hold), `handle` and `handle_travel`, `mag_well`, the magazine template's `ammo_type`,
 the fire rate and mode, mass, and the game's hand poses and kicks in their tables.

@@ -274,6 +274,15 @@ impl Link {
     pub fn read_body(&self) -> Option<RtBody> {
         unsafe { seq_read(self.base.add(OFF_BODY)) }
     }
+    /// Runtime: publish the posed player (see [`RtPlayerDraw`]).
+    pub fn write_player_draw(&self, v: &RtPlayerDraw) {
+        unsafe { seq_write(self.base.add(OFF_PLAYER_DRAW), v) }
+    }
+    /// Adapter: read the posed player into `out`. False if nothing was ever written or no
+    /// consistent copy was obtained.
+    pub fn read_player_draw_into(&self, out: &mut RtPlayerDraw) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_PLAYER_DRAW), out) }
+    }
     /// Adapter: publish the object table (call when it changes).
     pub fn write_objects(&self, v: &ObjectTable) {
         unsafe { seq_write(self.base.add(OFF_OBJECTS), v) }

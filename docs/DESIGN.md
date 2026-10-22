@@ -56,8 +56,10 @@ Supporting crates:
   (24 sounds, four variations each, no sample files) is the fallback.
 - `crates/ik`: full-body IK from the head and hands (torso, spine, arms with elbow prediction,
   stepping legs), calibration and grip-to-hand offsets.
-- `crates/avatar`: draws the player's body and hands over the game's picture, hidden behind the
-  game's geometry using its depth.
+- `crates/avatar`: draws the player's body and hands (and what they hold), hidden behind the
+  game's geometry using its depth: over the game's picture in the runtime, or, SkyCraft's way,
+  inside the game's own frame by an adapter that sets `GS_DRAWS_BODY` (the runtime posts the posed
+  player as `RtPlayerDraw`; Metro's adapter draws it into Metro's HDR scene before its post chain).
 - `crates/metro-assets`: reads Metro 2033 Redux's archives (`metro-extract`): models, textures,
   recoil, and its sound pack (`sounds.bin`, §6c). Local test content only, never committed.
 - `content/rigs/<game>.toml`: how the hands hold each of a game's guns, measured on its models

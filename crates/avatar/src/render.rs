@@ -35,8 +35,8 @@ const FAR: f32 = 200.0;
 /// depth noise, and a part per metre of distance for depth precision. Both depths are linear
 /// 32-bit metres, so this only covers rasterization differences; it must stay well under the
 /// thickness of a gun's grip, or fingers wrapped behind it show through.
-const DEPTH_BIAS: f32 = 0.0015;
-const DEPTH_BIAS_PER_METER: f32 = 0.002;
+pub(crate) const DEPTH_BIAS: f32 = 0.0015;
+pub(crate) const DEPTH_BIAS_PER_METER: f32 = 0.002;
 
 /// The ghost hands' colour (linear) and opacity.
 const GHOST: [f32; 4] = [0.30, 0.62, 1.0, 0.35];
@@ -76,7 +76,7 @@ cbuffer Lighting : register(b3) {
     float4 lit;                // x: hemi, y: depth squash, z: SSAO, w: grading table valid
     float4 envc;               // the environment map's tint, w: light count
     float4 up;                 // the world's up direction in the game camera's view space
-    float4 atlas;              // x: light atlas bound, yz: 1 / its size
+    float4 atlas;              // x: light atlas bound, yz: 1 / its size, w: in the game's frame (HDR out)
     MLight lights[32];
 };
 Texture2D albedo : register(t0);
@@ -176,13 +176,24 @@ float4 atlas_term(MLight l, float3 p) {
     return lerp(atlas_tex.SampleLevel(clamp_samp, a * atlas.yz, 0), atlas_tex.SampleLevel(clamp_samp, b * atlas.yz, 0), k);
 }
 
+// Not a number or infinite (bit test: the compiler may fold isnan away).
+bool m_bad(float3 c) { return any((asuint(c) & 0x7f800000) == 0x7f800000); }
+
 // The game's post chain on an HDR colour, as the value to write to the sRGB eye target so it
-// stores the code value the game would have displayed.
+// stores the code value the game would have displayed. In the game's own frame, the HDR colour.
 float3 finish(float3 hdr) {
+    // Drawn into the game's HDR picture before its post chain: the game tone maps and grades it.
+    // Never anything but a finite colour: the game feeds its picture back into later frames (its
+    // reflection and bloom read the last one), so one bad pixel would spread for good.
+    if (atlas.w > 0) return m_bad(hdr) ? 0 : clamp(hdr, 0, 60000);
     float3 tm = m_tonemap(hdr);
     float4 l = grade_tex.SampleLevel(clamp_samp, tm.bgr, 0);
     return m_display_to_linear(m_grade(tm, l, lit.w != 0));
 }
+
+// What an opaque fragment writes in alpha: in the game's HDR picture its view depth (metres), as
+// the game's combine pass writes it for its later passes; else opaque.
+float out_alpha(float view_z) { return atlas.w > 0 ? view_z : 1; }
 
 // The game's own shading of its first-person model (metro.rs), evaluated for this fragment.
 float4 PSMetro(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
@@ -217,7 +228,7 @@ float4 PSMetro(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
         if (cls != M_PLAIN && (cls != M_CLOTH_SKIN || options.x != 0)) x.env = env_tex.Sample(clamp_samp, to_world(m_reflection(pv, n))).rgb;
     }
     // The inside of the shell, seen through a cut (the game culls it): the flat ambient, dark.
-    if (!front) return float4(finish(x.base.rgb * amb.rgb * 0.3), 1);
+    if (!front) return float4(finish(x.base.rgb * amb.rgb * 0.3), out_alpha(i.view_z));
     MG g = m_gbuffer(cls, f, n, x, surf_color.rgb, material.w, options.xy, lit.y, envc.rgb, up.xyz);
     float3 d = 0, s = 0;
     if (!g.emissive) {
@@ -226,11 +237,13 @@ float4 PSMetro(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
             if (!m_reaches(pv, lights[k])) continue;
             float3 ld, ls;
             m_light(g, lights[k], atlas_term(lights[k], g.p), ld, ls);
+            // (A light the game's own shader would give nothing finite here adds nothing.)
+            if (m_bad(ld) || m_bad(ls)) continue;
             d += ld;
             s += ls;
         }
     }
-    return float4(finish(m_combine(g, d, s, sh_r, sh_g, sh_b, amb, lit.z, m_local_ao_r(d), 0)), 1);
+    return float4(finish(m_combine(g, d, s, sh_r, sh_g, sh_b, amb, lit.z, m_local_ao_r(d), 0)), out_alpha(i.view_z));
 }
 
 // The game's forward glass, blended over what's drawn.
@@ -244,7 +257,7 @@ float4 PSMetroGlass(VSOut i) : SV_Target {
     x.base = albedo.Sample(samp, i.uv);
     if (cls == M_GLASS_REFLECT) x.env = env_tex.Sample(clamp_samp, to_world(m_reflection(pv, nv))).rgb;
     float4 c = m_glass(cls, x, envc.rgb);
-    return float4(finish(c.rgb), c.a);
+    return float4(finish(c.rgb), m_bad(c.aaa) ? 0 : saturate(c.a));
 }
 
 float4 PSGhost(VSOut i) : SV_Target {
@@ -345,9 +358,9 @@ struct MetroMesh {
 
 /// A texture's two views: sRGB-decoded (the runtime's own look) and raw (the game's).
 #[derive(Clone)]
-struct GpuTex {
-    srgb: ID3D11ShaderResourceView,
-    linear: ID3D11ShaderResourceView,
+pub(crate) struct GpuTex {
+    pub(crate) srgb: ID3D11ShaderResourceView,
+    pub(crate) linear: ID3D11ShaderResourceView,
 }
 
 /// One drawable model: its rig, GPU meshes and palettes.
@@ -416,40 +429,7 @@ impl Character {
                 }
                 ranges[range] = (start, indices.len() as u32 - start);
             }
-            let vertices: Vec<Vertex> =
-                m.vertices.iter().map(|v| Vertex { pos: v.pos, normal: v.normal, uv: v.uv, bones: v.bones, weights: v.weights, ao: [v.ao, 0, 0, 0] }).collect();
-            let base = m.texture.as_ref().and_then(|t| upload(t, &m.name));
-            // The game's own flag where it has one, else a guess from the texture.
-            let cutout = base.is_some() && m.material.as_ref().map_or_else(|| m.texture.as_deref().is_some_and(is_cutout), |mat| mat.alpha_test);
-            let metro = match (&m.material, &base) {
-                (Some(mat), Some(base)) => {
-                    let mut get = |t: &Option<Arc<asset::Texture>>| t.as_ref().and_then(|t| upload(t, &m.name)).map(|t| t.linear);
-                    let (bump, detail, env) = (get(&mat.bump), get(&mat.detail), get(&mat.env));
-                    let (nb, nd, ne) = mat.class.needs();
-                    ((!nb || bump.is_some()) && (!nd || detail.is_some()) && (!ne || env.is_some()))
-                        .then(|| MetroMesh { class: mat.class, base: base.linear.clone(), bump, detail, env })
-                }
-                _ => None,
-            };
-            let (surf_params, surf_color, emissive) = m.material.as_ref().map_or(([0.0; 4], [0.0; 4], 0.0), |mat| (mat.params, mat.color, mat.emissive));
-            let options = m.material.as_ref().map_or([0.0; 4], |mat| [mat.env.is_some() as u32 as f32, mat.fresnel as u32 as f32, 0.0, 0.0]);
-            let class = metro.as_ref().map_or(0.0, |mm| mm.class as u32 as f32);
-            let material = MaterialCb {
-                tint: [m.tint[0], m.tint[1], m.tint[2], 1.0],
-                params: [base.is_some() as u32 as f32, cutout as u32 as f32, class, emissive],
-                surf_params,
-                surf_color,
-                options,
-            };
-            let srv = base.map(|b| b.srgb);
-            meshes.push(GpuMesh {
-                vb: static_buffer(gpu, bytemuck::cast_slice(&vertices), D3D11_BIND_VERTEX_BUFFER)?,
-                ib: static_buffer(gpu, bytemuck::cast_slice(&indices), D3D11_BIND_INDEX_BUFFER)?,
-                ranges,
-                srv,
-                material: static_buffer(gpu, bytemuck::bytes_of(&material), D3D11_BIND_CONSTANT_BUFFER)?,
-                metro,
-            });
+            meshes.push(gpu_mesh(gpu, m, &indices, ranges, &mut upload)?);
         }
         let cpu = source.meshes.iter().map(|m| m.vertices.clone()).collect();
         let bone_names = source.bones.iter().map(|b| b.name.clone()).collect();
@@ -522,6 +502,108 @@ impl Character {
     }
 }
 
+/// One mesh on the GPU: its vertices, `indices` (the views' `ranges` in them), its base texture
+/// and material, and the game's material when it has one with all its textures.
+fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u32); 3], upload: &mut impl FnMut(&Arc<asset::Texture>, &str) -> Option<GpuTex>) -> Result<GpuMesh> {
+    let vertices: Vec<Vertex> =
+        m.vertices.iter().map(|v| Vertex { pos: v.pos, normal: v.normal, uv: v.uv, bones: v.bones, weights: v.weights, ao: [v.ao, 0, 0, 0] }).collect();
+    let base = m.texture.as_ref().and_then(|t| upload(t, &m.name));
+    // The game's own flag where it has one, else a guess from the texture.
+    let cutout = base.is_some() && m.material.as_ref().map_or_else(|| m.texture.as_deref().is_some_and(is_cutout), |mat| mat.alpha_test);
+    let metro = match (&m.material, &base) {
+        (Some(mat), Some(base)) => {
+            let mut get = |t: &Option<Arc<asset::Texture>>| t.as_ref().and_then(|t| upload(t, &m.name)).map(|t| t.linear);
+            let (bump, detail, env) = (get(&mat.bump), get(&mat.detail), get(&mat.env));
+            let (nb, nd, ne) = mat.class.needs();
+            ((!nb || bump.is_some()) && (!nd || detail.is_some()) && (!ne || env.is_some())).then(|| MetroMesh { class: mat.class, base: base.linear.clone(), bump, detail, env })
+        }
+        _ => None,
+    };
+    let (surf_params, surf_color, emissive) = m.material.as_ref().map_or(([0.0; 4], [0.0; 4], 0.0), |mat| (mat.params, mat.color, mat.emissive));
+    let options = m.material.as_ref().map_or([0.0; 4], |mat| [mat.env.is_some() as u32 as f32, mat.fresnel as u32 as f32, 0.0, 0.0]);
+    let class = metro.as_ref().map_or(0.0, |mm| mm.class as u32 as f32);
+    let material = MaterialCb {
+        tint: [m.tint[0], m.tint[1], m.tint[2], 1.0],
+        params: [base.is_some() as u32 as f32, cutout as u32 as f32, class, emissive],
+        surf_params,
+        surf_color,
+        options,
+    };
+    let srv = base.map(|b| b.srgb);
+    Ok(GpuMesh {
+        vb: static_buffer(gpu, bytemuck::cast_slice(&vertices), D3D11_BIND_VERTEX_BUFFER)?,
+        ib: static_buffer(gpu, bytemuck::cast_slice(indices), D3D11_BIND_INDEX_BUFFER)?,
+        ranges,
+        srv,
+        material: static_buffer(gpu, bytemuck::bytes_of(&material), D3D11_BIND_CONSTANT_BUFFER)?,
+        metro,
+    })
+}
+
+/// A rigid model in parts that move on their own (a gun: its body, magazine, bolt, trigger,
+/// rounds), drawn with the body: each part is one "bone" of the palette, placed where the frame
+/// says ([`crate::HeldDraw`]) or hidden.
+pub struct HeldModel {
+    meshes: Vec<GpuMesh>,
+    info: Vec<crate::HeldMeshInfo>,
+    parts: usize,
+    palette: std::cell::RefCell<Box<BonesCb>>,
+    cb: ConstantBuffer<BonesCb>,
+}
+
+impl HeldModel {
+    /// `meshes`: each with the part it belongs to (its vertices' bones are ignored) and whether a
+    /// special draw takes it instead (see [`crate::SpecialDraw`]).
+    pub(crate) fn new(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>) -> Result<HeldModel> {
+        let parts = meshes.iter().map(|(_, i)| i.part + 1).max().unwrap_or(0);
+        anyhow::ensure!(parts <= MAX_BONES, "{parts} parts (at most {MAX_BONES})");
+        let mut uploaded: HashMap<*const asset::Texture, Option<GpuTex>> = HashMap::new();
+        let mut upload = |t: &Arc<asset::Texture>, what: &str| {
+            uploaded
+                .entry(Arc::as_ptr(t))
+                .or_insert_with(|| upload_texture(gpu, t).map_err(|e| tracing::warn!("avatar: texture of {what}: {e:#}")).ok())
+                .clone()
+        };
+        let mut out = Vec::new();
+        let mut info = Vec::new();
+        for (mut m, i) in meshes.into_iter().filter(|(m, _)| !m.indices.is_empty()) {
+            for v in &mut m.vertices {
+                v.bones = [i.part as u8, 0, 0, 0];
+                v.weights = [255, 0, 0, 0];
+            }
+            fix_winding(&mut m);
+            let n = m.indices.len() as u32;
+            out.push(gpu_mesh(gpu, &m, &m.indices, [(0, n); 3], &mut upload)?);
+            info.push(i);
+        }
+        Ok(HeldModel { meshes: out, info, parts, palette: std::cell::RefCell::new(Box::new(BonesCb::zeroed())), cb: ConstantBuffer::new(gpu)? })
+    }
+
+    /// Its meshes: which part each is, where it came from, and whether a special draw takes it.
+    pub fn meshes(&self) -> &[crate::HeldMeshInfo] {
+        &self.info
+    }
+
+    /// How many parts it has (a [`crate::HeldDraw`] gives each a place).
+    pub fn parts(&self) -> usize {
+        self.parts
+    }
+
+    /// Uploads the parts' places (tracking space; None or missing: hidden).
+    fn upload(&self, ctx: &ID3D11DeviceContext, parts: &[Option<Mat4>]) {
+        let mut palette = self.palette.borrow_mut();
+        for p in 0..self.parts {
+            let (m, vis) = match parts.get(p).copied().flatten() {
+                Some(m) => (m, [0.0, 0.0, 0.0, 1.0]),
+                None => (Mat4::IDENTITY, [0.0, 0.0, 0.0, -1.0]),
+            };
+            palette.rows[p] = [m.row(0).to_array(), m.row(1).to_array(), m.row(2).to_array()];
+            palette.vis[p] = vis;
+        }
+        self.cb.update(ctx, &palette);
+    }
+}
+
 /// The CPU version of the shader's visibility, for picking each view's triangles.
 fn visibility(v: &asset::Vertex, planes: &[[f32; 4]]) -> f32 {
     let p = Vec3::from_array(v.pos);
@@ -559,7 +641,7 @@ fn fix_winding(m: &mut crate::SourceMesh) {
 }
 
 /// Uploads a texture (a cube map when it has six faces) with an sRGB-decoding and a raw view.
-fn upload_texture(gpu: &Gpu, t: &asset::Texture) -> Result<GpuTex> {
+pub(crate) fn upload_texture(gpu: &Gpu, t: &asset::Texture) -> Result<GpuTex> {
     let (storage, srgb, linear) = match t.format {
         asset::TexFormat::Rgba8 => (DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM),
         asset::TexFormat::Bc1 => (DXGI_FORMAT_BC1_TYPELESS, DXGI_FORMAT_BC1_UNORM_SRGB, DXGI_FORMAT_BC1_UNORM),
@@ -699,6 +781,8 @@ pub struct Renderer {
     sampler: ID3D11SamplerState,
     /// The avatar's own depth buffer, kept until the eye size changes.
     depth: Option<Texture>,
+    /// Drawing into the game's HDR picture, before its post chain ([`Renderer::set_in_frame`]).
+    in_frame: bool,
 }
 
 impl Renderer {
@@ -733,7 +817,15 @@ impl Renderer {
             alpha_blend: pipeline::blend_state(gpu, Blend::Alpha)?,
             sampler: pipeline::sampler(gpu, true, true)?,
             depth: None,
+            in_frame: false,
         })
+    }
+
+    /// Draw into the game's own HDR picture, before its post chain (an adapter drawing the player in
+    /// the game's frame): the game's shading writes HDR colour and view depth (alpha), and the game
+    /// tone maps and grades it. Takes effect at the next [`Renderer::set_shading`].
+    pub fn set_in_frame(&mut self, in_frame: bool) {
+        self.in_frame = in_frame;
     }
 
     /// The game's lighting for this frame (None: the runtime's own look).
@@ -757,7 +849,7 @@ impl Renderer {
             envc: metro::envmap_color(l).extend(count as f32).to_array(),
             // m_iV[1]: the world's y in view space.
             up: to_world.row(1).extend(0.0).to_array(),
-            atlas: [self.atlas.is_some() as u32 as f32, 1.0 / LIGHT_ATLAS_W as f32, 1.0 / LIGHT_ATLAS_H as f32, 0.0],
+            atlas: [self.atlas.is_some() as u32 as f32, 1.0 / LIGHT_ATLAS_W as f32, 1.0 / LIGHT_ATLAS_H as f32, self.in_frame as u32 as f32],
             lights: l.lights,
         };
         self.lighting_cb.update(&gpu.ctx, &cb);
@@ -780,6 +872,9 @@ impl Renderer {
         depth: Option<DepthInput>,
         body: &mut Character,
         arms: Option<&mut Character>,
+        draw_body: bool,
+        held: &[crate::HeldDraw],
+        mut special: Option<&mut dyn FnMut(&crate::SpecialDraw)>,
     ) -> Result<()> {
         let ctx = &gpu.ctx;
         let show = show_of(frame);
@@ -804,27 +899,57 @@ impl Renderer {
         unsafe {
             ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
             ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
-            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            ctx.VSSetConstantBuffers(0, Some(&[Some(self.frame_cb.buf.clone()), Some(main.body_cb.buf.clone())]));
-            ctx.PSSetConstantBuffers(0, Some(&[Some(self.frame_cb.buf.clone())]));
-            ctx.PSSetConstantBuffers(3, Some(&[Some(self.lighting_cb.buf.clone())]));
-            ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone()), Some(self.clamp_sampler.clone())]));
-            ctx.PSSetShaderResources(1, Some(&[depth.as_ref().map(|d| d.srv.clone())]));
-            ctx.PSSetShaderResources(5, Some(&[Some(self.lut_srv.clone()), self.atlas.clone()]));
-            ctx.OMSetBlendState(&self.opaque_blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
-            ctx.OMSetDepthStencilState(&self.depth_write, 0);
-            ctx.RSSetState(&self.two_sided);
         }
-        pipeline::viewport(ctx, width, height);
+        let game_depth = depth.as_ref().map(|d| d.srv.clone());
+        self.bind_common(ctx, game_depth.as_ref(), width, height);
+        unsafe { ctx.VSSetConstantBuffers(1, Some(&[Some(main.body_cb.buf.clone())])) };
         let range = match show {
             Show::Full => ALL,
             Show::Arms => ARMS,
             _ => HANDS,
         };
-        self.draw_body(ctx, main, range);
+        if draw_body {
+            self.draw_body(ctx, main, range);
+        }
+
+        // What the hands hold, in the same depth (fingers round a grip hide behind it and it behind
+        // them), shaded the same way; then the meshes a special draw takes (a collimator's lens).
+        if !held.is_empty() {
+            for h in held {
+                h.model.upload(ctx, h.parts);
+                unsafe { ctx.VSSetConstantBuffers(1, Some(&[Some(h.model.cb.buf.clone())])) };
+                let meshes: Vec<&GpuMesh> = h.model.meshes.iter().zip(&h.model.info).filter(|(_, i)| !i.special).map(|(m, _)| m).collect();
+                self.draw_shaded(ctx, &meshes, ALL);
+            }
+            if let Some(special) = special.as_mut() {
+                let view_proj = projection(fov) * view_matrix(eye);
+                for h in held.iter() {
+                    for info in h.model.info.iter().filter(|i| i.special) {
+                        let Some(model) = h.parts.get(info.part).copied().flatten() else { continue };
+                        special(&crate::SpecialDraw {
+                            gpu,
+                            key: h.key,
+                            mesh: info,
+                            model,
+                            view_proj,
+                            near_far: (NEAR, FAR),
+                            eye,
+                            fov,
+                            width,
+                            height,
+                            game_depth: depth.as_ref().map(|d| (d.srv, d.units_per_meter)),
+                            shading: self.shading,
+                        });
+                    }
+                }
+                // (It may have changed any state.)
+                unsafe { ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv) };
+                self.bind_common(ctx, game_depth.as_ref(), width, height);
+            }
+        }
 
         let mut ghost_ready = [false; 2];
-        if ghosts.iter().any(Option::is_some) {
+        if draw_body && ghosts.iter().any(Option::is_some) {
             let ghost_model = match ghost_model {
                 Some(g) => {
                     g.pose(&input);
@@ -846,15 +971,39 @@ impl Renderer {
         Ok(())
     }
 
-    /// The body's meshes: with the game's shading where it's set and the mesh has the game's
-    /// material (its forward glass blended after everything opaque), else the runtime's own look.
+    /// The state every draw starts from: the frame, lighting, samplers, the game's depth, the
+    /// grading table and light atlas, opaque blending with depth writes.
+    fn bind_common(&self, ctx: &ID3D11DeviceContext, game_depth: Option<&ID3D11ShaderResourceView>, width: u32, height: u32) {
+        unsafe {
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.VSSetConstantBuffers(0, Some(&[Some(self.frame_cb.buf.clone())]));
+            ctx.PSSetConstantBuffers(0, Some(&[Some(self.frame_cb.buf.clone())]));
+            ctx.PSSetConstantBuffers(3, Some(&[Some(self.lighting_cb.buf.clone())]));
+            ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone()), Some(self.clamp_sampler.clone())]));
+            ctx.PSSetShaderResources(1, Some(&[game_depth.cloned()]));
+            ctx.PSSetShaderResources(5, Some(&[Some(self.lut_srv.clone()), self.atlas.clone()]));
+            ctx.OMSetBlendState(&self.opaque_blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(&self.depth_write, 0);
+            ctx.RSSetState(&self.two_sided);
+        }
+        pipeline::viewport(ctx, width, height);
+    }
+
+    /// The body's meshes (see [`Renderer::draw_shaded`]).
     fn draw_body(&self, ctx: &ID3D11DeviceContext, c: &Character, range: usize) {
+        let meshes: Vec<&GpuMesh> = c.meshes.iter().collect();
+        self.draw_shaded(ctx, &meshes, range);
+    }
+
+    /// Meshes with the game's shading where it's set and the mesh has the game's material (its
+    /// forward glass blended after everything opaque), else the runtime's own look.
+    fn draw_shaded(&self, ctx: &ID3D11DeviceContext, meshes: &[&GpuMesh], range: usize) {
         let shading = self.shading;
         fn metro_of(m: &GpuMesh, shading: bool) -> Option<&MetroMesh> {
             m.metro.as_ref().filter(|_| shading)
         }
         let mut bound: Option<bool> = None;
-        for m in &c.meshes {
+        for &m in meshes {
             let metro = metro_of(m, shading);
             if metro.is_some_and(|mm| mm.class.forward()) {
                 continue;
@@ -865,14 +1014,14 @@ impl Renderer {
             }
             draw_mesh(ctx, m, range);
         }
-        if c.meshes.iter().any(|m| metro_of(m, shading).is_some_and(|mm| mm.class.forward())) {
+        if meshes.iter().any(|m| metro_of(m, shading).is_some_and(|mm| mm.class.forward())) {
             self.metro_glass.bind(ctx);
             unsafe {
                 ctx.OMSetBlendState(&self.alpha_blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
                 ctx.OMSetDepthStencilState(&self.depth_test, 0);
                 ctx.RSSetState(&self.cull_back);
             }
-            for m in c.meshes.iter().filter(|m| metro_of(m, shading).is_some_and(|mm| mm.class.forward())) {
+            for &m in meshes.iter().filter(|m| metro_of(m, shading).is_some_and(|mm| mm.class.forward())) {
                 draw_mesh(ctx, m, range);
             }
             unsafe {

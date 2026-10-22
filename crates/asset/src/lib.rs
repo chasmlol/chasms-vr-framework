@@ -102,6 +102,18 @@ pub enum Shader {
     GlassTint,
     /// Forward glass with reflection (5734).
     GlassReflect,
+    // (Added after the others, so files written before them still load.)
+    /// Forward 2× modulate: what's behind times 2·base.rgb (a reflex sight's lens pane).
+    GlassMultiply,
+    /// Forward refraction: the screen-space offset the game's final pass samples the picture
+    /// behind it with.
+    Distort,
+    /// A collimator's reticle: a quad behind its lens pane ([`Shader::GlassMultiply`]) that the
+    /// game draws as forward tint (5732). `Material::params.x` is the distance (metres, along the
+    /// sight's axis) from the camera the game aims the sight with to the quad's plane, which sets
+    /// the reticle's angular size once it is collimated (0: unknown); `yzw` are 0. See
+    /// docs/research/metro-collimator.md.
+    Reticle,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]

@@ -130,6 +130,11 @@ The other fields are:
 
 Keys and captures may be written in any order.
 
+The script's times are its own clock: it starts with the emulator and stops while a capture is
+saved (saving holds the app's frame up for about a second, and the app sees nothing of that time),
+so a key that falls during a capture still reaches the app. `xrsim.log` gives each capture's
+duration and the script time after it; its own times are real seconds.
+
 A button press is two keys a moment apart:
 
 ```toml

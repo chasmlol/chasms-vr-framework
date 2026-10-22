@@ -570,6 +570,10 @@ impl Rig {
                         }
                         self.place(d.id, v3(d.spawn_pose.pos), q4(d.spawn_pose.rot));
                         self.start_in_slot(d);
+                        // The game's ammunition: its magazine holds what the game's does.
+                        if d.kind == OBJ_WEAPON && d.flags & OBJF_GAME_AMMO != 0 {
+                            self.load_game_magazine(d.id);
+                        }
                     }
                 }
                 None => {
@@ -627,8 +631,10 @@ impl Rig {
             }
         } else if d.kind == OBJ_WEAPON && d.weapon_flags & WPN_LOADS_CHAMBERS == 0 {
             match self.template_for(d.ammo_type) {
+                // With the game's ammunition, the rounds the game's gun holds.
+                Some(_) if d.flags & OBJF_GAME_AMMO != 0 => self.load_game_magazine(id),
                 Some(t) => {
-                    let mag = self.spawn_mag(&t, pos, rot);
+                    let mag = self.spawn_mag(&t, t.capacity, pos, rot);
                     self.seat(mag, id, false);
                 }
                 None => {
@@ -715,15 +721,61 @@ impl Rig {
         self.templates.iter().find(|t| t.kind == OBJ_MAGAZINE && t.ammo_type == ammo_type).copied()
     }
 
-    fn spawn_mag(&mut self, t: &ObjectDesc, pos: Vec3, rot: Quat) -> u32 {
+    /// A copy of the magazine template `t` holding `rounds` (at most its capacity).
+    fn spawn_mag(&mut self, t: &ObjectDesc, rounds: u32, pos: Vec3, rot: Quat) -> u32 {
         let id = self.next_spawn;
         self.next_spawn = self.next_spawn.wrapping_add(1).max(SPAWN_BASE);
         let mut d = *t;
         d.id = id;
         d.flags &= !OBJF_TEMPLATE;
-        d.rounds = t.capacity;
+        d.rounds = rounds.min(t.capacity);
         self.add(d, t.id, true, pos, rot);
         id
+    }
+
+    /// How many rounds a magazine for gun `wid` holds as it comes out of the pouch: a full one,
+    /// or with the game's ammunition ([`OBJF_GAME_AMMO`]) what the game's own reload would load
+    /// now (its template's `rounds`; 0: the pouch is empty).
+    fn pouch_rounds(&self, wid: u32, t: &ObjectDesc) -> u32 {
+        match self.objects.get(&wid) {
+            Some(o) if o.desc.flags & OBJF_GAME_AMMO != 0 => t.rounds.min(t.capacity),
+            _ => t.capacity,
+        }
+    }
+
+    /// A magazine-fed gun with the game's ammunition ([`OBJF_GAME_AMMO`]), as it arrives or the
+    /// game puts it back: it holds every round the game's gun does (`desc.rounds`). A self-loading
+    /// gun has one of them chambered and the rest in its seated magazine (none: both empty); a gun
+    /// worked by hand has them all in its magazine. Without a seated magazine, one from its
+    /// template goes in.
+    fn load_game_magazine(&mut self, wid: u32) {
+        let Some(o) = self.objects.get(&wid) else { return };
+        let (d, mag) = (o.desc, o.weapon.as_ref().and_then(|w| w.mag));
+        if d.weapon_flags & (WPN_LOADS_ROUNDS | WPN_LOADS_CHAMBERS) != 0 {
+            return;
+        }
+        let in_mag = if d.action == ACTION_SELF_LOADING {
+            if let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) {
+                w.chambered = d.rounds > 0;
+            }
+            d.rounds.saturating_sub(1)
+        } else {
+            d.rounds
+        };
+        match mag {
+            Some(m) => {
+                if let Some(m) = self.objects.get_mut(&m) {
+                    m.rounds = in_mag.min(m.desc.capacity);
+                }
+            }
+            None => {
+                if let Some(t) = self.template_for(d.ammo_type) {
+                    let (pos, rot) = self.obj_pose(wid).unwrap_or((Vec3::ZERO, Quat::IDENTITY));
+                    let mag = self.spawn_mag(&t, in_mag, pos, rot);
+                    self.seat(mag, wid, false);
+                }
+            }
+        }
     }
 
     // ---- the frame ------------------------------------------------------------------------------
@@ -1113,14 +1165,15 @@ impl Rig {
             }
             Hover::Ammo(wid) => {
                 let ammo_type = self.objects[&wid].desc.ammo_type;
-                match self.template_for(ammo_type) {
-                    Some(t) => {
-                        let id = self.spawn_mag(&t, palm, grip_rot);
+                // (With the game's ammunition an empty pouch gives nothing.)
+                match self.template_for(ammo_type).map(|t| (self.pouch_rounds(wid, &t), t)) {
+                    Some((rounds, t)) if rounds > 0 => {
+                        let id = self.spawn_mag(&t, rounds, palm, grip_rot);
                         self.debug.mags_spawned += 1;
                         self.take(id, i, true);
                         self.emit(Cue::Pouch, Some(i), Some(wid), palm, 1.0);
                     }
-                    None => self.emit(Cue::Fail, Some(i), None, palm, 1.0),
+                    _ => self.emit(Cue::Fail, Some(i), None, palm, 1.0),
                 }
             }
             Hover::Foregrip(wid) => {
@@ -1157,7 +1210,7 @@ impl Rig {
                     if let Some(w) = self.objects.get_mut(&wid).and_then(|o| o.weapon.as_mut()) {
                         w.chambers[k] = Chamber::Empty;
                     }
-                    let id = self.spawn_mag(&t, palm, grip_rot);
+                    let id = self.spawn_mag(&t, t.capacity, palm, grip_rot);
                     self.take(id, i, true);
                     self.debug.unloads += 1;
                     self.emit(Cue::ShellOut, Some(i), Some(wid), palm, 1.0);

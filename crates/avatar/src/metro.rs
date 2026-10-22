@@ -70,7 +70,8 @@ pub enum Class {
 impl Class {
     pub fn of(shader: Shader) -> Option<Class> {
         Some(match shader {
-            Shader::Unknown => return None,
+            // The collimator's lens and reticle are `collimator.rs`'s.
+            Shader::Unknown | Shader::GlassMultiply | Shader::Distort | Shader::Reticle => return None,
             Shader::Plain => Class::Plain,
             Shader::MetalEnv => Class::MetalEnv,
             Shader::ClothSkin => Class::ClothSkin,

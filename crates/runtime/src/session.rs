@@ -58,6 +58,10 @@ pub struct Stats {
     pub fade: f32,
     pub vignette_frames: u64,
     pub fade_frames: u64,
+    /// Objects the runtime drew itself into the eyes last frame (`OBJF_RUNTIME_DRAWS`), and in
+    /// all.
+    pub held_drawn: u32,
+    pub held_drawn_frames: u64,
 }
 
 /// What a scripted test can see of the runtime's UI, to aim at it.
@@ -127,6 +131,8 @@ pub struct Session {
     menu_trigger_was: bool,
     /// The player's body (IK) and its avatar.
     pub body: crate::body::PlayerBody,
+    /// What the runtime draws of what the player holds (`OBJF_RUNTIME_DRAWS`).
+    pub held_objects: crate::held_objects::HeldObjects,
     /// The runtime draws the body this frame.
     pub draws_body: bool,
     /// When to take the T-pose calibration (seconds, the frame clock).
@@ -200,6 +206,7 @@ impl Session {
             comfort: Comfort::default(),
             menu_trigger_was: false,
             body: crate::body::PlayerBody::default(),
+            held_objects: Default::default(),
             draws_body: false,
             calibrate_at: None,
             countdown_tick: -1,
@@ -367,6 +374,7 @@ impl Session {
             if seq != self.objects_seq && self.link.read_objects_into(&mut self.objects) {
                 self.objects_seq = seq;
                 self.rig.sync(&self.objects);
+                self.held_objects.sync(&self.gpu, &self.objects);
                 tracing::info!("runtime: {} objects registered (table {})", self.objects.count, seq);
             }
             let seq = self.link.hand_poses_seq();
@@ -460,6 +468,10 @@ impl Session {
             }
             self.rig.write_states(&mut self.states);
             self.link.write_object_states(&self.states);
+            let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
+            self.held_objects.update(&self.objects, &self.states, map.as_ref(), frame.hands.map(|h| h.trigger));
+        } else {
+            self.held_objects.clear();
         }
         if let (true, Some(a)) = (self.opts.offline_audio && !self.opts.audio, &self.audio) {
             a.render((frame.dt.clamp(0.0, 0.1) * OFFLINE_RATE as f32).round() as usize);
@@ -556,6 +568,19 @@ impl Session {
                 settings: &self.settings.current,
             });
             self.link.write_body(body);
+            // The game draws the player in its own frame (SkyCraft's way): the posed player for it.
+            if game_draws_body {
+                let mut pd: Box<RtPlayerDraw> = Box::default();
+                pd.flags = PD_VALID;
+                pd.frame_index = frame.index;
+                pd.body = self.body.body;
+                pd.ghosts = self.body.ghosts.map(|g| g.unwrap_or_default());
+                pd.hands = self.body.held.map(|h| h.map(|h| h.to_drawn()).unwrap_or(bytemuck::Zeroable::zeroed()));
+                let objects = self.held_objects.drawn();
+                pd.object_count = objects.len() as u32;
+                pd.objects[..objects.len()].copy_from_slice(&objects);
+                self.link.write_player_draw(&pd);
+            }
         }
 
         // ---- tell the adapter
@@ -685,6 +710,9 @@ impl Session {
             }
         }
         let kf = 1.0 - (-dt / 0.08).exp();
+        if (fade > 0.5) != (self.comfort.fade > 0.5) {
+            tracing::info!("runtime: the head is {} the world's geometry: fading {}", if fade > 0.5 { "inside" } else { "out of" }, if fade > 0.5 { "out" } else { "back in" });
+        }
         self.comfort.fade += (fade - self.comfort.fade) * kf;
         self.stats.vignette = self.comfort.vignette;
         self.stats.fade = self.comfort.fade;
@@ -708,6 +736,7 @@ impl Session {
         self.rig = Rig::default();
         self.rig_out = RigOutput::default();
         self.objects_seq = 0;
+        self.held_objects.clear();
         self.hand_poses.count = 0;
         self.hand_poses_seq = 0;
         self.kicks.count = 0;
@@ -923,6 +952,9 @@ impl Session {
         });
         self.body.set_game_shading(&self.gpu, shading.as_ref());
         let body = &mut self.body;
+        let held = if draw_body { self.held_objects.draws() } else { Vec::new() };
+        self.stats.held_drawn = held.len() as u32;
+        self.stats.held_drawn_frames += (!held.is_empty()) as u64;
         for e in 0..2 {
             let game = stereo.as_ref().and_then(|(slot, _)| slot.eyes[e].srv.as_ref());
             let mut depth = stereo
@@ -935,7 +967,7 @@ impl Session {
             let (eye, fov) = (&poses[e], &fovs[e]);
             self.comp.draw_eye(&self.gpu, target, eye, fov, game, &layers, &mut |gpu| {
                 if draw_body {
-                    body.draw(gpu, target, eye, fov, light, depth.take());
+                    body.draw(gpu, target, eye, fov, light, depth.take(), &held);
                 }
             });
         }

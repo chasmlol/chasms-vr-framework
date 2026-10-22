@@ -60,6 +60,9 @@ pub(crate) struct Submitted {
 
 pub(crate) struct Rt {
     pub start: Instant,
+    /// How long the app's frame loop has been held up by captures (saved inside `xrEndFrame`): the
+    /// script's clock stops for them, so a key that falls inside one isn't lost.
+    pub stalled: Duration,
     pub dir: PathBuf,
     pub script: Script,
     control: Option<Control>,
@@ -138,6 +141,7 @@ impl Rt {
         let now = Instant::now();
         let mut r = Rt {
             start: now,
+            stalled: Duration::ZERO,
             dir,
             script,
             control: None,
@@ -215,9 +219,15 @@ impl Rt {
         }
     }
 
+    /// The script's time: since the start, less the time captures held the app's frames up (the
+    /// app sees none of it, so the script doesn't play on through it).
+    pub fn script_time(&self) -> f64 {
+        self.start.elapsed().saturating_sub(self.stalled).as_secs_f64()
+    }
+
     /// The script's time, the control file and the pose for now. Once a frame.
     fn tick(&mut self) {
-        let t = self.start.elapsed().as_secs_f64();
+        let t = self.script_time();
         let mut pose = sample(&self.script, t);
         if self.control_checked.elapsed() > Duration::from_millis(100) {
             self.control_checked = Instant::now();
@@ -987,9 +997,14 @@ unsafe extern "system" fn end_frame(_s: xr::Session, info: *const xr::FrameEndIn
         if !r.pending.is_empty() {
             let names = std::mem::take(&mut r.pending);
             for name in names {
-                match capture::save(r, &name) {
+                let began = Instant::now();
+                let saved = capture::save(r, &name);
+                // (The app's frame waited for it: the script's clock doesn't run on meanwhile.)
+                let took = began.elapsed();
+                r.stalled += took;
+                match saved {
                     Ok(path) => {
-                        let msg = format!("capture {name} -> {}", path.display());
+                        let msg = format!("capture {name} -> {} ({:.2} s, script time {:.3})", path.display(), took.as_secs_f64(), r.script_time());
                         r.log(&msg);
                     }
                     Err(e) => {

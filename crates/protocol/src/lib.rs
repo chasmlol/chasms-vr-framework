@@ -63,16 +63,18 @@ pub mod hud;
 pub mod sound;
 pub mod world;
 pub mod lighting;
+pub mod player;
 
 pub use hud::*;
 pub use sound::*;
 pub use world::*;
 pub use lighting::*;
+pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 4;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v4";
-pub const MAPPING_BYTES: usize = 0x004C_0000;
+pub const VERSION: u32 = 5;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v5";
+pub const MAPPING_BYTES: usize = 0x004D_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;
@@ -575,7 +577,8 @@ pub const GS_DEAD: u32 = 1 << 4;
 pub const GS_CROUCHED: u32 = 1 << 5;
 pub const GS_HAS_WEAPON: u32 = 1 << 6;
 pub const GS_PAUSED: u32 = 1 << 7;
-/// The game draws the player's body and hands itself (from [RtBody]); the runtime doesn't.
+/// The game draws the player itself (from [RtPlayerDraw]: body, hands and what the runtime draws
+/// of what they hold, inside the game's own frame); the runtime doesn't.
 pub const GS_DRAWS_BODY: u32 = 1 << 8;
 /// Magazines from the ammo pouch never run out.
 pub const GS_INFINITE_AMMO: u32 = 1 << 9;

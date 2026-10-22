@@ -36,7 +36,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for how it fits together.
 | `crates/metro-assets` | `metro-extract`: copies Metro's guns, hands, props and sounds from your install into `local_assets/` |
 | `crates/asset` | The format of `local_assets/` |
 | `crates/ik` | Full-body IK from the head and hands |
-| `crates/avatar` | Draws the player's body and hands over the game's picture |
+| `crates/avatar` | Draws the player's body and hands: over the game's picture, or inside the game's frame by its adapter |
 | `crates/audio` | Spatial interaction sounds: a game's own (its sound pack), or procedural ones |
 | `content/rigs` | How the hands hold each game's guns, measured on its models ([docs/RIGGING.md](docs/RIGGING.md)) |
 

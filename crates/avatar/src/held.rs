@@ -29,6 +29,51 @@ pub struct HeldHand {
 }
 
 impl HeldHand {
+    /// As the protocol carries it to an adapter that draws the player ([`RtPlayerDraw`]).
+    pub fn to_drawn(&self) -> DrawnHand {
+        let q = |r: Quat| r.to_array();
+        let reach = |r: (Vec3, f32)| [r.0.x, r.0.y, r.0.z, r.1];
+        let mut d: DrawnHand = bytemuck::Zeroable::zeroed();
+        d.flags = DH_HELD;
+        d.trigger = self.trigger;
+        d.size = self.size;
+        d.wrist = self.wrist;
+        d.fingers = self.fingers.map(q);
+        if let Some(p) = self.index_pulled {
+            d.flags |= DH_INDEX_PULLED;
+            d.index_pulled = p.map(q);
+        }
+        for (k, r) in self.reach.iter().enumerate() {
+            if let Some(r) = r {
+                d.reach_mask |= 1 << k;
+                d.reach[k] = reach(*r);
+            }
+        }
+        if let Some(r) = self.index_reach_pulled {
+            d.flags |= DH_INDEX_REACH_PULLED;
+            d.index_reach_pulled = reach(r);
+        }
+        d
+    }
+
+    /// The hand an adapter was given ([`HeldHand::to_drawn`]); None when it isn't held.
+    pub fn from_drawn(d: &DrawnHand) -> Option<HeldHand> {
+        if d.flags & DH_HELD == 0 {
+            return None;
+        }
+        let q = |a: [f32; 4]| Quat::from_array(a);
+        let reach = |a: [f32; 4]| (Vec3::new(a[0], a[1], a[2]), a[3]);
+        Some(HeldHand {
+            wrist: d.wrist,
+            fingers: d.fingers.map(q),
+            index_pulled: (d.flags & DH_INDEX_PULLED != 0).then(|| d.index_pulled.map(q)),
+            trigger: d.trigger,
+            size: d.size,
+            reach: std::array::from_fn(|k| (d.reach_mask & (1 << k) != 0).then(|| reach(d.reach[k]))),
+            index_reach_pulled: (d.flags & DH_INDEX_REACH_PULLED != 0).then(|| reach(d.index_reach_pulled)),
+        })
+    }
+
     fn pull(&self) -> f32 {
         if self.trigger.is_finite() { self.trigger.clamp(0.0, 1.0) } else { 0.0 }
     }
@@ -139,6 +184,22 @@ fn quat(a: [f32; 4]) -> Quat {
 mod tests {
     use super::*;
     use bytemuck::Zeroable;
+
+    /// What an adapter that draws the player gets is the hand the runtime posed.
+    #[test]
+    fn a_held_hand_crosses_to_the_adapter_unchanged() {
+        let h = HeldHand {
+            wrist: Pose { pos: [0.1, 1.3, 0.4], valid: 1, rot: Quat::from_rotation_x(0.3).to_array() },
+            fingers: std::array::from_fn(|k| Quat::from_rotation_z(-0.05 * k as f32)),
+            index_pulled: Some([Quat::from_rotation_z(-0.9); 3]),
+            trigger: 0.4,
+            size: 0.095,
+            reach: [None, Some((Vec3::new(0.01, 0.08, 0.0), 0.7)), None, None, Some((Vec3::new(-0.02, 0.06, 0.01), 0.5))],
+            index_reach_pulled: None,
+        };
+        assert_eq!(HeldHand::from_drawn(&h.to_drawn()), Some(h));
+        assert_eq!(HeldHand::from_drawn(&DrawnHand::zeroed()), None);
+    }
 
     fn pose_desc(id: u32, side: u32) -> HandPoseDesc {
         let mut p = HandPoseDesc::zeroed();

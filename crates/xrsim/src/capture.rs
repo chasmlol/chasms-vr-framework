@@ -151,7 +151,7 @@ pub(crate) fn save(r: &mut Rt, name: &str) -> Result<PathBuf> {
     let width = r.script.capture_width.max(64);
     let mut info = format!(
         "time = {:.3}\nframes = {}\nfocused = {}\nlayers = {}\nhead = {{ pos = {:?}, yaw = {}, pitch = {} }}\n",
-        r.start.elapsed().as_secs_f64(),
+        r.script_time(),
         r.frames,
         r.focused,
         r.last_layer_count,

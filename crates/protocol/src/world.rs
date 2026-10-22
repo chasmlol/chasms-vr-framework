@@ -286,7 +286,10 @@ pub struct ObjectDesc {
     pub ammo_type: u32,
     /// Magazine capacity (weapons: of their magazine).
     pub capacity: u32,
-    /// Magazines: rounds when spawned.
+    /// Magazines: rounds when spawned. Weapons with [`OBJF_GAME_AMMO`]: every round in the gun as
+    /// it arrives (or is respawned): a self-loading gun chambers one of them and its seated
+    /// magazine holds the rest (0: the chamber and the magazine empty); a gun worked by hand has
+    /// them all in its magazine.
     pub rounds: u32,
     pub weapon_flags: u32, // WPN_*
     /// Rounds per second on full auto.
@@ -340,6 +343,20 @@ pub const OBJF_TWO_HANDED: u32 = 1 << 3;
 pub const OBJF_SCOPED: u32 = 1 << 4;
 /// Not placed in the world: the runtime spawns copies of it (magazines from the ammo pouch).
 pub const OBJF_TEMPLATE: u32 = 1 << 5;
+/// The runtime draws it (with the player's hands, lit by the game's [`crate::GameLighting`]) from
+/// the model its `name` gives as `<game>/<asset key>` in the runtime's asset cache
+/// (`metro2033/wpn_2012`); the game doesn't. A weapon is drawn with its moving parts where its
+/// [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
+/// (or round) part, in place (magazine space is the gun's).
+pub const OBJF_RUNTIME_DRAWS: u32 = 1 << 6;
+/// Weapons: the game keeps this gun's ammunition (Metro's magazine and reserve), so the runtime's
+/// rounds follow the game's instead of being unlimited. The gun arrives (and comes back with each
+/// `spawn_seq`) holding `rounds` in all, not a full magazine: a self-loading gun chambers one of
+/// them and its seated magazine holds the rest (0: chamber and magazine empty). A magazine the hand
+/// takes from the pouch holds its template's `rounds`: what the game's own reload would load now,
+/// less a live round already in the gun's chamber (0: the pouch is empty). The game rewrites both
+/// as its ammunition changes.
+pub const OBJF_GAME_AMMO: u32 = 1 << 7;
 
 pub const SHAPE_BOX: u32 = 0;
 pub const SHAPE_CAPSULE: u32 = 1;

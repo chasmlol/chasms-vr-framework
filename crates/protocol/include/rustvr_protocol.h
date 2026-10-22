@@ -8,9 +8,9 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 4
+#define RVR_VERSION 5
 
-#define RVR_MAPPING_BYTES 4980736
+#define RVR_MAPPING_BYTES 5046272
 
 #define RVR_OFF_HEADER 0
 
@@ -198,7 +198,8 @@
 #define RVR_GS_PAUSED (1 << 7)
 
 /**
- * The game draws the player's body and hands itself (from [RtBody]); the runtime doesn't.
+ * The game draws the player itself (from [RtPlayerDraw]: body, hands and what the runtime draws
+ * of what they hold, inside the game's own frame); the runtime doesn't.
  */
 #define RVR_GS_DRAWS_BODY (1 << 8)
 
@@ -457,6 +458,26 @@
  * Not placed in the world: the runtime spawns copies of it (magazines from the ammo pouch).
  */
 #define RVR_OBJF_TEMPLATE (1 << 5)
+
+/**
+ * The runtime draws it (with the player's hands, lit by the game's [`crate::GameLighting`]) from
+ * the model its `name` gives as `<game>/<asset key>` in the runtime's asset cache
+ * (`metro2033/wpn_2012`); the game doesn't. A weapon is drawn with its moving parts where its
+ * [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
+ * (or round) part, in place (magazine space is the gun's).
+ */
+#define RVR_OBJF_RUNTIME_DRAWS (1 << 6)
+
+/**
+ * Weapons: the game keeps this gun's ammunition (Metro's magazine and reserve), so the runtime's
+ * rounds follow the game's instead of being unlimited. The gun arrives (and comes back with each
+ * `spawn_seq`) holding `rounds` in all, not a full magazine: a self-loading gun chambers one of
+ * them and its seated magazine holds the rest (0: chamber and magazine empty). A magazine the hand
+ * takes from the pouch holds its template's `rounds`: what the game's own reload would load now,
+ * less a live round already in the gun's chamber (0: the pouch is empty). The game rewrites both
+ * as its ammunition changes.
+ */
+#define RVR_OBJF_GAME_AMMO (1 << 7)
 
 #define RVR_SHAPE_BOX 0
 
@@ -853,6 +874,38 @@
  * [`GameLight::tile`] holds this light's texture term in the light atlas.
  */
 #define RVR_GLF_TILE (1 << 1)
+
+#define RVR_OFF_PLAYER_DRAW 4980736
+
+/**
+ * Objects drawn with the player at once (a gun, its magazines).
+ */
+#define RVR_DRAWN_OBJECTS_MAX 6
+
+/**
+ * Moving parts per drawn object (a gun's body, trigger, bolt, rounds, glass...).
+ */
+#define RVR_DRAWN_PARTS_MAX 128
+
+/**
+ * [`RtPlayerDraw::flags`]: a posed player is there.
+ */
+#define RVR_PD_VALID (1 << 0)
+
+/**
+ * [`DrawnHand::flags`]: the hand is drawn in a game's own pose for what it holds.
+ */
+#define RVR_DH_HELD (1 << 0)
+
+/**
+ * [`DrawnHand::index_pulled`] holds the index finger at a full trigger pull.
+ */
+#define RVR_DH_INDEX_PULLED (1 << 1)
+
+/**
+ * [`DrawnHand::index_reach_pulled`] is given.
+ */
+#define RVR_DH_INDEX_REACH_PULLED (1 << 2)
 
 #define RVR_SHOTS 0
 

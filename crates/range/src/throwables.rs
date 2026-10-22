@@ -222,6 +222,7 @@ fn model_meshes(m: &asset::Model) -> Vec<MeshData> {
         .map(|mesh| MeshData {
             vertices: mesh.vertices.iter().map(|v| crate::content::Vertex { pos: v.pos, normal: v.normal, uv: v.uv, color: [255; 4] }).collect(),
             indices: mesh.indices.clone(),
+            source: None,
             texture: if mesh.texture.is_empty() { None } else { Some(mesh.texture.clone()) },
         })
         .collect()

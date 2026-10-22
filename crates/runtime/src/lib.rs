@@ -9,6 +9,7 @@ pub mod body;
 pub mod compositor;
 pub mod mechanics;
 pub mod menu;
+pub mod held_objects;
 pub mod hud;
 pub mod panels;
 pub mod rig;

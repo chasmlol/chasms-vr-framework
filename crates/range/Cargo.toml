@@ -19,6 +19,8 @@ rustvr-asset.workspace = true
 rustvr-avatar.workspace = true
 # The one mapping from a controller's grip pose to the hand drawn on it.
 rustvr-ik.workspace = true
+# The guns (Metro's, rigged) and how they're registered: shared with the adapters and the runtime.
+rustvr-guns.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
 glam.workspace = true

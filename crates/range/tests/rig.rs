@@ -32,7 +32,7 @@ mod physical;
 use std::path::{Path, PathBuf};
 
 use content::{MeshData, Weapon};
-use glam::{Mat3, Mat4, Quat, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 use render::{Draw, Mesh, Renderer};
 use rustvr_adapter::math::{projection, view_matrix};
 use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput};
@@ -326,6 +326,39 @@ fn the_line_of_sight_passes_through_the_sights() {
             assert!((0.0..0.12).contains(&over) && (m.x - sight.x).abs() < 0.01, "{}: muzzle {m} vs sight {sight}", w.key);
         }
     }
+}
+
+/// The Kalash 2012 (the first gun in Metro 2033) aims through the collimator the game mounts on
+/// it: the line of sight is the collimator's own axis (its mount `loc_kolimator`'s +Z through its
+/// origin), through the reticle's centre and the middle of the lens's window; the lens and the
+/// reticle are glass the runtime draws (`Weapon::glass`), not range parts.
+#[test]
+fn the_kalash_2012_sights_through_its_collimator() {
+    let Some(w) = rigged().into_iter().find(|w| w.key == "wpn_2012") else {
+        eprintln!("no Metro 2033 assets: skipped");
+        return;
+    };
+    let model = rustvr_asset::load_model(&metro_dir(), "wpn_2012").unwrap();
+    let mount = model.bones.iter().find(|b| b.name == "loc_kolimator").expect("the collimator's mount");
+    let mount = Mat4::from_cols_array(&mount.model_matrix);
+    let sight = Vec3::from_array(w.rig.sight);
+    // The mount's axis in weapon space is the line of sight.
+    let axis = w.fix.transform_vector3(mount.z_axis.truncate()).normalize();
+    eprintln!("wpn_2012: the collimator's axis is {:.4}° off the line of sight", axis.angle_between(Vec3::Z).to_degrees());
+    assert!(axis.angle_between(Vec3::Z).to_degrees() < 0.01, "the line of sight is the collimator's axis ({axis})");
+    let on_line = |p: Vec3| Vec2::new(p.x - sight.x, p.y - sight.y).length();
+    let origin = w.fix.transform_point3(mount.w_axis.truncate());
+    assert!(on_line(origin) < 1e-4, "through the mount: {:.2} mm off", on_line(origin) * 1000.0);
+    // The glass: the panes and the reticle, each centred on the line.
+    assert_eq!(w.glass.len(), 4, "the collimator's four lens meshes are glass");
+    for g in &w.glass {
+        let (lo, hi) = g.bounds(w.fix).unwrap();
+        let c = (lo + hi) * 0.5;
+        eprintln!("wpn_2012: glass {:?} centred {:.2} mm off the line of sight", g.texture, on_line(c) * 1000.0);
+        assert!(on_line(c) < 0.001, "a lens mesh {lo}..{hi} is off the line of sight");
+        assert!(c.z > sight.z - 0.01, "the lens is ahead of the sight point");
+    }
+    assert!(w.parts.iter().all(|p| p.source.as_ref().is_some_and(|s| s.mesh < 6)), "no glass among the parts");
 }
 
 /// The hands the runtime would draw are where the rig says: each hand joint is exactly

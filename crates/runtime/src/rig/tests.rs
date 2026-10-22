@@ -1600,3 +1600,141 @@ fn an_air_rifle_needs_pumping_and_shots_spend_the_pressure() {
     assert!((s.rig.debug.last_strength - 0.75).abs() < 1e-4);
     assert!((s.state(AIR).fuse - 0.65).abs() < 1e-4, "a shot spent a tenth");
 }
+
+/// A gun with the game's ammunition (`OBJF_GAME_AMMO`, as Metro's adapter registers its gun): it
+/// arrives (and comes back when the game respawns it) holding every round the game's gun does, one
+/// chambered and the rest in its magazine; and the pouch hands what the game's own reload would
+/// load, which the game rewrites in its template as its ammunition changes: no respawning, and
+/// nothing at all once the game's reserve is gone.
+#[test]
+fn a_gun_with_the_games_ammo_takes_its_rounds_from_the_game() {
+    const GAME_RIFLE: u32 = 9;
+    const GAME_MAG: u32 = 101;
+    let mut game_rifle = rifle();
+    game_rifle.id = GAME_RIFLE;
+    game_rifle.flags |= OBJF_GAME_AMMO;
+    game_rifle.spawn_pose = pose(Vec3::new(-0.3, 0.87, 0.6), Quat::IDENTITY);
+    game_rifle.ammo_type = 3;
+    game_rifle.capacity = 40;
+    game_rifle.rounds = 18;
+    let mut game_mag = rifle_mag();
+    game_mag.id = GAME_MAG;
+    game_mag.ammo_type = 3;
+    game_mag.capacity = 40;
+    game_mag.rounds = 40;
+    let mut s = Sim::with(&[game_rifle, game_mag]);
+    // (rounds in the chamber, rounds in the magazine)
+    let held = |s: &Sim| {
+        let st = s.state(GAME_RIFLE);
+        (st.chambered & CHAMBER_LIVE_MASK != 0, st.rounds)
+    };
+    assert_eq!(held(&s), (true, 17), "18 in all: one chambered, 17 in the magazine");
+    assert_eq!(s.state(RIFLE).rounds, 5, "a gun without the flag still arrives with a full magazine");
+    let k = (0..s.table.count as usize).find(|&k| s.table.descs[k].id == GAME_RIFLE).unwrap();
+    let m = (0..s.table.count as usize).find(|&k| s.table.descs[k].id == GAME_MAG).unwrap();
+    // The game respawns it: with one round (chambered), then with none (empty and empty).
+    for (rounds, want) in [(1, (true, 0)), (0, (false, 0)), (18, (true, 17))] {
+        s.table.descs[k].rounds = rounds;
+        s.table.descs[k].spawn_seq += 1;
+        s.table.seq += 1;
+        s.rig.sync(&s.table);
+        s.step(45);
+        assert_eq!(held(&s), want, "respawned with {rounds} in all");
+        assert_eq!(s.state(RIFLE).rounds, 5, "the other gun isn't touched");
+    }
+    // Its reload would now load 22 (only the template changes): that's what the pouch hands.
+    s.table.descs[m].rounds = 22;
+    s.table.seq += 1;
+    s.rig.sync(&s.table);
+    s.take(1, GAME_RIFLE);
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.15), 30);
+    let mag = s.from_the_pouch();
+    assert_eq!(s.state(mag).rounds, 22, "the template's rounds, not its capacity");
+    // The game's reserve runs out: the pouch is empty.
+    s.grip(0, 0.0);
+    s.move_hand(0, Vec3::new(-0.2, 1.1, 0.2), 20);
+    s.table.descs[m].rounds = 0;
+    s.table.seq += 1;
+    s.rig.sync(&s.table);
+    let spawned = s.rig.debug.mags_spawned;
+    s.cues.clear();
+    s.move_hand(0, Vec3::new(-0.3, 1.45, 0.1), 20);
+    s.move_hand(0, Vec3::new(-0.26, 1.6, -0.06), 20);
+    s.grip(0, 1.0);
+    assert_eq!(s.rig.held(0), None, "nothing out of an empty pouch");
+    assert_eq!(s.rig.debug.mags_spawned, spawned);
+    assert!(s.cues.contains(&Cue::Fail));
+    assert_eq!(held(&s), (true, 17), "and the gun keeps what it has");
+}
+
+/// The magazine comes out of a gun set up as Metro's adapter registers it (the game's ammunition,
+/// drawn by the runtime, the table rewritten as the game's ammunition changes with every shot): A
+/// on the gun hand ejects it whatever the table does, the pouch's magazine seats in its place, and
+/// the gun fires from the new one. (The Metro run where A did nothing was the headset emulator's:
+/// the capture it saved at that moment held the frames up through the whole press, so no frame
+/// saw A. Its script clock now stops for captures.)
+#[test]
+fn a_game_ammo_gun_ejects_its_magazine_while_the_game_rewrites_the_table() {
+    const GAME_RIFLE: u32 = 9;
+    const GAME_MAG: u32 = 101;
+    let mut gun = rifle();
+    gun.id = GAME_RIFLE;
+    gun.flags |= OBJF_GAME_AMMO | OBJF_RUNTIME_DRAWS;
+    gun.spawn_pose = pose(Vec3::new(-0.3, 0.87, 0.6), Quat::IDENTITY);
+    gun.ammo_type = 3;
+    gun.capacity = 40;
+    gun.rounds = 18;
+    let mut mag = rifle_mag();
+    mag.id = GAME_MAG;
+    mag.flags |= OBJF_RUNTIME_DRAWS;
+    mag.ammo_type = 3;
+    mag.capacity = 40;
+    mag.rounds = 39;
+    let mut s = Sim::with(&[gun, mag]);
+    let k = (0..s.table.count as usize).find(|&k| s.table.descs[k].id == GAME_RIFLE).unwrap();
+    let m = (0..s.table.count as usize).find(|&k| s.table.descs[k].id == GAME_MAG).unwrap();
+    // The game's rewrite: its gun's rounds and what its reload would load (the same spawn).
+    let rewrite = |s: &mut Sim| {
+        let rounds = s.state(GAME_RIFLE).rounds + 1;
+        s.table.descs[k].rounds = rounds;
+        s.table.descs[m].rounds = 39;
+        s.table.seq += 1;
+        s.rig.sync(&s.table);
+    };
+    let first = s.rig.mag_of(GAME_RIFLE).expect("it arrives with a magazine");
+    s.take(1, GAME_RIFLE);
+    s.move_hand(1, Vec3::new(0.15, 1.3, 0.25), 30);
+    for _ in 0..3 {
+        s.fire_once();
+        rewrite(&mut s);
+    }
+    assert_eq!(s.rig.debug.shots, 3);
+    assert_eq!(s.rig.mag_of(GAME_RIFLE), Some(first));
+    // A, held for a fifth of a second as the emulator's script holds it, the table rewritten as it
+    // goes.
+    s.f.hands[1].buttons |= CTRL_A;
+    for _ in 0..20 {
+        s.step(1);
+        rewrite(&mut s);
+    }
+    s.f.hands[1].buttons &= !CTRL_A;
+    s.step(10);
+    assert_eq!(s.rig.mag_of(GAME_RIFLE), None, "A ejected the magazine");
+    assert_eq!(s.rig.debug.ejects, 1);
+    rewrite(&mut s);
+    s.step(10);
+    assert_eq!(s.rig.mag_of(GAME_RIFLE), None, "and a table rewrite doesn't put it back");
+    // A fresh one from the pouch goes in, and the gun fires from it.
+    let fresh = s.from_the_pouch();
+    assert_eq!(s.state(fresh).rounds, 39);
+    let well = s.pos(GAME_RIFLE) + s.rot(GAME_RIFLE) * v3(rifle().mag_well);
+    let rot = (s.rot(GAME_RIFLE) * held_mag_rot().inverse()).normalize();
+    s.set_rot(0, rot);
+    s.move_hand(0, well - rot * HELD_MAG_TOP - Vec3::Y * 0.12, 30);
+    s.move_hand(0, well - rot * HELD_MAG_TOP, 15);
+    s.step(3);
+    assert_eq!(s.rig.mag_of(GAME_RIFLE), Some(fresh), "the pouch's magazine seated");
+    let shots = s.rig.debug.shots;
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, shots + 1, "and it fires from it");
+}

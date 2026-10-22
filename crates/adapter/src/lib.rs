@@ -437,6 +437,15 @@ impl Adapter {
         }
     }
 
+    /// The player as the runtime posed it (see [`RtPlayerDraw`]), for an adapter that draws it in
+    /// the game's frame. False when there's none.
+    pub fn read_player_draw(&self, out: &mut RtPlayerDraw) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_player_draw_into(out) && out.flags & PD_VALID != 0,
+            _ => false,
+        }
+    }
+
     pub fn push_event(&self, ev: Event) -> bool {
         match &self.link {
             Some(l) if self.connected => l.push_event(&ev),

@@ -1726,6 +1726,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustvr-guns"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "glam 0.34.1",
+ "rustvr-adapter",
+ "rustvr-asset",
+ "rustvr-avatar",
+ "rustvr-ik",
+ "rustvr-protocol",
+ "tracing",
+]
+
+[[package]]
 name = "rustvr-ik"
 version = "0.1.0"
 dependencies = [
@@ -1743,7 +1758,10 @@ dependencies = [
  "glam 0.34.1",
  "retour",
  "rustvr-adapter",
+ "rustvr-asset",
+ "rustvr-avatar",
  "rustvr-gpu",
+ "rustvr-guns",
  "rustvr-protocol",
  "serde",
  "toml 1.1.8+spec-1.1.0",
@@ -1773,6 +1791,7 @@ dependencies = [
  "rustvr-asset",
  "rustvr-avatar",
  "rustvr-gpu",
+ "rustvr-guns",
  "rustvr-ik",
  "rustvr-protocol",
  "rustvr-runtime",
@@ -1790,11 +1809,13 @@ dependencies = [
  "egui",
  "glam 0.34.1",
  "openxr",
+ "png",
  "rapier3d",
  "rustvr-asset",
  "rustvr-audio",
  "rustvr-avatar",
  "rustvr-gpu",
+ "rustvr-guns",
  "rustvr-ik",
  "rustvr-protocol",
  "serde",

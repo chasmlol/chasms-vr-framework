@@ -27,6 +27,13 @@
 //!   and colour grading, written as the code values the game would display ([`metro`]). Other
 //!   meshes, and everything when the game doesn't say, keep the runtime's own look.
 //!
+//! * **Held objects:** what the hands hold (a gun, its magazine) can be drawn here too
+//!   ([`HeldModel`], [`Avatar::draw_with`]): rigid parts of a game model, each where the frame puts
+//!   it, in the body's depth (fingers wrap a grip) and through exactly the same shading (the game's
+//!   materials and lighting). Meshes whose shading isn't reproduced here (a collimator's lens and
+//!   reticle) are left to a caller's special draw ([`SpecialDraw`]); [`collimator::Collimator`]
+//!   is the one for a collimator sight.
+//!
 //! **Joint rotations** are read as the orientation of each joint's canonical frame in tracking
 //! space (the protocol's convention in `world.rs`), so a player standing in the reference T-pose
 //! has exactly [`pose::reference_frame`] on every joint, and a hand's +Y points along its fingers
@@ -34,6 +41,7 @@
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+pub mod collimator;
 pub mod fit;
 pub mod held;
 pub mod metro;
@@ -52,9 +60,11 @@ use glam::Quat;
 use rustvr_asset as asset;
 use rustvr_gpu::Gpu;
 use rustvr_protocol::{Fingers, Fov, GameLighting, HandState, JOINT_COUNT, LightHint, Pose};
+use glam::Mat4;
 use windows::Win32::Graphics::Direct3D11::{ID3D11RenderTargetView, ID3D11ShaderResourceView};
 
 pub use held::{HeldHand, held_hands};
+pub use render::HeldModel;
 pub use rig::{GameHand, bind_joints, finger_reach, game_hand};
 
 /// Everything about the player's body for one frame (tracking space).
@@ -141,6 +151,14 @@ impl Avatar {
         Ok(Avatar { renderer, body, arms })
     }
 
+    /// Draw into the game's own HDR picture before its post chain (an adapter drawing the player
+    /// inside the game's frame, SkyCraft's way): the game's shading writes HDR colour, and view depth
+    /// in alpha as the game's combine does; the game's post chain tone maps and grades it. Takes
+    /// effect at the next [`Avatar::set_game_shading`].
+    pub fn set_in_frame(&mut self, in_frame: bool) {
+        self.renderer.set_in_frame(in_frame);
+    }
+
     /// Shades the body with the game's own lighting model from now on (None: the runtime's own
     /// look). Call once a frame, before drawing the eyes.
     pub fn set_game_shading(&mut self, gpu: &Gpu, shading: Option<&GameShading>) {
@@ -161,7 +179,28 @@ impl Avatar {
         frame: &AvatarFrame,
         depth: Option<DepthInput>,
     ) -> Result<()> {
-        self.renderer.draw(gpu, target, width, height, eye, fov, frame, depth, &mut self.body, self.arms.as_mut())
+        self.renderer.draw(gpu, target, width, height, eye, fov, frame, depth, &mut self.body, self.arms.as_mut(), true, &[], None)
+    }
+
+    /// [`Avatar::draw`], with what the hands hold (`held`, in the same depth and shading), and
+    /// `special` called for each held mesh a special draw takes, after the opaque ones (the eye's
+    /// target and the avatar's depth buffer bound; it may change any state). Without `body` only
+    /// the held objects are drawn.
+    pub fn draw_with(
+        &mut self,
+        gpu: &Gpu,
+        target: &ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        frame: &AvatarFrame,
+        depth: Option<DepthInput>,
+        body: bool,
+        held: &[HeldDraw],
+        special: Option<&mut dyn FnMut(&SpecialDraw)>,
+    ) -> Result<()> {
+        self.renderer.draw(gpu, target, width, height, eye, fov, frame, depth, &mut self.body, self.arms.as_mut(), body, held, special)
     }
 
     /// The skin this would draw for `frame`, posed on the CPU: every vertex (tracking space) with
@@ -169,6 +208,95 @@ impl Avatar {
     /// tests and tools; the arms model in the arms and hands views, the body in the full view.
     pub fn skin(&mut self, frame: &AvatarFrame) -> Vec<(glam::Vec3, &str)> {
         self.renderer.skin(frame, &mut self.body, self.arms.as_mut())
+    }
+}
+
+/// One of a [`HeldModel`]'s meshes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldMeshInfo {
+    /// The part it moves with (its place in [`HeldDraw::parts`]).
+    pub part: usize,
+    /// The mesh of the game's model it was cut from, and that mesh's name.
+    pub source: usize,
+    pub name: String,
+    /// Taken by a special draw ([`SpecialDraw`]): the game shades it with a shader this crate's
+    /// materials don't reproduce ([`metro::Class::of`] has none, in a model that has the game's
+    /// materials), or it is part of a collimator ([`collimator::takes`]; [`collimator::Collimator`]
+    /// is the special draw that draws it).
+    pub special: bool,
+}
+
+/// One of a [`HeldModel`]'s parts, from a mesh of the game's model: its triangles (`indices`) over
+/// some of that mesh's vertices (`vertices`, their indices in the mesh).
+pub struct HeldPart {
+    pub part: usize,
+    pub mesh: usize,
+    pub vertices: Vec<u32>,
+    pub indices: Vec<u32>,
+}
+
+/// A held model to draw this eye: each of its parts' model space -> tracking space (None: not
+/// drawn).
+pub struct HeldDraw<'a> {
+    pub model: &'a HeldModel,
+    pub parts: &'a [Option<Mat4>],
+    /// What it is, for the special draws (e.g. `metro2033/wpn_2012`).
+    pub key: &'a str,
+}
+
+/// A held mesh a caller draws itself (see [`HeldMeshInfo::special`]), between the opaque meshes
+/// and the ghosts, into the eye's target with the avatar's depth buffer bound.
+pub struct SpecialDraw<'a> {
+    pub gpu: &'a Gpu,
+    /// The held model's key ([`HeldDraw::key`]) and the mesh.
+    pub key: &'a str,
+    pub mesh: &'a HeldMeshInfo,
+    /// The mesh's model space -> tracking space (its part's place).
+    pub model: Mat4,
+    /// Tracking space -> clip space as the avatar draws (left-handed, D3D depth), and its near and
+    /// far planes (metres).
+    pub view_proj: Mat4,
+    pub near_far: (f32, f32),
+    pub eye: &'a Pose,
+    pub fov: &'a Fov,
+    pub width: u32,
+    pub height: u32,
+    /// The game's linear depth and its units per metre, when the game gave it.
+    pub game_depth: Option<(&'a ID3D11ShaderResourceView, f32)>,
+    /// The game's lighting is set for this frame ([`Avatar::set_game_shading`]).
+    pub shading: bool,
+}
+
+impl HeldModel {
+    /// A held model from a game model in an asset cache folder (`dir`, its textures by key), in
+    /// `parts`. Meshes with the game's materials whose shader isn't reproduced here are marked
+    /// [`HeldMeshInfo::special`].
+    pub fn load(gpu: &Gpu, dir: &std::path::Path, model: &asset::Model, parts: &[HeldPart]) -> Result<HeldModel> {
+        let mut cache: HashMap<String, Option<Arc<asset::Texture>>> = HashMap::new();
+        let mut texture = |key: &str| -> Option<Arc<asset::Texture>> {
+            if key.is_empty() {
+                return None;
+            }
+            cache
+                .entry(key.to_string())
+                .or_insert_with(|| asset::load_texture(dir, key).map_err(|e| tracing::warn!("avatar: texture {key}: {e:#}")).ok().map(Arc::new))
+                .clone()
+        };
+        let game_materials = model.meshes.iter().any(|m| m.material.shader != asset::Shader::Unknown);
+        let mut meshes = Vec::new();
+        for p in parts {
+            let m = model.meshes.get(p.mesh).with_context(|| format!("{}: no mesh {}", model.source, p.mesh))?;
+            let vertices = p.vertices.iter().map(|&i| m.vertices.get(i as usize).copied().with_context(|| format!("{}: mesh {} has no vertex {i}", model.source, p.mesh))).collect::<Result<Vec<_>>>()?;
+            anyhow::ensure!(p.indices.iter().all(|&i| (i as usize) < vertices.len()), "{}: a part of mesh {} indexes past its vertices", model.source, p.mesh);
+            let mesh = asset::Mesh { texture: m.texture.clone(), vertices, indices: p.indices.clone(), name: m.name.clone(), material: m.material.clone() };
+            let one = asset::Model { source: model.source.clone(), meshes: vec![mesh], ..Default::default() };
+            let Some(source) = from_model(one, &mut texture).meshes.pop() else { continue };
+            // Shaders not reproduced here, and the whole of a collimator (its reticle, the lens's
+            // reflection, pane and refraction, which the game draws in that order: `collimator`).
+            let special = game_materials && (metro::Class::of(m.material.shader).is_none() || collimator::takes(model, p.mesh));
+            meshes.push((source, HeldMeshInfo { part: p.part, source: p.mesh, name: m.name.clone(), special }));
+        }
+        render::HeldModel::new(gpu, meshes)
     }
 }
 

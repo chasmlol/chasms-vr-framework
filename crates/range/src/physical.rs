@@ -16,7 +16,7 @@ use rustvr_adapter::View;
 use rustvr_protocol::*;
 use std::collections::HashMap;
 
-use crate::content::{self, GunHand, Weapon};
+use crate::content::{self, Weapon};
 
 /// Desc ids: weapon `i` is `WEAPON_BASE + i`, its magazine template `MAG_BASE + i`.
 pub const WEAPON_BASE: u32 = 1;
@@ -90,31 +90,7 @@ pub fn part_id(weapon: usize, part: usize) -> usize {
     10_000 + weapon * 100 + part
 }
 
-fn bounds_of(points: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
-    let mut min = Vec3::splat(f32::MAX);
-    let mut max = Vec3::splat(f32::MIN);
-    for p in points {
-        min = min.min(p);
-        max = max.max(p);
-    }
-    (min.x <= max.x).then_some((min, max))
-}
-
-/// Weapon-space bounds of some of a gun's parts.
-fn parts_bounds(w: &Weapon, keep: impl Fn(usize) -> bool) -> Option<(Vec3, Vec3)> {
-    let pts = w.parts.iter().enumerate().filter(|(i, _)| keep(*i)).flat_map(|(_, p)| p.vertices.iter().map(|v| w.fix.transform_point3(Vec3::from_array(v.pos))));
-    bounds_of(pts)
-}
-
-/// Weapon-space bounds of a gun without its magazine (its collider).
-fn weapon_bounds(w: &Weapon) -> (Vec3, Vec3) {
-    parts_bounds(w, |i| !w.mag_parts.contains(&i)).unwrap_or((Vec3::new(-0.03, -0.1, -0.3), Vec3::new(0.03, 0.08, 0.6)))
-}
-
-/// Weapon-space bounds of a gun with its magazine in (what it covers lying on a table).
-fn drawn_bounds(w: &Weapon) -> (Vec3, Vec3) {
-    parts_bounds(w, |_| true).unwrap_or_else(|| weapon_bounds(w))
-}
+use rustvr_guns::desc::{bounds_of, drawn_bounds, weapon_bounds};
 
 /// The rotation of a gun lying on its side with the barrel along `barrel`: its right side up, or
 /// its left side up when `left_side_up` (a magazine sticking out of the left side then points up).
@@ -203,89 +179,17 @@ fn lying_from(w: &Weapon, barrel: Vec3, x: f32, z: f32, top: f32) -> (Pose, f32)
 }
 
 pub fn weapon_desc(i: usize, w: &Weapon, spawn: Pose, start_slot: u32) -> ObjectDesc {
-    let (min, max) = weapon_bounds(w);
-    let mut d = ObjectDesc::zeroed();
-    d.id = WEAPON_BASE + i as u32;
-    d.kind = OBJ_WEAPON;
-    d.flags = OBJF_GRABBABLE
-        | OBJF_PULLABLE
-        | OBJF_HOLSTERABLE
-        | if w.pistol { 0 } else { OBJF_TWO_HANDED }
-        | if w.ads_zoom > 1.4 { OBJF_SCOPED } else { 0 };
+    let mut d = rustvr_guns::desc::weapon_desc(WEAPON_BASE + i as u32, w, [support_pose_id(i), grip_pose_id(i)]);
     d.spawn_seq = 1;
     d.spawn_pose = spawn;
     d.start_slot = start_slot;
-    d.shape = SHAPE_BOX;
-    d.mass = w.mass;
-    d.half_extents = ((max - min) * 0.5).to_array();
-    d.center = ((max + min) * 0.5).to_array();
-    d.grip = w.rig.grip;
-    d.foregrip = w.rig.foregrip;
-    d.mag_well = w.rig.mag_well;
-    d.muzzle = w.rig.muzzle;
-    d.sight = w.rig.sight;
-    if let Some((h, travel)) = w.handle {
-        d.handle = h.to_array();
-        d.handle_travel = travel;
-    }
     d.ammo_type = i as u32 + 1;
-    d.capacity = w.mag_size;
-    // How it's worked: a self-loading gun with a handle (not an air gun's pump) or a bolt or pump
-    // action needs a fresh magazine racked in.
-    let a = &w.action;
-    let racks = w.handle.is_some() && a.air.is_none() && matches!(a.kind, ACTION_SELF_LOADING | ACTION_BOLT | ACTION_PUMP);
-    d.weapon_flags = if w.automatic { WPN_AUTOMATIC } else { 0 }
-        | if w.slide_locks { WPN_SLIDE_LOCKS } else { 0 }
-        | if racks { WPN_NEEDS_RACK } else { 0 }
-        | if a.air.is_some() { WPN_PNEUMATIC } else { 0 }
-        | if a.chambers.is_empty() { 0 } else { WPN_LOADS_CHAMBERS }
-        | if a.round_parts.is_empty() { 0 } else { WPN_LOADS_ROUNDS }
-        | if w.pistol { WPN_PISTOL } else if w.stock { WPN_STOCK } else { 0 };
-    d.action = a.kind;
-    match a.kind {
-        ACTION_BREAK | ACTION_SWING => {
-            d.handle = a.hinge.to_array();
-            d.handle_travel = 0.0;
-            d.action_angle = a.open;
-        }
-        ACTION_BOLT => d.action_angle = a.bolt_turn.map_or(0.0, |[closed, open]| open - closed),
-        _ => {}
-    }
-    if !a.chambers.is_empty() {
-        d.capacity = a.chambers.len() as u32;
-        d.mag_well = a.chambers[0].to_array();
-        d.chamber_step = a.chambers.get(1).map_or(0.0, |c1| c1.x - a.chambers[0].x);
-    }
-    if let (Some(port), false) = (a.port, a.round_parts.is_empty()) {
-        d.capacity = a.round_parts.len() as u32;
-        d.mag_well = port.to_array();
-    }
-    if let Some([pump, shot, min]) = a.air {
-        [d.pump_pressure, d.shot_pressure, d.min_pressure] = [pump, shot, min];
-    }
-    d.fire_rate = w.rounds_per_second;
-    [d.recoil_pitch, d.recoil_yaw, d.recoil_back] = w.recoil;
-    [d.recoil_climb, d.recoil_return, d.recoil_angle] = w.recoil_feel;
-    // How the hands hold it (all zero: the runtime's fallbacks), and the game's own hand poses.
-    d.grip_rot = w.grip_rot.map(|q| q.normalize().to_array()).unwrap_or([0.0; 4]);
-    if w.grip_rot.is_some() && w.game_hands[1].is_some() {
-        d.grip_pose = grip_pose_id(i);
-    }
-    if !w.pistol {
-        d.support_rot = w.support_rot.map(|q| q.normalize().to_array()).unwrap_or([0.0; 4]);
-        if w.support_rot.is_some() && w.game_hands[0].is_some() {
-            d.support_pose = support_pose_id(i);
-        }
-    }
-    set_name(&mut d.name, &w.name);
     d
 }
 
-/// A gun's own recoil as kick table entries: its kicks taken from the model's space into the
-/// weapon's (`Weapon::fix`), rotations and translations alike (the channels at each one's key times,
-/// so the turn is exact).
+/// A gun's own recoil as kick table entries (see `rustvr_guns::desc::kick_descs`).
 pub fn kick_descs(object: u32, w: &Weapon) -> Vec<KickDesc> {
-    rustvr_adapter::kicks::kick_descs(object, &w.kicks, w.fix)
+    rustvr_guns::desc::kick_descs(object, w)
 }
 
 /// The guns' kicks as the kick table can hold them (`capacity`, the protocol's `MAX_KICKS`): every
@@ -327,23 +231,7 @@ pub fn fit_kicks(per_gun: Vec<(u32, Vec<KickDesc>)>, first: &[u32], capacity: us
     out
 }
 
-/// A hand pose table entry for one of the game's hands on a gun.
-pub fn pose_desc(id: u32, side: usize, h: &GunHand) -> HandPoseDesc {
-    let mut p = HandPoseDesc::zeroed();
-    p.id = id;
-    p.side = side as u32;
-    p.size = h.size;
-    p.wrist = Pose { pos: h.wrist.0.to_array(), valid: 1, rot: h.wrist.1.normalize().to_array() };
-    p.fingers = h.fingers.map(|q| q.normalize().to_array());
-    if let Some(pulled) = h.index_pulled {
-        p.flags |= HPOSE_TRIGGER;
-        p.index_pulled = pulled.map(|q| q.normalize().to_array());
-    }
-    let point = |r: Option<(Vec3, f32)>| r.map_or([0.0; 4], |(at, along)| [at.x, at.y, at.z, along]);
-    p.reach = h.reach.map(point);
-    p.index_reach_pulled = point(h.index_reach_pulled);
-    p
-}
+pub use rustvr_guns::desc::pose_desc;
 
 /// The runtime's ammo types (`ObjectDesc::ammo_type`: guns and magazines with the same one fit
 /// together), by weapon: one per kind of magazine (`Weapon::magazine`), so guns that take the same
@@ -373,25 +261,10 @@ pub fn ammo_types(weapons: &[&Weapon]) -> Vec<u32> {
         .collect()
 }
 
-/// Magazine space is the gun's own space: seated, a magazine sits exactly where the gun's model
-/// has it, so its part draws in place. Its collider is the magazine mesh's box. A gun loaded round
-/// by round gets one round (its first chamber's), its base at that chamber's mouth.
+/// A gun's magazine template (see `rustvr_guns::desc::mag_desc`).
 fn mag_desc(i: usize, w: &Weapon) -> ObjectDesc {
-    let round = w.round_base().is_some();
-    let (min, max) = parts_bounds(w, |p| w.round_parts().contains(&p)).unwrap_or((w.mag_center - Vec3::new(0.016, 0.07, 0.03), w.mag_center + Vec3::new(0.016, 0.07, 0.03)));
-    let mut d = ObjectDesc::zeroed();
-    d.id = MAG_BASE + i as u32;
-    d.kind = OBJ_MAGAZINE;
-    d.flags = OBJF_GRABBABLE | OBJF_PULLABLE | OBJF_TEMPLATE;
-    d.shape = SHAPE_BOX;
-    d.mass = w.mag_mass;
-    d.half_extents = ((max - min) * 0.5).to_array();
-    d.center = ((max + min) * 0.5).to_array();
-    d.mag_well = w.round_base().unwrap_or(Vec3::from_array(w.rig.mag_well)).to_array();
+    let mut d = rustvr_guns::desc::mag_desc(MAG_BASE + i as u32, w).expect("a gun that takes magazines or rounds");
     d.ammo_type = i as u32 + 1;
-    d.capacity = if round { 1 } else { w.mag_size };
-    d.rounds = d.capacity;
-    set_name(&mut d.name, &format!("{} {}", w.name, if round { "round" } else { "magazine" }));
     d
 }
 
@@ -778,12 +651,34 @@ impl Armory {
         })
     }
 
-    /// Draw items for every object. `triggers`: each controller's trigger (a held gun's trigger
-    /// follows its hand's).
+    /// Has the runtime draw the rigged Metro guns and their magazines (`OBJF_RUNTIME_DRAWS`, by
+    /// their model's name: `rustvr_guns::desc::model_name`) instead of the range, as a game adapter
+    /// does. Before the table is registered.
+    pub fn let_runtime_draw(&mut self, weapons: &[&Weapon]) {
+        let count = (self.table.count as usize).min(MAX_OBJECTS);
+        for d in self.table.descs[..count].iter_mut() {
+            let w = match self.kinds.get(&d.id) {
+                Some(Kind::Weapon(i)) | Some(Kind::Mag(i)) => weapons[*i],
+                _ => continue,
+            };
+            if !w.from_game || !w.rigged() {
+                continue;
+            }
+            set_name(&mut d.name, &rustvr_guns::desc::model_name("metro2033", &w.key));
+            d.flags |= OBJF_RUNTIME_DRAWS;
+            self.descs.insert(d.id, *d);
+        }
+    }
+
+    /// Draw items for every object the range draws (not the ones the runtime does). `triggers`:
+    /// each controller's trigger (a held gun's trigger follows its hand's).
     pub fn draws(&self, v: &View, weapons: &[&Weapon], triggers: [f32; 2]) -> Vec<DrawItem> {
         let mut out = Vec::new();
         for s in self.states() {
             let Some(kind) = self.kinds.get(&s.desc) else { continue };
+            if self.descs.get(&s.desc).is_some_and(|d| d.flags & OBJF_RUNTIME_DRAWS != 0) {
+                continue;
+            }
             let (p, q) = Self::world_pose(s, v);
             let model = Mat4::from_rotation_translation(q, p);
             let glow = if s.flags & OS_HOVERED != 0 { 0.25 } else { 0.0 };
@@ -1030,7 +925,7 @@ mod tests {
         let weapons = everything();
         let refs: Vec<&Weapon> = weapons.iter().collect();
         let a = Armory::new(&refs);
-        let mag_bounds = |w: &Weapon| parts_bounds(w, |i| w.mag_parts.contains(&i));
+        let mag_bounds = |w: &Weapon| rustvr_guns::desc::bounds_where(w, |i| w.mag_parts.contains(&i));
         for d in weapon_descs(&a) {
             let i = (d.id - WEAPON_BASE) as usize;
             let w = refs[i];

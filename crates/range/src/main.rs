@@ -18,7 +18,9 @@
 //! Options: `--weapon <name|scoped|first>` picks the starting gun (legacy); `--fps <n>` caps the
 //! frame rate when the runtime isn't in lockstep (to test a game slower than the headset);
 //! `--table <key>[,<key>...]` lays those guns (asset keys, `wpn_duplet`) nearest on the table at
-//! your right hand (physical mode; the scenarios that handle a particular gun use it).
+//! your right hand (physical mode; the scenarios that handle a particular gun use it);
+//! `--runtime-draws` has the runtime draw Metro's guns and their magazines (`OBJF_RUNTIME_DRAWS`,
+//! from the same models, with the player's hands) instead of the range, as a game adapter does.
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
@@ -123,23 +125,25 @@ fn main() -> Result<()> {
     let mut fps_cap = 0.0f64;
     let mut legacy = false;
     let mut front: Vec<String> = Vec::new();
+    let mut runtime_draws = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--weapon" => start_weapon = args.next().unwrap_or_default(),
             "--fps" => fps_cap = args.next().and_then(|v| v.parse().ok()).unwrap_or(0.0),
             "--legacy" => legacy = true,
+            "--runtime-draws" => runtime_draws = true,
             "--table" => front = args.next().unwrap_or_default().split(',').filter(|k| !k.is_empty()).map(String::from).collect(),
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
     let gpu = Gpu::new()?;
-    let mut game = Game::new(gpu, &start_weapon, legacy, &front)?;
+    let mut game = Game::new(gpu, &start_weapon, legacy, &front, runtime_draws)?;
     game.run(fps_cap)
 }
 
 impl Game {
-    fn new(gpu: Gpu, start_weapon: &str, legacy: bool, front: &[String]) -> Result<Game> {
+    fn new(gpu: Gpu, start_weapon: &str, legacy: bool, front: &[String], runtime_draws: bool) -> Result<Game> {
         let assets = rustvr_asset::default_root();
         let mut renderer = Renderer::new(&gpu, assets.clone())?;
         let (grid, plain) = content::room();
@@ -175,6 +179,9 @@ impl Game {
         };
 
         let mut armory = (!legacy).then(|| physical::Armory::with_front(&weapons.iter().map(|g| &g.w).collect::<Vec<_>>(), front));
+        if let (Some(a), true) = (&mut armory, runtime_draws) {
+            a.let_runtime_draw(&weapons.iter().map(|g| &g.w).collect::<Vec<_>>());
+        }
         // Grenades and knives (physical mode): on their own table at your left hand, and in the
         // pouches.
         let throw_list = if legacy { Vec::new() } else { throwables::all(&assets) };

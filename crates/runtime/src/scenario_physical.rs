@@ -308,6 +308,48 @@ pub fn all() -> Vec<Scenario> {
             captures: vec![(0.62, "reach"), (1.2, "lifted"), (1.95, "aim")],
         },
         Scenario {
+            name: "runtime_gun",
+            about: "physical: the range has the runtime draw Metro's guns (as an adapter does): pick up the Kalash 2012, aim it through its collimator and fire; the runtime draws it in the hands",
+            duration: 3.4,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec!["--table", "wpn_2012", "--runtime-draws"],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(rifle) = near_rifle(objs) else { return b };
+                    b.head_rot = Quat::from_rotation_x(0.5 * (1.0 - ramp(t, 1.0, 1.4)));
+                    let aim = aim_gun(&rifle, Body::rest().eye(1), TARGET_AHEAD, 0.15);
+                    let (p, r) = take_rifle(t, &rifle);
+                    b.hands[1].pos = keys(t, &[(1.0, p), (1.6, aim.0)]);
+                    b.hands[1].rot = qkeys(t, &[(1.0, r), (1.6, aim.1)]);
+                    if t < 1.0 {
+                        b.hands[1].pos = p;
+                        b.hands[1].rot = r;
+                    }
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    b.hands[1].trigger = on(t, &[(1.9, 1.98), (2.4, 2.48), (2.9, 2.98)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(0.5, "the runtime draws the guns on the table", |c| ensure(c.stats.held_drawn >= 1, || format!("{} drawn", c.stats.held_drawn))),
+                check(0.9, "the rifle is in the right hand", |c| ensure(gun_held_right(c), || "not held".into())),
+                check(1.8, "raised to the eye it aims down its collimator", |c| {
+                    let w = c.out.weapon.as_ref().ok_or("no weapon pose")?;
+                    ensure(w.ads, || format!("sight {:.3} m from the eye", w.sight_to_eye))
+                }),
+                check(3.3, "the shots it fired hit the target", |c| {
+                    ensure(c.stat(rs::SHOTS) >= 3 && c.stat(rs::HITS) >= 3, || format!("shots {} hits {} (rig {})", c.stat(rs::SHOTS), c.stat(rs::HITS), c.rig.shots))
+                }),
+                check(3.3, "the runtime drew it every frame it was in view", |c| ensure(c.stats.held_drawn >= 1, || format!("{} drawn", c.stats.held_drawn))),
+            ],
+            captures: vec![(0.62, "reach"), (1.2, "lifted"), (1.95, "aim")],
+        },
+        Scenario {
             name: "gun_fx",
             about: "physical: the range shows the rifle's shots as a game does: muzzle flash and light, smoke, tracers, holes and sparks on the target, casings out of the port onto the floor",
             duration: 4.4,
