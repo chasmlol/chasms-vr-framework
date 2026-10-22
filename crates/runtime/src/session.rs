@@ -62,6 +62,10 @@ pub struct Stats {
     /// all.
     pub held_drawn: u32,
     pub held_drawn_frames: u64,
+    /// The game's HUD in pieces last frame (see `hud.rs`): each drawn piece's role and its
+    /// panel's centre (tracking space), the first `hud_piece_count`.
+    pub hud_pieces: [(u32, Vec3); 8],
+    pub hud_piece_count: usize,
 }
 
 /// What a scripted test can see of the runtime's UI, to aim at it.
@@ -906,7 +910,12 @@ impl Session {
                             (self.hud_layout.count > 0 && info.flags & SLOT_STEREO != 0).then_some(&*self.hud_layout),
                             &at,
                         );
+                        self.stats.hud_piece_count = 0;
                         for piece in pieces {
+                            if piece.opacity > 0.0 && self.stats.hud_piece_count < self.stats.hud_pieces.len() {
+                                self.stats.hud_pieces[self.stats.hud_piece_count] = (piece.role, piece.panel.center);
+                                self.stats.hud_piece_count += 1;
+                            }
                             layers.panels.push(PanelLayer { panel: piece.panel, srv: hud.srv.as_ref().unwrap(), opacity: piece.opacity, uv: piece.uv });
                         }
                         hud_shown = true;

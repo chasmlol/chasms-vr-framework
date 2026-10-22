@@ -986,6 +986,8 @@ fn diff(a: &Stats, b: &Stats) -> Stats {
         fade_frames: a.fade_frames - b.fade_frames,
         held_drawn: a.held_drawn,
         held_drawn_frames: a.held_drawn_frames - b.held_drawn_frames,
+        hud_pieces: a.hud_pieces,
+        hud_piece_count: a.hud_piece_count,
     }
 }
 

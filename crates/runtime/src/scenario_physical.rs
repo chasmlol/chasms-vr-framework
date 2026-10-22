@@ -350,6 +350,51 @@ pub fn all() -> Vec<Scenario> {
             captures: vec![(0.62, "reach"), (1.2, "lifted"), (1.95, "aim")],
         },
         Scenario {
+            name: "metro_hud",
+            about: "the HUD in pieces: the range stands in for Metro 2033 Redux's UI layer (subtitles, a hint, the ammo counter where Redux draws them) and sends Redux's layout, as Metro's adapter does; the runtime puts the subtitles low in view and the ammo on the held gun",
+            duration: 2.0,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec!["--table", "wpn_2012", "--runtime-draws", "--metro-hud"],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(rifle) = near_rifle(objs) else { return b };
+                    let (p, r) = take_rifle(t, &rifle);
+                    b.hands[1].pos = keys(t, &[(1.0, p), (1.5, Vec3::new(0.2, 1.25, 0.35))]);
+                    b.hands[1].rot = r;
+                    if t < 1.0 {
+                        b.hands[1].pos = p;
+                    }
+                    b.hands[1].squeeze = if t > 0.65 { 1.0 } else { 0.0 };
+                    b
+                })
+            },
+            checks: vec![
+                check(1.8, "the game's HUD is drawn in pieces", |c| {
+                    let roles: Vec<u32> = c.stats.hud_pieces[..c.stats.hud_piece_count].iter().map(|p| p.0).collect();
+                    ensure(roles.contains(&HUD_SUBTITLES) && roles.contains(&HUD_AMMO), || format!("pieces {roles:?}"))
+                }),
+                check(1.8, "the subtitles sit low in view, a comfortable way off", |c| {
+                    let (_, at) = c.stats.hud_pieces[..c.stats.hud_piece_count].iter().find(|p| p.0 == HUD_SUBTITLES).ok_or("no subtitles")?;
+                    let d = *at - Body::rest().head_pos;
+                    let below = (-d.y).atan2(d.z).to_degrees();
+                    ensure((5.0..25.0).contains(&below) && (0.8..3.0).contains(&d.length()), || format!("{below:.1} degrees below gaze, {:.2} m away", d.length()))
+                }),
+                check(1.8, "the ammo counter is on the held gun", |c| {
+                    ensure(gun_held_right(c), || "not held".into())?;
+                    let (_, at) = c.stats.hud_pieces[..c.stats.hud_piece_count].iter().find(|p| p.0 == HUD_AMMO).ok_or("no ammo counter")?;
+                    // The gun is in the right hand, held where the script puts it (tracking space).
+                    let hand = Vec3::new(0.2, 1.25, 0.35);
+                    ensure(at.distance(hand) < 0.35, || format!("{:.2} m from the hand holding the gun ({at:.2?})", at.distance(hand)))
+                }),
+            ],
+            captures: vec![(1.8, "hud")],
+        },
+        Scenario {
             name: "gun_fx",
             about: "physical: the range shows the rifle's shots as a game does: muzzle flash and light, smoke, tracers, holes and sparks on the target, casings out of the port onto the floor",
             duration: 4.4,

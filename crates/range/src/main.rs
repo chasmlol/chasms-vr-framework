@@ -82,6 +82,10 @@ struct Game {
     targets: Vec<content::Target>,
     weapon: usize,
     hud: (egui::Context, EguiPainter),
+    /// `--metro-hud`: the HUD stands in for Metro 2033 Redux's UI layer (its pieces where Redux
+    /// draws them, additive over black) and is described with Redux's layout, as Metro's adapter
+    /// does, so the runtime's HUD in pieces can be tested without the game. The layout's been sent.
+    metro_hud: Option<bool>,
 
     time: f64,
     feet: Vec3,
@@ -126,6 +130,7 @@ fn main() -> Result<()> {
     let mut legacy = false;
     let mut front: Vec<String> = Vec::new();
     let mut runtime_draws = false;
+    let mut metro_hud = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -133,12 +138,14 @@ fn main() -> Result<()> {
             "--fps" => fps_cap = args.next().and_then(|v| v.parse().ok()).unwrap_or(0.0),
             "--legacy" => legacy = true,
             "--runtime-draws" => runtime_draws = true,
+            "--metro-hud" => metro_hud = true,
             "--table" => front = args.next().unwrap_or_default().split(',').filter(|k| !k.is_empty()).map(String::from).collect(),
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
     let gpu = Gpu::new()?;
     let mut game = Game::new(gpu, &start_weapon, legacy, &front, runtime_draws)?;
+    game.metro_hud = metro_hud.then_some(false);
     game.run(fps_cap)
 }
 
@@ -234,6 +241,7 @@ impl Game {
             targets,
             weapon,
             hud: (egui::Context::default(), painter),
+            metro_hud: None,
             time: 0.0,
             feet: Vec3::ZERO,
             vel_y: 0.0,
@@ -778,6 +786,10 @@ impl Game {
             hud_aspect: slot_hud.as_ref().map(|(_, w, h, _)| *w as f32 / *h as f32).unwrap_or(16.0 / 9.0),
             _pad: [0; 3],
         };
+        if self.metro_hud == Some(false) && slot_hud.is_some() {
+            self.adapter.write_hud_layout(&metro_2033_redux_layout(info.hud_aspect));
+            self.metro_hud = Some(true);
+        }
         self.adapter.submit(info);
         Ok(())
     }
@@ -795,6 +807,7 @@ impl Game {
         // Physical mode: no gun in hand, no ammo counter.
         let show_gun = self.armory.is_none() || self.held.is_some();
         let name = weapon.name.clone();
+        let metro = self.metro_hud.is_some();
         let mut out = ctx.run_ui(input, |ui| {
             let painter = ui.painter();
             if paused {
@@ -804,6 +817,16 @@ impl Game {
                 painter.rect_filled(button, 8.0, egui::Color32::from_rgb(160, 60, 30));
                 painter.text(button.center(), egui::Align2::CENTER_CENTER, "Resume (menu button)", egui::FontId::proportional(18.0), egui::Color32::WHITE);
                 painter.text(egui::pos2(size.x / 2.0, size.y * 0.7), egui::Align2::CENTER_CENTER, "RustVR test range", egui::FontId::proportional(16.0), egui::Color32::GRAY);
+            } else if metro {
+                // Metro's UI, where Redux draws it (fractions of the layer: see the layout).
+                let at = |u: f32, v: f32| egui::pos2(size.x * u, size.y * v);
+                let orange = egui::Color32::from_rgb(230, 120, 40);
+                painter.text(at(0.43, 0.84), egui::Align2::CENTER_TOP, "Shhh... Something moving in the next room.", egui::FontId::proportional(18.0), orange);
+                painter.text(at(0.43, 0.88), egui::Align2::CENTER_TOP, "Open the gate, cover.", egui::FontId::proportional(18.0), orange);
+                painter.text(at(0.5, 0.72), egui::Align2::CENTER_CENTER, "Use L to move.", egui::FontId::proportional(16.0), egui::Color32::WHITE);
+                if show_gun {
+                    painter.text(at(0.9, 0.9), egui::Align2::CENTER_CENTER, format!("{ammo} | {mag}"), egui::FontId::proportional(24.0), egui::Color32::LIGHT_GRAY);
+                }
             } else {
                 if show_gun {
                     let panel = egui::Rect::from_min_size(egui::pos2(20.0, size.y - 90.0), egui::vec2(240.0, 70.0));

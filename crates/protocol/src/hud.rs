@@ -89,6 +89,50 @@ impl HudElement {
     }
 }
 
+/// Metro 2033 Redux's UI layer in pieces, for a layer `aspect` (width / height) wide: what its
+/// adapter sends, and what the test range sends standing in for it. Measured on Redux's UI layer:
+/// the game lays its HUD out relative to the screen's height, so at the eyes' nearly square aspect
+/// the subtitles wrap narrower and the ammo block (about 0.30 heights wide) reaches further in from
+/// the bottom-right corner, at least to where the subtitles end (74 % across).
+pub fn metro_2033_redux_layout(aspect: f32) -> HudLayout {
+    let a = (1.0 - 0.30 / aspect.max(0.5)).max(0.74);
+    HudLayout::new(
+        HUDL_REST_HIDDEN,
+        &[
+            HudElement::new(HUD_SUBTITLES, [0.12, 0.805, a, 0.935]),
+            HudElement::new(HUD_HINTS, [0.12, 0.64, 0.88, 0.805]),
+            HudElement::new(HUD_AMMO, [a, 0.805, 1.0, 1.0]),
+            HudElement::new(HUD_STATUS, [0.0, 0.805, 0.12, 1.0]),
+            HudElement::new(HUD_PROMPTS, [0.12, 0.935, a, 1.0]),
+            // Everything above, where the flat screen had it.
+            HudElement::new(HUD_CENTER, [0.0, 0.0, 1.0, 0.64]),
+        ],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metros_pieces_tile_without_overlapping() {
+        for aspect in [16.0 / 9.0, 2552.0 / 2536.0, 0.9] {
+            let l = metro_2033_redux_layout(aspect);
+            let e = l.entries();
+            for (i, a) in e.iter().enumerate() {
+                assert!(a.uv[0] < a.uv[2] && a.uv[1] < a.uv[3]);
+                for b in &e[i + 1..] {
+                    let overlap = a.uv[0] < b.uv[2] && b.uv[0] < a.uv[2] && a.uv[1] < b.uv[3] && b.uv[1] < a.uv[3];
+                    assert!(!overlap, "{a:?} overlaps {b:?}");
+                }
+            }
+        }
+        // The ammo reaches in further on a narrower layer, but never into the subtitles.
+        let ammo = |a: f32| metro_2033_redux_layout(a).entries().iter().find(|e| e.role == HUD_AMMO).unwrap().uv[0];
+        assert!(ammo(16.0 / 9.0) > 0.8 && (ammo(1.07) - 0.74).abs() < 1e-6);
+    }
+}
+
 const _: () = {
     use std::mem::size_of;
     assert!(size_of::<HudElement>() == 64);
