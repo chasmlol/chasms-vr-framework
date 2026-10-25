@@ -276,6 +276,8 @@ pub struct RigWeapon {
     pub muzzle: Vec3,
     pub two_handed: bool,
     pub scoped: bool,
+    /// A laser fitted and on (`WPN_LASER`): where it shines from (weapon space, along +Z).
+    pub laser: Option<Vec3>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -3049,6 +3051,7 @@ impl Rig {
                 muzzle: v3(o.desc.muzzle),
                 two_handed: hands[held_by ^ 1].support == Some(id),
                 scoped: o.desc.flags & OBJF_SCOPED != 0,
+                laser: (o.desc.weapon_flags & WPN_LASER != 0).then(|| v3(o.desc.laser)),
             });
         }
         let _ = inp;

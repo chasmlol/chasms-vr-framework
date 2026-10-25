@@ -48,6 +48,8 @@ pub struct WeaponPose {
     pub sight_to_eye: f32,
     pub zoom: f32,
     pub scope: Option<ScopeView>,
+    /// The gun's own laser (fitted and on, the game says): where it shines from, tracking space.
+    pub laser: Option<Vec3>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -563,7 +565,8 @@ impl Mechanics {
             let scope = (c.scope.enabled && (c.scope.force || (ads && (zoom > 1.4 || rw.scoped))))
                 .then(|| scope_view(c, w2t, aim, so, mz, if c.scope.force || zoom <= 1.4 { c.scope.magnification } else { zoom }, inp.aux_aspect));
             if w2t.is_finite() && so.is_finite() && aim.is_finite() && mz.is_finite() {
-                weapon = Some(WeaponPose { weapon_to_tracking: w2t, sight_origin: so, aim_dir: aim, muzzle: mz, two_handed: two, ads, sight_to_eye: best, zoom, scope });
+                let laser = rw.laser.map(|l| w2t.transform_point3(l));
+                weapon = Some(WeaponPose { weapon_to_tracking: w2t, sight_origin: so, aim_dir: aim, muzzle: mz, two_handed: two, ads, sight_to_eye: best, zoom, scope, laser });
             }
         } else if dc.connected != 0 && has_weapon && !rig_mode {
             let w = &c.weapon;
@@ -701,6 +704,7 @@ impl Mechanics {
                     sight_to_eye: best,
                     zoom,
                     scope,
+                    laser: None,
                 });
             }
         } else {

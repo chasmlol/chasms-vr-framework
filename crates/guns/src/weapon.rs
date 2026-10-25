@@ -106,6 +106,9 @@ pub struct Weapon {
     pub magazine: String,
     /// How it's worked between shots and loaded, and the parts that move for it.
     pub action: WeaponAction,
+    /// Where a laser fitted to it shines from (weapon space, along +Z): the game's mount for its
+    /// laser attachment (Metro's `loc_lazer`). Whether one is fitted is the game's to say.
+    pub laser: Option<Vec3>,
 }
 
 /// How a gun that doesn't cycle itself is worked (the protocol's `ACTION_*`, `WPN_PNEUMATIC`,

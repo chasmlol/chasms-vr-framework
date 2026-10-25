@@ -959,14 +959,17 @@ impl Session {
             layers.panels.push(PanelLayer::whole(p, self.menu.srv()));
         }
         let dom = s.dominant();
-        if let (true, Some(w), false) = (s.interaction.laser_sight, &out.weapon, menu_mode) {
+        // The gun's own laser (the game's attachment, fitted and on), or the runtime's laser sight
+        // from the muzzle when that's turned on.
+        let gun_laser = out.weapon.as_ref().filter(|_| !menu_mode).and_then(|w| w.laser.or(s.interaction.laser_sight.then_some(w.muzzle)).map(|o| (w, o)));
+        if let Some((w, origin)) = gun_laser {
             // Up to 30 m, or the first thing in the game's collision.
             let hit = self.game.as_ref().and_then(|g| {
                 let map = WorldMap::from_state(&g.tracking);
-                let o = map.point(w.muzzle);
+                let o = map.point(origin);
                 self.rig.physics.ray_world(o, map.rot(Quat::IDENTITY) * w.aim_dir, 30.0).map(|d| d / map.world_per_meter)
             });
-            layers.gun_laser = Some(Laser { origin: w.muzzle, end: w.muzzle + w.aim_dir * hit.unwrap_or(30.0), hit: hit.is_some() });
+            layers.gun_laser = Some(Laser { origin, end: origin + w.aim_dir * hit.unwrap_or(30.0), hit: hit.is_some() });
         }
         if layout.game_menu.is_some() || layout.runtime_menu.is_some() {
             let hand = &frame.hands[dom];

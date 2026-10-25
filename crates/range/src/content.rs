@@ -300,6 +300,7 @@ pub fn builtin_rifle(name: &str, scoped: bool) -> Weapon {
         // Each built-in gun has a magazine of its own.
         magazine: if scoped { "builtin_rifle_scoped" } else { "builtin_rifle" }.into(),
         action: WeaponAction::default(),
+        laser: None,
     }
 }
 
@@ -396,6 +397,7 @@ pub fn builtin_pistol() -> Weapon {
         caliber: "9x19".into(),
         magazine: "builtin_pistol".into(),
         action: WeaponAction::default(),
+        laser: None,
     }
 }
 

@@ -331,6 +331,10 @@ pub struct ObjectDesc {
     /// Weapons: how it's worked between shots and loaded (`ACTION_*`; 0: it cycles itself, as a
     /// self-loading gun does).
     pub action: u32,
+    /// Weapons with [`WPN_LASER`]: where their laser's beam starts (object space); it shines along
+    /// +Z. The game's own laser attachment, mounted where the game mounts it.
+    pub laser: [f32; 3],
+    pub _p_laser: f32,
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;
@@ -487,6 +491,9 @@ pub const WPN_LOADS_CHAMBERS: u32 = 1 << 6;
 /// when its base is brought to the port pointing along weapon +Z. It arrives full.
 /// [`ObjectState::rounds`] is how many the magazine holds.
 pub const WPN_LOADS_ROUNDS: u32 = 1 << 7;
+/// A laser is fitted and on: the runtime draws its beam from [`ObjectDesc::laser`] (the game's
+/// own one is off).
+pub const WPN_LASER: u32 = 1 << 8;
 
 /// [`ObjectDesc::action`]: it cycles itself (self-loading, semi or full auto): the default.
 pub const ACTION_SELF_LOADING: u32 = 0;
@@ -847,7 +854,7 @@ const _: () = {
     assert!(size_of::<HandState>() == 48);
     assert!(size_of::<RtBody>() == 32 + 32 * JOINT_COUNT + 64 + 96);
     assert!(OFF_BODY + size_of::<RtBody>() <= OFF_OBJECTS);
-    assert!(size_of::<ObjectDesc>() == 320);
+    assert!(size_of::<ObjectDesc>() == 336);
     assert!(size_of::<ObjectState>() == 96);
     assert!(size_of::<GamePose>() == 48);
     assert!(OFF_GAME_POSES.is_multiple_of(64));

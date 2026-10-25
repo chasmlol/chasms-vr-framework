@@ -591,6 +591,12 @@
 #define RVR_WPN_LOADS_ROUNDS (1 << 7)
 
 /**
+ * A laser is fitted and on: the runtime draws its beam from [`ObjectDesc::laser`] (the game's
+ * own one is off).
+ */
+#define RVR_WPN_LASER (1 << 8)
+
+/**
  * [`ObjectDesc::action`]: it cycles itself (self-loading, semi or full auto): the default.
  */
 #define RVR_ACTION_SELF_LOADING 0

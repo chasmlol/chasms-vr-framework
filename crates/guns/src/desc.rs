@@ -57,6 +57,9 @@ pub fn weapon_desc(id: u32, w: &Weapon, poses: [u32; 2]) -> ObjectDesc {
     d.foregrip = w.rig.foregrip;
     d.mag_well = w.rig.mag_well;
     d.muzzle = w.rig.muzzle;
+    if let Some(l) = w.laser {
+        d.laser = l.to_array();
+    }
     d.sight = w.rig.sight;
     if let Some((h, travel)) = w.handle {
         d.handle = h.to_array();

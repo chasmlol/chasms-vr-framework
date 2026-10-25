@@ -238,6 +238,7 @@ pub fn metro_weapons(root: &std::path::Path) -> Vec<Weapon> {
             caliber: String::new(),
             magazine: item.key.clone(),
             action: WeaponAction::default(),
+            laser: None,
         });
     }
     out
@@ -429,6 +430,7 @@ fn rigged_metro_weapon(r: &MetroRig, item: &asset::Item, model: &asset::Model, h
         caliber: r.caliber.clone(),
         magazine: r.magazine.clone(),
         action,
+        laser: bone_position(model, "loc_lazer").map(p),
     }
 }
 
