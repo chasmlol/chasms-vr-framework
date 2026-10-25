@@ -256,6 +256,7 @@ impl Scene<'_> {
             visibility: view.visibility,
             light: daylight(),
             first_person: view.first_person,
+            plain: false,
         };
         let eye = Pose { pos: cam.to_array(), valid: 1, rot: rot.to_array() };
         // The avatar lets the body show through up to 1 cm + 1% of the distance behind the game's

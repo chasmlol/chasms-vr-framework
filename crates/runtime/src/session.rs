@@ -89,6 +89,11 @@ pub struct Session {
     comp: Compositor,
     /// The runtime's physics world, shown instead of the game's picture (`Mechanics::framework_view`).
     physics_view: crate::physics_view::PhysicsView,
+    /// The desktop view's window (`crate::spectator`), while it's open, and its camera.
+    spectator: Option<crate::spectator::Window>,
+    spectator_cam: crate::spectator::SteadyCamera,
+    /// Tests: where the desktop view's frames are saved, and when one was last.
+    spectator_capture: Option<(PathBuf, f64)>,
     physics_tris: Vec<([Vec3; 3], [f32; 3])>,
     /// The rig ran this step (there's a physics world to show).
     rig_active_last: bool,
@@ -180,7 +185,23 @@ impl Session {
             None => SettingsStore::memory(Default::default()),
         };
         tracing::info!("runtime: {} on {} ({}), link {}", backend.name(), gpu.adapter_name(), backend.recommended_size().0, opts.mapping);
+        // The desktop view: off in tests on the emulated headset (RUSTVR_DESKTOP_VIEW=0, or
+        // `capture:<dir>`: off screen, a frame saved there every few seconds) and with the
+        // built-in simulator.
+        let sp = &settings.current.spectator;
+        let env = std::env::var("RUSTVR_DESKTOP_VIEW").unwrap_or_default();
+        let capture = env.strip_prefix("capture:").map(PathBuf::from);
+        let wanted = (sp.enabled || capture.is_some()) && backend.name() != "sim" && env != "0";
+        let spectator = wanted
+            .then(|| crate::spectator::Window::open(&gpu, sp.width, sp.height, capture.is_some()))
+            .and_then(|w| w.inspect_err(|e| tracing::warn!("desktop view: {e:#}")).ok());
+        if spectator.is_some() {
+            tracing::info!("desktop view: open");
+        }
         Ok(Session {
+            spectator,
+            spectator_capture: capture.map(|d| (d, 0.0)),
+            spectator_cam: crate::spectator::SteadyCamera::default(),
             comp: Compositor::new(&gpu)?,
             physics_view: crate::physics_view::PhysicsView::new(&gpu)?,
             physics_tris: Vec::new(),
@@ -271,6 +292,11 @@ impl Session {
         };
         let now = frame.display_time_ns as f64 * 1e-9;
         self.link.heartbeat_runtime();
+        if let Some(w) = &mut self.spectator
+            && !w.pump(&self.gpu)
+        {
+            self.spectator = None;
+        }
         let elapsed = self.last_tick.elapsed().as_secs_f32();
         self.last_tick = std::time::Instant::now();
         if elapsed > 0.0 {
@@ -1029,7 +1055,10 @@ impl Session {
 
         // The player's body goes between the game's picture and the overlays, behind the game's
         // geometry where the game gave its depth.
-        let draw_body = self.draws_body && !menu_mode;
+        // (A game that draws the body in its own picture has none in the framework view: the runtime
+        // draws it there.)
+        let framework = self.mech.framework_view && self.rig_active_last;
+        let draw_body = (self.draws_body || framework) && !menu_mode;
         let (wpm, light) = match &self.game {
             Some(g) => {
                 let map = WorldMap::from_state(&g.tracking);
@@ -1045,19 +1074,23 @@ impl Session {
             world_rot: self.game.as_ref().map_or(Quat::IDENTITY, |g| WorldMap::from_state(&g.tracking).rot(Quat::IDENTITY)),
             atlas: stereo.as_ref().and_then(|(slot, _)| slot.lights.as_ref()).and_then(|t| t.srv.as_ref()),
         });
-        self.body.set_game_shading(&self.gpu, shading.as_ref());
+        // The framework view: the physics world in tracking space instead of the game's picture,
+        // the body and hands plain (the runtime's own look) and the guns as their collision.
+        self.body.set_game_shading(&self.gpu, shading.as_ref().filter(|_| !framework));
+        self.body.set_plain(framework);
         let body = &mut self.body;
-        let held = if draw_body { self.held_objects.draws() } else { Vec::new() };
+        let held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
         self.stats.held_drawn = held.len() as u32;
         self.stats.held_drawn_frames += (!held.is_empty()) as u64;
-        // The framework view: the physics world in tracking space instead of the game's picture.
-        let framework = self.mech.framework_view && self.rig_active_last;
         if framework {
             let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
             self.physics_tris.clear();
             self.rig.physics_triangles(&mut self.physics_tris);
-            let tris = self.physics_tris.iter().map(|(t, c)| (map.as_ref().map_or(*t, |m| t.map(|p| m.inv_point(p))), *c));
-            if let Err(e) = self.physics_view.set_triangles(&self.gpu, tris) {
+            let mut marks = Vec::new();
+            self.rig.mechanism_markers(&mut marks);
+            let to_tracking = |(t, c): &([Vec3; 3], [f32; 3])| (map.as_ref().map_or(*t, |m| t.map(|p| m.inv_point(p))), *c);
+            let tris = self.physics_tris.iter().map(to_tracking);
+            if let Err(e) = self.physics_view.set_triangles(&self.gpu, tris, marks.iter().map(to_tracking)) {
                 tracing::warn!("framework view: {e:#}");
             }
         }
@@ -1077,8 +1110,38 @@ impl Session {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {
                         tracing::warn!("framework view: {e:#}");
                     }
-                } else if draw_body {
-                    body.draw(gpu, target, eye, fov, light, depth.take(), &held);
+                }
+                if draw_body {
+                    body.draw(gpu, target, eye, fov, light, if framework { None } else { depth.take() }, &held);
+                }
+            });
+        }
+        // The desktop view: the same frame from its steadied camera between the eyes.
+        if let Some(target) = self.spectator.as_ref().and_then(|w| w.target()) {
+            let sp = &s.spectator;
+            let head = quat(frame.hmd.rot);
+            let cam = self.spectator_cam.update(head, crate::spectator::between(&frame.eyes), frame.dt, sp);
+            let fov = crate::spectator::fov(sp.fov, target.width as f32 / target.height.max(1) as f32);
+            let background = match (&stereo, framework) {
+                (Some((slot, info)), false) => {
+                    let first = match sp.eye {
+                        crate::settings::Eye::Left => 0,
+                        crate::settings::Eye::Right => 1,
+                    };
+                    let eye = |e: usize| slot.eyes[e].srv.as_ref().map(|srv| (srv, info.eye_pose[e], info.fov[e]));
+                    match (eye(first), eye(first ^ 1)) {
+                        (Some(a), b) => crate::compositor::Background::Reprojected { first: a, second: b },
+                        (None, _) => crate::compositor::Background::Void,
+                    }
+                }
+                _ => crate::compositor::Background::Void,
+            };
+            self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
+                if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
+                    tracing::warn!("framework view: {e:#}");
+                }
+                if draw_body {
+                    body.draw(gpu, target, &cam, &fov, light, None, &held);
                 }
             });
         }
@@ -1092,6 +1155,19 @@ impl Session {
             }
         }
         self.backend.submit(&self.gpu, &poses, &fovs)?;
+        if let Some(w) = &self.spectator {
+            let now = frame.display_time_ns as f64 * 1e-9;
+            if let Some((dir, last)) = &mut self.spectator_capture
+                && now - *last > 5.0
+            {
+                *last = now;
+                let path = dir.join(format!("desktop_{:06}.png", frame.index));
+                if let Err(e) = std::fs::create_dir_all(dir).map_err(anyhow::Error::from).and_then(|_| w.save(&self.gpu, &path)) {
+                    tracing::warn!("desktop view: saving {}: {e:#}", path.display());
+                }
+            }
+            w.present();
+        }
         Ok(())
     }
 }

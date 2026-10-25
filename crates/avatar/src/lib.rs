@@ -87,6 +87,8 @@ pub struct AvatarFrame<'a> {
     pub light: LightHint,
     /// Drawing for the wearer's own eyes: hide the head.
     pub first_person: bool,
+    /// The plain look: one colour, no textures (the framework view).
+    pub plain: bool,
 }
 
 /// The game's depth for the eye being drawn.

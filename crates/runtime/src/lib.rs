@@ -18,6 +18,7 @@ pub mod scenario;
 pub mod scenario_physical;
 pub mod session;
 pub mod settings;
+pub mod spectator;
 pub mod targets;
 
 /// Wraps an angle to (-pi, pi].

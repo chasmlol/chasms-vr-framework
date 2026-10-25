@@ -107,6 +107,7 @@ fn gpu_cost_per_eye() {
                 visibility,
                 light: LightHint::default(),
                 first_person: true,
+                plain: false,
             };
             let (gpu_ms, cpu_us) = measure(&gpu, &mut avatar, &frame, Some(&depth));
             eprintln!("{name}, {label}, {}x{}: GPU {gpu_ms:.3} ms per eye, CPU {cpu_us:.1} us per draw call", EYE.0, EYE.1);

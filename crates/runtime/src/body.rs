@@ -66,6 +66,8 @@ pub struct PlayerBody {
     unreached: [f32; 2],
     /// Each hand on its way into a held pose or out of one (see [`Grab`]).
     grab: [Grab; 2],
+    /// The plain look (the framework view).
+    plain: bool,
 }
 
 /// A hand going into the game's pose for what it takes, and back out letting go, over
@@ -122,6 +124,7 @@ impl Default for PlayerBody {
             auto_span: None,
             unreached: [0.0; 2],
             grab: [Grab::default(); 2],
+            plain: false,
         }
     }
 }
@@ -315,6 +318,11 @@ impl PlayerBody {
         }
     }
 
+    /// The plain look (one colour, no textures: the framework view) from now on, or not.
+    pub fn set_plain(&mut self, plain: bool) {
+        self.plain = plain;
+    }
+
     /// Draws the body into one eye, with what the runtime draws of what the player holds (`holding`,
     /// see `crate::held_objects`). `light.sun_dir` must already be in tracking space.
     pub fn draw(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw]) {
@@ -333,6 +341,7 @@ impl PlayerBody {
             visibility: body.visibility,
             light,
             first_person: true,
+            plain: self.plain,
         };
         let special = self.special.as_deref_mut().map(|f| f as &mut dyn FnMut(&rustvr_avatar::SpecialDraw));
         if let Err(e) = avatar.draw_with(gpu, &target.rtv, target.width, target.height, eye, fov, &frame, depth, true, holding, special) {

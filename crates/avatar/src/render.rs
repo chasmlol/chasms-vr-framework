@@ -53,6 +53,7 @@ cbuffer Frame : register(b0) {
     float4 depth;        // x: game depth bound, y: metres per game unit, z: bias, w: bias per metre
     float4 target_size;
     float4 ghost;        // rgb, opacity
+    float4 plain;        // rgb, w: 1 for the plain look (one colour, no textures, a headlamp)
 };
 cbuffer Bones : register(b1) {
     float4 bone_rows[MAX_BONES * 3];   // bind model space -> tracking space, 3x4 rows
@@ -147,6 +148,13 @@ float4 PSMain(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     if (i.vis < 0) discard;
     if (behind_game(i.pos, i.view_z)) discard;
     float3 base = tint.rgb;
+    if (plain.w > 0) {
+        // A mannequin: one colour, lit from the eye, edges darker.
+        float3 pn = normalize(i.normal);
+        float3 pv = normalize(eye_pos.xyz - i.world);
+        float facing = abs(dot(pn, pv));
+        return float4(plain.rgb * (0.35 + 0.65 * facing) * (front ? 1.0 : 0.5), 1);
+    }
     if (material.x > 0) {
         float4 t = albedo.Sample(samp, i.uv);
         if (material.y > 0 && t.a < 0.5) discard;
@@ -296,7 +304,11 @@ struct FrameCb {
     depth: [f32; 4],
     target_size: [f32; 4],
     ghost: [f32; 4],
+    plain: [f32; 4],
 }
+
+/// The plain look's colour (linear): a light grey-blue mannequin.
+const PLAIN: [f32; 3] = [0.62, 0.66, 0.74];
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -780,7 +792,7 @@ pub struct Renderer {
     alpha_blend: ID3D11BlendState,
     sampler: ID3D11SamplerState,
     /// The avatar's own depth buffer, kept until the eye size changes.
-    depth: Option<Texture>,
+    depth: Vec<Texture>,
     /// Drawing into the game's HDR picture, before its post chain ([`Renderer::set_in_frame`]).
     in_frame: bool,
 }
@@ -816,7 +828,7 @@ impl Renderer {
             opaque_blend: pipeline::blend_state(gpu, Blend::Opaque)?,
             alpha_blend: pipeline::blend_state(gpu, Blend::Alpha)?,
             sampler: pipeline::sampler(gpu, true, true)?,
-            depth: None,
+            depth: Vec::new(),
             in_frame: false,
         })
     }
@@ -892,10 +904,18 @@ impl Renderer {
         main.upload_body(ctx, show);
 
         self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, frame, depth.as_ref()));
-        if self.depth.as_ref().is_none_or(|d| d.width != width || d.height != height) {
-            self.depth = Some(Texture::new(gpu, &TexDesc::depth(width, height))?);
-        }
-        let dsv = self.depth.as_ref().and_then(|d| d.dsv.clone()).unwrap();
+        // One depth buffer per target size (the eyes, a desktop view): the last two kept.
+        let i = match self.depth.iter().position(|d| d.width == width && d.height == height) {
+            Some(i) => i,
+            None => {
+                if self.depth.len() >= 2 {
+                    self.depth.remove(0);
+                }
+                self.depth.push(Texture::new(gpu, &TexDesc::depth(width, height))?);
+                self.depth.len() - 1
+            }
+        };
+        let dsv = self.depth[i].dsv.clone().unwrap();
         unsafe {
             ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
             ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
@@ -1182,6 +1202,7 @@ fn frame_constants(width: u32, height: u32, eye: &Pose, fov: &Fov, frame: &Avata
         },
         target_size: [width as f32, height as f32, 0.0, 0.0],
         ghost: GHOST,
+        plain: [PLAIN[0], PLAIN[1], PLAIN[2], frame.plain as u32 as f32],
     }
 }
 

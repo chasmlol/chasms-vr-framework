@@ -64,6 +64,7 @@ impl Scene {
             visibility: self.visibility,
             light: self.light,
             first_person: self.first_person,
+            plain: false,
         }
     }
 

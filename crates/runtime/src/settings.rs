@@ -23,6 +23,43 @@ pub struct Settings {
     pub interaction: Interaction,
     pub body: Body,
     pub sound: Sound,
+    pub spectator: Spectator,
+}
+
+/// Which eye.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Eye {
+    Left,
+    Right,
+}
+
+/// The desktop view (`crate::spectator`): a window of its own for recording and streaming, from
+/// between the eyes with a steadied camera, the way the flat game would look.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Spectator {
+    pub enabled: bool,
+    /// The eye whose picture of the game is shown (your aiming eye: the sights line up); the other
+    /// only fills what it can't see.
+    pub eye: Eye,
+    /// Degrees across the window.
+    pub fov: f32,
+    /// Seconds for the camera to turn half way to where the head looks (0 = no smoothing).
+    pub smoothing: f32,
+    /// Degrees the steadied camera may lag the head at most (it catches up on fast turns).
+    pub max_lag: f32,
+    /// Keep the horizon level (the head's roll isn't shown).
+    pub roll_lock: bool,
+    /// The window's first size, pixels (it's kept on the screen).
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for Spectator {
+    fn default() -> Self {
+        Spectator { enabled: true, eye: Eye::Right, fov: 90.0, smoothing: 0.1, max_lag: 8.0, roll_lock: true, width: 1600, height: 900 }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

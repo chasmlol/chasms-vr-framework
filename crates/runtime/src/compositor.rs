@@ -27,6 +27,7 @@ cbuffer Draw : register(b0) {
     float4 color;            // premultiplied, linear
     float4 uv_rect;          // u0 v0 u1 v1
     float4 params;           // x mode, y reticle, z opacity
+    float4x4 view_proj_src;  // the re-projected picture's eye
 };
 Texture2D tex : register(t0);
 SamplerState samp : register(s0);
@@ -43,6 +44,32 @@ VOut VSFull(uint id : SV_VertexID) {
 }
 
 float4 PSBlit(VOut i) : SV_Target { return float4(tex.Sample(samp, i.uv).rgb, 1); }
+
+// Another camera's view of the game's picture: each pixel's direction looked up in one eye's image
+// (`view_proj` here is that eye's), else in the other's (`eye_b`), else dark. A turn of the camera
+// is exact; the few centimetres between it and the eye are left out (far things don't move).
+cbuffer Reproject : register(b1) {
+    float4x4 eye_b;
+};
+Texture2D tex_b : register(t1);
+float3 eye_sample(Texture2D t, float4x4 m, float3 d, out bool ok) {
+    float4 c = mul(m, float4(d, 0));
+    float2 n = c.xy / max(c.w, 1e-6);
+    ok = c.w > 0 && abs(n.x) <= 1 && abs(n.y) <= 1;
+    return t.SampleLevel(samp, float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5), 0).rgb;
+}
+float4 PSReproject(VOut i) : SV_Target {
+    float2 ndc = float2(i.uv.x * 2 - 1, 1 - i.uv.y * 2);
+    float4 a = mul(inv_view_proj, float4(ndc, 0, 1)); a /= a.w;
+    float4 b = mul(inv_view_proj, float4(ndc, 1, 1)); b /= b.w;
+    float3 d = normalize(b.xyz - a.xyz);
+    bool ok;
+    float3 c = eye_sample(tex, view_proj_src, d, ok);
+    if (ok) return float4(c, 1);
+    c = eye_sample(tex_b, eye_b, d, ok);
+    if (ok) return float4(c, 1);
+    return float4(0.004, 0.004, 0.005, 1);
+}
 
 // The runtime's own room: a floor grid at the real floor with a ring around the play-space centre.
 float4 PSVoid(VOut i) : SV_Target {
@@ -125,6 +152,24 @@ struct DrawCb {
     color: [f32; 4],
     uv_rect: [f32; 4],
     params: [f32; 4],
+    view_proj_src: [f32; 16],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ReprojectCb {
+    eye_b: [f32; 16],
+}
+
+/// What's behind everything in a view.
+pub enum Background<'a> {
+    /// The game's picture for this eye, as it was rendered.
+    Game(&'a ID3D11ShaderResourceView),
+    /// The runtime's own room.
+    Void,
+    /// Another camera's view of the game's picture: from `first` (its eye's pose and field of
+    /// view), else from `second`, where `first` doesn't reach.
+    Reprojected { first: (&'a ID3D11ShaderResourceView, Pose, Fov), second: Option<(&'a ID3D11ShaderResourceView, Pose, Fov)> },
 }
 
 const MODE_TEXTURE: f32 = 0.0;
@@ -196,6 +241,8 @@ pub struct Compositor {
     full_blit: Program,
     full_void: Program,
     full_comfort: Program,
+    full_reproject: Program,
+    reproject_cb: ConstantBuffer<ReprojectCb>,
     quad: Program,
     opaque: ID3D11BlendState,
     premul: ID3D11BlendState,
@@ -214,6 +261,8 @@ impl Compositor {
             full_blit: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSBlit", &[])?,
             full_void: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSVoid", &[])?,
             full_comfort: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSComfort", &[])?,
+            full_reproject: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSReproject", &[])?,
+            reproject_cb: ConstantBuffer::new(gpu)?,
             quad: Program::with_entries(gpu, SHADER, "compositor", "VSQuad", "PSQuad", &[])?,
             opaque: pipeline::blend_state(gpu, Blend::Opaque)?,
             premul: pipeline::blend_state(gpu, Blend::Premultiplied)?,
@@ -252,6 +301,24 @@ impl Compositor {
         layers: &Layers,
         between: &mut dyn FnMut(&Gpu),
     ) {
+        let background = game.map_or(Background::Void, Background::Game);
+        self.draw_view(gpu, target, eye, fov, background, layers, true, between);
+    }
+
+    /// [`Compositor::draw_eye`] for any camera, with any [`Background`], and with or without the
+    /// comfort vignette and fade (`comfort`: a desktop view has none of the headset's).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_view(
+        &self,
+        gpu: &Gpu,
+        target: &EyeTarget,
+        eye: &Pose,
+        fov: &Fov,
+        background: Background,
+        layers: &Layers,
+        comfort: bool,
+        between: &mut dyn FnMut(&Gpu),
+    ) {
         let ctx = &gpu.ctx;
         let view_proj = projection(fov) * view_matrix(eye);
         let mut cb = DrawCb::zeroed();
@@ -259,21 +326,38 @@ impl Compositor {
         cb.inv_view_proj = view_proj.inverse().to_cols_array();
         cb.uv_rect = [0.0, 0.0, 1.0, 1.0];
         self.bind(gpu, target);
-        self.cb.update(ctx, &cb);
         unsafe {
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            match game {
-                Some(srv) => {
+            match background {
+                Background::Game(srv) => {
+                    self.cb.update(ctx, &cb);
                     self.full_blit.bind(ctx);
                     ctx.PSSetShaderResources(0, Some(&[Some(srv.clone())]));
                 }
-                None => {
+                Background::Void => {
+                    self.cb.update(ctx, &cb);
                     self.full_void.bind(ctx);
                     ctx.PSSetShaderResources(0, Some(&[None]));
                 }
+                Background::Reprojected { first, second } => {
+                    let mut c = cb;
+                    c.view_proj_src = (projection(&first.2) * view_matrix(&first.1)).to_cols_array();
+                    self.cb.update(ctx, &c);
+                    let (b_srv, b_vp) = match &second {
+                        Some((srv, pose, fov)) => (Some((*srv).clone()), projection(fov) * view_matrix(pose)),
+                        // Nothing to fall back on: a matrix that puts everything behind it.
+                        None => (None, Mat4::ZERO),
+                    };
+                    self.reproject_cb.update(ctx, &ReprojectCb { eye_b: b_vp.to_cols_array() });
+                    ctx.PSSetConstantBuffers(1, Some(&[Some(self.reproject_cb.buf.clone())]));
+                    self.full_reproject.bind(ctx);
+                    ctx.PSSetShaderResources(0, Some(&[Some(first.0.clone()), b_srv]));
+                }
             }
             ctx.Draw(3, 0);
+            ctx.PSSetShaderResources(0, Some(&[None, None]));
         }
+        self.cb.update(ctx, &cb);
         between(gpu);
         self.bind(gpu, target);
         unsafe {
@@ -322,7 +406,7 @@ impl Compositor {
             }
         }
         let k = &layers.comfort;
-        if k.vignette > 0.003 || k.fade > 0.003 {
+        if comfort && (k.vignette > 0.003 || k.fade > 0.003) {
             let mut c = cb;
             c.center = k.forward.normalize_or(Vec3::Z).extend(0.0).to_array();
             c.color = [k.vignette.clamp(0.0, 1.0), k.aperture, k.feather.max(0.01), k.fade.clamp(0.0, 1.0)];

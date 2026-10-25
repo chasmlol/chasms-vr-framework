@@ -477,4 +477,15 @@ fn display(ui: &mut egui::Ui, s: &mut Settings) {
     }
     slider(ui, "Menu distance", &mut s.ui.menu_distance, 1.0, 4.0, " m", 2);
     slider(ui, "Menu size", &mut s.ui.menu_size, 1.0, 5.0, " m", 2);
+    ui.separator();
+    ui.label("Desktop view (the window on your monitor, for recording)");
+    ui.horizontal(|ui| {
+        ui.label("Game picture from the");
+        ui.radio_value(&mut s.spectator.eye, crate::settings::Eye::Left, "left eye");
+        ui.radio_value(&mut s.spectator.eye, crate::settings::Eye::Right, "right eye (your aiming eye)");
+    });
+    slider(ui, "Desktop field of view", &mut s.spectator.fov, 60.0, 110.0, " deg", 0);
+    slider(ui, "Desktop camera smoothing", &mut s.spectator.smoothing, 0.0, 0.4, " s", 2);
+    slider(ui, "Desktop camera lag at most", &mut s.spectator.max_lag, 0.0, 20.0, " deg", 0);
+    ui.checkbox(&mut s.spectator.roll_lock, "Keep the desktop view's horizon level");
 }

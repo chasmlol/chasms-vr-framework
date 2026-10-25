@@ -62,8 +62,12 @@ pub struct PhysicsView {
     program: Program,
     vertices: Vec<Vertex>,
     vb: DynBuffer,
+    /// Drawn over everything (the guns' working parts).
+    over: Vec<Vertex>,
+    over_vb: DynBuffer,
+    no_depth: ID3D11DepthStencilState,
     cb: ConstantBuffer<DrawCb>,
-    depth: Option<Texture>,
+    depth: Vec<Texture>,
     solid: ID3D11RasterizerState,
     outline: ID3D11RasterizerState,
     depth_test: ID3D11DepthStencilState,
@@ -98,8 +102,11 @@ impl PhysicsView {
             program: Program::new(gpu, SHADER, "physics_view", &layout)?,
             vertices: Vec::new(),
             vb: DynBuffer::vertices(),
+            over: Vec::new(),
+            over_vb: DynBuffer::vertices(),
+            no_depth: pipeline::depth_state(gpu, false, false)?,
             cb: ConstantBuffer::new(gpu)?,
-            depth: None,
+            depth: Vec::new(),
             solid: raster(D3D11_FILL_SOLID, 0)?,
             outline: raster(D3D11_FILL_WIREFRAME, -200)?,
             depth_test: pipeline::depth_state(gpu, true, true)?,
@@ -107,14 +114,18 @@ impl PhysicsView {
         })
     }
 
-    /// This frame's triangles (tracking space) and their colours.
-    pub fn set_triangles(&mut self, gpu: &Gpu, tris: impl IntoIterator<Item = ([Vec3; 3], [f32; 3])>) -> Result<()> {
-        self.vertices.clear();
-        for (t, color) in tris {
+    /// This frame's triangles (tracking space) and their colours, and those drawn over them.
+    pub fn set_triangles(&mut self, gpu: &Gpu, tris: impl IntoIterator<Item = ([Vec3; 3], [f32; 3])>, over: impl IntoIterator<Item = ([Vec3; 3], [f32; 3])>) -> Result<()> {
+        let push = |v: &mut Vec<Vertex>, (t, color): ([Vec3; 3], [f32; 3])| {
             let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero().to_array();
-            self.vertices.extend(t.map(|p| Vertex { pos: p.to_array(), normal: n, color }));
-        }
-        self.vb.write(gpu, bytemuck::cast_slice(&self.vertices))
+            v.extend(t.map(|p| Vertex { pos: p.to_array(), normal: n, color }));
+        };
+        self.vertices.clear();
+        self.over.clear();
+        tris.into_iter().for_each(|t| push(&mut self.vertices, t));
+        over.into_iter().for_each(|t| push(&mut self.over, t));
+        self.vb.write(gpu, bytemuck::cast_slice(&self.vertices))?;
+        self.over_vb.write(gpu, bytemuck::cast_slice(&self.over))
     }
 
     /// Draws them into one eye's target, over whatever is there.
@@ -122,10 +133,18 @@ impl PhysicsView {
         if self.vertices.is_empty() {
             return Ok(());
         }
-        if self.depth.as_ref().is_none_or(|d| (d.width, d.height) != (target.width, target.height)) {
-            self.depth = Some(Texture::new(gpu, &TexDesc::depth(target.width, target.height))?);
-        }
-        let dsv = self.depth.as_ref().and_then(|d| d.dsv.clone());
+        // One depth buffer per target size (the eyes, a desktop view): the last two kept.
+        let i = match self.depth.iter().position(|d| (d.width, d.height) == (target.width, target.height)) {
+            Some(i) => i,
+            None => {
+                if self.depth.len() >= 2 {
+                    self.depth.remove(0);
+                }
+                self.depth.push(Texture::new(gpu, &TexDesc::depth(target.width, target.height))?);
+                self.depth.len() - 1
+            }
+        };
+        let dsv = self.depth[i].dsv.clone();
         let ctx = &gpu.ctx;
         let view_proj: Mat4 = projection(fov) * view_matrix(eye);
         let mut cb = DrawCb { view_proj: view_proj.to_cols_array(), eye: [eye.pos[0], eye.pos[1], eye.pos[2], 0.0] };
@@ -153,6 +172,16 @@ impl PhysicsView {
                 ctx.Draw(n, 0);
             }
         }
+        if !self.over.is_empty() {
+            cb.eye[3] = 0.0;
+            self.cb.update(ctx, &cb);
+            unsafe {
+                ctx.OMSetDepthStencilState(&self.no_depth, 0);
+                ctx.RSSetState(&self.solid);
+                ctx.IASetVertexBuffers(0, 1, Some(&self.over_vb.buf.clone()), Some(&(size_of::<Vertex>() as u32)), Some(&0));
+                ctx.Draw(self.over.len() as u32, 0);
+            }
+        }
         unsafe { ctx.OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None) };
         Ok(())
     }
@@ -176,7 +205,7 @@ mod tests {
         let tris: Vec<([Vec3; 3], [f32; 3])> =
             faces.iter().flat_map(|f| [([corner(f[0]), corner(f[1]), corner(f[2])], [1.0, 0.5, 0.1]), ([corner(f[0]), corner(f[2]), corner(f[3])], [1.0, 0.5, 0.1])]).collect();
         let mut view = PhysicsView::new(&gpu).unwrap();
-        view.set_triangles(&gpu, tris).unwrap();
+        view.set_triangles(&gpu, tris, []).unwrap();
         let eye = Pose { pos: [0.0; 3], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] };
         let fov = Fov { left: -0.8, right: 0.8, up: 0.8, down: -0.8 };
         view.draw(&gpu, &target, &eye, &fov).unwrap();

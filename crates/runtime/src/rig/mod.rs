@@ -640,6 +640,32 @@ impl Rig {
         self.physics.surface_triangles(|h, c| Some(tints.get(&h).copied().unwrap_or(if c.parent().is_some() { [0.75, 0.75, 0.75] } else { [0.55, 0.57, 0.62] })), out);
     }
 
+    /// The guns' working parts, from the game's rig, as small cubes (world space) to draw over the
+    /// framework view: where it's held, where its magazine goes, its charging handle (where it is
+    /// now: it moves as it's racked), muzzle and sight.
+    pub fn mechanism_markers(&self, out: &mut Vec<([Vec3; 3], [f32; 3])>) {
+        for (id, o) in &self.objects {
+            if o.desc.kind != OBJ_WEAPON {
+                continue;
+            }
+            let Some((p, q)) = self.obj_pose(*id) else { continue };
+            let d = &o.desc;
+            let marks: [(Vec3, [f32; 3]); 6] = [
+                (v3(d.grip), [0.2, 0.45, 1.0]),
+                (v3(d.foregrip), [0.25, 0.9, 0.35]),
+                (v3(d.mag_well), [1.0, 0.85, 0.15]),
+                (self.handle_now(*id), [1.0, 0.5, 0.1]),
+                (v3(d.muzzle), [1.0, 0.2, 0.15]),
+                (v3(d.sight), [0.95, 0.95, 0.95]),
+            ];
+            for (at, color) in marks {
+                if at != Vec3::ZERO {
+                    marker_cube(p + q * at, q, 0.012, color, out);
+                }
+            }
+        }
+    }
+
     /// The game's convex collision for its objects: kept for the ones still to come, and given to
     /// the ones already here whose hull is new.
     pub fn set_game_hulls(&mut self, hulls: &GameHulls) {
@@ -3332,3 +3358,26 @@ pub fn look_rotation(fwd: Vec3, up: Vec3) -> Quat {
 
 #[cfg(test)]
 mod tests;
+
+/// A small cube (half size `h`) at `at`, turned by `q`, as outward triangles.
+fn marker_cube(at: Vec3, q: Quat, h: f32, color: [f32; 3], out: &mut Vec<([Vec3; 3], [f32; 3])>) {
+    let c = |x: f32, y: f32, z: f32| at + q * (Vec3::new(x, y, z) * h);
+    // Each face: its normal axis and sign; corners wound outwards.
+    for (axis, s) in [(0, 1.0f32), (0, -1.0), (1, 1.0), (1, -1.0), (2, 1.0), (2, -1.0)] {
+        let p = |u: f32, v: f32| {
+            let mut a = [0.0f32; 3];
+            a[axis] = s;
+            a[(axis + 1) % 3] = u;
+            a[(axis + 2) % 3] = v;
+            c(a[0], a[1], a[2])
+        };
+        let (a, b, cc, d) = (p(-1.0, -1.0), p(1.0, -1.0), p(1.0, 1.0), p(-1.0, 1.0));
+        if s > 0.0 {
+            out.push(([a, b, cc], color));
+            out.push(([a, cc, d], color));
+        } else {
+            out.push(([a, cc, b], color));
+            out.push(([a, d, cc], color));
+        }
+    }
+}

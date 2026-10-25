@@ -178,6 +178,7 @@ fn frame<'a>(held: &'a Held, visibility: u32, first_person: bool) -> AvatarFrame
         visibility,
         light: daylight(),
         first_person,
+        plain: false,
     }
 }
 
