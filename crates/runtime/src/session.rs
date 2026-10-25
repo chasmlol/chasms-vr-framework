@@ -108,6 +108,11 @@ pub struct Session {
     pub rig_out: RigOutput,
     objects: Box<ObjectTable>,
     states: Box<ObjectStates>,
+    /// The states as the game gets them: what it draws of its own in a hand, where the hand will
+    /// have it when the game's picture of this frame is shown ([`lead_held`]).
+    states_ahead: Box<ObjectStates>,
+    /// How long after the runtime's frame the game's picture of it is shown, seconds (smoothed).
+    game_lag: f32,
     objects_seq: u32,
     /// The game's own hand poses for its objects (`ObjectDesc::grip_pose`, `support_pose`).
     hand_poses: Box<HandPoseTable>,
@@ -162,6 +167,8 @@ pub struct Session {
     opts: Options,
     fps: f32,
     last_tick: std::time::Instant,
+    /// When a slow frame was last logged.
+    slow_logged: f64,
     was_alive: bool,
 }
 
@@ -199,6 +206,8 @@ impl Session {
             rig_out: RigOutput::default(),
             objects: bytemuck::zeroed_box(),
             states: bytemuck::zeroed_box(),
+            states_ahead: bytemuck::zeroed_box(),
+            game_lag: 0.0,
             objects_seq: 0,
             hand_poses: bytemuck::zeroed_box(),
             hand_poses_seq: 0,
@@ -238,6 +247,7 @@ impl Session {
             opts,
             fps: 0.0,
             last_tick: std::time::Instant::now(),
+            slow_logged: f64::MIN,
             was_alive: false,
         })
     }
@@ -388,9 +398,12 @@ impl Session {
         self.menu_trigger_was = trigger_down;
 
         // ---- the rig: the game's collision and objects, then the hands
+        let t_rig = std::time::Instant::now();
+        let mut t_collision = 0.0f32;
         if alive {
             let physics = &mut self.rig.physics;
             self.link.drain_collision(|kind, payload| physics.apply_collision(kind, payload));
+            t_collision = t_rig.elapsed().as_secs_f32() * 1000.0;
             let seq = self.link.objects_seq();
             if seq != self.objects_seq && self.link.read_objects_into(&mut self.objects) {
                 self.objects_seq = seq;
@@ -514,7 +527,9 @@ impl Session {
                 self.game_pushes.pushes[i] = *p;
             }
             self.link.write_game_pushes(&self.game_pushes);
-            self.link.write_object_states(&self.states);
+            *self.states_ahead = *self.states;
+            lead_held(&mut self.states_ahead, &self.objects, self.game_lag);
+            self.link.write_object_states(&self.states_ahead);
             let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
             self.held_objects.update(&self.objects, &self.states, map.as_ref(), frame.hands.map(|h| h.trigger));
         } else {
@@ -524,6 +539,7 @@ impl Session {
             a.render((frame.dt.clamp(0.0, 0.1) * OFFLINE_RATE as f32).round() as usize);
         }
 
+        let t_mech = std::time::Instant::now();
         // ---- mechanics
         let aux_aspect = self.targets.as_ref().map(|t| t.spec.aux_w as f32 / t.spec.aux_h.max(1) as f32).unwrap_or(1.0);
         let out = self.mech.update(&MechInput {
@@ -672,6 +688,15 @@ impl Session {
             if self.targets.as_ref().is_some_and(|t| t.generation == info.generation) {
                 self.shown = Some((front, info));
             }
+            // The game's picture arrives this many of the runtime's frames after the frame it was
+            // made for (and is shown in this one).
+            if info.frame_index > 0 && info.frame_index <= frame.index {
+                let lag = ((frame.index - info.frame_index) as f32 / self.backend.refresh_hz().max(30.0)).min(0.1);
+                self.game_lag += (lag - self.game_lag) * 0.05;
+                if frame.index % 900 == 0 {
+                    tracing::info!("runtime: the game's picture is shown {:.0} ms after its frame", self.game_lag * 1000.0);
+                }
+            }
         }
 
         // ---- the runtime's menu
@@ -719,7 +744,22 @@ impl Session {
         self.update_comfort(&frame, &out, menu_mode || menu_pointer.is_some());
 
         // ---- compose
+        let t_compose = std::time::Instant::now();
         self.compose(&frame, &out, &layout, pick.map(|(_, t, _)| laser_origin + laser_dir * t), menu_mode, alive)?;
+        // A frame that took long (over a refresh and a half): where its time went, once a second.
+        let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f32() * 1000.0;
+        let t_end = std::time::Instant::now();
+        let budget = 1500.0 / self.backend.refresh_hz().max(30.0);
+        if ms(t_rig, t_end) > budget && now - self.slow_logged > 1.0 {
+            self.slow_logged = now;
+            tracing::info!(
+                "runtime: slow frame {:.1} ms (budget {budget:.1}): collision {t_collision:.1}, rig {:.1}, mechanics and the wait for the game {:.1}, compose {:.1}",
+                ms(t_rig, t_end),
+                ms(t_rig, t_mech) - t_collision,
+                ms(t_mech, t_compose),
+                ms(t_compose, t_end)
+            );
+        }
         self.stats.frames += 1;
         if menu_mode {
             self.stats.menu_frames += 1;
@@ -1193,5 +1233,53 @@ mod tests {
             }
         }
         assert_eq!(event_of(C::ShotPistol), Some((E::Fire, rustvr_audio::Sound::ShotPistol)));
+    }
+}
+
+/// What the game draws of its own in a hand (a prop it simulates or the runtime moves: not a gun or
+/// a magazine, which the runtime draws), moved on by its velocity to where the hand will have it
+/// `lead` seconds on: the game draws it that long after this frame, so it would trail the hand.
+fn lead_held(states: &mut ObjectStates, objects: &ObjectTable, lead: f32) {
+    if lead <= 0.0 {
+        return;
+    }
+    let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
+    for st in states.states[..(states.count as usize).min(MAX_OBJECTS)].iter_mut() {
+        if st.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) == 0 || !descs.iter().any(|d| d.id == st.id && d.kind == OBJ_PROP) {
+            continue;
+        }
+        let (v, w) = (Vec3::from_array(st.lin_vel), Vec3::from_array(st.ang_vel));
+        st.pose.pos = (Vec3::from_array(st.pose.pos) + v * lead).to_array();
+        st.pose.rot = (Quat::from_scaled_axis(w * lead) * Quat::from_array(st.pose.rot)).normalize().to_array();
+    }
+}
+
+#[cfg(test)]
+mod lead_tests {
+    use super::*;
+
+    #[test]
+    fn a_prop_in_a_hand_is_led_on_and_nothing_else_is() {
+        let mut objects: Box<ObjectTable> = bytemuck::zeroed_box();
+        objects.count = 2;
+        objects.descs[0].id = 1;
+        objects.descs[0].kind = OBJ_PROP;
+        objects.descs[1].id = 2;
+        objects.descs[1].kind = OBJ_WEAPON;
+        let mut states: Box<ObjectStates> = bytemuck::zeroed_box();
+        states.count = 3;
+        for (i, (id, flags)) in [(1, OS_HELD_RIGHT), (2, OS_HELD_RIGHT), (1, 0)].into_iter().enumerate() {
+            let st = &mut states.states[i];
+            st.id = id;
+            st.flags = flags;
+            st.pose.rot = Quat::IDENTITY.to_array();
+            st.lin_vel = [1.0, 0.0, 0.0];
+            st.ang_vel = [0.0, std::f32::consts::PI, 0.0];
+        }
+        lead_held(&mut states, &objects, 0.05);
+        assert!((states.states[0].pose.pos[0] - 0.05).abs() < 1e-6, "the held prop, 50 ms on");
+        assert!(Quat::from_array(states.states[0].pose.rot).angle_between(Quat::IDENTITY) > 0.15, "and turned on");
+        assert_eq!(states.states[1].pose.pos[0], 0.0, "a gun the runtime draws itself");
+        assert_eq!(states.states[2].pose.pos[0], 0.0, "a prop nobody holds");
     }
 }

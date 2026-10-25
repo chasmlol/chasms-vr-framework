@@ -912,7 +912,25 @@ impl Rig {
     // ---- the frame ------------------------------------------------------------------------------
     pub fn update(&mut self, inp: &RigInput) -> RigOutput {
         self.now = inp.now;
+        let prev = self.map;
         self.map = inp.map;
+        // What the hands hold goes where the player goes (walking, turning): a thing's weight
+        // limits how fast a hand swings it, not how fast the player walks with it.
+        if prev != WorldMap::IDENTITY && prev != inp.map && prev.world_per_meter == inp.map.world_per_meter {
+            let turn = inp.map.yaw() * prev.yaw().inverse();
+            let carry = |p: Vec3, q: Quat| (inp.map.point(prev.inv_point(p)), (turn * q).normalize());
+            for o in self.objects.values_mut().filter(|o| matches!(o.holder, Holder::Held(_))) {
+                let (p, q) = self.physics.pose(o.body);
+                let (v, w) = self.physics.velocity(o.body);
+                let (np, nq) = carry(p, q);
+                self.physics.set_pose(o.body, np, nq);
+                self.physics.set_velocity(o.body, turn * v, turn * w);
+                if let Some((bp, bq, t0, d)) = o.blend {
+                    let (bp, bq) = carry(bp, bq);
+                    o.blend = Some((bp, bq, t0, d));
+                }
+            }
+        }
         self.frame_index = inp.frame.index;
         self.feedback.clear();
         let dt = inp.dt.clamp(1e-4, 0.05);
@@ -1403,7 +1421,11 @@ impl Rig {
                     _ => {}
                 }
             }
-            Hover::Object(id) => self.take(id, i, false),
+            Hover::Object(id) => {
+                // Gripped as it flies in from the gloves: a catch (it may still be half a metre out).
+                let caught = self.objects.get(&id).is_some_and(|o| matches!(o.holder, Holder::Pulled { .. }));
+                self.take(id, i, caught)
+            }
             Hover::Valve(id) => {
                 // The hand goes to the rim where it's nearest and holds on there, as it sits.
                 let Some(v) = self.objects.get(&id).and_then(|o| o.valve) else { return };
@@ -1515,7 +1537,10 @@ impl Rig {
             let top = v3(o.desc.mag_well);
             Attach::Fixed(HELD_MAG_TOP - rot * top, rot)
         } else {
-            let rel = compose(inverse((palm, grip_rot)), (pos, rot));
+            // Caught or drawn (`snap`): its nearest surface in the palm, as it's turned (it was
+            // caught up to `glove_catch_radius` away). Picked up, it stays where the hand took it.
+            let at = if snap { pos + (palm - self.physics.closest_point(o.collider, palm)) } else { pos };
+            let rel = compose(inverse((palm, grip_rot)), (at, rot));
             Attach::Fixed(rel.0, rel.1)
         };
         o.blend = Some((pos, rot, self.now, pos.distance(palm)));

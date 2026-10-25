@@ -949,6 +949,32 @@ fn gravity_gloves_pull_and_catch() {
     }
     assert_eq!(s.rig.held(1), Some(FAR_BOTTLE), "caught: bottle at {:?}", s.pos(FAR_BOTTLE));
     assert_eq!(s.rig.debug.catches, 1);
+    // In the palm, not where it was when caught: its centre within its half height (and a bit).
+    s.step(40);
+    let off = s.pos(FAR_BOTTLE).distance(s.hand_pos(1));
+    assert!(off < 0.14, "the caught bottle sits in the hand: {off:.2} m from it");
+}
+
+#[test]
+fn a_held_rifle_walks_and_turns_with_the_player() {
+    let mut s = Sim::new();
+    s.s.interaction.weight = 1.0; // as heavy as it gets: it still mustn't trail the player
+    s.take_rifle();
+    s.step(30);
+    let hand = |s: &Sim| s.map.point(s.hand_pos(1));
+    let rel = |s: &Sim| s.map.inv_point(s.pos(RIFLE)) - s.hand_pos(1);
+    let before = rel(&s);
+    // Off at a run, then a turn on the spot.
+    for _ in 0..60 {
+        s.map.anchor.z += 3.5 * DT;
+        s.step(1);
+    }
+    for _ in 0..20 {
+        s.map.body_yaw += 0.08;
+        s.step(1);
+    }
+    let lag = (rel(&s) - before).length();
+    assert!(lag < 0.05, "the rifle stays in the hand: {lag:.3} m off (hand at {:?})", hand(&s));
 }
 
 #[test]

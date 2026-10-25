@@ -364,6 +364,12 @@ impl Physics {
         if proj.is_inside { 0.0 } else { (from_v(proj.point) - p).length() }
     }
 
+    /// The point of collider `c`'s surface nearest `p` (`p` itself when inside).
+    pub fn closest_point(&self, c: ColliderHandle, p: V3) -> V3 {
+        let Some(col) = self.world.colliders.get(c) else { return p };
+        from_v(col.shape().project_point(col.position(), to_v(p), true).point)
+    }
+
     /// Nothing of the static world lies between `from` and `to` (the player could reach `to`).
     pub fn reachable(&self, from: V3, to: V3) -> bool {
         let d = to - from;
