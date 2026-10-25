@@ -24,6 +24,8 @@ use crate::rig::WorldMap;
 pub struct Loaded {
     pub weapon: Weapon,
     pub model: HeldModel,
+    /// Each part as boxes (model space): the framework view's low-poly gun ([`crate::blockout`]).
+    pub blocks: Vec<Vec<(Vec3, Vec3)>>,
 }
 
 /// One object to draw this frame: its model (by name) and each part's place in tracking space.
@@ -68,7 +70,8 @@ pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str) -> anyhow::Result<Loa
     let weapon = rustvr_guns::metro::metro_weapon(&dir, key)?;
     let model = rustvr_asset::load_model(&dir, key)?;
     let model = HeldModel::load(gpu, &dir, &model, &held_parts(&weapon))?;
-    Ok(Loaded { weapon, model })
+    let blocks = weapon.parts.iter().map(|m| crate::blockout::blockout(&m.vertices.iter().map(|v| Vec3::from_array(v.pos)).collect::<Vec<_>>(), &m.indices)).collect();
+    Ok(Loaded { weapon, model, blocks })
 }
 
 /// Where each part of an object of `w` goes (tracking space), for its description's kind, its
@@ -158,6 +161,32 @@ impl HeldObjects {
                 o
             })
             .collect()
+    }
+
+    /// This frame's objects as the framework view draws them (tracking space): each part's boxes,
+    /// coloured by what it is (the magazine, the bolt or charging handle, the trigger, the rest).
+    pub fn framework_triangles(&self, out: &mut Vec<([Vec3; 3], [f32; 3])>) {
+        for p in &self.placed {
+            let Some(Some(l)) = self.models.get(&p.name) else { continue };
+            let w = &l.weapon;
+            for (i, blocks) in l.blocks.iter().enumerate() {
+                let Some(Some(m)) = p.parts.get(i) else { continue };
+                let color = if w.mag_parts.contains(&i) {
+                    [0.95, 0.78, 0.2]
+                } else if w.bolt_parts.contains(&i) {
+                    [1.0, 0.5, 0.12]
+                } else if w.trigger_parts.contains(&i) {
+                    [0.9, 0.25, 0.2]
+                } else {
+                    [0.38, 0.42, 0.5]
+                };
+                for &(lo, hi) in blocks {
+                    for t in crate::blockout::box_triangles(lo, hi, |v| m.transform_point3(v)) {
+                        out.push((t, color));
+                    }
+                }
+            }
+        }
     }
 
     /// This frame's draws (see [`HeldObjects::update`]).

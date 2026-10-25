@@ -629,15 +629,18 @@ impl Rig {
             };
             tints.insert(o.collider, c);
         }
+        // Left out: the hands' and fingers' colliders (the body is drawn there), and what the
+        // runtime draws itself (a gun, its magazines: drawn as their low-poly selves instead).
+        let mut skip: std::collections::HashSet<ColliderHandle> = std::collections::HashSet::new();
         for h in self.hands.iter().flatten() {
-            tints.insert(h.collider, [0.25, 0.5, 1.0]);
-            for f in h.fingers {
-                if let Some(c) = self.physics.collider_of(f) {
-                    tints.insert(c, if h.fingers_solid || h.fingers_on { [0.6, 0.85, 1.0] } else { [0.25, 0.35, 0.45] });
-                }
-            }
+            skip.insert(h.collider);
+            skip.extend(h.fingers.iter().filter_map(|f| self.physics.collider_of(*f)));
         }
-        self.physics.surface_triangles(|h, c| Some(tints.get(&h).copied().unwrap_or(if c.parent().is_some() { [0.75, 0.75, 0.75] } else { [0.55, 0.57, 0.62] })), out);
+        skip.extend(self.objects.values().filter(|o| o.desc.flags & OBJF_RUNTIME_DRAWS != 0).map(|o| o.collider));
+        self.physics.surface_triangles(
+            |h, c| (!skip.contains(&h)).then(|| tints.get(&h).copied().unwrap_or(if c.parent().is_some() { [0.75, 0.75, 0.75] } else { [0.55, 0.57, 0.62] })),
+            out,
+        );
     }
 
     /// The guns' working parts, from the game's rig, as small cubes (world space) to draw over the
@@ -660,7 +663,7 @@ impl Rig {
             ];
             for (at, color) in marks {
                 if at != Vec3::ZERO {
-                    marker_cube(p + q * at, q, 0.012, color, out);
+                    marker_cube(p + q * at, q, 0.009, color, out);
                 }
             }
         }

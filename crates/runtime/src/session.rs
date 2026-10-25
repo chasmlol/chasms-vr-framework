@@ -1089,7 +1089,10 @@ impl Session {
             let mut marks = Vec::new();
             self.rig.mechanism_markers(&mut marks);
             let to_tracking = |(t, c): &([Vec3; 3], [f32; 3])| (map.as_ref().map_or(*t, |m| t.map(|p| m.inv_point(p))), *c);
-            let tris = self.physics_tris.iter().map(to_tracking);
+            // The guns the runtime draws, as their low-poly selves (tracking space already).
+            let mut guns = Vec::new();
+            self.held_objects.framework_triangles(&mut guns);
+            let tris = self.physics_tris.iter().map(to_tracking).chain(guns);
             if let Err(e) = self.physics_view.set_triangles(&self.gpu, tris, marks.iter().map(to_tracking)) {
                 tracing::warn!("framework view: {e:#}");
             }
