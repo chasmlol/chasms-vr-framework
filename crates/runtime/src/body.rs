@@ -324,9 +324,9 @@ impl PlayerBody {
     }
 
     /// The held gun's laser from now on (None: none), drawn with the body.
-    pub fn set_laser(&mut self, laser: Option<rustvr_avatar::LaserBeam>) {
+    pub fn set_laser(&mut self, gpu: &Gpu, laser: Option<rustvr_avatar::LaserBeam>) {
         if let Some(a) = self.avatar.as_mut() {
-            a.set_laser(laser);
+            a.set_laser(gpu, laser);
         }
     }
 

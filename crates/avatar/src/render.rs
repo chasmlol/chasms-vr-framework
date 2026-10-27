@@ -228,54 +228,150 @@ float3 fogged(float3 c, float3 pv) {
     return lerp(c, fc, g);
 }
 
-// A gun's laser: its beam (a strip facing the eye) and its dot (a disc facing the eye, with a glow
-// for the bloom the game would give it), light added over what's there, with the game's tone
-// curve and grading on it and fading into its fog.
+// A gun's laser, as Metro 2033 Redux draws its own (`weapons\attaches\weapon_laser`): the beam
+// is `static34\fx\fx_laser2_red`, two crossed planes 10 cm wide along it, texture `fx\fx_laser1`
+// (its first quarter across them) under `effects\fx_laser` (added light, faded where a plane is
+// seen edge on, the texture's dust sparkling in screen space, red from the mesh's colours); the
+// dot is the spotlight `spotlights\spot_laser2_npc_red`, its falloff `light\light_radial_falloff1`,
+// lying on what it hits. It ends at the first thing the game drew along it (the game's depth: a
+// door, a monster, whatever is there), else where its collision or its range stops it.
 cbuffer Laser : register(b4) {
-    float4 laser_a;      // xyz: the beam's start, w: its half width (m)
-    float4 laser_b;      // xyz: its end (the dot)
-    float4 laser_color;  // rgb: its light at the core (HDR)
-    float4 laser_mode;   // x: 0 the beam, 1 the dot; y: the dot's glow radius, z: its core's;
-                         // w: a pixel's width a metre away (the beam is never thinner than 2)
+    float4 laser_a;      // xyz: its start (the laser's mount)
+    float4 laser_b;      // xyz: as far as it can go (its collision's hit, or its range)
+    float4 laser_color;  // rgb: its light (HDR); w: seconds (the dust drifts)
+    float4 laser_mode;   // x: 0 the beam, 1 the dot; y: the dot's radius; z: the game's textures
+                         // bound; w: a pixel's width a metre away
+    float4x4 laser_inv_vp;
 };
+Texture2D laser_tex : register(t13);
+Texture2D laser_dot_tex : register(t14);
 struct LaserOut {
     float4 pos : SV_Position;
     float3 world : TEXCOORD0;
     float2 uv : TEXCOORD1;
     float view_z : TEXCOORD2;
+    float3 normal : TEXCOORD3;
 };
-LaserOut VSLaser(uint id : SV_VertexID) {
-    float2 c = float2((id & 1) ? 1 : -1, (id & 2) ? 1 : -1);
+
+// The game's depth (metres) where world point p shows, or 0 (off screen, nothing drawn).
+float laser_depth_at(float3 p, out float z) {
+    z = dot(view_z.xyz, p) + view_z.w;
+    float4 c = mul(view_proj, float4(p, 1));
+    if (depth.x == 0 || c.w <= 0) return 0;
+    float2 ndc = c.xy / c.w;
+    if (any(abs(ndc) > 1)) return 0;
+    uint w, h;
+    game_depth.GetDimensions(w, h);
+    int2 px = int2(float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * float2(w, h));
+    return game_depth.Load(int3(min(px, int2(w, h) - 1), 0)) * depth.y;
+}
+
+// Whether p is in what the game drew (behind its surface there, but not by more than a surface's
+// thickness: a beam passing behind a pillar hasn't hit it).
+bool laser_inside(float3 p) {
+    float z;
+    float g = laser_depth_at(p, z);
+    return g > 0 && z > g + 0.01 && z < g + 0.25 + 0.05 * g;
+}
+
+// Where the beam stops: the first thing the game drew along it.
+float3 laser_end() {
+    float3 a = laser_a.xyz, b = laser_b.xyz;
+    float prev = 0;
+    [loop] for (int k = 1; k <= 128; k++) {
+        // (Closer together near the gun.)
+        float t = k / 128.0;
+        t *= t;
+        if (laser_inside(lerp(a, b, t))) {
+            float lo = prev, hi = t;
+            [unroll] for (int r = 0; r < 6; r++) {
+                float m = 0.5 * (lo + hi);
+                if (laser_inside(lerp(a, b, m))) hi = m; else lo = m;
+            }
+            return lerp(a, b, hi);
+        }
+        prev = t;
+    }
+    return b;
+}
+
+// The game's surface at screen position ndc: the world point its depth puts there.
+float3 laser_surface(float2 ndc, float g) {
+    float4 w = mul(laser_inv_vp, float4(ndc, 0.5, 1));
+    float3 d = normalize(w.xyz / w.w - eye_pos.xyz);
+    return eye_pos.xyz + d * (g / max(dot(view_z.xyz, d), 1e-4));
+}
+
+LaserOut VSLaser(uint id : SV_VertexID, uint inst : SV_InstanceID) {
+    float2 c = float2((id & 1) ? 1 : -1, (id & 2) ? 1 : 0);
+    float3 a = laser_a.xyz;
+    float3 end = laser_end();
+    float3 dir = normalize(end - a);
+    float3 side = normalize(cross(dir, abs(dir.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0)));
+    float3 up = cross(side, dir);
+    LaserOut o;
     float3 p;
     if (laser_mode.x < 0.5) {
-        float3 a = laser_a.xyz, b = laser_b.xyz;
-        float3 q = lerp(a, b, c.y * 0.5 + 0.5);
-        float half_width = max(laser_a.w, length(q - eye_pos.xyz) * laser_mode.w);
-        float3 side = normalize(cross(b - a, eye_pos.xyz - (a + b) * 0.5)) * half_width;
-        p = q + side * c.x;
+        // The beam: the mesh's two crossed planes, 5 cm either side, along to where it stops;
+        // across them u runs 0.25 to 0 (the texture's beam), along them v 0 to 1.
+        float3 across = inst == 0 ? side : up;
+        p = lerp(a, end, c.y) + across * 0.05 * c.x;
+        o.uv = float2((0.5 - 0.5 * c.x) * 0.25, c.y);
+        o.normal = inst == 0 ? up : side;
     } else {
-        float3 d = normalize(laser_b.xyz - eye_pos.xyz);
-        float3 r = normalize(cross(float3(0, 1, 0), d));
-        float3 u = cross(d, r);
-        // (A little towards the eye, so the surface it lies on doesn't cut it.)
-        p = laser_b.xyz - d * 0.02 + (r * c.x + u * c.y) * laser_mode.y;
+        // The dot: on the surface where it stops (its normal from the game's depth around it),
+        // a little off it towards the eye.
+        float4 cc = mul(view_proj, float4(end, 1));
+        float2 ndc = cc.xy / max(cc.w, 1e-4);
+        float z;
+        float g = laser_depth_at(end, z);
+        float3 n = -dir;
+        if (g > 0) {
+            float2 px = 2.0 / target_size.xy * 3;
+            float gx, gy;
+            float3 e = laser_surface(ndc, g);
+            float gx0 = laser_depth_at(laser_surface(ndc + float2(px.x, 0), g), z);
+            float gy0 = laser_depth_at(laser_surface(ndc + float2(0, px.y), g), z);
+            float3 ex = laser_surface(ndc + float2(px.x, 0), gx0 > 0 ? gx0 : g);
+            float3 ey = laser_surface(ndc + float2(0, px.y), gy0 > 0 ? gy0 : g);
+            float3 m = cross(ex - e, ey - e);
+            if (dot(m, m) > 1e-12) n = normalize(m);
+            if (dot(n, eye_pos.xyz - end) < 0) n = -n;
+        }
+        float3 t1 = normalize(cross(n, abs(n.y) < 0.95 ? float3(0, 1, 0) : float3(1, 0, 0)));
+        float3 t2 = cross(n, t1);
+        float r = max(laser_mode.y * (1 + 0.01 * length(end - a)), length(end - eye_pos.xyz) * laser_mode.w * 2);
+        p = end + n * 0.01 + (t1 * c.x + t2 * (c.y * 2 - 1)) * r;
+        o.uv = float2(c.x, c.y * 2 - 1);
+        o.normal = n;
     }
-    LaserOut o;
     o.pos = mul(view_proj, float4(p, 1));
     o.world = p;
-    o.uv = c;
     o.view_z = dot(view_z.xyz, p) + view_z.w;
     return o;
 }
+
 float4 PSLaser(LaserOut i) : SV_Target {
     if (behind_game(i.pos, i.view_z)) discard;
+    float3 view = normalize(eye_pos.xyz - i.world);
     float3 light;
     if (laser_mode.x < 0.5) {
-        light = laser_color.rgb * saturate(1 - i.uv.x * i.uv.x);
+        // Faded where the plane is seen edge on (the other plane shows there).
+        float facing = saturate(abs(dot(normalize(i.normal), view)) * 1.5);
+        float beam, dust = 1;
+        if (laser_mode.z > 0) {
+            beam = laser_tex.Sample(samp, i.uv).g;
+            // Its dust, drifting, sparkling in screen space.
+            float2 s = i.pos.xy / 512 + float2(0, laser_color.w * 0.03);
+            dust = 0.55 + 0.9 * laser_tex.Sample(samp, s).r;
+        } else {
+            float x = (i.uv.x / 0.125) - 1;
+            beam = saturate(1 - x * x);
+        }
+        light = laser_color.rgb * beam * facing * dust;
     } else {
-        float r = length(i.uv);
-        float core = 1 - smoothstep(laser_mode.z * 0.6, laser_mode.z, r);
-        light = laser_color.rgb * (core * 6 + exp(-r * r * 6) * 0.8);
+        float spot = laser_mode.z > 0 ? laser_dot_tex.Sample(clamp_samp, i.uv * 0.5 + 0.5).r : saturate(1 - dot(i.uv, i.uv));
+        light = laser_color.rgb * spot * 4;
     }
     // Its light fades into the game's fog as anything there would.
     float d = length(i.world - eye_pos.xyz);
@@ -546,16 +642,15 @@ struct LaserCb {
     b: [f32; 4],
     color: [f32; 4],
     mode: [f32; 4],
+    inv_vp: [f32; 16],
 }
 
-/// A laser's look: its beam's half width (m) and light at the core (HDR, Metro's red), its dot's
-/// core radius and light, and the dot's glow as an angle (radians: it stays the size the game's
-/// bloom would make it, however far the dot is).
-const LASER_HALF_WIDTH: f32 = 0.0015;
-const LASER_BEAM: [f32; 3] = [1.2, 0.05, 0.03];
-const LASER_DOT_CORE: f32 = 0.004;
-const LASER_DOT: [f32; 3] = [1.6, 0.08, 0.04];
-const LASER_GLOW_ANGLE: f32 = 0.02;
+/// The laser's light (HDR): Metro's red (the beam mesh's vertex colours are pure red).
+const LASER_RED: [f32; 3] = [1.6, 0.0, 0.0];
+/// The dot's radius (m) close up (the spotlight's spot), growing 1% a metre out.
+const LASER_DOT_RADIUS: f32 = 0.012;
+/// The game's textures for it (`metro-extract --extras`), in the asset cache's `metro2033`.
+const LASER_TEXTURES: [&str; 2] = ["fx__fx_laser1", "light__light_radial_falloff1"];
 
 /// The player's layer over the game's picture, through the game's lens: at each pixel, the layer
 /// where the lens takes the picture from (its warp: the bloom and lens textures' alphas).
@@ -1128,8 +1223,12 @@ pub struct Renderer {
     in_frame: bool,
     /// Testing: the body, and what it holds, each in one flat colour ([`Renderer::set_flat`]).
     flat: Option<([f32; 3], [f32; 3])>,
-    /// The held gun's laser ([`Renderer::set_laser`]), its pass and light added over what's there.
+    /// The held gun's laser ([`Renderer::set_laser`]), its pass and light added over what's there,
+    /// the game's textures for it (loaded with the first laser; None inside: not there), and the
+    /// clock its dust drifts by.
     laser: Option<crate::LaserBeam>,
+    laser_textures: Option<Option<[ID3D11ShaderResourceView; 2]>>,
+    laser_clock: std::time::Instant,
     laser_program: Program,
     laser_cb: ConstantBuffer<LaserCb>,
     additive: ID3D11BlendState,
@@ -1179,6 +1278,8 @@ impl Renderer {
             in_frame: false,
             flat: None,
             laser: None,
+            laser_textures: None,
+            laser_clock: std::time::Instant::now(),
             laser_program: Program::with_entries(gpu, &source, "avatar", "VSLaser", "PSLaser", &[])?,
             laser_cb: ConstantBuffer::new(gpu)?,
             additive: additive_blend(gpu)?,
@@ -1190,7 +1291,18 @@ impl Renderer {
     }
 
     /// The held gun's laser from now on (None: none): drawn with the player.
-    pub fn set_laser(&mut self, laser: Option<crate::LaserBeam>) {
+    pub fn set_laser(&mut self, gpu: &Gpu, laser: Option<crate::LaserBeam>) {
+        if laser.is_some() && self.laser_textures.is_none() {
+            let dir = asset::default_root().join("metro2033");
+            let load = |k: &str| asset::load_texture(&dir, k).and_then(|t| Ok(upload_texture(gpu, &t)?.linear));
+            self.laser_textures = Some(match (load(LASER_TEXTURES[0]), load(LASER_TEXTURES[1])) {
+                (Ok(beam), Ok(dot)) => Some([beam, dot]),
+                (a, b) => {
+                    tracing::warn!("avatar: the laser's textures ({:?}, {:?}): drawn without them", a.err(), b.err());
+                    None
+                }
+            });
+        }
         self.laser = laser;
     }
 
@@ -1685,28 +1797,42 @@ impl Renderer {
     /// added.
     fn draw_laser(&self, ctx: &ID3D11DeviceContext, eye: &Pose, fov: &Fov, width: u32, l: &crate::LaserBeam) {
         let pixel = (fov.right - fov.left) / width.max(1) as f32;
+        let inv_vp = (projection(fov) * view_matrix(eye)).inverse().to_cols_array();
+        let textures = self.laser_textures.as_ref().and_then(|t| t.as_ref());
         self.laser_program.bind(ctx);
         unsafe {
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
             ctx.OMSetBlendState(&self.additive, Some(&[0.0; 4]), 0xFFFF_FFFF);
             ctx.OMSetDepthStencilState(&self.depth_test, 0);
             ctx.RSSetState(&self.two_sided);
+            // (Vertex shaders read the game's depth too: where the beam stops.)
+            ctx.VSSetShaderResources(1, Some(&[self.bound_game_depth(ctx)]));
             ctx.VSSetConstantBuffers(4, Some(&[Some(self.laser_cb.buf.clone())]));
             ctx.PSSetConstantBuffers(4, Some(&[Some(self.laser_cb.buf.clone())]));
+            ctx.PSSetShaderResources(13, Some(&textures.map_or([None, None], |t| [Some(t[0].clone()), Some(t[1].clone())])));
         }
-        let rgb = |c: [f32; 3]| [c[0], c[1], c[2], 0.0];
-        let (from, to) = (l.from.extend(LASER_HALF_WIDTH).to_array(), l.to.extend(0.0).to_array());
-        self.laser_cb.update(ctx, &LaserCb { a: from, b: to, color: rgb(LASER_BEAM), mode: [0.0, 0.0, 0.0, pixel] });
-        unsafe { ctx.Draw(4, 0) };
-        if l.hit {
-            let far = l.to.distance(Vec3::from_array(eye.pos));
-            let glow = (far * LASER_GLOW_ANGLE).max(LASER_DOT_CORE * 3.0);
-            // (Its core never smaller than a couple of pixels.)
-            let core = LASER_DOT_CORE.max(far * pixel * 1.5);
-            self.laser_cb.update(ctx, &LaserCb { a: from, b: to, color: rgb(LASER_DOT), mode: [1.0, glow, (core / glow).min(0.5), pixel] });
-            unsafe { ctx.Draw(4, 0) };
+        let t = self.laser_clock.elapsed().as_secs_f32();
+        let color = [LASER_RED[0], LASER_RED[1], LASER_RED[2], t];
+        let (from, to) = (l.from.extend(0.0).to_array(), l.to.extend(0.0).to_array());
+        let has = textures.is_some() as u32 as f32;
+        self.laser_cb.update(ctx, &LaserCb { a: from, b: to, color, mode: [0.0, 0.0, has, pixel], inv_vp });
+        // The beam's two crossed planes.
+        unsafe { ctx.DrawInstanced(4, 2, 0, 0) };
+        // Its dot: where its collision stops it, or wherever the game's depth shows it stopping.
+        self.laser_cb.update(ctx, &LaserCb { a: from, b: to, color, mode: [1.0, LASER_DOT_RADIUS, has, pixel], inv_vp });
+        unsafe {
+            ctx.Draw(4, 0);
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.VSSetShaderResources(1, Some(&[None]));
+            ctx.PSSetShaderResources(13, Some(&[None, None]));
         }
-        unsafe { ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
+    }
+
+    /// The game's depth as bound for the pixel shaders (t1).
+    fn bound_game_depth(&self, ctx: &ID3D11DeviceContext) -> Option<ID3D11ShaderResourceView> {
+        let mut v = [None];
+        unsafe { ctx.PSGetShaderResources(1, Some(&mut v)) };
+        v[0].take()
     }
 
     fn draw_ghosts(&self, ctx: &ID3D11DeviceContext, ghost_model: &Character, ghost_ready: [bool; 2]) {

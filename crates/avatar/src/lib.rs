@@ -192,8 +192,8 @@ impl Avatar {
     }
 
     /// The held gun's laser from now on (None: none), drawn with the player.
-    pub fn set_laser(&mut self, laser: Option<LaserBeam>) {
-        self.renderer.set_laser(laser);
+    pub fn set_laser(&mut self, gpu: &Gpu, laser: Option<LaserBeam>) {
+        self.renderer.set_laser(gpu, laser);
     }
 
     /// Draws the body into `target` (an sRGB view of one eye's image, `width` x `height`) as seen
