@@ -278,6 +278,117 @@ float4 PSGhost(VSOut i) : SV_Target {
     if (behind_game(i.pos, i.view_z)) a *= 0.5;
     return float4(ghost.rgb * (0.45 + 1.1 * f), saturate(a));
 }
+
+// ---- The player the game drew inside its own frame, moved to where it is now
+// (`Renderer::draw_view_depth`, `Renderer::draw_reprojected`).
+cbuffer BonesThen : register(b4) {
+    float4 was_rows[MAX_BONES * 3];   // where the bones were in the game's pictures, 3x4 rows
+    float4 was_vis[MAX_BONES];
+};
+cbuffer Sources : register(b5) {
+    float4x4 src_view_proj[2];   // tracking space -> each picture's clip space
+    float4 src_view_z[2];        // its view z = dot(xyz, p) + w
+    float4 src_info;             // x: pictures (1 or 2), y: depth tolerance (metres), z: per metre, w: 1 to tint by where each colour came from
+};
+Texture2D src_color0 : register(t7);
+Texture2D src_color1 : register(t8);
+Texture2D<float> src_player0 : register(t9);    // the player's view z where it shows (0: not there)
+Texture2D<float> src_player1 : register(t10);
+
+// The view depth (metres) of the player where it shows.
+float PSViewZ(VSOut i) : SV_Target {
+    if (i.vis < 0) discard;
+    if (behind_game(i.pos, i.view_z)) discard;
+    if (material.x > 0 && material.y > 0 && albedo.Sample(samp, i.uv).a < 0.5) discard;
+    return i.view_z;
+}
+
+struct VSRepOut {
+    float4 pos : SV_Position;
+    float2 uv : TEXCOORD0;
+    float view_z : TEXCOORD1;
+    float vis : TEXCOORD2;
+    float4 clip0 : TEXCOORD3;
+    float4 clip1 : TEXCOORD4;
+    float2 was_z : TEXCOORD5;
+};
+
+// Skinned twice: where the vertex is now (drawn there) and where it was in the game's pictures
+// (where its colour is in them).
+VSRepOut VSReproject(VSIn i) {
+    float4 w = i.weights / max(dot(i.weights, 1), 1e-5);
+    float4 r0 = 0, r1 = 0, r2 = 0, t0 = 0, t1 = 0, t2 = 0;
+    float vis = 0;
+    [unroll] for (int k = 0; k < 4; k++) {
+        uint b = i.bones[k];
+        r0 += bone_rows[b * 3 + 0] * w[k];
+        r1 += bone_rows[b * 3 + 1] * w[k];
+        r2 += bone_rows[b * 3 + 2] * w[k];
+        t0 += was_rows[b * 3 + 0] * w[k];
+        t1 += was_rows[b * 3 + 1] * w[k];
+        t2 += was_rows[b * 3 + 2] * w[k];
+        vis += w[k] * (dot(vis_planes[b].xyz, i.pos) + vis_planes[b].w);
+    }
+    float4 p = float4(i.pos, 1);
+    float3 now = float3(dot(r0, p), dot(r1, p), dot(r2, p));
+    float4 was = float4(dot(t0, p), dot(t1, p), dot(t2, p), 1);
+    VSRepOut o;
+    o.pos = mul(view_proj, float4(now, 1));
+    o.uv = i.uv;
+    o.view_z = dot(view_z.xyz, now) + view_z.w;
+    o.vis = vis;
+    o.clip0 = mul(src_view_proj[0], was);
+    o.clip1 = mul(src_view_proj[1], was);
+    o.was_z = float2(dot(src_view_z[0], was), dot(src_view_z[1], was));
+    return o;
+}
+
+float2 clip_uv(float4 c) {
+    float2 n = c.xy / c.w;
+    return float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
+}
+
+// This point's colour in a picture the game drew it in, if the player shows this point there: its
+// depth within what the player's pixels around its place span (a surface seen edge-on changes
+// depth a lot from one pixel to the next).
+bool from_source(Texture2D col, Texture2D<float> pl, float4 clip, float z, out float3 c) {
+    c = 0;
+    if (clip.w <= 1e-4) return false;
+    float2 uv = clip_uv(clip);
+    if (any(uv < 0) || any(uv > 1)) return false;
+    uint w, h;
+    pl.GetDimensions(w, h);
+    int2 at = int2(uv * float2(w, h));
+    float lo = 1e30, hi = 0;
+    [unroll] for (int k = 0; k < 9; k++) {
+        float d = pl.Load(int3(clamp(at + int2(k % 3 - 1, k / 3 - 1), 0, int2(w - 1, h - 1)), 0));
+        if (d > 0) {
+            lo = min(lo, d);
+            hi = max(hi, d);
+        }
+    }
+    float tol = src_info.y + src_info.z * z;
+    if (!(hi > 0) || z < lo - tol || z > hi + tol) return false;
+    c = col.SampleLevel(clamp_samp, uv, 0).rgb;
+    return true;
+}
+
+// The player as the game drew it (its light, its fog, its tone curve and grading: the game's own
+// pixels), where the player is now.
+float4 PSReproject(VSRepOut i) : SV_Target {
+    if (i.vis < 0) discard;
+    if (behind_game(i.pos, i.view_z)) discard;
+    if (material.x > 0 && material.y > 0 && albedo.Sample(samp, i.uv).a < 0.5) discard;
+    float3 c;
+    // (Debugging, `src_info.w`: the first picture's colours reddened, the second's greened, and
+    // blue where neither shows the point.)
+    bool tint = src_info.w > 0;
+    if (from_source(src_color0, src_player0, i.clip0, i.was_z.x, c)) return float4(tint ? c * float3(1, 0.35, 0.35) + float3(0.15, 0, 0) : c, 1);
+    if (src_info.x > 1 && from_source(src_color1, src_player1, i.clip1, i.was_z.y, c)) return float4(tint ? c * float3(0.35, 1, 0.35) + float3(0, 0.15, 0) : c, 1);
+    if (tint) return float4(0, 0, 0.6, 1);
+    // Hidden in the pictures (a side that has turned into view since): the nearest the first has.
+    return float4(src_color0.SampleLevel(clamp_samp, saturate(clip_uv(i.clip0)), 0).rgb, 1);
+}
 "#;
 
 #[repr(C)]
@@ -326,6 +437,21 @@ struct MaterialCb {
     surf_color: [f32; 4],
     options: [f32; 4],
 }
+
+/// The pictures the game drew the player in, as the shader's `Sources` buffer holds them.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SourcesCb {
+    view_proj: [[f32; 16]; 2],
+    view_z: [[f32; 4]; 2],
+    info: [f32; 4],
+}
+
+/// How far (metres, and per metre of distance) a point's depth may be from the depth of the player
+/// a picture shows at its place and still be that point: rasterization differences, well under a
+/// finger's thickness.
+const SOURCE_BIAS: f32 = 0.006;
+const SOURCE_BIAS_PER_METER: f32 = 0.005;
 
 /// The game's lighting, as the shader's `Lighting` buffer holds it.
 #[repr(C)]
@@ -384,6 +510,8 @@ pub struct Character {
     vis: [Vec<[f32; 4]>; 5],
     palette: Box<BonesCb>,
     body_cb: ConstantBuffer<BonesCb>,
+    /// Where the bones were in the game's pictures ([`Renderer::draw_reprojected`]).
+    then_cb: ConstantBuffer<BonesCb>,
     ghost_cbs: [ConstantBuffer<BonesCb>; 2],
     /// The hand poses the last [`Character::pose`] drew, for re-rooting the ghosts.
     drawn_hands: [Option<Pose>; 2],
@@ -454,6 +582,7 @@ impl Character {
             vis,
             palette: Box::new(BonesCb::zeroed()),
             body_cb: ConstantBuffer::new(gpu)?,
+            then_cb: ConstantBuffer::new(gpu)?,
             ghost_cbs: [ConstantBuffer::new(gpu)?, ConstantBuffer::new(gpu)?],
             drawn_hands: [None; 2],
         })
@@ -491,6 +620,14 @@ impl Character {
     fn upload_body(&mut self, ctx: &ID3D11DeviceContext, show: Show) {
         self.fill_palette(Mat4::IDENTITY, show);
         self.body_cb.update(ctx, &self.palette);
+    }
+
+    /// Poses the rig for `input` and uploads that palette as where the bones were
+    /// ([`Renderer::draw_reprojected`]). Pose the rig for now after it.
+    fn upload_then(&mut self, ctx: &ID3D11DeviceContext, input: &PoseInput, show: Show) {
+        self.rig.pose(input, &mut self.posed);
+        self.fill_palette(Mat4::IDENTITY, show);
+        self.then_cb.update(ctx, &self.palette);
     }
 
     /// Uploads the palette for a ghost of hand `side` at `at`: the posed body moved rigidly so its
@@ -561,6 +698,8 @@ pub struct HeldModel {
     parts: usize,
     palette: std::cell::RefCell<Box<BonesCb>>,
     cb: ConstantBuffer<BonesCb>,
+    /// The parts where they were in the game's pictures ([`Renderer::draw_reprojected`]).
+    then_cb: ConstantBuffer<BonesCb>,
 }
 
 impl HeldModel {
@@ -588,7 +727,7 @@ impl HeldModel {
             out.push(gpu_mesh(gpu, &m, &m.indices, [(0, n); 3], &mut upload)?);
             info.push(i);
         }
-        Ok(HeldModel { meshes: out, info, parts, palette: std::cell::RefCell::new(Box::new(BonesCb::zeroed())), cb: ConstantBuffer::new(gpu)? })
+        Ok(HeldModel { meshes: out, info, parts, palette: std::cell::RefCell::new(Box::new(BonesCb::zeroed())), cb: ConstantBuffer::new(gpu)?, then_cb: ConstantBuffer::new(gpu)? })
     }
 
     /// Its meshes: which part each is, where it came from, and whether a special draw takes it.
@@ -603,6 +742,15 @@ impl HeldModel {
 
     /// Uploads the parts' places (tracking space; None or missing: hidden).
     fn upload(&self, ctx: &ID3D11DeviceContext, parts: &[Option<Mat4>]) {
+        self.upload_to(ctx, parts, &self.cb);
+    }
+
+    /// Uploads where the parts were in the game's pictures ([`Renderer::draw_reprojected`]).
+    fn upload_then(&self, ctx: &ID3D11DeviceContext, parts: &[Option<Mat4>]) {
+        self.upload_to(ctx, parts, &self.then_cb);
+    }
+
+    fn upload_to(&self, ctx: &ID3D11DeviceContext, parts: &[Option<Mat4>], cb: &ConstantBuffer<BonesCb>) {
         let mut palette = self.palette.borrow_mut();
         for p in 0..self.parts {
             let (m, vis) = match parts.get(p).copied().flatten() {
@@ -612,7 +760,7 @@ impl HeldModel {
             palette.rows[p] = [m.row(0).to_array(), m.row(1).to_array(), m.row(2).to_array()];
             palette.vis[p] = vis;
         }
-        self.cb.update(ctx, &palette);
+        cb.update(ctx, &palette);
     }
 }
 
@@ -775,6 +923,11 @@ pub struct Renderer {
     /// The game's shading (metro.rs): opaque classes and forward glass.
     metro: Program,
     metro_glass: Program,
+    /// The player's view depth ([`Renderer::draw_view_depth`]) and the game's own pixels of the
+    /// player moved to where it is now ([`Renderer::draw_reprojected`]).
+    view_z: Program,
+    reproject: Program,
+    sources_cb: ConstantBuffer<SourcesCb>,
     frame_cb: ConstantBuffer<FrameCb>,
     lighting_cb: ConstantBuffer<LightingCb>,
     /// The game's colour grading table (16³ RGBA8) and its view.
@@ -814,6 +967,9 @@ impl Renderer {
             ghost: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSGhost", &layout)?,
             metro: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSMetro", &layout)?,
             metro_glass: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSMetroGlass", &layout)?,
+            view_z: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSViewZ", &layout)?,
+            reproject: Program::with_entries(gpu, &source, "avatar", "VSReproject", "PSReproject", &layout)?,
+            sources_cb: ConstantBuffer::new(gpu)?,
             frame_cb: ConstantBuffer::new(gpu)?,
             lighting_cb: ConstantBuffer::new(gpu)?,
             lut,
@@ -904,18 +1060,7 @@ impl Renderer {
         main.upload_body(ctx, show);
 
         self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, frame, depth.as_ref()));
-        // One depth buffer per target size (the eyes, a desktop view): the last two kept.
-        let i = match self.depth.iter().position(|d| d.width == width && d.height == height) {
-            Some(i) => i,
-            None => {
-                if self.depth.len() >= 2 {
-                    self.depth.remove(0);
-                }
-                self.depth.push(Texture::new(gpu, &TexDesc::depth(width, height))?);
-                self.depth.len() - 1
-            }
-        };
-        let dsv = self.depth[i].dsv.clone().unwrap();
+        let dsv = self.depth_for(gpu, width, height)?;
         unsafe {
             ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
             ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
@@ -986,6 +1131,177 @@ impl Renderer {
         }
         unsafe {
             ctx.PSSetShaderResources(0, Some(&[None, None, None, None, None, None, None]));
+            ctx.OMSetRenderTargets(None, None);
+        }
+        Ok(())
+    }
+
+    /// The avatar's depth buffer for a target this size (the eyes, a desktop view, the game's
+    /// pictures): the last few sizes kept.
+    fn depth_for(&mut self, gpu: &Gpu, width: u32, height: u32) -> Result<ID3D11DepthStencilView> {
+        let i = match self.depth.iter().position(|d| d.width == width && d.height == height) {
+            Some(i) => i,
+            None => {
+                if self.depth.len() >= 4 {
+                    self.depth.remove(0);
+                }
+                self.depth.push(Texture::new(gpu, &TexDesc::depth(width, height))?);
+                self.depth.len() - 1
+            }
+        };
+        Ok(self.depth[i].dsv.clone().unwrap())
+    }
+
+    /// The view depth (metres) of the player `frame` poses, with `held`, seen from `eye`, where it
+    /// shows: into `target` (R32F, 0 where it doesn't), hidden behind the game's world (`depth`) as
+    /// the game's frame hid it. The game's forward glass and the special draws (a collimator's
+    /// lens) aren't in it: what shows there is what's behind them.
+    pub fn draw_view_depth(
+        &mut self,
+        gpu: &Gpu,
+        target: &ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        frame: &AvatarFrame,
+        depth: Option<DepthInput>,
+        body: &mut Character,
+        arms: Option<&mut Character>,
+        held: &[crate::HeldDraw],
+    ) -> Result<()> {
+        let ctx = &gpu.ctx;
+        let show = show_of(frame);
+        let main = main_model(body, arms, show);
+        main.pose(&pose_input(frame));
+        main.upload_body(ctx, show);
+        self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, frame, depth.as_ref()));
+        let dsv = self.depth_for(gpu, width, height)?;
+        unsafe {
+            ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
+            ctx.ClearRenderTargetView(target, &[0.0; 4]);
+            ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
+        }
+        let game_depth = depth.as_ref().map(|d| d.srv.clone());
+        self.bind_common(ctx, game_depth.as_ref(), width, height);
+        self.view_z.bind(ctx);
+        draw_opaque(ctx, main, range_of(show), held);
+        unsafe {
+            ctx.PSSetShaderResources(0, Some(&vec![None; 11]));
+            ctx.OMSetRenderTargets(None, None);
+        }
+        Ok(())
+    }
+
+    /// Writes the depth of the player `frame` poses (with `held`), seen from `eye`, into the game's
+    /// own depth buffer (`dsv`, `width` x `height`) as the game's projection (`proj`, with its own
+    /// near and far planes) stores it, where it's nearer than what's there: the game's later passes
+    /// (its volumetric light, particles and glass) then stop at the player as at its own things.
+    pub fn draw_game_depth(
+        &mut self,
+        gpu: &Gpu,
+        dsv: &ID3D11DepthStencilView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        proj: Mat4,
+        frame: &AvatarFrame,
+        body: &mut Character,
+        arms: Option<&mut Character>,
+        held: &[crate::HeldDraw],
+    ) -> Result<()> {
+        let ctx = &gpu.ctx;
+        let show = show_of(frame);
+        let main = main_model(body, arms, show);
+        main.pose(&pose_input(frame));
+        main.upload_body(ctx, show);
+        let mut cb = frame_constants(width, height, eye, fov, frame, None);
+        cb.view_proj = (proj * view_matrix(eye)).to_cols_array();
+        self.frame_cb.update(ctx, &cb);
+        unsafe { ctx.OMSetRenderTargets(None, dsv) };
+        self.bind_common(ctx, None, width, height);
+        self.view_z.bind(ctx);
+        draw_opaque(ctx, main, range_of(show), held);
+        unsafe {
+            ctx.PSSetShaderResources(0, Some(&vec![None; 11]));
+            ctx.OMSetRenderTargets(None, None);
+        }
+        Ok(())
+    }
+
+    /// Draws the player `now` poses into `target` as seen from `eye`, every point in the colour
+    /// the game drew it: `then` is the pose the game drew the player in, `held` each held object
+    /// with its parts' places now and then, and `sources` the game's pictures (with the player's
+    /// depth in them, [`Renderer::draw_view_depth`]); the first is looked in first. Hidden behind
+    /// the world as it shows now (`depth`).
+    pub fn draw_reprojected(
+        &mut self,
+        gpu: &Gpu,
+        target: &ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        now: &AvatarFrame,
+        then: &AvatarFrame,
+        depth: Option<DepthInput>,
+        body: &mut Character,
+        arms: Option<&mut Character>,
+        held: &[(crate::HeldDraw, &[Option<Mat4>])],
+        sources: &[crate::PlayerSource],
+    ) -> Result<()> {
+        let show = show_of(now);
+        // (A body drawn as another model then has nothing to take its colours from.)
+        if sources.is_empty() || show_of(then) != show {
+            return Ok(());
+        }
+        let ctx = &gpu.ctx;
+        let main = main_model(body, arms, show);
+        main.upload_then(ctx, &pose_input(then), show);
+        main.pose(&pose_input(now));
+        main.upload_body(ctx, show);
+        self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, now, depth.as_ref()));
+        let mut cb = SourcesCb::zeroed();
+        for (k, s) in sources.iter().take(2).enumerate() {
+            let view = view_matrix(&s.eye);
+            cb.view_proj[k] = (projection(&s.fov) * view).to_cols_array();
+            cb.view_z[k] = view.row(2).to_array();
+        }
+        cb.info = [sources.len().min(2) as f32, SOURCE_BIAS, SOURCE_BIAS_PER_METER, debug_tint() as u32 as f32];
+        self.sources_cb.update(ctx, &cb);
+        let dsv = self.depth_for(gpu, width, height)?;
+        unsafe {
+            ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
+            ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
+        }
+        let game_depth = depth.as_ref().map(|d| d.srv.clone());
+        self.bind_common(ctx, game_depth.as_ref(), width, height);
+        self.reproject.bind(ctx);
+        let src = |k: usize| sources.get(k).unwrap_or(&sources[0]);
+        unsafe {
+            ctx.VSSetConstantBuffers(1, Some(&[Some(main.body_cb.buf.clone())]));
+            ctx.VSSetConstantBuffers(4, Some(&[Some(main.then_cb.buf.clone()), Some(self.sources_cb.buf.clone())]));
+            ctx.PSSetConstantBuffers(5, Some(&[Some(self.sources_cb.buf.clone())]));
+            ctx.PSSetShaderResources(7, Some(&[Some(src(0).color.clone()), Some(src(1).color.clone()), Some(src(0).player_depth.clone()), Some(src(1).player_depth.clone())]));
+        }
+        let range = range_of(show);
+        for m in main.meshes.iter().filter(|m| !forward(m)) {
+            draw_mesh(ctx, m, range);
+        }
+        for (h, then_parts) in held {
+            h.model.upload(ctx, h.parts);
+            h.model.upload_then(ctx, then_parts);
+            unsafe {
+                ctx.VSSetConstantBuffers(1, Some(&[Some(h.model.cb.buf.clone())]));
+                ctx.VSSetConstantBuffers(4, Some(&[Some(h.model.then_cb.buf.clone())]));
+            }
+            for (m, _) in h.model.meshes.iter().zip(&h.model.info).filter(|(m, i)| !i.special && !forward(m)) {
+                draw_mesh(ctx, m, ALL);
+            }
+        }
+        unsafe {
+            ctx.PSSetShaderResources(0, Some(&vec![None; 11]));
             ctx.OMSetRenderTargets(None, None);
         }
         Ok(())
@@ -1081,6 +1397,52 @@ impl Renderer {
             }
         }
     }
+}
+
+/// The model that draws `show`: the first-person arms model (if any) in the arms and hands
+/// views, the body in the full view.
+fn main_model<'a>(body: &'a mut Character, arms: Option<&'a mut Character>, show: Show) -> &'a mut Character {
+    match arms {
+        Some(arms) if show != Show::Full => arms,
+        _ => body,
+    }
+}
+
+/// The index range of `show`'s triangles.
+fn range_of(show: Show) -> usize {
+    match show {
+        Show::Full => ALL,
+        Show::Arms => ARMS,
+        _ => HANDS,
+    }
+}
+
+/// Debugging (`RUSTVR_DEBUG_IN_FRAME=1`): the moved player tinted by which of the game's pictures
+/// each of its colours came from ([`Renderer::draw_reprojected`]).
+fn debug_tint() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RUSTVR_DEBUG_IN_FRAME").is_ok_and(|v| v == "1"))
+}
+
+/// The opaque meshes of `main` (`range`) and of `held` (not the forward glass, not the special
+/// draws), with whatever program is bound.
+fn draw_opaque(ctx: &ID3D11DeviceContext, main: &Character, range: usize, held: &[crate::HeldDraw]) {
+    unsafe { ctx.VSSetConstantBuffers(1, Some(&[Some(main.body_cb.buf.clone())])) };
+    for m in main.meshes.iter().filter(|m| !forward(m)) {
+        draw_mesh(ctx, m, range);
+    }
+    for h in held {
+        h.model.upload(ctx, h.parts);
+        unsafe { ctx.VSSetConstantBuffers(1, Some(&[Some(h.model.cb.buf.clone())])) };
+        for (m, _) in h.model.meshes.iter().zip(&h.model.info).filter(|(m, i)| !i.special && !forward(m)) {
+            draw_mesh(ctx, m, ALL);
+        }
+    }
+}
+
+/// Drawn as the game's forward glass (blended over the rest).
+fn forward(m: &GpuMesh) -> bool {
+    m.metro.as_ref().is_some_and(|mm| mm.class.forward())
 }
 
 fn show_of(frame: &AvatarFrame) -> Show {

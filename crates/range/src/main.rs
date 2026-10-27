@@ -790,6 +790,7 @@ impl Game {
             _pad: [0; 3],
             // (The range renders every headset frame: nothing to move.)
             eye_map: [SlotMap::default(); 2],
+            player_frame: 0,
         };
         if self.metro_hud == Some(false) && slot_hud.is_some() {
             self.adapter.write_hud_layout(&metro_2033_redux_layout(info.hud_aspect));

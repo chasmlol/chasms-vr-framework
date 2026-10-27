@@ -42,6 +42,24 @@ pub fn run_vr(o: VrOptions) -> Result<()> {
     // The game that connected, and whether it has exited (not just gone quiet: a game loading a
     // level stops its heartbeat for a while).
     let mut game_pid = 0u32;
+    // The same from a thread of its own, for when the loop can't get round to it: a headset
+    // runtime may hold the frame wait while the headset is off.
+    let watched = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    if o.exit_with_game.is_some() {
+        let watched = watched.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let pid = watched.load(std::sync::atomic::Ordering::Relaxed);
+                if pid != 0 && !process_alive(pid) {
+                    // (The loop gets its chance first.)
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    tracing::info!("runtime: the game (pid {pid}) has exited and the headset isn't drawing: exiting");
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
     while session.step()? {
         if o.exit_with_game.is_none() {
             continue;
@@ -49,6 +67,7 @@ pub fn run_vr(o: VrOptions) -> Result<()> {
         let pid = session.link.adapter_pid();
         if session.adapter_connected() && pid != 0 {
             game_pid = pid;
+            watched.store(pid, std::sync::atomic::Ordering::Relaxed);
         } else if game_pid != 0 && !process_alive(game_pid) {
             tracing::info!("runtime: the game (pid {game_pid}) has exited: exiting");
             break;

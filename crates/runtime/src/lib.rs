@@ -21,6 +21,8 @@ pub mod session;
 pub mod settings;
 pub mod spectator;
 pub mod targets;
+pub mod in_frame;
+pub mod pacing;
 pub mod warp;
 
 /// Wraps an angle to (-pi, pi].

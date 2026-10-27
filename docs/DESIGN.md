@@ -137,9 +137,21 @@ adapters (`tests/header.rs` keeps the two in step).
    `vr.reproject`): each eye is laid over a grid, pushed out to its depth, carried from that eye's
    world mapping to the game's mapping now and drawn from this headset frame's eyes. The headset
    only turns a picture for the head, so without this the world steps whenever the game walks or
-   turns the player between its pictures, while the hands (drawn every headset frame) don't. The
-   body, hands and gun are then drawn over it from the same eyes, behind the game's walls by the
-   warp's view depth.
+   turns the player between its pictures, while the hands (drawn every headset frame) don't.
+
+   A game that draws the player inside its own frame (`GS_DRAWS_BODY`, so its fog, bloom, tone
+   curve and grading reach it) says which posed player each pair was drawn with
+   (`SlotInfo::player_frame`). The runtime poses the player it sends for when the picture will
+   show (`in_frame::predict`), keeps every pose it sent, and at each headset frame
+   (`crates/runtime/src/in_frame.rs`): finds the player's pixels in each eye (the sent pose drawn
+   as depth from that eye), moves the world without them (what the other eye saw behind them, or
+   filled from around), and draws the player where it is now with its own copy of the same meshes,
+   every point in the colour the game's picture has it in (`Avatar::draw_reprojected`). The
+   player's pixels stay the game's; they just follow the controllers at the headset's rate. The
+   adapter also writes the player's depth into the game's depth buffer (`Avatar::draw_game_depth`,
+   with the game's own projection), so the game's later passes (Metro's volumetric light,
+   particles, glass) stop at the player instead of shining through it from the wall behind; the
+   runtime fills the world's depth behind the player from around for the warp.
 
 In tests the runtime runs in **lockstep** (`RT_LOCKSTEP`): it waits for the adapter's frame every
 time, and the adapter steps exactly once per headset frame using its `dt`, so runs are

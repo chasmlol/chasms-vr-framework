@@ -32,6 +32,8 @@ pub struct Loaded {
 struct Placed {
     name: String,
     parts: Vec<Option<Mat4>>,
+    /// The hand holding it.
+    hand: Option<usize>,
 }
 
 #[derive(Default)]
@@ -129,13 +131,14 @@ impl HeldObjects {
                 let Some(map) = map else { continue };
                 (map.inv_point(pos), map.inv_rot(rot))
             };
-            let trigger = match s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) {
-                OS_HELD_LEFT => triggers[0],
-                OS_HELD_RIGHT => triggers[1],
-                _ => 0.0,
+            let hand = match s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) {
+                OS_HELD_LEFT => Some(0),
+                OS_HELD_RIGHT => Some(1),
+                _ => None,
             };
+            let trigger = hand.map_or(0.0, |h| triggers[h]);
             let parts = part_places(&l.weapon, d.kind, s, trigger, Mat4::from_rotation_translation(rot, pos));
-            self.placed.push(Placed { name: name.to_string(), parts });
+            self.placed.push(Placed { name: name.to_string(), parts, hand });
         }
     }
 
@@ -187,6 +190,17 @@ impl HeldObjects {
                 }
             }
         }
+    }
+
+    /// The model loaded for `name` (`<game>/<key>`).
+    pub fn model(&self, name: &str) -> Option<&HeldModel> {
+        self.models.get(name)?.as_ref().map(|l| &l.model)
+    }
+
+    /// The hand holding each of [`HeldObjects::drawn`]'s objects (None: none, it's holstered or
+    /// loose).
+    pub fn drawn_hands(&self) -> Vec<Option<usize>> {
+        self.placed.iter().take(DRAWN_OBJECTS_MAX).map(|p| p.hand).collect()
     }
 
     /// This frame's draws (see [`HeldObjects::update`]).

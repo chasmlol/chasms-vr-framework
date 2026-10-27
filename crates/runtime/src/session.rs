@@ -53,6 +53,8 @@ pub struct Stats {
     pub exact_frames: u64,
     /// Frames where the game's picture was moved to the headset frame by its depth (`crate::warp`).
     pub warped_frames: u64,
+    /// Frames the player the game drew was moved to where it is now (`crate::in_frame`).
+    pub in_frame_frames: u64,
     pub scope_frames: u64,
     pub menu_frames: u64,
     /// Comfort overlay strength last frame.
@@ -93,6 +95,12 @@ pub struct Session {
     physics_view: crate::physics_view::PhysicsView,
     /// Moves the game's picture to this headset frame (`crate::warp`).
     warp: crate::warp::Warp,
+    /// The player the game draws in its own frame, moved to each headset frame (`crate::in_frame`).
+    in_frame: crate::in_frame::InFrame,
+    /// The game's player was moved to where it is this frame.
+    in_frame_last: bool,
+    /// Frame pacing, said every ten seconds (`crate::pacing`).
+    pacing: crate::pacing::Pacing,
     /// The desktop view's window (`crate::spectator`), while it's open, and its camera.
     spectator: Option<crate::spectator::Window>,
     spectator_cam: crate::spectator::SteadyCamera,
@@ -122,6 +130,9 @@ pub struct Session {
     states_ahead: Box<ObjectStates>,
     /// How long after the runtime's frame the game's picture of it is shown, seconds (smoothed).
     game_lag: f32,
+    /// How long after the runtime posed the player the game's picture of it is shown, seconds
+    /// (smoothed): what the player is posed ahead for (`crate::in_frame::predict`).
+    player_lag: f32,
     /// The player's walk and turn in the game: the last mapping seen (and when), and how fast it
     /// moves the world past a fixed point of tracking space (world units a second) and turns it
     /// (radians a second; smoothed).
@@ -196,6 +207,16 @@ impl Session {
             None => SettingsStore::memory(Default::default()),
         };
         tracing::info!("runtime: {} on {} ({}), link {}", backend.name(), gpu.adapter_name(), backend.recommended_size().0, opts.mapping);
+        // The runtime's GPU work goes before the game's, as a headset compositor's does: the game
+        // rendering flat out on the same GPU mustn't make a headset frame late.
+        {
+            use windows::core::Interface;
+            let raised = gpu.device.cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice>().and_then(|d| unsafe { d.SetGPUThreadPriority(7) });
+            match raised {
+                Ok(()) => tracing::info!("runtime: GPU priority raised over the game's"),
+                Err(e) => tracing::info!("runtime: GPU priority left as it is ({e})"),
+            }
+        }
         // The desktop view: off in tests on the emulated headset (RUSTVR_DESKTOP_VIEW=0, or
         // `capture:<dir>`: off screen, a frame saved there every few seconds) and with the
         // built-in simulator.
@@ -216,6 +237,9 @@ impl Session {
             comp: Compositor::new(&gpu)?,
             physics_view: crate::physics_view::PhysicsView::new(&gpu)?,
             warp: crate::warp::Warp::new(&gpu)?,
+            in_frame: crate::in_frame::InFrame::new(&gpu)?,
+            in_frame_last: false,
+            pacing: crate::pacing::Pacing::new(&gpu)?,
             physics_tris: Vec::new(),
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
@@ -241,6 +265,7 @@ impl Session {
             states: bytemuck::zeroed_box(),
             states_ahead: bytemuck::zeroed_box(),
             game_lag: 0.0,
+            player_lag: 0.0,
             walk_seen: None,
             walk: (Vec3::ZERO, 0.0),
             warped_last: false,
@@ -306,6 +331,7 @@ impl Session {
             }
         };
         let now = frame.display_time_ns as f64 * 1e-9;
+        self.pacing.frame(frame.display_time_ns, 1.0 / self.backend.refresh_hz().max(30.0) as f64);
         self.link.heartbeat_runtime();
         if let Some(w) = &mut self.spectator
             && !w.pump(&self.gpu)
@@ -709,8 +735,18 @@ impl Session {
                 let objects = self.held_objects.drawn();
                 pd.object_count = objects.len() as u32;
                 pd.objects[..objects.len()].copy_from_slice(&objects);
+                self.in_frame.set_now(Some(&pd));
+                // Posed for when the game's picture of it shows: the game draws it that much later
+                // (and the runtime moves the game's pixels of it the rest of the way).
+                let free = if rig_active { self.rig_out.hands.map(|h| h.flags & HAND_TRACKED != 0 && h.flags & HAND_BLOCKED == 0) } else { [true; 2] };
+                crate::in_frame::predict(&mut pd, &frame.hands, free, &self.held_objects.drawn_hands(), self.player_lag);
                 self.link.write_player_draw(&pd);
+                self.in_frame.record(&pd);
+            } else {
+                self.in_frame.set_now(None);
             }
+        } else {
+            self.in_frame.set_now(None);
         }
 
         // ---- tell the adapter
@@ -752,16 +788,25 @@ impl Session {
             let info = self.link.read_slot_info(front);
             self.stats.slots += 1;
             self.stats.last_slot_frame = info.frame_index;
+            self.pacing.picture(info.player_frame != 0);
             if self.targets.as_ref().is_some_and(|t| t.generation == info.generation) {
                 self.shown = Some((front, info));
             }
             // The game's picture arrives this many of the runtime's frames after the frame it was
             // made for (and is shown in this one).
+            if info.player_frame > 0 && info.player_frame <= frame.index {
+                let lag = ((frame.index - info.player_frame) as f32 / self.backend.refresh_hz().max(30.0)).min(0.1);
+                self.player_lag += (lag - self.player_lag) * 0.05;
+            }
             if info.frame_index > 0 && info.frame_index <= frame.index {
                 let lag = ((frame.index - info.frame_index) as f32 / self.backend.refresh_hz().max(30.0)).min(0.1);
                 self.game_lag += (lag - self.game_lag) * 0.05;
                 if frame.index % 900 == 0 {
-                    tracing::info!("runtime: the game's picture is shown {:.0} ms after its frame", self.game_lag * 1000.0);
+                    tracing::info!(
+                        "runtime: the game's picture is shown {:.0} ms after its frame ({:.0} ms after the player in it was posed)",
+                        self.game_lag * 1000.0,
+                        self.player_lag * 1000.0
+                    );
                 }
             }
         }
@@ -816,6 +861,11 @@ impl Session {
         // A frame that took long (over a refresh and a half): where its time went, once a second.
         let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f32() * 1000.0;
         let t_end = std::time::Instant::now();
+        let framework_shown = self.mech.framework_view && self.rig_active_last;
+        self.pacing.cpu(ms(t_rig, t_end), framework_shown, self.in_frame_last, self.warped_last);
+        if let Some(line) = self.pacing.report(now) {
+            tracing::info!("runtime: {line}");
+        }
         let budget = 1500.0 / self.backend.refresh_hz().max(30.0);
         if ms(t_rig, t_end) > budget && now - self.slow_logged > 1.0 {
             self.slow_logged = now;
@@ -988,6 +1038,7 @@ impl Session {
         alive: bool,
     ) -> Result<()> {
         let eyes = self.backend.eye_targets(&self.gpu)?;
+        self.pacing.gpu_begin(&self.gpu);
         let shown = self.shown.and_then(|(slot, info)| self.targets.as_ref().map(|t| (&t.slots[slot], info)));
         let locked = shown.filter(|(slot, _)| slot.acquire(50));
         let s = &self.settings.current;
@@ -1142,7 +1193,6 @@ impl Session {
         // the body and hands plain (the runtime's own look) and the guns as their collision.
         self.body.set_game_shading(&self.gpu, shading.as_ref().filter(|_| !framework));
         self.body.set_plain(framework);
-        let body = &mut self.body;
         let held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
         self.stats.held_drawn = held.len() as u32;
         self.stats.held_drawn_frames += (!held.is_empty()) as u64;
@@ -1161,6 +1211,48 @@ impl Session {
                 tracing::warn!("framework view: {e:#}");
             }
         }
+        // The player the game drew into its picture: which of its pixels are the player, and the
+        // world without them (`crate::in_frame`). Then the world is moved without them and the
+        // player drawn where it is now, in the game's own colours.
+        let in_frame_ready = match (&stereo, warp_to, self.shown) {
+            (Some((slot, info)), Some(_), Some((index, _))) if !framework && !menu_mode && !self.draws_body => {
+                self.in_frame.prepare(&self.gpu, index, slot, info, &mut self.body, &self.held_objects).is_some()
+            }
+            _ => false,
+        };
+        self.stats.in_frame_frames += in_frame_ready as u64;
+        self.in_frame_last = in_frame_ready;
+        let body = &mut self.body;
+        let in_frame = &self.in_frame;
+        let prepared = in_frame.prepared().filter(|_| in_frame_ready);
+        let then = stereo.as_ref().and_then(|(_, info)| in_frame.sent(info.player_frame)).filter(|_| prepared.is_some());
+        let player_now = in_frame.now().filter(|_| prepared.is_some());
+        let (now_places, then_places, pairs) = match (player_now, then) {
+            (Some(now), Some(then)) => (
+                crate::in_frame::objects(now).iter().map(|o| (name_str(&o.name).to_string(), crate::in_frame::part_places(o))).collect::<Vec<_>>(),
+                crate::in_frame::objects(then).iter().map(crate::in_frame::part_places).collect::<Vec<_>>(),
+                crate::in_frame::pair_objects(now, then),
+            ),
+            _ => (Vec::new(), Vec::new(), Vec::new()),
+        };
+        let held_objects = &self.held_objects;
+        let player_held: Vec<(rustvr_avatar::HeldDraw, &[Option<glam::Mat4>])> = pairs
+            .iter()
+            .filter_map(|&(i, j)| {
+                let (name, parts) = &now_places[i];
+                Some((rustvr_avatar::HeldDraw { model: held_objects.model(name)?, parts, key: name }, then_places[j].as_slice()))
+            })
+            .collect();
+        // The game's pictures of the player, the eye's own first.
+        let player_sources = |order: [usize; 2]| -> Vec<rustvr_avatar::PlayerSource> {
+            let (Some((slot, info)), Some(p)) = (&stereo, prepared) else { return Vec::new() };
+            order
+                .iter()
+                .filter_map(|&k| {
+                    Some(rustvr_avatar::PlayerSource { color: slot.eyes[k].srv.as_ref()?, player_depth: p.player[k].srv.as_ref()?, eye: info.eye_pose[k], fov: info.fov[k] })
+                })
+                .collect()
+        };
         let physics_view = &mut self.physics_view;
         let warp = &mut self.warp;
         for e in 0..2 {
@@ -1174,7 +1266,10 @@ impl Session {
                 match warp_to {
                     Some(to_now) => {
                         // The other eye's first (it fills the edges this one's doesn't reach).
-                        let sources = warp_sources(slot, info, to_now, [e ^ 1, e]);
+                        let sources = match prepared {
+                            Some(p) => warp_sources_without_player(slot, info, to_now, e, p),
+                            None => warp_sources(slot, info, to_now, &[e ^ 1, e]),
+                        };
                         match warp.draw(&self.gpu, target, eye, fov, &sources).and_then(|_| warp.view_depth(&self.gpu, target.width, target.height)) {
                             Ok(z) => {
                                 background = crate::compositor::Background::Keep;
@@ -1193,6 +1288,7 @@ impl Session {
                 }
             }
             let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: depth_units });
+            let sources = player_sources([e, e ^ 1]);
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
                 if framework {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {
@@ -1201,6 +1297,9 @@ impl Session {
                 }
                 if draw_body {
                     body.draw(gpu, target, eye, fov, light, if framework { None } else { depth.take() }, &held);
+                }
+                if let (Some(now), Some(then), false) = (player_now, then, sources.is_empty()) {
+                    body.draw_reprojected(gpu, target, eye, fov, now, then, depth.take(), &player_held, &sources);
                 }
             });
         }
@@ -1218,7 +1317,10 @@ impl Session {
             let background = match (&stereo, framework, warp_to) {
                 // Moved to the steadied camera by its depth: the aiming eye's over the other's.
                 (Some((slot, info)), false, Some(to_now)) => {
-                    let sources = warp_sources(slot, info, to_now, [first ^ 1, first]);
+                    let sources = match prepared {
+                        Some(p) => warp_sources_without_player(slot, info, to_now, first, p),
+                        None => warp_sources(slot, info, to_now, &[first ^ 1, first]),
+                    };
                     match warp.draw(&self.gpu, target, &cam, &fov, &sources).and_then(|_| warp.view_depth(&self.gpu, target.width, target.height)) {
                         Ok(z) => {
                             depth_srv = Some(z);
@@ -1240,12 +1342,16 @@ impl Session {
                 _ => crate::compositor::Background::Void,
             };
             let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: 1.0 });
+            let sources = player_sources([first, first ^ 1]);
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");
                 }
                 if draw_body {
                     body.draw(gpu, target, &cam, &fov, light, depth.take(), &held);
+                }
+                if let (Some(now), Some(then), false) = (player_now, then, sources.is_empty()) {
+                    body.draw_reprojected(gpu, target, &cam, &fov, now, then, depth.take(), &player_held, &sources);
                 }
             });
         }
@@ -1258,6 +1364,7 @@ impl Session {
                 }
             }
         }
+        self.pacing.gpu_end(&self.gpu);
         self.backend.submit(&self.gpu, &poses, &fovs)?;
         if let Some(w) = &self.spectator {
             let now = frame.display_time_ns as f64 * 1e-9;
@@ -1416,9 +1523,32 @@ mod tests {
     }
 }
 
+/// A slot's eyes as pictures to move (`crate::warp`) into eye `own`'s view without the player the
+/// game drew into them (`crate::in_frame`): first `own`'s with the player's pixels filled from
+/// around, then the other eye's and `own`'s own without them, each over the last where it has the
+/// world. So what's behind the player shows where either eye saw it, and is filled where neither
+/// did.
+fn warp_sources_without_player<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, to_now: glam::Mat4, own: usize, p: &'a crate::in_frame::Prepared) -> Vec<crate::warp::WarpSource<'a>> {
+    let mut out = warp_sources(slot, info, to_now, &[own, own ^ 1, own]);
+    if out.len() == 3 {
+        if let Some(world) = p.world[own].srv.as_ref() {
+            out[0].color = world;
+        }
+        out[1].mask = p.player[own ^ 1].srv.as_ref();
+        out[2].mask = p.player[own].srv.as_ref();
+        // The world's depth, without the player the game put in it.
+        for (s, k) in out.iter_mut().zip([own, own ^ 1, own]) {
+            if let Some(z) = p.depth[k].srv.as_ref() {
+                s.depth = z;
+            }
+        }
+    }
+    out
+}
+
 /// A slot's eyes as pictures to move (`crate::warp`), in `order` (the last drawn over the others),
 /// each from where it was in the world into the world `to_now` (tracking -> world now, inverted).
-fn warp_sources<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, to_now: glam::Mat4, order: [usize; 2]) -> Vec<crate::warp::WarpSource<'a>> {
+fn warp_sources<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, to_now: glam::Mat4, order: &[usize]) -> Vec<crate::warp::WarpSource<'a>> {
     let Some(depth) = slot.depth.as_ref() else { return Vec::new() };
     order
         .iter()
@@ -1435,6 +1565,7 @@ fn warp_sources<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, to_now: gla
                 to_target: to_now * then.matrix(),
                 // The depth is in the game's units: metres in tracking space are that over its scale.
                 metres_per_unit: 1.0 / then.world_per_meter,
+                mask: None,
             })
         })
         .collect()

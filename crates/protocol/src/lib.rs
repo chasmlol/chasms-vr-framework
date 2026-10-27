@@ -72,8 +72,8 @@ pub use lighting::*;
 pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 7;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v8";
+pub const VERSION: u32 = 8;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v9";
 pub const MAPPING_BYTES: usize = 0x004F_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
@@ -704,6 +704,11 @@ pub struct SlotInfo {
     /// mapping it was drawn with. With the depth, the runtime moves the picture to where the head
     /// and the walking player are when it's shown.
     pub eye_map: [SlotMap; 2],
+    /// The player the adapter drew into both eyes inside the game's own frame: the
+    /// [`crate::RtPlayerDraw::frame_index`] it drew (0: none). Knowing the pose the player was drawn
+    /// in, the runtime moves the player's own pixels to where the player is when the picture is
+    /// shown.
+    pub player_frame: u64,
 }
 
 /// A tracking -> world mapping (as [`TrackingState`] gives it): world = anchor + yaw(body_yaw) *
@@ -776,7 +781,7 @@ const _: () = {
     assert!(size_of::<TargetRequest>() == 32);
     assert!(size_of::<GameState>() == 488);
     assert!(size_of::<LightHint>() == 48);
-    assert!(size_of::<SlotInfo>() == 240);
+    assert!(size_of::<SlotInfo>() == 248);
     assert!(size_of::<SlotMap>() == 32);
     assert!(size_of::<Event>() == 32);
     assert!(OFF_HEADER + size_of::<Header>() <= OFF_SUBMIT);

@@ -8,7 +8,7 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 7
+#define RVR_VERSION 8
 
 #define RVR_MAPPING_BYTES 5177344
 

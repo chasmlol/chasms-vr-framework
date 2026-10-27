@@ -323,6 +323,47 @@ impl PlayerBody {
         self.plain = plain;
     }
 
+    /// The view depth of the player `pd` poses (with `held`) where it shows from `eye`, hidden
+    /// behind the game's world (`depth`), into `target` (R32F, `width` x `height`): which of a game's
+    /// picture's pixels are the player it drew there (see `crate::in_frame`).
+    pub fn draw_view_depth(
+        &mut self,
+        gpu: &Gpu,
+        target: &windows::Win32::Graphics::Direct3D11::ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        pd: &RtPlayerDraw,
+        depth: DepthInput,
+        held: &[rustvr_avatar::HeldDraw],
+    ) -> anyhow::Result<()> {
+        let Some(avatar) = self.avatar(gpu) else { anyhow::bail!("no avatar") };
+        avatar.draw_view_depth(gpu, target, width, height, eye, fov, &crate::in_frame::avatar_frame(pd), Some(depth), held)
+    }
+
+    /// The player the game drew inside its own frame (posed as `then`, in `sources`), drawn where
+    /// it is now (`now`) in the game's own colours, hidden behind the world as it shows now
+    /// (`depth`). `held`: each held object with where its parts were then.
+    pub fn draw_reprojected(
+        &mut self,
+        gpu: &Gpu,
+        target: &EyeTarget,
+        eye: &Pose,
+        fov: &Fov,
+        now: &RtPlayerDraw,
+        then: &RtPlayerDraw,
+        depth: Option<DepthInput>,
+        held: &[(rustvr_avatar::HeldDraw, &[Option<glam::Mat4>])],
+        sources: &[rustvr_avatar::PlayerSource],
+    ) {
+        let Some(avatar) = self.avatar(gpu) else { return };
+        let (now, then) = (crate::in_frame::avatar_frame(now), crate::in_frame::avatar_frame(then));
+        if let Err(e) = avatar.draw_reprojected(gpu, &target.rtv, target.width, target.height, eye, fov, &now, &then, depth, held, sources) {
+            tracing::warn!("runtime: the player the game drew, moved: {e:#}");
+        }
+    }
+
     /// Draws the body into one eye, with what the runtime draws of what the player holds (`holding`,
     /// see `crate::held_objects`). `light.sun_dir` must already be in tracking space.
     pub fn draw(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw]) {

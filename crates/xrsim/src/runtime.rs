@@ -70,6 +70,8 @@ pub(crate) struct Rt {
     control_checked: Instant,
     last_capture_cmd: Option<String>,
     pub pose: Pose,
+    /// Each hand's velocity now (stage space: metres and radians a second), from the script.
+    hand_vel: [(Vec3, Vec3); 2],
     pub focused: bool,
     quit: bool,
     paths: Vec<String>,
@@ -149,6 +151,7 @@ impl Rt {
             control_checked: now,
             last_capture_cmd: None,
             pose: Pose::default(),
+            hand_vel: [(Vec3::ZERO, Vec3::ZERO); 2],
             focused: true,
             quit: false,
             paths: Vec::new(),
@@ -261,6 +264,17 @@ impl Rt {
         }
         if let Some(c) = &self.control {
             pose.apply(&c.head, &c.left, &c.right);
+        }
+        // The hands' velocities, as a headset's runtime reports them: the script's motion now (a
+        // moment back to now), so an app's prediction runs on them.
+        const BACK: f64 = 0.01;
+        let mut before = sample(&self.script, (t - BACK).max(0.0));
+        if let Some(c) = &self.control {
+            before.apply(&c.head, &c.left, &c.right);
+        }
+        for h in 0..2 {
+            let ((p1, q1), (p0, q0)) = (pose.hand_pose(h), before.hand_pose(h));
+            self.hand_vel[h] = ((p1 - p0) / BACK as f32, (q1 * q0.inverse()).normalize().to_scaled_axis() / BACK as f32);
         }
         self.pose = pose;
         while let Some(c) = self.script.captures.get(self.captures_done)
@@ -755,14 +769,21 @@ unsafe extern "system" fn locate_space(space: xr::Space, base: xr::Space, _time:
                 }
                 _ => (*loc).location_flags = xr::SpaceLocationFlags::EMPTY,
             }
-            // Velocities on the chain: still (the script moves in steps the app sees frame to frame).
+            // Velocities on the chain: a hand's as the script moves it (in the base space), else still.
+            let (lin, ang) = match (r.spaces.get(&space.into_raw()), b) {
+                (Some(SpaceKind::Action { hand: Some(h), .. }), Some((_, qb))) => {
+                    let (v, w) = r.hand_vel[*h];
+                    (qb.inverse() * v, qb.inverse() * w)
+                }
+                _ => (Vec3::ZERO, Vec3::ZERO),
+            };
             let mut n = (*loc).next as *mut xr::BaseOutStructure;
             while !n.is_null() {
                 if (*n).ty == xr::StructureType::SPACE_VELOCITY {
                     let v = n as *mut xr::SpaceVelocity;
                     (*v).velocity_flags = xr::SpaceVelocityFlags::LINEAR_VALID | xr::SpaceVelocityFlags::ANGULAR_VALID;
-                    (*v).linear_velocity = xr::Vector3f { x: 0.0, y: 0.0, z: 0.0 };
-                    (*v).angular_velocity = xr::Vector3f { x: 0.0, y: 0.0, z: 0.0 };
+                    (*v).linear_velocity = xr::Vector3f { x: lin.x, y: lin.y, z: lin.z };
+                    (*v).angular_velocity = xr::Vector3f { x: ang.x, y: ang.y, z: ang.z };
                 }
                 n = (*n).next;
             }

@@ -91,6 +91,18 @@ pub struct AvatarFrame<'a> {
     pub plain: bool,
 }
 
+/// A picture the game drew the player into, inside its own frame: the player's colours there are
+/// the game's (its light, fog, tone curve and grading), taken by [`Avatar::draw_reprojected`].
+pub struct PlayerSource<'a> {
+    pub color: &'a ID3D11ShaderResourceView,
+    /// `R32_FLOAT`: the view depth (metres) of the player where it shows in `color`, 0 elsewhere
+    /// ([`Avatar::draw_view_depth`]).
+    pub player_depth: &'a ID3D11ShaderResourceView,
+    /// The eye it was drawn from.
+    pub eye: Pose,
+    pub fov: Fov,
+}
+
 /// The game's depth for the eye being drawn.
 pub struct DepthInput<'a> {
     /// `R32_FLOAT` linear depth along the view axis, in game units. 0 means nothing was drawn.
@@ -203,6 +215,68 @@ impl Avatar {
         special: Option<&mut dyn FnMut(&SpecialDraw)>,
     ) -> Result<()> {
         self.renderer.draw(gpu, target, width, height, eye, fov, frame, depth, &mut self.body, self.arms.as_mut(), body, held, special)
+    }
+
+    /// The view depth (metres) of the player `frame` poses (with `held`) where it shows from `eye`,
+    /// hidden behind the game's world (`depth`): into `target` (`R32_FLOAT`, `width` x `height`), 0
+    /// where the player isn't. Drawn for a picture the game drew the player into, it tells which of
+    /// its pixels are the player's (see [`Avatar::draw_reprojected`]).
+    pub fn draw_view_depth(
+        &mut self,
+        gpu: &Gpu,
+        target: &ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        frame: &AvatarFrame,
+        depth: Option<DepthInput>,
+        held: &[HeldDraw],
+    ) -> Result<()> {
+        self.renderer.draw_view_depth(gpu, target, width, height, eye, fov, frame, depth, &mut self.body, self.arms.as_mut(), held)
+    }
+
+    /// Writes the depth of the player `frame` poses (with `held`), seen from `eye`, into the game's
+    /// own depth buffer (`dsv`, `width` x `height`) as the game's projection `proj` (its own near and
+    /// far planes) stores it, where it's nearer than what's there. An adapter drawing the player in
+    /// the game's frame does this after the colour, so the game's later passes (its volumetric
+    /// light, particles, glass) stop at the player as they do at the game's own things.
+    pub fn draw_game_depth(
+        &mut self,
+        gpu: &Gpu,
+        dsv: &windows::Win32::Graphics::Direct3D11::ID3D11DepthStencilView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        proj: Mat4,
+        frame: &AvatarFrame,
+        held: &[HeldDraw],
+    ) -> Result<()> {
+        self.renderer.draw_game_depth(gpu, dsv, width, height, eye, fov, proj, frame, &mut self.body, self.arms.as_mut(), held)
+    }
+
+    /// The player the game drew inside its own frame, where it is now: drawn posed as `now` (with
+    /// each of `held`'s parts where they are now), every point in the colour the game's pictures
+    /// (`sources`) have it in, the game having drawn it posed as `then` (each held object's parts
+    /// where the second of its pair says). So the game's own pixels of the player (its lighting,
+    /// fog, bloom, tone curve and grading) follow the player at every headset frame. Hidden behind
+    /// the world as it shows now (`depth`).
+    pub fn draw_reprojected(
+        &mut self,
+        gpu: &Gpu,
+        target: &ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        now: &AvatarFrame,
+        then: &AvatarFrame,
+        depth: Option<DepthInput>,
+        held: &[(HeldDraw, &[Option<Mat4>])],
+        sources: &[PlayerSource],
+    ) -> Result<()> {
+        self.renderer.draw_reprojected(gpu, target, width, height, eye, fov, now, then, depth, &mut self.body, self.arms.as_mut(), held, sources)
     }
 
     /// The skin this would draw for `frame`, posed on the CPU: every vertex (tracking space) with

@@ -979,6 +979,7 @@ fn diff(a: &Stats, b: &Stats) -> Stats {
         last_slot_frame: a.last_slot_frame,
         exact_frames: a.exact_frames - b.exact_frames,
         warped_frames: a.warped_frames - b.warped_frames,
+        in_frame_frames: a.in_frame_frames - b.in_frame_frames,
         scope_frames: a.scope_frames - b.scope_frames,
         menu_frames: a.menu_frames - b.menu_frames,
         vignette: a.vignette,
