@@ -153,6 +153,9 @@ pub(crate) struct Film {
     left: u32,
     /// A part of each eye at full size instead of the whole a quarter size (x, y, width, height).
     crop: Option<[u32; 4]>,
+    /// Only every this many frames, and how many until the next.
+    every: u32,
+    skip: u32,
     /// Per eye: a copy of the submitted image with its mips (made the first frame).
     mips: Vec<(ID3D11Texture2D, ID3D11ShaderResourceView)>,
     /// Frames on their way to the CPU (read a frame or two later, never waited for): their row of
@@ -164,8 +167,8 @@ pub(crate) struct Film {
 }
 
 impl Film {
-    pub(crate) fn new(name: &str, frames: u32, crop: Option<[u32; 4]>) -> Film {
-        Film { name: name.to_string(), left: frames, crop, mips: Vec::new(), waiting: VecDeque::new(), done: Vec::new(), format: DXGI_FORMAT_UNKNOWN }
+    pub(crate) fn new(name: &str, frames: u32, crop: Option<[u32; 4]>, every: u32) -> Film {
+        Film { name: name.to_string(), left: frames, crop, every: every.max(1), skip: 0, mips: Vec::new(), waiting: VecDeque::new(), done: Vec::new(), format: DXGI_FORMAT_UNKNOWN }
     }
 }
 
@@ -205,7 +208,9 @@ pub(crate) fn film_frame(r: &mut Rt) {
             let (row, _, _) = f.waiting.pop_front().unwrap();
             f.done.push((row, a, b));
         }
-        if f.left > 0 && r.last_layers.len() >= 2 {
+        let take = f.skip == 0;
+        f.skip = if take { f.every - 1 } else { f.skip - 1 };
+        if f.left > 0 && take && r.last_layers.len() >= 2 {
             let layers = r.last_layers.clone();
             let mut st: Vec<ID3D11Texture2D> = Vec::new();
             let mut sizes = [(0, 0); 2];

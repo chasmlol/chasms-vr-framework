@@ -312,7 +312,7 @@ impl Rt {
             && let Some(f) = self.script.films.get(self.films_started)
             && f.t <= t
         {
-            self.film = Some(crate::capture::Film::new(&f.name, f.frames, f.crop));
+            self.film = Some(crate::capture::Film::new(&f.name, f.frames, f.crop, f.every.unwrap_or(1)));
             self.films_started += 1;
             self.log(&format!("film {} starts ({} frames)", f.name, f.frames));
         }

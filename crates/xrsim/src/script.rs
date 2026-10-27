@@ -91,6 +91,10 @@ pub struct Film {
     /// height in the submitted image's pixels), the same for both eyes.
     #[serde(default)]
     pub crop: Option<[u32; 4]>,
+    /// Only every this many frames (a film of a longer stretch at a watchable rate: 3 at 90 Hz
+    /// gives 30 frames a second); 1 when not given.
+    #[serde(default)]
+    pub every: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
