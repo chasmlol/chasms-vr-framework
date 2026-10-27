@@ -132,6 +132,15 @@ adapters (`tests/header.rs` keeps the two in step).
    panels, laser). It submits those poses to OpenXR, so the headset's reprojection corrects for
    any lateness.
 
+   When the slot brings linear depth and where each eye was in the world (`SlotInfo::eye_map`),
+   the runtime instead moves the picture itself (`crates/runtime/src/warp.rs`, setting
+   `vr.reproject`): each eye is laid over a grid, pushed out to its depth, carried from that eye's
+   world mapping to the game's mapping now and drawn from this headset frame's eyes. The headset
+   only turns a picture for the head, so without this the world steps whenever the game walks or
+   turns the player between its pictures, while the hands (drawn every headset frame) don't. The
+   body, hands and gun are then drawn over it from the same eyes, behind the game's walls by the
+   warp's view depth.
+
 In tests the runtime runs in **lockstep** (`RT_LOCKSTEP`): it waits for the adapter's frame every
 time, and the adapter steps exactly once per headset frame using its `dt`, so runs are
 deterministic. With a real headset the game runs at its own pace and the newest slot wins.

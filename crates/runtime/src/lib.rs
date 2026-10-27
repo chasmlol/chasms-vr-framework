@@ -21,6 +21,7 @@ pub mod session;
 pub mod settings;
 pub mod spectator;
 pub mod targets;
+pub mod warp;
 
 /// Wraps an angle to (-pi, pi].
 pub fn wrap_angle(a: f32) -> f32 {

@@ -464,6 +464,7 @@ fn weapon(ui: &mut egui::Ui, s: &mut Settings) {
 fn display(ui: &mut egui::Ui, s: &mut Settings) {
     slider(ui, "Resolution scale", &mut s.vr.render_scale, 0.5, 2.0, "", 2);
     slider(ui, "World scale", &mut s.vr.world_scale, 0.7, 1.4, "", 2);
+    ui.checkbox(&mut s.vr.reproject, "Smooth the game's picture to every headset frame (walking and turning too)");
     slider(ui, "HUD distance", &mut s.ui.hud_distance, 0.6, 3.0, " m", 2);
     slider(ui, "HUD size", &mut s.ui.hud_size, 0.6, 3.0, " m", 2);
     ui.checkbox(&mut s.ui.hud_follow_head, "HUD follows your head");

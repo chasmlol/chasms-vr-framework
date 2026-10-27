@@ -1,8 +1,9 @@
 //! Draws each eye: the game's image (or the runtime's own empty room when there's no game picture),
 //! then the runtime's layers on top: the scope lens, panels (HUD, menus), the laser pointer and
 //! controller markers. Everything the runtime draws lives in tracking space and is drawn with the
-//! same eye pose the game image was rendered with, so the headset's reprojection treats it all as
-//! one picture.
+//! eye pose the picture underneath is seen from (the game's own, or this headset frame's when the
+//! game's picture has been moved to it, `crate::warp`), so the headset's reprojection treats it
+//! all as one picture.
 
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
@@ -170,6 +171,8 @@ pub enum Background<'a> {
     /// Another camera's view of the game's picture: from `first` (its eye's pose and field of
     /// view), else from `second`, where `first` doesn't reach.
     Reprojected { first: (&'a ID3D11ShaderResourceView, Pose, Fov), second: Option<(&'a ID3D11ShaderResourceView, Pose, Fov)> },
+    /// What's in the target already (the game's picture moved there, `crate::warp`).
+    Keep,
 }
 
 const MODE_TEXTURE: f32 = 0.0;
@@ -326,9 +329,11 @@ impl Compositor {
         cb.inv_view_proj = view_proj.inverse().to_cols_array();
         cb.uv_rect = [0.0, 0.0, 1.0, 1.0];
         self.bind(gpu, target);
+        let keep = matches!(background, Background::Keep);
         unsafe {
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             match background {
+                Background::Keep => {}
                 Background::Game(srv) => {
                     self.cb.update(ctx, &cb);
                     self.full_blit.bind(ctx);
@@ -354,7 +359,9 @@ impl Compositor {
                     ctx.PSSetShaderResources(0, Some(&[Some(first.0.clone()), b_srv]));
                 }
             }
-            ctx.Draw(3, 0);
+            if !keep {
+                ctx.Draw(3, 0);
+            }
             ctx.PSSetShaderResources(0, Some(&[None, None]));
         }
         self.cb.update(ctx, &cb);

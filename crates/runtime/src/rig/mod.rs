@@ -67,6 +67,16 @@ impl WorldMap {
         }
     }
 
+    /// A slot's mapping (where an eye's picture was in the world).
+    pub fn from_slot(m: &SlotMap) -> WorldMap {
+        WorldMap { origin: Vec3::from_array(m.origin), body_yaw: m.body_yaw, world_per_meter: if m.world_per_meter > 0.0 { m.world_per_meter } else { 1.0 }, anchor: Vec3::from_array(m.anchor) }
+    }
+
+    /// Tracking -> world as a matrix.
+    pub fn matrix(&self) -> glam::Mat4 {
+        glam::Mat4::from_translation(self.anchor) * glam::Mat4::from_rotation_y(self.body_yaw) * glam::Mat4::from_scale(Vec3::splat(self.world_per_meter)) * glam::Mat4::from_translation(-self.origin)
+    }
+
     fn yaw(&self) -> Quat {
         Quat::from_rotation_y(self.body_yaw)
     }

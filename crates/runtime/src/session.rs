@@ -51,6 +51,8 @@ pub struct Stats {
     pub last_slot_frame: u64,
     /// Frames where the shown game picture was rendered for this exact headset frame.
     pub exact_frames: u64,
+    /// Frames where the game's picture was moved to the headset frame by its depth (`crate::warp`).
+    pub warped_frames: u64,
     pub scope_frames: u64,
     pub menu_frames: u64,
     /// Comfort overlay strength last frame.
@@ -89,6 +91,8 @@ pub struct Session {
     comp: Compositor,
     /// The runtime's physics world, shown instead of the game's picture (`Mechanics::framework_view`).
     physics_view: crate::physics_view::PhysicsView,
+    /// Moves the game's picture to this headset frame (`crate::warp`).
+    warp: crate::warp::Warp,
     /// The desktop view's window (`crate::spectator`), while it's open, and its camera.
     spectator: Option<crate::spectator::Window>,
     spectator_cam: crate::spectator::SteadyCamera,
@@ -118,6 +122,13 @@ pub struct Session {
     states_ahead: Box<ObjectStates>,
     /// How long after the runtime's frame the game's picture of it is shown, seconds (smoothed).
     game_lag: f32,
+    /// The player's walk and turn in the game: the last mapping seen (and when), and how fast it
+    /// moves the world past a fixed point of tracking space (world units a second) and turns it
+    /// (radians a second; smoothed).
+    walk_seen: Option<(f64, WorldMap)>,
+    walk: (Vec3, f32),
+    /// The last frame's game picture was moved to the headset frame (`crate::warp`).
+    warped_last: bool,
     objects_seq: u32,
     /// The game's own hand poses for its objects (`ObjectDesc::grip_pose`, `support_pose`).
     hand_poses: Box<HandPoseTable>,
@@ -204,6 +215,7 @@ impl Session {
             spectator_cam: crate::spectator::SteadyCamera::default(),
             comp: Compositor::new(&gpu)?,
             physics_view: crate::physics_view::PhysicsView::new(&gpu)?,
+            warp: crate::warp::Warp::new(&gpu)?,
             physics_tris: Vec::new(),
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
@@ -229,6 +241,9 @@ impl Session {
             states: bytemuck::zeroed_box(),
             states_ahead: bytemuck::zeroed_box(),
             game_lag: 0.0,
+            walk_seen: None,
+            walk: (Vec3::ZERO, 0.0),
+            warped_last: false,
             objects_seq: 0,
             hand_poses: bytemuck::zeroed_box(),
             hand_poses_seq: 0,
@@ -320,6 +335,29 @@ impl Session {
             self.was_alive = alive;
         }
         self.game = if alive { self.link.read_game_state() } else { None };
+        // How fast the game walks and turns the player (for what it draws in a hand, `lead_held`).
+        match self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking)) {
+            Some(m) => {
+                if let Some((t, was)) = self.walk_seen
+                    && now > t
+                {
+                    let dt = (now - t) as f32;
+                    // Where the origin is in the world now against where it was: the walk (a step
+                    // in the room moves the origin and the anchor together, and isn't one).
+                    let moved = m.anchor - was.point(m.origin);
+                    let turn = (m.body_yaw - was.body_yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                    // A jump (a snap turn, a teleport, a level) isn't a speed.
+                    let (u, w) = if moved.length() > 1.0 || turn.abs() > 0.3 { (Vec3::ZERO, 0.0) } else { (moved / dt, turn / dt) };
+                    let k = 0.25;
+                    self.walk = (self.walk.0.lerp(u, k), self.walk.1 + (w - self.walk.1) * k);
+                }
+                self.walk_seen = Some((now, m));
+            }
+            None => {
+                self.walk_seen = None;
+                self.walk = (Vec3::ZERO, 0.0);
+            }
+        }
         // A torn read (the adapter writing as we read) keeps the last good copy.
         if !alive {
             self.has_game_lighting = false;
@@ -554,7 +592,10 @@ impl Session {
             }
             self.link.write_game_pushes(&self.game_pushes);
             *self.states_ahead = *self.states;
-            lead_held(&mut self.states_ahead, &self.objects, self.game_lag);
+            // With the picture moved to the headset frame, the world stays put: what the game draws
+            // in a hand goes where the walking, turning player will have it too.
+            let walk = self.warped_last.then(|| self.game.as_ref().map(|g| (WorldMap::from_state(&g.tracking), self.walk.0, self.walk.1))).flatten();
+            lead_held(&mut self.states_ahead, &self.objects, self.game_lag, walk);
             self.link.write_object_states(&self.states_ahead);
             let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
             self.held_objects.update(&self.objects, &self.states, map.as_ref(), frame.hands.map(|h| h.trigger));
@@ -951,9 +992,33 @@ impl Session {
         let locked = shown.filter(|(slot, _)| slot.acquire(50));
         let s = &self.settings.current;
         let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && !menu_mode && alive);
+        let framework = self.mech.framework_view && self.rig_active_last;
+        // The game's picture moved to this headset frame (`crate::warp`) when it brings its depth
+        // (linear: what the warp reads) and where each eye was in the world, and the game says
+        // where the player is now: the
+        // world (tracking -> world now, inverted) it's moved into.
+        let world_now = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
+        let warp_to = match (&stereo, &world_now) {
+            (Some((slot, info)), Some(now))
+                if s.vr.reproject
+                    && info.flags & SLOT_DEPTH != 0
+                    && info.depth_flags & (DEPTH_LINEAR | DEPTH_REVERSED) == DEPTH_LINEAR
+                    && slot.depth.is_some()
+                    && info.eye_map.iter().all(|m| m.world_per_meter > 0.0) =>
+            {
+                Some(now.matrix().inverse())
+            }
+            _ => None,
+        };
+        self.stats.warped_frames += warp_to.is_some() as u64;
+        if stereo.is_some() && warp_to.is_some() != self.warped_last {
+            tracing::info!("runtime: the game's picture is {}", if warp_to.is_some() { "moved to each headset frame by its depth" } else { "shown as the game drew it" });
+        }
+        self.warped_last = warp_to.is_some();
+        // Drawn as seen from this headset frame's eyes, unless the picture is the game's as it was.
         let (poses, fovs) = match &stereo {
-            Some((_, info)) => (info.eye_pose, info.fov),
-            None => (frame.eyes, frame.fov),
+            Some((_, info)) if warp_to.is_none() && !framework => (info.eye_pose, info.fov),
+            _ => (frame.eyes, frame.fov),
         };
 
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
@@ -1057,7 +1122,6 @@ impl Session {
         // geometry where the game gave its depth.
         // (A game that draws the body in its own picture has none in the framework view: the runtime
         // draws it there.)
-        let framework = self.mech.framework_view && self.rig_active_last;
         let draw_body = (self.draws_body || framework) && !menu_mode;
         let (wpm, light) = match &self.game {
             Some(g) => {
@@ -1098,17 +1162,38 @@ impl Session {
             }
         }
         let physics_view = &mut self.physics_view;
+        let warp = &mut self.warp;
         for e in 0..2 {
-            let game = stereo.as_ref().and_then(|(slot, _)| slot.eyes[e].srv.as_ref()).filter(|_| !framework);
-            let mut depth = stereo
-                .as_ref()
-                .filter(|(_, info)| info.flags & SLOT_DEPTH != 0)
-                .and_then(|(slot, _)| slot.depth.as_ref())
-                .and_then(|d| d[e].srv.as_ref())
-                .map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: wpm });
             let target = &eyes[e];
             let (eye, fov) = (&poses[e], &fovs[e]);
-            self.comp.draw_eye(&self.gpu, target, eye, fov, game, &layers, &mut |gpu| {
+            // Behind it: the game's picture (moved to this frame, or as it was), or the runtime's.
+            let mut background = crate::compositor::Background::Void;
+            let mut depth_srv = None;
+            let mut depth_units = wpm;
+            if let (Some((slot, info)), false) = (&stereo, framework) {
+                match warp_to {
+                    Some(to_now) => {
+                        // The other eye's first (it fills the edges this one's doesn't reach).
+                        let sources = warp_sources(slot, info, to_now, [e ^ 1, e]);
+                        match warp.draw(&self.gpu, target, eye, fov, &sources).and_then(|_| warp.view_depth(&self.gpu, target.width, target.height)) {
+                            Ok(z) => {
+                                background = crate::compositor::Background::Keep;
+                                depth_srv = Some(z);
+                                depth_units = 1.0;
+                            }
+                            Err(err) => tracing::warn!("warp: {err:#}"),
+                        }
+                    }
+                    None => {
+                        if let Some(srv) = slot.eyes[e].srv.as_ref() {
+                            background = crate::compositor::Background::Game(srv);
+                        }
+                        depth_srv = (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[e].srv.clone())).flatten();
+                    }
+                }
+            }
+            let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: depth_units });
+            self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
                 if framework {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {
                         tracing::warn!("framework view: {e:#}");
@@ -1125,12 +1210,27 @@ impl Session {
             let head = quat(frame.hmd.rot);
             let cam = self.spectator_cam.update(head, crate::spectator::between(&frame.eyes), frame.dt, sp);
             let fov = crate::spectator::fov(sp.fov, target.width as f32 / target.height.max(1) as f32);
-            let background = match (&stereo, framework) {
-                (Some((slot, info)), false) => {
-                    let first = match sp.eye {
-                        crate::settings::Eye::Left => 0,
-                        crate::settings::Eye::Right => 1,
-                    };
+            let first = match sp.eye {
+                crate::settings::Eye::Left => 0,
+                crate::settings::Eye::Right => 1,
+            };
+            let mut depth_srv = None;
+            let background = match (&stereo, framework, warp_to) {
+                // Moved to the steadied camera by its depth: the aiming eye's over the other's.
+                (Some((slot, info)), false, Some(to_now)) => {
+                    let sources = warp_sources(slot, info, to_now, [first ^ 1, first]);
+                    match warp.draw(&self.gpu, target, &cam, &fov, &sources).and_then(|_| warp.view_depth(&self.gpu, target.width, target.height)) {
+                        Ok(z) => {
+                            depth_srv = Some(z);
+                            crate::compositor::Background::Keep
+                        }
+                        Err(err) => {
+                            tracing::warn!("warp: {err:#}");
+                            crate::compositor::Background::Void
+                        }
+                    }
+                }
+                (Some((slot, info)), false, None) => {
                     let eye = |e: usize| slot.eyes[e].srv.as_ref().map(|srv| (srv, info.eye_pose[e], info.fov[e]));
                     match (eye(first), eye(first ^ 1)) {
                         (Some(a), b) => crate::compositor::Background::Reprojected { first: a, second: b },
@@ -1139,12 +1239,13 @@ impl Session {
                 }
                 _ => crate::compositor::Background::Void,
             };
+            let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: 1.0 });
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");
                 }
                 if draw_body {
-                    body.draw(gpu, target, &cam, &fov, light, None, &held);
+                    body.draw(gpu, target, &cam, &fov, light, depth.take(), &held);
                 }
             });
         }
@@ -1315,10 +1416,39 @@ mod tests {
     }
 }
 
+/// A slot's eyes as pictures to move (`crate::warp`), in `order` (the last drawn over the others),
+/// each from where it was in the world into the world `to_now` (tracking -> world now, inverted).
+fn warp_sources<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, to_now: glam::Mat4, order: [usize; 2]) -> Vec<crate::warp::WarpSource<'a>> {
+    let Some(depth) = slot.depth.as_ref() else { return Vec::new() };
+    order
+        .iter()
+        .filter_map(|&e| {
+            let (color, z) = (slot.eyes[e].srv.as_ref()?, depth[e].srv.as_ref()?);
+            let then = WorldMap::from_slot(&info.eye_map[e]);
+            Some(crate::warp::WarpSource {
+                color,
+                depth: z,
+                width: slot.eyes[e].width,
+                height: slot.eyes[e].height,
+                pose: info.eye_pose[e],
+                fov: info.fov[e],
+                to_target: to_now * then.matrix(),
+                // The depth is in the game's units: metres in tracking space are that over its scale.
+                metres_per_unit: 1.0 / then.world_per_meter,
+            })
+        })
+        .collect()
+}
+
 /// What the game draws of its own in a hand (a prop it simulates or the runtime moves: not a gun or
 /// a magazine, which the runtime draws), moved on by its velocity to where the hand will have it
 /// `lead` seconds on: the game draws it that long after this frame, so it would trail the hand.
-fn lead_held(states: &mut ObjectStates, objects: &ObjectTable, lead: f32) {
+///
+/// `walk` (the mapping now, how fast the game walks the player, world units a second, and turns
+/// them, radians a second): the game's picture is moved to where the player is when it's shown
+/// (`crate::warp`), so the world stays put and a thing in a hand would be left behind by the walk.
+/// It's put where the walk and turn will have carried it too.
+fn lead_held(states: &mut ObjectStates, objects: &ObjectTable, lead: f32, walk: Option<(WorldMap, Vec3, f32)>) {
     if lead <= 0.0 {
         return;
     }
@@ -1328,8 +1458,18 @@ fn lead_held(states: &mut ObjectStates, objects: &ObjectTable, lead: f32) {
             continue;
         }
         let (v, w) = (Vec3::from_array(st.lin_vel), Vec3::from_array(st.ang_vel));
-        st.pose.pos = (Vec3::from_array(st.pose.pos) + v * lead).to_array();
-        st.pose.rot = (Quat::from_scaled_axis(w * lead) * Quat::from_array(st.pose.rot)).normalize().to_array();
+        let mut pos = Vec3::from_array(st.pose.pos) + v * lead;
+        let mut rot = Quat::from_scaled_axis(w * lead) * Quat::from_array(st.pose.rot);
+        if let Some((now, u, turn)) = walk
+            && st.flags & OS_TRACKING != 0
+        {
+            // Tracking space now -> the world then (the player walked and turned) -> tracking now.
+            let later = WorldMap { anchor: now.anchor + u * lead, body_yaw: now.body_yaw + turn * lead, ..now };
+            pos = now.inv_point(later.point(pos));
+            rot = now.inv_rot(later.rot(rot));
+        }
+        st.pose.pos = pos.to_array();
+        st.pose.rot = rot.normalize().to_array();
     }
 }
 
@@ -1355,10 +1495,33 @@ mod lead_tests {
             st.lin_vel = [1.0, 0.0, 0.0];
             st.ang_vel = [0.0, std::f32::consts::PI, 0.0];
         }
-        lead_held(&mut states, &objects, 0.05);
+        lead_held(&mut states, &objects, 0.05, None);
         assert!((states.states[0].pose.pos[0] - 0.05).abs() < 1e-6, "the held prop, 50 ms on");
         assert!(Quat::from_array(states.states[0].pose.rot).angle_between(Quat::IDENTITY) > 0.15, "and turned on");
         assert_eq!(states.states[1].pose.pos[0], 0.0, "a gun the runtime draws itself");
         assert_eq!(states.states[2].pose.pos[0], 0.0, "a prop nobody holds");
+    }
+
+    #[test]
+    fn a_prop_in_a_hand_goes_where_the_walking_player_will_have_it() {
+        let mut objects: Box<ObjectTable> = bytemuck::zeroed_box();
+        objects.count = 1;
+        objects.descs[0].id = 1;
+        objects.descs[0].kind = OBJ_PROP;
+        let mut states: Box<ObjectStates> = bytemuck::zeroed_box();
+        states.count = 1;
+        let st = &mut states.states[0];
+        (st.id, st.flags) = (1, OS_HELD_RIGHT | OS_TRACKING);
+        st.pose.pos = [0.0, 1.2, 0.4];
+        st.pose.rot = Quat::IDENTITY.to_array();
+        let now = WorldMap { origin: Vec3::new(0.0, 1.7, 0.0), body_yaw: 0.0, world_per_meter: 1.0, anchor: Vec3::new(10.0, 1.7, 5.0) };
+        // Walking forward (+z in the world, the way tracking forward faces) at 3 m/s: in 50 ms the
+        // world is 15 cm further back, so in tracking space now the prop is 15 cm further forward.
+        lead_held(&mut states, &objects, 0.05, Some((now, Vec3::new(0.0, 0.0, 3.0), 0.0)));
+        let p = Vec3::from_array(states.states[0].pose.pos);
+        assert!(p.distance(Vec3::new(0.0, 1.2, 0.55)) < 1e-4, "{p}");
+        // Where the game draws it (with the mapping now) is where the walked player will hold it.
+        let later = WorldMap { anchor: now.anchor + Vec3::new(0.0, 0.0, 0.15), ..now };
+        assert!(now.point(p).distance(later.point(Vec3::new(0.0, 1.2, 0.4))) < 1e-4);
     }
 }

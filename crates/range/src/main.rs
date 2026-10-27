@@ -788,6 +788,8 @@ impl Game {
             aux_pose: it.scope_cam,
             hud_aspect: slot_hud.as_ref().map(|(_, w, h, _)| *w as f32 / *h as f32).unwrap_or(16.0 / 9.0),
             _pad: [0; 3],
+            // (The range renders every headset frame: nothing to move.)
+            eye_map: [SlotMap::default(); 2],
         };
         if self.metro_hud == Some(false) && slot_hud.is_some() {
             self.adapter.write_hud_layout(&metro_2033_redux_layout(info.hud_aspect));

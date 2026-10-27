@@ -84,6 +84,17 @@ impl View {
     pub fn to_tracking(&self, p: Vec3) -> Vec3 {
         self.tracking_to_world.inverse().transform_point3(p)
     }
+
+    /// This mapping as a slot reports it ([`rustvr_protocol::SlotMap`]): the tracking point the
+    /// anchor is (origin), the yaw, the anchor and the scale.
+    pub fn slot_map(&self) -> rustvr_protocol::SlotMap {
+        rustvr_protocol::SlotMap {
+            origin: self.to_tracking(self.anchor).to_array(),
+            body_yaw: self.body_yaw,
+            anchor: self.anchor.to_array(),
+            world_per_meter: self.world_per_meter,
+        }
+    }
 }
 
 pub struct TrackingMapper {

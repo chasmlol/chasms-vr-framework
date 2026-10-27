@@ -72,8 +72,8 @@ pub use lighting::*;
 pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 6;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v7";
+pub const VERSION: u32 = 7;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v8";
 pub const MAPPING_BYTES: usize = 0x004F_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
@@ -700,7 +700,23 @@ pub struct SlotInfo {
     /// Width / height of the HUD content.
     pub hud_aspect: f32,
     pub _pad: [u32; 3],
+    /// Where each eye's picture was in the world when it was rendered: the tracking -> world
+    /// mapping it was drawn with. With the depth, the runtime moves the picture to where the head
+    /// and the walking player are when it's shown.
+    pub eye_map: [SlotMap; 2],
 }
+
+/// A tracking -> world mapping (as [`TrackingState`] gives it): world = anchor + yaw(body_yaw) *
+/// (tracking - origin) * world_per_meter. All zero: not given.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct SlotMap {
+    pub origin: [f32; 3],
+    pub body_yaw: f32,
+    pub anchor: [f32; 3],
+    pub world_per_meter: f32,
+}
+
 pub const SLOT_STEREO: u32 = 1 << 0;
 pub const SLOT_HUD: u32 = 1 << 1;
 /// The HUD texture holds the game's whole picture (a menu or loading screen) instead of an overlay.
@@ -760,7 +776,8 @@ const _: () = {
     assert!(size_of::<TargetRequest>() == 32);
     assert!(size_of::<GameState>() == 488);
     assert!(size_of::<LightHint>() == 48);
-    assert!(size_of::<SlotInfo>() == 176);
+    assert!(size_of::<SlotInfo>() == 240);
+    assert!(size_of::<SlotMap>() == 32);
     assert!(size_of::<Event>() == 32);
     assert!(OFF_HEADER + size_of::<Header>() <= OFF_SUBMIT);
     assert!(OFF_SUBMIT + size_of::<SubmitCtl>() <= OFF_TARGETS);

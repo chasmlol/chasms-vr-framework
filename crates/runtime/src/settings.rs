@@ -72,6 +72,9 @@ pub struct Vr {
     /// >1 makes the world feel bigger.
     pub world_scale: f32,
     pub ipd_scale: f32,
+    /// Move the game's picture, by its depth, to where the head and the walking player are at each
+    /// headset frame (`crate::warp`): a game slower than the headset stays smooth.
+    pub reproject: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -347,7 +350,7 @@ pub struct Ui {
 
 impl Default for Vr {
     fn default() -> Self {
-        Vr { render_scale: 1.0, max_eye_size: 2208, world_scale: 1.0, ipd_scale: 1.0 }
+        Vr { render_scale: 1.0, max_eye_size: 2208, world_scale: 1.0, ipd_scale: 1.0, reproject: true }
     }
 }
 
