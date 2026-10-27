@@ -377,6 +377,10 @@ const SHOULDER_OUT: f32 = 0.18;
 /// Faster than this (m/s), a hand pushes the way it moves.
 const PUSH_MOVING: f32 = 0.2;
 const LEASH: f32 = 0.7;
+/// A turn (radians) or a move (metres) of the player's mapping in one step past which it's a snap
+/// turn or a teleport, not a walk (as `crate::locomotion` tells them apart).
+const SNAP_TURN: f32 = 0.3;
+const SNAP_MOVE: f32 = 1.0;
 /// A held thing the world holds back further than this from the hand (metres: a fence the walk
 /// carries it along, a doorway it catches in) goes through the world until it's back in the hand
 /// (within `SLIP_BACK`) and clear of it: it's never dragged along behind and then jumps back.
@@ -983,7 +987,36 @@ impl Rig {
         let carrying = prev != WorldMap::IDENTITY && prev != inp.map && prev.world_per_meter == inp.map.world_per_meter;
         let turn = inp.map.yaw() * prev.yaw().inverse();
         let carry = |p: Vec3, q: Quat| (inp.map.point(prev.inv_point(p)), (turn * q).normalize());
-        for o in self.objects.values_mut().filter(|o| matches!(o.holder, Holder::Held(_))) {
+        // A snap turn or a teleport isn't a walk: what the hands hold, and the hands, go with it at
+        // once (as a velocity, a 45 degree snap in one step is past any speed the physics will
+        // take: the gun lagged off the hand, which let go, and was flung through the world).
+        let head = v3(inp.frame.hmd.pos);
+        let jumped = carrying
+            && (turn.angle_between(Quat::IDENTITY) > SNAP_TURN || inp.map.point(head).distance(prev.point(head)) > SNAP_MOVE * inp.map.world_per_meter);
+        if jumped {
+            for o in self.objects.values_mut().filter(|o| matches!(o.holder, Holder::Held(_))) {
+                let (p, q) = self.physics.pose(o.body);
+                let (cp, cq) = carry(p, q);
+                self.physics.set_pose(o.body, cp, cq);
+                let (v, w) = self.physics.velocity(o.body);
+                self.physics.set_velocity(o.body, turn * v, turn * w);
+                if let Some((bp, bq, t0, d)) = o.blend {
+                    let (bp, bq) = carry(bp, bq);
+                    o.blend = Some((bp, bq, t0, d));
+                }
+                (o.carry, o.carried) = (None, (Vec3::ZERO, Vec3::ZERO));
+            }
+            for h in self.hands.iter().flatten() {
+                for b in std::iter::once(h.body).chain(h.fingers) {
+                    let (p, q) = self.physics.pose(b);
+                    let (cp, cq) = carry(p, q);
+                    self.physics.set_pose(b, cp, cq);
+                    let (v, w) = self.physics.velocity(b);
+                    self.physics.set_velocity(b, turn * v, turn * w);
+                }
+            }
+        }
+        for o in self.objects.values_mut().filter(|o| !jumped && matches!(o.holder, Holder::Held(_))) {
             o.carry = carrying.then(|| {
                 // Its own swing turns with the player too.
                 let (v, w) = self.physics.velocity(o.body);

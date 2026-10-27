@@ -1059,6 +1059,33 @@ fn both_hands_on_the_gun_stay_put_on_the_walk() {
 }
 
 #[test]
+fn snap_turns_keep_the_gun_in_both_hands() {
+    let mut s = Sim::new();
+    s.map.origin.y += 0.5;
+    s.map.anchor.y += 0.5;
+    s.take_rifle();
+    let fore = s.pos(RIFLE) + s.rot(RIFLE) * v3(rifle().foregrip);
+    s.move_hand(0, s.map.inv_point(fore), 30);
+    s.grip(0, 1.0);
+    s.step(60);
+    assert!(s.out.primary_weapon.unwrap().two_handed);
+    let seen = |s: &Sim| {
+        let (gp, gq) = s.rig.object_world_pose(RIFLE).unwrap();
+        (s.map.inv_point(gp), s.map.inv_rot(gq))
+    };
+    let (p0, q0) = seen(&s);
+    // Three snaps right, three back left, a few steps apart.
+    for k in 0..6 {
+        s.map.body_yaw += if k < 3 { 45f32 } else { -45.0 }.to_radians();
+        s.step(8);
+        assert_eq!(s.rig.held(1), Some(RIFLE), "snap {k}: still in the grip hand");
+        assert!(s.out.primary_weapon.unwrap().two_handed, "snap {k}: still in both hands");
+        let (p, q) = seen(&s);
+        assert!(p.distance(p0) < 0.005 && q.angle_between(q0) < 0.01, "snap {k}: moved {:.3} m, {:.1} deg", p.distance(p0), q.angle_between(q0).to_degrees());
+    }
+}
+
+#[test]
 fn a_held_rifle_scraping_a_wall_on_the_walk_slides_along_it() {
     let mut s = Sim::new();
     // The same mapping, written as a game would (the rig takes an all-zero one as none yet).
