@@ -978,6 +978,29 @@ fn a_held_rifle_walks_and_turns_with_the_player() {
 }
 
 #[test]
+fn a_held_rifle_stays_in_the_hand_when_the_walk_changes_direction() {
+    let mut s = Sim::new();
+    // A game's mapping (the rig takes an all-zero one as none yet).
+    s.map.origin.y += 0.5;
+    s.map.anchor.y += 0.5;
+    s.s.interaction.weight = 1.0;
+    s.take_rifle();
+    s.step(30);
+    let rel = |s: &Sim| s.map.inv_point(s.pos(RIFLE)) - s.hand_pos(1);
+    let before = rel(&s);
+    let mut worst = 0.0f32;
+    // Forward, then a sudden sidestep, then back: as a stick swung round.
+    for v in [Vec3::new(0.0, 0.0, 3.5), Vec3::new(3.5, 0.0, 0.0), Vec3::new(-2.0, 0.0, -2.0), Vec3::ZERO] {
+        for _ in 0..30 {
+            s.map.anchor += v * DT;
+            s.step(1);
+            worst = worst.max((rel(&s) - before).length());
+        }
+    }
+    assert!(worst < 0.02, "the rifle stays in the hand as the walk turns: {worst:.3} m off at worst");
+}
+
+#[test]
 fn a_held_rifle_scraping_a_wall_on_the_walk_slides_along_it() {
     let mut s = Sim::new();
     // The same mapping, written as a game would (the rig takes an all-zero one as none yet).

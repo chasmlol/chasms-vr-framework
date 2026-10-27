@@ -241,18 +241,18 @@ fn a_pack_event_plays_its_layers_and_falls_back_otherwise() {
     audio.render(frames(0.02));
     assert_eq!((audio.pack_plays(Event::DryFire), audio.pack_plays(Event::Grab), audio.synth_plays()), (1, 2, 1));
 
-    // What the pack doesn't have falls back; with no fallback, nothing plays.
+    // What the pack doesn't have is silent: a game's pack replaces the runtime's sounds.
     audio.play_event(Event::MagOut, SetKey::of("gun"), Some(Sound::MagEject), HAND, 1.0);
     audio.play_event(Event::Explosion, SetKey::of("gun"), None, HAND, 1.0);
     audio.render(frames(0.02));
-    assert_eq!((audio.pack_plays(Event::MagOut), audio.pack_plays(Event::Explosion), audio.synth_plays()), (0, 0, 2));
+    assert_eq!((audio.pack_plays(Event::MagOut), audio.pack_plays(Event::Explosion), audio.synth_plays()), (0, 0, 1));
 
     // Unloaded, it's the runtime's own sounds again.
     audio.render(frames(1.0));
     audio.load_pack(None);
     audio.play_event(Event::Fire, SetKey::of("gun"), Some(Sound::ShotRifle), HAND, 1.0);
     audio.render(frames(0.02));
-    assert_eq!((audio.pack_plays(Event::Fire), audio.synth_plays()), (1, 3));
+    assert_eq!((audio.pack_plays(Event::Fire), audio.synth_plays()), (1, 2));
 }
 
 #[test]
@@ -315,7 +315,8 @@ fn missing_files_are_skipped_and_a_broken_pack_falls_back() {
     audio.play_event(Event::Grab, SetKey::NONE, Some(Sound::Grab), HAND, 1.0);
     audio.play_event(Event::MagIn, SetKey::NONE, Some(Sound::MagSeat), HAND, 1.0);
     audio.render(frames(0.02));
-    assert_eq!((audio.pack_plays(Event::Grab), audio.pack_plays(Event::MagIn), audio.synth_plays()), (1, 0, 1));
+    // (The magazine has no files left: silent, the pack being loaded.)
+    assert_eq!((audio.pack_plays(Event::Grab), audio.pack_plays(Event::MagIn), audio.synth_plays()), (1, 0, 0));
 
     let bad = TempPack::new("broken", &[], "format = 1\n[defaults\n");
     audio.load_pack(Some(&bad.0));

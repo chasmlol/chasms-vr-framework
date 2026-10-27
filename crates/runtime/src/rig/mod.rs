@@ -3021,8 +3021,11 @@ impl Rig {
             // Something hit something: a sudden change of velocity (a free object landing or
             // bouncing), or a held one starting to touch the world.
             let change = (vel - o.prev_vel).length();
+            // (Not one of the game's own props the runtime only follows: the game moves it, at the
+            // game's pace, and sounds its own knocks.)
+            let following = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && self.now - o.free_since > GAME_HANDBACK as f64;
             let hit = match o.holder {
-                Holder::Free | Holder::Pulled { .. } => change > 1.2 && o.prev_vel.length() > 1.0,
+                Holder::Free | Holder::Pulled { .. } => !following && change > 1.2 && o.prev_vel.length() > 1.0,
                 Holder::Held(_) => contact && !o.in_contact && o.prev_vel.length() > 0.4,
                 _ => false,
             };

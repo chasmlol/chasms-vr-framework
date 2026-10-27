@@ -476,7 +476,12 @@ impl Mixer {
                 self.start(Source::Synth(sound), pos, intensity, None);
             }
             Command::Event { event, set, fallback, pos, intensity } => self.start_event(event, set, fallback, pos, intensity),
-            Command::StartLoop { id, sound, pos } => self.start(Source::Synth(sound), pos, 1.0, Some(id)),
+            // (A game's pack replaces the runtime's sounds: no synthesised loop with one loaded.)
+            Command::StartLoop { id, sound, pos } => {
+                if self.pack.is_none() {
+                    self.start(Source::Synth(sound), pos, 1.0, Some(id));
+                }
+            }
             Command::MoveLoop { id, pos } => {
                 if let Some(voice) = self.voices.iter_mut().find(|v| v.playing && v.looping == Some(id)) {
                     voice.source = pos;
@@ -490,8 +495,9 @@ impl Mixer {
         }
     }
 
-    /// The pack's sound for `event`, every layer at once (each picking one of its clips), or the
-    /// synthesised fallback where the pack has none.
+    /// The pack's sound for `event`, every layer at once (each picking one of its clips). With no
+    /// pack loaded, the synthesised fallback; with one, nothing where it has none: a game's pack
+    /// replaces the runtime's sounds, it doesn't patch them.
     fn start_event(&mut self, event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32) {
         // A clone of the `Arc`, so the voices can be started while it's borrowed; dropping it
         // again never frees the pack (`Shared::packs` holds every one).
@@ -505,6 +511,7 @@ impl Mixer {
                     self.start(source, pos, intensity, None);
                 }
             }
+            None if pack.is_some() => {}
             None => {
                 if let Some(sound) = fallback {
                     self.shared.synth_plays.fetch_add(1, Ordering::Relaxed);

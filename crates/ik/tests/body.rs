@@ -680,3 +680,26 @@ fn stick_walking_leaves_the_arms_where_they_are() {
     eprintln!("stick walking: the arms moved {:.1} cm at most ({:?})", worst.0 * 100.0, worst.1);
     assert!(worst.0 < 0.01, "stick walking moved {:?} {:.1} cm", worst.1, worst.0 * 100.0);
 }
+
+#[test]
+fn changing_direction_on_the_stick_leaves_the_arms_where_they_are() {
+    // As above, but the stick swings round: forward, then strafing, then back the other way.
+    let mut s = solver();
+    let stand = named_pose("two_hand_hip");
+    let still = settle(&mut s, &stand, 120);
+    let watched = [Joint::LeftUpperArm, Joint::RightUpperArm, Joint::LeftLowerArm, Joint::RightLowerArm, Joint::UpperChest];
+    let mut worst = (0.0f32, Joint::UpperChest);
+    for dir in [Vec3::Z, Vec3::X, -Vec3::X, -Vec3::Z, Vec3::new(1.0, 0.0, 1.0).normalize()] {
+        let walking = TrackedInput { locomotion: dir * 1.4, ..stand };
+        for o in run(&mut s, 1.2, |_| walking) {
+            for j in watched {
+                let d = pos(&o, j).distance(pos(&still, j));
+                if d > worst.0 {
+                    worst = (d, j);
+                }
+            }
+        }
+    }
+    eprintln!("changing direction: the arms moved {:.1} cm at most ({:?})", worst.0 * 100.0, worst.1);
+    assert!(worst.0 < 0.01, "changing direction moved {:?} {:.1} cm", worst.1, worst.0 * 100.0);
+}

@@ -7,9 +7,10 @@
 //! * Every [`Sound`] is synthesised at startup, four variations each, no sample files.
 //! * A game that has sounds of its own hands the runtime a **sound pack** (see [`pack`]): its
 //!   files for each [`Event`], per sound set (one per gun, say). [`Audio::load_pack`] decodes it
-//!   on a background thread; from then on [`Audio::play_event`] plays the pack's sound, and the
-//!   synthesised one only where the pack has none (or isn't loaded yet). The game is the source
-//!   of truth; the library is the fallback.
+//!   on a background thread; from then on [`Audio::play_event`] plays the pack's sound, and
+//!   nothing where the pack has none: a game's pack replaces the runtime's sounds (the synthesised
+//!   ones play only until a pack is loaded, and without one: the runtime's own range). The game
+//!   is the source of truth; the library is the fallback for having no game.
 //! * [`Audio::play`] and [`Audio::play_event`] only enqueue a command. The mixer (on the device's
 //!   audio thread, or in [`Audio::render`] offline) picks a variation and starts the voice at its
 //!   next block.
