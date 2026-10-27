@@ -108,6 +108,14 @@ pub struct GameLighting {
     pub lut_valid: u32,
     /// The environment-reflection tint the game's materials use (Metro's `envmap_color`, rgb).
     pub envmap_color: [f32; 4],
+    /// The game's fog (Metro's, in its combine): its colour towards the sun (`fog_color`), away
+    /// from it (`clouds_dir`), and how it thickens with distance (`fade_params`: amount =
+    /// saturate(distance·y + x)); zeros: no fog.
+    pub fog_color: [f32; 4],
+    pub fog_color_away: [f32; 4],
+    pub fog_fade: [f32; 4],
+    /// The direction towards the sun, in the game camera's view space (`sun_direction`).
+    pub sun_dir: [f32; 4],
     pub lights: [GameLight; GAME_LIGHTS_MAX],
     /// The colour-grading table: `LUT_SIZE`³ RGBA8 texels packed little-endian (r in the low
     /// byte), index `(b·16 + g)·16 + r`, applied as

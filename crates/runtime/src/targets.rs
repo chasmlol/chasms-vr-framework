@@ -5,7 +5,7 @@ use rustvr_gpu::texture::color_family;
 use rustvr_gpu::{Gpu, TexDesc, Texture};
 use rustvr_protocol::link::Security;
 use rustvr_protocol::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM};
 
 use crate::settings::Settings;
 
@@ -47,7 +47,7 @@ impl Spec {
             eye_w,
             eye_h,
             color_format: typeless.0,
-            flags: req.flags & (TGT_DEPTH | TGT_HUD | TGT_AUX | TGT_LIGHTS),
+            flags: req.flags & (TGT_DEPTH | TGT_HUD | TGT_AUX | TGT_LIGHTS | TGT_BLOOM),
             hud_w: if req.hud_w > 0 { req.hud_w } else { 1920 },
             hud_h: if req.hud_h > 0 { req.hud_h } else { 1080 },
             aux_w,
@@ -62,11 +62,20 @@ pub struct Slot {
     pub hud: Option<Texture>,
     pub aux: Option<Texture>,
     pub lights: Option<Texture>,
+    pub bloom: Option<[Texture; 2]>,
+    pub lens: Option<[Texture; 2]>,
 }
 
 impl Slot {
     fn all(&self) -> impl Iterator<Item = &Texture> {
-        self.eyes.iter().chain(self.depth.iter().flatten()).chain(self.hud.iter()).chain(self.aux.iter()).chain(self.lights.iter())
+        self.eyes
+            .iter()
+            .chain(self.depth.iter().flatten())
+            .chain(self.hud.iter())
+            .chain(self.aux.iter())
+            .chain(self.lights.iter())
+            .chain(self.bloom.iter().flatten())
+            .chain(self.lens.iter().flatten())
     }
 
     /// Takes every texture's keyed mutex; on failure releases what it took.
@@ -121,7 +130,17 @@ impl SharedTargets {
             } else {
                 None
             };
-            slots.push(Slot { eyes, depth, hud, aux, lights });
+            let (bloom, lens) = if spec.flags & TGT_BLOOM != 0 {
+                let (w, h) = bloom_size(spec.eye_w, spec.eye_h);
+                let d = TexDesc::target(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
+                (
+                    Some([make(TexKind::BloomLeft, s, d)?, make(TexKind::BloomRight, s, d)?]),
+                    Some([make(TexKind::LensLeft, s, d)?, make(TexKind::LensRight, s, d)?]),
+                )
+            } else {
+                (None, None)
+            };
+            slots.push(Slot { eyes, depth, hud, aux, lights, bloom, lens });
         }
         Ok(SharedTargets { spec, generation, slots })
     }

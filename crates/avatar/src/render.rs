@@ -54,6 +54,7 @@ cbuffer Frame : register(b0) {
     float4 target_size;
     float4 ghost;        // rgb, opacity
     float4 plain;        // rgb, w: 1 for the plain look (one colour, no textures, a headlamp), 2 for one flat colour (testing)
+    float4 post;         // x: the game's bloom and lens bound
 };
 cbuffer Bones : register(b1) {
     float4 bone_rows[MAX_BONES * 3];   // bind model space -> tracking space, 3x4 rows
@@ -78,6 +79,10 @@ cbuffer Lighting : register(b3) {
     float4 envc;               // the environment map's tint, w: light count
     float4 up;                 // the world's up direction in the game camera's view space
     float4 atlas;              // x: light atlas bound, yz: 1 / its size, w: in the game's frame (HDR out)
+    float4 fog_color;          // the game's fog towards the sun
+    float4 fog_away;           // ... and away from it
+    float4 fog_fade;           // amount = saturate(distance·y + x); 0: no fog
+    float4 sun_view;           // towards the sun, in the game camera's view space
     MLight lights[32];
 };
 Texture2D albedo : register(t0);
@@ -87,6 +92,8 @@ Texture2D detail_tex : register(t3);
 TextureCube env_tex : register(t4);
 Texture3D grade_tex : register(t5);
 Texture2D atlas_tex : register(t6);
+Texture2D bloom_tex : register(t11);
+Texture2D lens_tex : register(t12);
 SamplerState samp : register(s0);
 SamplerState clamp_samp : register(s1);
 
@@ -188,16 +195,37 @@ float4 atlas_term(MLight l, float3 p) {
 // Not a number or infinite (bit test: the compiler may fold isnan away).
 bool m_bad(float3 c) { return any((asuint(c) & 0x7f800000) == 0x7f800000); }
 
-// The game's post chain on an HDR colour, as the value to write to the sRGB eye target so it
-// stores the code value the game would have displayed. In the game's own frame, the HDR colour.
-float3 finish(float3 hdr) {
+// The game's post chain on an HDR colour at screen position svpos, as the value to write to the
+// sRGB eye target so it stores the code value the game would have displayed. In the game's own
+// frame, the HDR colour.
+float3 finish(float3 hdr, float4 svpos) {
     // Drawn into the game's HDR picture before its post chain: the game tone maps and grades it.
     // Never anything but a finite colour: the game feeds its picture back into later frames (its
     // reflection and bloom read the last one), so one bad pixel would spread for good.
     if (atlas.w > 0) return m_bad(hdr) ? 0 : clamp(hdr, 0, 60000);
-    float3 tm = m_tonemap(hdr);
+    // The game's bloom here: added before the tone curve, and an eighth of it after; and its lens's
+    // light (a visor's sheen) after it (Metro's final pass; docs/research/metro-viewmodel-lighting.md).
+    float3 b = 0, after = 0;
+    if (post.x > 0) {
+        float2 uv = svpos.xy / target_size.xy;
+        b = max(bloom_tex.SampleLevel(clamp_samp, uv, 0).rgb, 0);
+        after = max(lens_tex.SampleLevel(clamp_samp, uv, 0).rgb, 0);
+    }
+    float3 tm = m_tonemap(max(hdr + b, 0)) + 0.125 * b + after;
     float4 l = grade_tex.SampleLevel(clamp_samp, tm.bgr, 0);
     return m_display_to_linear(m_grade(tm, l, lit.w != 0));
+}
+
+// The game's fog at view-space point pv, as its combine fogs the world (docs/research/
+// metro-viewmodel-lighting.md §5.1). (In the game's own frame, it fogs the player itself.)
+float3 fogged(float3 c, float3 pv) {
+    if (atlas.w > 0 || fog_fade.y == 0) return c;
+    float d = length(pv);
+    float f = saturate(d * fog_fade.y + fog_fade.x);
+    float k = min(20 * f, 1);
+    float g = sqrt(f) * k * k * (3 - 2 * k);
+    float3 fc = lerp(fog_away.rgb, fog_color.rgb, saturate(dot(pv / max(d, 1e-4), sun_view.xyz) - 0.5));
+    return lerp(c, fc, g);
 }
 
 // What an opaque fragment writes in alpha: in the game's HDR picture its view depth (metres), as
@@ -238,7 +266,7 @@ float4 PSMetro(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
         if (cls != M_PLAIN && (cls != M_CLOTH_SKIN || options.x != 0)) x.env = env_tex.Sample(clamp_samp, to_world(m_reflection(pv, n))).rgb;
     }
     // The inside of the shell, seen through a cut (the game culls it): the flat ambient, dark.
-    if (!front) return float4(finish(x.base.rgb * amb.rgb * 0.3), out_alpha(i.view_z));
+    if (!front) return float4(finish(fogged(x.base.rgb * amb.rgb * 0.3, pv), i.pos), out_alpha(i.view_z));
     MG g = m_gbuffer(cls, f, n, x, surf_color.rgb, material.w, options.xy, lit.y, envc.rgb, up.xyz);
     float3 d = 0, s = 0;
     if (!g.emissive) {
@@ -253,7 +281,7 @@ float4 PSMetro(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
             s += ls;
         }
     }
-    return float4(finish(m_combine(g, d, s, sh_r, sh_g, sh_b, amb, lit.z, m_local_ao_r(d), 0)), out_alpha(i.view_z));
+    return float4(finish(fogged(m_combine(g, d, s, sh_r, sh_g, sh_b, amb, lit.z, m_local_ao_r(d), 0), pv), i.pos), out_alpha(i.view_z));
 }
 
 // The game's forward glass, blended over what's drawn.
@@ -267,7 +295,7 @@ float4 PSMetroGlass(VSOut i) : SV_Target {
     x.base = albedo.Sample(samp, i.uv);
     if (cls == M_GLASS_REFLECT) x.env = env_tex.Sample(clamp_samp, to_world(m_reflection(pv, nv))).rgb;
     float4 c = m_glass(cls, x, envc.rgb);
-    return float4(finish(c.rgb), m_bad(c.aaa) ? 0 : saturate(c.a));
+    return float4(finish(fogged(c.rgb, pv), i.pos), m_bad(c.aaa) ? 0 : saturate(c.a));
 }
 
 float4 PSGhost(VSOut i) : SV_Target {
@@ -448,6 +476,25 @@ struct Vertex {
     ao: [u8; 4],
 }
 
+/// The player's layer over the game's picture, through the game's lens: at each pixel, the layer
+/// where the lens takes the picture from (its warp: the bloom and lens textures' alphas).
+const THROUGH_LENS: &str = r#"
+Texture2D layer : register(t0);
+Texture2D bloom_tex : register(t1);
+Texture2D lens_tex : register(t2);
+SamplerState lin : register(s0);
+cbuffer C : register(b0) { float4 size; };
+float4 VSMain(uint id : SV_VertexID) : SV_Position {
+    float2 uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+float4 PSMain(float4 p : SV_Position) : SV_Target {
+    float2 uv = p.xy / size.xy;
+    float2 warp = float2(bloom_tex.SampleLevel(lin, uv, 0).a, lens_tex.SampleLevel(lin, uv, 0).a);
+    return layer.SampleLevel(lin, uv + warp, 0);
+}
+"#;
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct FrameCb {
@@ -461,6 +508,7 @@ struct FrameCb {
     target_size: [f32; 4],
     ghost: [f32; 4],
     plain: [f32; 4],
+    post: [f32; 4],
 }
 
 /// The plain look's colour (linear): a light grey-blue mannequin.
@@ -510,6 +558,10 @@ struct LightingCb {
     envc: [f32; 4],
     up: [f32; 4],
     atlas: [f32; 4],
+    fog_color: [f32; 4],
+    fog_away: [f32; 4],
+    fog_fade: [f32; 4],
+    sun_view: [f32; 4],
     lights: [GameLight; GAME_LIGHTS_MAX],
 }
 
@@ -995,6 +1047,12 @@ pub struct Renderer {
     in_frame: bool,
     /// Testing: the body, and what it holds, each in one flat colour ([`Renderer::set_flat`]).
     flat: Option<([f32; 3], [f32; 3])>,
+    /// The player drawn on its own, laid over the picture through the game's lens
+    /// ([`Renderer::draw`]): the layer (kept until the size or format changes), and the pass.
+    layer: Option<Texture>,
+    through_lens: Program,
+    lens_cb: ConstantBuffer<[f32; 4]>,
+    premultiplied: ID3D11BlendState,
 }
 
 impl Renderer {
@@ -1034,6 +1092,10 @@ impl Renderer {
             depth: Vec::new(),
             in_frame: false,
             flat: None,
+            layer: None,
+            through_lens: Program::new(gpu, THROUGH_LENS, "avatar_lens", &[])?,
+            lens_cb: ConstantBuffer::new(gpu)?,
+            premultiplied: pipeline::blend_state(gpu, Blend::Premultiplied)?,
         })
     }
 
@@ -1072,6 +1134,10 @@ impl Renderer {
             // m_iV[1]: the world's y in view space.
             up: to_world.row(1).extend(0.0).to_array(),
             atlas: [self.atlas.is_some() as u32 as f32, 1.0 / LIGHT_ATLAS_W as f32, 1.0 / LIGHT_ATLAS_H as f32, self.in_frame as u32 as f32],
+            fog_color: l.fog_color,
+            fog_away: l.fog_color_away,
+            fog_fade: l.fog_fade,
+            sun_view: l.sun_dir,
             lights: l.lights,
         };
         self.lighting_cb.update(&gpu.ctx, &cb);
@@ -1083,6 +1149,65 @@ impl Renderer {
     }
 
     pub fn draw(
+        &mut self,
+        gpu: &Gpu,
+        target: &ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        eye: &Pose,
+        fov: &Fov,
+        frame: &AvatarFrame,
+        depth: Option<DepthInput>,
+        body: &mut Character,
+        arms: Option<&mut Character>,
+        draw_body: bool,
+        held: &[crate::HeldDraw],
+        special: Option<&mut dyn FnMut(&crate::SpecialDraw)>,
+    ) -> Result<()> {
+        // The game's lens bends its picture (a gas mask's visor, heat haze): the player, drawn on
+        // its own, is laid over it bent the same way.
+        let lens = depth.as_ref().and_then(|d| Some((d.bloom?.clone(), d.lens?.clone())));
+        let Some((bloom, lens)) = lens.filter(|_| !self.in_frame) else {
+            return self.draw_into(gpu, target, width, height, eye, fov, frame, depth, body, arms, draw_body, held, special);
+        };
+        let (rtv, srv) = self.layer_for(gpu, target, width, height)?;
+        unsafe { gpu.ctx.ClearRenderTargetView(&rtv, &[0.0; 4]) };
+        self.draw_into(gpu, &rtv, width, height, eye, fov, frame, depth, body, arms, draw_body, held, special)?;
+        let ctx = &gpu.ctx;
+        self.lens_cb.update(ctx, &[width as f32, height as f32, 0.0, 0.0]);
+        unsafe {
+            ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), None);
+            pipeline::viewport(ctx, width, height);
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            self.through_lens.bind(ctx);
+            ctx.PSSetShaderResources(0, Some(&[Some(srv), Some(bloom), Some(lens)]));
+            ctx.PSSetSamplers(0, Some(&[Some(self.clamp_sampler.clone())]));
+            ctx.PSSetConstantBuffers(0, Some(&[Some(self.lens_cb.buf.clone())]));
+            ctx.OMSetBlendState(&self.premultiplied, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(None, 0);
+            ctx.RSSetState(None);
+            ctx.Draw(3, 0);
+            ctx.PSSetShaderResources(0, Some(&[None, None, None]));
+            ctx.OMSetRenderTargets(None, None);
+        }
+        Ok(())
+    }
+
+    /// The layer the player is drawn into for [`Renderer::draw`] through the game's lens: the
+    /// target's size and format, transparent where the player isn't (premultiplied). Its views.
+    fn layer_for(&mut self, gpu: &Gpu, target: &ID3D11RenderTargetView, width: u32, height: u32) -> Result<(ID3D11RenderTargetView, ID3D11ShaderResourceView)> {
+        let mut d = D3D11_RENDER_TARGET_VIEW_DESC::default();
+        unsafe { target.GetDesc(&mut d) };
+        let fits = |t: &Texture| t.width == width && t.height == height && t.format == d.Format;
+        if !self.layer.as_ref().is_some_and(fits) {
+            self.layer = Some(Texture::new(gpu, &TexDesc::target(width, height, d.Format))?);
+        }
+        let layer = self.layer.as_ref().unwrap();
+        Ok((layer.rtv.clone().context("layer view")?, layer.srv.clone().context("layer view")?))
+    }
+
+    /// [`Renderer::draw`] straight into `target`.
+    fn draw_into(
         &mut self,
         gpu: &Gpu,
         target: &ID3D11RenderTargetView,
@@ -1124,8 +1249,12 @@ impl Renderer {
             ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
         }
         let game_depth = depth.as_ref().map(|d| d.srv.clone());
+        let post = depth.as_ref().map_or([None, None], |d| [d.bloom.cloned(), d.lens.cloned()]);
         self.bind_common(ctx, game_depth.as_ref(), width, height);
-        unsafe { ctx.VSSetConstantBuffers(1, Some(&[Some(main.body_cb.buf.clone())])) };
+        unsafe {
+            ctx.PSSetShaderResources(11, Some(&post));
+            ctx.VSSetConstantBuffers(1, Some(&[Some(main.body_cb.buf.clone())]));
+        }
         let range = match show {
             Show::Full => ALL,
             Show::Arms => ARMS,
@@ -1170,7 +1299,10 @@ impl Renderer {
                     }
                 }
                 // (It may have changed any state.)
-                unsafe { ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv) };
+                unsafe {
+                    ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
+                    ctx.PSSetShaderResources(11, Some(&post));
+                }
                 self.bind_common(ctx, game_depth.as_ref(), width, height);
             }
         }
@@ -1193,6 +1325,7 @@ impl Renderer {
         }
         unsafe {
             ctx.PSSetShaderResources(0, Some(&[None, None, None, None, None, None, None]));
+            ctx.PSSetShaderResources(11, Some(&[None, None]));
             ctx.OMSetRenderTargets(None, None);
         }
         Ok(())
@@ -1627,6 +1760,7 @@ fn frame_constants(width: u32, height: u32, eye: &Pose, fov: &Fov, frame: &Avata
         target_size: [width as f32, height as f32, 0.0, 0.0],
         ghost: GHOST,
         plain: [PLAIN[0], PLAIN[1], PLAIN[2], frame.plain as u32 as f32],
+        post: [depth.is_some_and(|d| d.bloom.is_some() && d.lens.is_some()) as u32 as f32, 0.0, 0.0, 0.0],
     }
 }
 

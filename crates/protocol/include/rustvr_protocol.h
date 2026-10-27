@@ -62,6 +62,20 @@
  */
 #define RVR_TGT_LIGHTS (1 << 3)
 
+/**
+ * The game's post chain's light and lens per eye, for the player the runtime draws over the game's
+ * finished picture to get them too. Two `R16G16B16A16_FLOAT` textures per eye ([`bloom_size`]):
+ *
+ * * **bloom** ([`TexKind::BloomLeft`]): rgb, light the game adds to each pixel before its tone
+ *   curve (its bloom, through the lens dirt), and an eighth of after; a, the lens's warp in x;
+ * * **lens** ([`TexKind::LensLeft`]): rgb, light added after the tone curve (a gas mask visor's
+ *   sheen); a, the warp in y.
+ *
+ * The warp (in texture coordinates, at the screen position) is where the picture there comes from
+ * (a visor's glass, heat haze): the game shows at `uv` what it drew at `uv + warp(uv)`.
+ */
+#define RVR_TGT_BLOOM (1 << 4)
+
 #define RVR_CTRL_A (1 << 0)
 
 #define RVR_CTRL_B (1 << 1)
@@ -241,6 +255,11 @@
 #define RVR_SLOT_AUX (1 << 3)
 
 #define RVR_SLOT_DEPTH (1 << 4)
+
+/**
+ * Both eyes' bloom and lens textures hold the game's for their pictures.
+ */
+#define RVR_SLOT_BLOOM (1 << 5)
 
 /**
  * Depth holds linear view distance in metres.
@@ -1092,6 +1111,16 @@ enum RVR_TexKind
    * The light atlas: the game's light-map and shadow terms per light (see [`lighting`]).
    */
   RVR_TexKind_Lights = 6,
+  /**
+   * The game's bloom (and the lens's warp in x) for each eye (see [`TGT_BLOOM`]).
+   */
+  RVR_TexKind_BloomLeft = 7,
+  RVR_TexKind_BloomRight = 8,
+  /**
+   * The lens's light (and its warp in y) for each eye (see [`TGT_BLOOM`]).
+   */
+  RVR_TexKind_LensLeft = 9,
+  RVR_TexKind_LensRight = 10,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1137,7 +1166,7 @@ typedef uint32_t RVR_Joint;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
-#define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, }
+#define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, RVR_TexKind_BloomLeft, RVR_TexKind_BloomRight, RVR_TexKind_LensLeft, RVR_TexKind_LensRight, }
 
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
 

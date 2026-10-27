@@ -46,7 +46,7 @@ fn measure(gpu: &Gpu, avatar: &mut Avatar, frame: &AvatarFrame, depth: Option<&T
     let disjoint = query(gpu, D3D11_QUERY_TIMESTAMP_DISJOINT);
     let start = query(gpu, D3D11_QUERY_TIMESTAMP);
     let end = query(gpu, D3D11_QUERY_TIMESTAMP);
-    let depth_input = || depth.map(|d| DepthInput { srv: d.srv.as_ref().unwrap(), units_per_meter: 1.0 });
+    let depth_input = || depth.map(|d| DepthInput { srv: d.srv.as_ref().unwrap(), units_per_meter: 1.0, bloom: None, lens: None });
     // Warm up (first use of shaders and buffers).
     for _ in 0..10 {
         avatar.draw(gpu, rtv, EYE.0, EYE.1, &eye, &FOV, frame, depth_input()).unwrap();

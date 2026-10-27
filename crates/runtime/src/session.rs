@@ -1152,14 +1152,19 @@ impl Session {
             // Behind it: the game's picture as it drew it (and its depth, which the body hides
             // behind), or the runtime's own view.
             let mut background = crate::compositor::Background::Void;
-            let mut depth_srv = None;
+            let (mut depth_srv, mut bloom_srv, mut lens_srv) = (None, None, None);
             if let (Some((slot, info)), false) = (&stereo, framework) {
                 if let Some(srv) = slot.eyes[e].srv.as_ref() {
                     background = crate::compositor::Background::Game(srv);
                 }
                 depth_srv = (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[e].srv.clone())).flatten();
+                // The game's bloom and lens over its picture, which the hands drawn over it get too.
+                if info.flags & SLOT_BLOOM != 0 {
+                    bloom_srv = slot.bloom.as_ref().and_then(|b| b[e].srv.clone());
+                    lens_srv = slot.lens.as_ref().and_then(|l| l[e].srv.clone());
+                }
             }
-            let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: wpm });
+            let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: wpm, bloom: bloom_srv.as_ref(), lens: lens_srv.as_ref() });
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
                 if framework {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {

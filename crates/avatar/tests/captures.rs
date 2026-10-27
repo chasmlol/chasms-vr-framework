@@ -292,7 +292,7 @@ fn renders() {
         let mut reaching = Scene::new(reach, [pose::relaxed_hand(); 2]);
         reaching.first_person = true;
         let wall = wall_depth(&gpu, fp, 40.0);
-        let depth = DepthInput { srv: wall.srv.as_ref().unwrap(), units_per_meter: 100.0 };
+        let depth = DepthInput { srv: wall.srv.as_ref().unwrap(), units_per_meter: 100.0, bloom: None, lens: None };
         shot("fp_wall", fp, reaching.eye(), HEADSET, &reaching, Backdrop::WallRight, Some(depth));
         shot("fp_reach", fp, reaching.eye(), HEADSET, &reaching, Backdrop::Floor, None);
 
@@ -353,7 +353,7 @@ fn game_depth_hides_the_hand_behind_a_wall() {
         let right = window(on_hand(&scene.joints[Joint::RightHand as usize], 0.085));
         assert!(right.0 > size.0 / 2 + 6 && left.2 < size.0 / 2, "the hands are either side of the wall's edge");
         let open = render(&gpu, &mut avatar, size, &eye, &HEADSET, &scene, Backdrop::Plain, None);
-        let depth = DepthInput { srv: wall.srv.as_ref().unwrap(), units_per_meter: 100.0 };
+        let depth = DepthInput { srv: wall.srv.as_ref().unwrap(), units_per_meter: 100.0, bloom: None, lens: None };
         let walled = render(&gpu, &mut avatar, size, &eye, &HEADSET, &scene, Backdrop::Plain, Some(depth));
         let (r_open, r_wall) = (coverage(&open, size.0, right), coverage(&walled, size.0, right));
         let (l_open, l_wall) = (coverage(&open, size.0, left), coverage(&walled, size.0, left));
@@ -361,5 +361,54 @@ fn game_depth_hides_the_hand_behind_a_wall() {
         assert!(r_open > 0.9 && l_open > 0.9, "{name}: both hands drawn without the wall");
         assert!(r_wall < 0.02, "{name}: the hand behind the wall is hidden");
         assert!(l_wall > 0.9, "{name}: the other hand is untouched");
+    }
+}
+
+#[test]
+fn the_game_lens_bends_the_player_as_it_bends_the_picture() {
+    let gpu = Gpu::new().unwrap();
+    let size = (400, 400);
+    let nothing = wall_depth(&gpu, size, 0.0);
+    // The game's bloom and lens (half size): no light, and a warp of `warp` in x everywhere.
+    let post = |warp: f32| {
+        let texels: Vec<[f32; 4]> = vec![[0.0, 0.0, 0.0, warp]; (size.0 * size.1 / 4) as usize];
+        let lens: Vec<[f32; 4]> = vec![[0.0; 4]; texels.len()];
+        let up = |t: &[[f32; 4]]| Texture::upload(&gpu, size.0 / 2, size.1 / 2, DXGI_FORMAT_R32G32B32A32_FLOAT, &[bytemuck::cast_slice(t)]).unwrap();
+        (up(&texels), up(&lens))
+    };
+    // Mean x of the pixels that aren't the backdrop.
+    let centre_x = |px: &[u8]| {
+        let (mut sum, mut n) = (0.0, 0.0);
+        for (i, p) in px.chunks(4).enumerate() {
+            if p != PLAIN {
+                sum += (i as u32 % size.0) as f32;
+                n += 1.0;
+            }
+        }
+        sum / n
+    };
+    for (name, mut avatar) in avatars(&gpu) {
+        let mut scene = Scene::new(pose::reaching_forward(HEIGHT, [0.53, 0.53]), [pose::relaxed_hand(); 2]);
+        scene.first_person = true;
+        let eye = scene.eye();
+        let mut draw = |post: Option<&(Texture, Texture)>| {
+            let depth = DepthInput {
+                srv: nothing.srv.as_ref().unwrap(),
+                units_per_meter: 100.0,
+                bloom: post.map(|p| p.0.srv.as_ref().unwrap()),
+                lens: post.map(|p| p.1.srv.as_ref().unwrap()),
+            };
+            render(&gpu, &mut avatar, size, &eye, &HEADSET, &scene, Backdrop::Plain, Some(depth))
+        };
+        let straight = draw(None);
+        let still = draw(Some(&post(0.0)));
+        let bent = draw(Some(&post(0.05)));
+        // Without a warp the layer lays the player down where it was drawn (bar rounding at edges).
+        let differ = straight.chunks(4).zip(still.chunks(4)).filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 2)).count();
+        let (c0, c1) = (centre_x(&straight), centre_x(&bent));
+        eprintln!("{name}: {differ} pixels differ unbent; bent moves the player {:.1} px", c1 - c0);
+        assert!(differ < 20, "{name}: the layer without a warp changes the player ({differ} pixels)");
+        // Showing at uv what was drawn at uv + 0.05: the player moves 5% of the width left.
+        assert!((c1 - c0 + 0.05 * size.0 as f32).abs() < 3.0, "{name}: bent by {:.1} px", c1 - c0);
     }
 }

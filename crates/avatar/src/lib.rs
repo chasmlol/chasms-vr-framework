@@ -103,11 +103,17 @@ pub struct PlayerSource<'a> {
     pub fov: Fov,
 }
 
-/// The game's depth for the eye being drawn.
+/// The game's depth for the eye being drawn (and its bloom).
 pub struct DepthInput<'a> {
     /// `R32_FLOAT` linear depth along the view axis, in game units. 0 means nothing was drawn.
     pub srv: &'a ID3D11ShaderResourceView,
     pub units_per_meter: f32,
+    /// The game's post chain's light and lens over the same picture (any size), so the player
+    /// drawn over the finished picture gets them too: `bloom` rgb is added before the tone curve
+    /// (and an eighth of it after), `lens` rgb after it; their alphas are the lens's warp (x, y):
+    /// the player shows at `uv` as drawn at `uv + warp` ([`rustvr_protocol::TGT_BLOOM`]).
+    pub bloom: Option<&'a ID3D11ShaderResourceView>,
+    pub lens: Option<&'a ID3D11ShaderResourceView>,
 }
 
 pub enum AvatarSource {

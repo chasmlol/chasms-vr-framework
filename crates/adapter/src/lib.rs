@@ -28,7 +28,7 @@ pub use tracking::{Anchor, TrackingMapper, View};
 use rustvr_gpu::{Gpu, Texture, texture::color_family};
 use rustvr_protocol::link::Link;
 use rustvr_protocol::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32_FLOAT};
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT};
 
 pub struct AdapterConfig {
     /// Adapter name: shown in logs and selects the runtime's settings profile.
@@ -52,6 +52,9 @@ pub struct SlotTextures {
     pub hud: Option<Texture>,
     pub aux: Option<Texture>,
     pub lights: Option<Texture>,
+    /// The game's bloom and lens per eye (`R16G16B16A16_FLOAT`, [`rustvr_protocol::TGT_BLOOM`]).
+    pub bloom: Option<[Texture; 2]>,
+    pub lens: Option<[Texture; 2]>,
 }
 
 impl SlotTextures {
@@ -62,6 +65,8 @@ impl SlotTextures {
             .chain(self.hud.iter())
             .chain(self.aux.iter())
             .chain(self.lights.iter())
+            .chain(self.bloom.iter().flatten())
+            .chain(self.lens.iter().flatten())
     }
 }
 
@@ -543,7 +548,13 @@ fn open_targets(gpu: &Gpu, mapping: &str, t: &Targets) -> anyhow::Result<Vec<Slo
         let hud = if t.flags & TGT_HUD != 0 { Some(open(TexKind::Hud, unorm)?) } else { None };
         let aux = if t.flags & TGT_AUX != 0 { Some(open(TexKind::Aux, unorm)?) } else { None };
         let lights = if t.flags & TGT_LIGHTS != 0 { Some(open(TexKind::Lights, DXGI_FORMAT_R8G8B8A8_UNORM)?) } else { None };
-        slots.push(SlotTextures { eyes, depth, hud, aux, lights });
+        let (bloom, lens) = if t.flags & TGT_BLOOM != 0 {
+            let f = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            (Some([open(TexKind::BloomLeft, f)?, open(TexKind::BloomRight, f)?]), Some([open(TexKind::LensLeft, f)?, open(TexKind::LensRight, f)?]))
+        } else {
+            (None, None)
+        };
+        slots.push(SlotTextures { eyes, depth, hud, aux, lights, bloom, lens });
     }
     Ok(slots)
 }

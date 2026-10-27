@@ -271,7 +271,7 @@ impl Scene<'_> {
             Some(Texture::upload(gpu, width, height, DXGI_FORMAT_R32_FLOAT, &[bytemuck::cast_slice(&texels)]).unwrap())
         };
         let srv = exact.as_ref().unwrap_or(&depth).srv.as_ref().unwrap();
-        let d = DepthInput { srv, units_per_meter: 1.0 };
+        let d = DepthInput { srv, units_per_meter: 1.0, bloom: None, lens: None };
         self.avatar.draw(gpu, target.rtv.as_ref().unwrap(), width, height, &eye, &view.fov, &frame, Some(d)).unwrap();
         target.read_rgba8(gpu).unwrap()
     }

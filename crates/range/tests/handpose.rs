@@ -231,7 +231,7 @@ fn shot(gpu: &Gpu, renderer: &mut Renderer, avatar: &mut Avatar, gun: &[(Mesh, b
     };
     let srv = exact.as_ref().unwrap_or(&depth).srv.as_ref().unwrap();
     let f = frame(held, view.visibility, view.first_person);
-    avatar.draw(gpu, target.rtv.as_ref().unwrap(), width, height, &eye, &view.fov, &f, Some(DepthInput { srv, units_per_meter: 1.0 })).unwrap();
+    avatar.draw(gpu, target.rtv.as_ref().unwrap(), width, height, &eye, &view.fov, &f, Some(DepthInput { srv, units_per_meter: 1.0, bloom: None, lens: None })).unwrap();
     target.read_rgba8(gpu).unwrap()
 }
 

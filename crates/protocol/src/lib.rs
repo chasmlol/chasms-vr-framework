@@ -162,6 +162,23 @@ pub const TGT_HUD: u32 = 1 << 1;
 pub const TGT_AUX: u32 = 1 << 2;
 /// The light atlas (`LIGHT_ATLAS_W` x `LIGHT_ATLAS_H` RGBA8, see [`lighting`]).
 pub const TGT_LIGHTS: u32 = 1 << 3;
+/// The game's post chain's light and lens per eye, for the player the runtime draws over the game's
+/// finished picture to get them too. Two `R16G16B16A16_FLOAT` textures per eye ([`bloom_size`]):
+///
+/// * **bloom** ([`TexKind::BloomLeft`]): rgb, light the game adds to each pixel before its tone
+///   curve (its bloom, through the lens dirt), and an eighth of after; a, the lens's warp in x;
+/// * **lens** ([`TexKind::LensLeft`]): rgb, light added after the tone curve (a gas mask visor's
+///   sheen); a, the warp in y.
+///
+/// The warp (in texture coordinates, at the screen position) is where the picture there comes from
+/// (a visor's glass, heat haze): the game shows at `uv` what it drew at `uv + warp(uv)`.
+pub const TGT_BLOOM: u32 = 1 << 4;
+
+/// The bloom and lens textures' size for eyes `w` x `h`: half each way (bloom is blurry; the lens
+/// dirt it shows and the visor's warp less so).
+pub fn bloom_size(w: u32, h: u32) -> (u32, u32) {
+    ((w / 2).max(1), (h / 2).max(1))
+}
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,11 +194,28 @@ pub enum TexKind {
     Aux = 5,
     /// The light atlas: the game's light-map and shadow terms per light (see [`lighting`]).
     Lights = 6,
+    /// The game's bloom (and the lens's warp in x) for each eye (see [`TGT_BLOOM`]).
+    BloomLeft = 7,
+    BloomRight = 8,
+    /// The lens's light (and its warp in y) for each eye (see [`TGT_BLOOM`]).
+    LensLeft = 9,
+    LensRight = 10,
 }
 
 impl TexKind {
-    pub const ALL: [TexKind; 7] =
-        [TexKind::EyeLeft, TexKind::EyeRight, TexKind::DepthLeft, TexKind::DepthRight, TexKind::Hud, TexKind::Aux, TexKind::Lights];
+    pub const ALL: [TexKind; 11] = [
+        TexKind::EyeLeft,
+        TexKind::EyeRight,
+        TexKind::DepthLeft,
+        TexKind::DepthRight,
+        TexKind::Hud,
+        TexKind::Aux,
+        TexKind::Lights,
+        TexKind::BloomLeft,
+        TexKind::BloomRight,
+        TexKind::LensLeft,
+        TexKind::LensRight,
+    ];
 
     pub fn tag(self) -> &'static str {
         match self {
@@ -192,6 +226,10 @@ impl TexKind {
             TexKind::Hud => "hud",
             TexKind::Aux => "aux",
             TexKind::Lights => "lights",
+            TexKind::BloomLeft => "bloomL",
+            TexKind::BloomRight => "bloomR",
+            TexKind::LensLeft => "lensL",
+            TexKind::LensRight => "lensR",
         }
     }
 }
@@ -735,6 +773,8 @@ pub const SLOT_HUD: u32 = 1 << 1;
 pub const SLOT_MENU: u32 = 1 << 2;
 pub const SLOT_AUX: u32 = 1 << 3;
 pub const SLOT_DEPTH: u32 = 1 << 4;
+/// Both eyes' bloom and lens textures hold the game's for their pictures.
+pub const SLOT_BLOOM: u32 = 1 << 5;
 
 /// Depth holds linear view distance in metres.
 pub const DEPTH_LINEAR: u32 = 1 << 0;
