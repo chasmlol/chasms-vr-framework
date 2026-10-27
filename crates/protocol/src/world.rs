@@ -347,6 +347,12 @@ pub struct ObjectDesc {
     pub turn_max: f32,
     pub detent: f32,
     pub joint_flags: u32, // JOINT_*
+    /// Valves with [`OBJF_RUNTIME_DRAWS`]: the bone of their model that turns (its index in the
+    /// model's bones). It and the bones on it are drawn turned by the valve's angle about its +Z;
+    /// the rest of the model stays where `spawn_pose` and `model_pos` / `model_rot` put it (the
+    /// game's own mechanism, drawn by the runtime: the switch's box, its knob turned by the hand).
+    pub turn_bone: u32,
+    pub _p_turn: [u32; 3],
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;
@@ -377,7 +383,9 @@ pub const OBJF_TEMPLATE: u32 = 1 << 5;
 /// [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
 /// (or round) part, in place (magazine space is the gun's). A prop ([`OBJ_PROP`]) the game draws
 /// is the runtime's to draw once a hand has had it ([`OS_RUNTIME_DRAWN`]), its model at
-/// [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece.
+/// [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece. A valve ([`OBJ_VALVE`]) is the
+/// runtime's to draw always (the game hides its own): its model in two pieces, the part on
+/// [`ObjectDesc::turn_bone`] turned by how far it's turned.
 pub const OBJF_RUNTIME_DRAWS: u32 = 1 << 6;
 /// Weapons: the game keeps this gun's ammunition (Metro's magazine and reserve), so the runtime's
 /// rounds follow the game's instead of being unlimited. The gun arrives (and comes back with each
@@ -881,7 +889,7 @@ const _: () = {
     assert!(size_of::<HandState>() == 48);
     assert!(size_of::<RtBody>() == 32 + 32 * JOINT_COUNT + 64 + 96);
     assert!(OFF_BODY + size_of::<RtBody>() <= OFF_OBJECTS);
-    assert!(size_of::<ObjectDesc>() == 384);
+    assert!(size_of::<ObjectDesc>() == 400);
     assert!(size_of::<ObjectState>() == 96);
     assert!(size_of::<GamePose>() == 48);
     assert!(OFF_GAME_POSES.is_multiple_of(64));

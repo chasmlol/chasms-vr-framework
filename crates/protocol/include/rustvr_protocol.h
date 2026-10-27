@@ -500,7 +500,9 @@
  * [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
  * (or round) part, in place (magazine space is the gun's). A prop ([`OBJ_PROP`]) the game draws
  * is the runtime's to draw once a hand has had it ([`OS_RUNTIME_DRAWN`]), its model at
- * [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece.
+ * [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece. A valve ([`OBJ_VALVE`]) is the
+ * runtime's to draw always (the game hides its own): its model in two pieces, the part on
+ * [`ObjectDesc::turn_bone`] turned by how far it's turned.
  */
 #define RVR_OBJF_RUNTIME_DRAWS (1 << 6)
 

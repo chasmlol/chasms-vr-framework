@@ -6,7 +6,9 @@
 //! +Z), its rim `ObjectDesc::radius` out, its own weight `mass` (a ring's inertia, m r^2), and the
 //! turning it resists `ObjectDesc::friction` (N m, static and sliding alike, as an old stiff valve
 //! or a free-running wheel), scaled by the player's stiffness setting. A hand reaching it takes it
-//! where it is, and turns it one of two ways:
+//! where it is: on its rim, or, when the runtime has the model of the part that turns (a game's
+//! switch handle, its wheel), anywhere on that part ([`Valve::nearest_on`]). It turns it one of two
+//! ways:
 //!
 //! * **cranked** (a wheel): the hand pulls its point on the rim towards the controller like an
 //!   arm would, up to [`ARM_FORCE`];
@@ -64,19 +66,19 @@ pub struct Valve {
 /// What one hand does to it this step.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pull {
-    /// Cranked: its place on the rim (angle, wheel frame), pulled towards the controller there.
-    Rim { at: f32, toward: Vec3 },
+    /// Cranked: where the hand holds it (the wheel's own frame), pulled towards the controller.
+    Rim { at: Vec3, toward: Vec3 },
     /// Twisted: the angle the wrist turns it towards.
     Twist { to: f32 },
 }
 
-/// A hand on a valve: where on the rim (its angle in the wheel's own frame) and how the hand sits
+/// A hand on a valve: where it holds it (a point in the wheel's own frame) and how the hand sits
 /// on it (its rotation in the wheel's frame); and where the hand was when it took hold, and when
-/// (it goes onto the rim over the grab transition).
+/// (it goes onto the valve over the grab transition).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ValveGrip {
     pub id: u32,
-    pub at: f32,
+    pub at: Vec3,
     pub rot: Quat,
     pub from: (Vec3, Quat),
     pub since: f64,
@@ -133,17 +135,32 @@ impl Valve {
         self.base * Vec3::Z
     }
 
-    /// The rim at angle `at` (wheel frame), in the world.
-    pub fn rim(&self, at: f32) -> Vec3 {
-        self.centre + self.rot() * Vec3::new(self.radius * at.cos(), self.radius * at.sin(), 0.0)
+    /// The rim at angle `at` (wheel frame): in the wheel's frame, and in the world.
+    pub fn ring(&self, at: f32) -> Vec3 {
+        Vec3::new(self.radius * at.cos(), self.radius * at.sin(), 0.0)
     }
 
-    /// The rim's nearest point to `p`: its angle (wheel frame) and how far `p` is from it.
-    pub fn nearest(&self, p: Vec3) -> (f32, f32) {
+    pub fn rim(&self, at: f32) -> Vec3 {
+        self.point(self.ring(at))
+    }
+
+    /// A point of the wheel (its own frame) in the world, as it's turned now.
+    pub fn point(&self, local: Vec3) -> Vec3 {
+        self.centre + self.rot() * local
+    }
+
+    /// The rim's nearest point to `p` (the wheel's frame) and how far `p` is from it.
+    pub fn nearest(&self, p: Vec3) -> (Vec3, f32) {
         let local = self.rot().inverse() * (p - self.centre);
-        let at = local.y.atan2(local.x);
-        let on = Vec3::new(self.radius * at.cos(), self.radius * at.sin(), 0.0);
-        (at, local.distance(on))
+        let on = self.ring(local.y.atan2(local.x));
+        (on, local.distance(on))
+    }
+
+    /// The nearest of `shape`'s points to `p` (the turning part, in the wheel's frame) and how far
+    /// `p` is from it; with no shape, the rim's.
+    pub fn nearest_on(&self, shape: &[Vec3], p: Vec3) -> (Vec3, f32) {
+        let local = self.rot().inverse() * (p - self.centre);
+        shape.iter().map(|&q| (q, q.distance(local))).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap_or_else(|| self.nearest(p))
     }
 
     /// One step: each gripping hand pulls or twists (each its own: two hands, twice the force),
@@ -162,7 +179,7 @@ impl Valve {
             for pull in pulls {
                 torque += match *pull {
                     Pull::Rim { at, toward } => {
-                        let p = self.rim(at);
+                        let p = self.point(at);
                         let r = p - self.centre;
                         let v = axis.cross(r) * self.vel;
                         let f = ((toward - p) * ARM_STIFFNESS - v * damp).clamp_length_max(ARM_FORCE);
@@ -207,6 +224,21 @@ impl Valve {
 mod tests {
     use super::*;
 
+    /// A switch's handle sticking out one way from the hub: the hand takes it on the handle, not
+    /// on a circle round the hub; and holds that point of it as it turns.
+    #[test]
+    fn a_part_is_taken_where_it_is() {
+        let mut v = Valve::new(Vec3::new(0.0, 1.2, 1.0), Quat::IDENTITY, 0.13, 0.5, 0.4);
+        let handle: Vec<Vec3> = (0..14).map(|k| Vec3::new(k as f32 * 0.01, 0.0, 0.02)).collect();
+        let (at, d) = v.nearest_on(&handle, v.centre + Vec3::new(0.1, 0.01, 0.03));
+        assert!(at.distance(Vec3::new(0.1, 0.0, 0.02)) < 1e-6 && d < 0.02, "on the handle: {at} {d}");
+        // Across the hub from the handle, nothing to take (the rim would be right there).
+        let (_, d) = v.nearest_on(&handle, v.centre + Vec3::new(-0.13, 0.0, 0.02));
+        assert!(d > REACH, "nothing there: {d}");
+        v.angle = std::f32::consts::FRAC_PI_2;
+        assert!(v.point(at).distance(v.centre + Vec3::new(0.0, 0.1, 0.02)) < 1e-5, "turned a quarter with it");
+    }
+
     fn wheel(friction: f32) -> Valve {
         Valve::new(Vec3::new(0.0, 1.2, 1.0), Quat::IDENTITY, 0.2, 2.0, friction)
     }
@@ -222,7 +254,7 @@ mod tests {
                 .iter()
                 .map(|&a| {
                     let want = a + t * std::f32::consts::FRAC_PI_2;
-                    Pull::Rim { at: a, toward: v.centre + v.base * Vec3::new(v.radius * want.cos(), v.radius * want.sin(), 0.0) }
+                    Pull::Rim { at: v.ring(a), toward: v.centre + v.base * Vec3::new(v.radius * want.cos(), v.radius * want.sin(), 0.0) }
                 })
                 .collect();
             v.step(&pulls, 1.0 / 90.0, 1.0);
@@ -242,7 +274,7 @@ mod tests {
         // along the rim (150 N): one hand manages 30 N m, two 60.
         let lead = |v: &mut Valve, hands: &[f32]| {
             for _ in 0..90 {
-                let pulls: Vec<Pull> = hands.iter().map(|&a| Pull::Rim { at: a, toward: v.rim(a) + v.axis().cross(v.rim(a) - v.centre).normalize() * 0.25 }).collect();
+                let pulls: Vec<Pull> = hands.iter().map(|&a| Pull::Rim { at: v.ring(a), toward: v.rim(a) + v.axis().cross(v.rim(a) - v.centre).normalize() * 0.25 }).collect();
                 v.step(&pulls, 1.0 / 90.0, 1.0);
             }
         };
@@ -340,6 +372,7 @@ mod tests {
     fn the_nearest_rim_point() {
         let v = wheel(1.0);
         let (at, d) = v.nearest(v.centre + Vec3::new(0.0, 0.25, 0.03));
+        let at = at.y.atan2(at.x);
         assert!((at - std::f32::consts::FRAC_PI_2).abs() < 1e-4 && (d - (0.05f32.powi(2) + 0.03f32.powi(2)).sqrt()).abs() < 1e-4);
         assert!(v.rim(at).distance(v.centre + Vec3::new(0.0, 0.2, 0.0)) < 1e-5);
     }

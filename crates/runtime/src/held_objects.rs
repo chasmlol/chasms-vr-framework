@@ -22,12 +22,15 @@ use rustvr_protocol::*;
 use crate::rig::WorldMap;
 
 /// A model loaded for drawing: the gun it is (its parts and how they move; None: a prop, one
-/// piece) and its GPU model.
+/// piece, or a valve, two: what stays put and what turns) and its GPU model.
 pub struct Loaded {
     pub weapon: Option<Weapon>,
     pub model: HeldModel,
     /// Each part as boxes (model space): the framework view's low-poly gun ([`crate::blockout`]).
     pub blocks: Vec<Vec<(Vec3, Vec3)>>,
+    /// A valve: the part that turns, as points (model space, a centimetre apart at most): where a
+    /// hand can take it.
+    pub turning: Vec<Vec3>,
 }
 
 /// One object to draw this frame: its model (by name) and each part's place: in tracking space
@@ -74,10 +77,87 @@ pub fn held_parts(w: &Weapon) -> Vec<HeldPart> {
         .collect()
 }
 
-/// Loads `name` (`<game>/<key>`) from the asset cache under `root`, for an object of `kind`.
-pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32) -> anyhow::Result<Loaded> {
+/// Which of `bones` are `bone` or hang from it (the part of a mechanism that turns with it).
+pub fn on_bone(bones: &[rustvr_asset::Bone], bone: usize) -> Vec<bool> {
+    let mut on = vec![false; bones.len()];
+    // Parents may come after their children: settle it in as many passes as it takes.
+    for _ in 0..bones.len() {
+        let mut changed = false;
+        for (i, b) in bones.iter().enumerate() {
+            let now = i == bone || (b.parent >= 0 && on.get(b.parent as usize).copied().unwrap_or(false));
+            if now && !on[i] {
+                on[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    on
+}
+
+/// A valve's model in two parts: 0, what stays put; 1, the triangles on its turning bone (`turns`:
+/// each bone, whether it turns), by the bone each corner leans on most (two corners of three
+/// decide).
+pub fn valve_parts(model: &rustvr_asset::Model, turns: &[bool]) -> Vec<HeldPart> {
+    let mut out = Vec::new();
+    for (mesh, m) in model.meshes.iter().enumerate() {
+        let turning = |v: u32| {
+            let v = &m.vertices[v as usize];
+            let k = (0..4).max_by_key(|&k| v.weights[k]).unwrap_or(0);
+            v.weights[k] > 0 && turns.get(v.bones[k] as usize).copied().unwrap_or(false)
+        };
+        let (mut still, mut moving) = (Vec::new(), Vec::new());
+        for t in m.indices.chunks_exact(3) {
+            let n = t.iter().filter(|&&v| turning(v)).count();
+            if n >= 2 { moving.extend_from_slice(t) } else { still.extend_from_slice(t) }
+        }
+        let all: Vec<u32> = (0..m.vertices.len() as u32).collect();
+        for (part, indices) in [(0, still), (1, moving)] {
+            if !indices.is_empty() {
+                out.push(HeldPart { part, mesh, vertices: all.clone(), indices });
+            }
+        }
+    }
+    out
+}
+
+/// How far apart (metres) the points a hand can take a valve's turning part by are, at most.
+const GRIP_SPACING: f32 = 0.01;
+
+/// The corners of `part`'s triangles (model space), one per `spacing` cube.
+pub fn part_points(model: &rustvr_asset::Model, parts: &[HeldPart], part: usize, spacing: f32) -> Vec<Vec3> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for p in parts.iter().filter(|p| p.part == part) {
+        let mesh = &model.meshes[p.mesh];
+        for &i in &p.indices {
+            let v = Vec3::from_array(mesh.vertices[p.vertices[i as usize] as usize].pos);
+            if seen.insert((v / spacing).floor().as_ivec3().to_array()) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// Loads `name` (`<game>/<key>`) from the asset cache under `root`, for an object of `kind`
+/// (a valve's: `turn_bone`, the bone that turns, [`ObjectDesc::turn_bone`]).
+pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32, turn_bone: u32) -> anyhow::Result<Loaded> {
     use anyhow::Context;
     let (game, key) = rustvr_guns::desc::parse_model_name(name).with_context(|| format!("{name:?} isn't <game>/<asset key>"))?;
+    if kind == OBJ_VALVE {
+        // A mechanism: what stays put, and what the hand turns.
+        let dir = root.join(game);
+        let model = rustvr_asset::load_model(&dir, key)?;
+        anyhow::ensure!((turn_bone as usize) < model.bones.len(), "{name} has no bone {turn_bone}");
+        let parts = valve_parts(&model, &on_bone(&model.bones, turn_bone as usize));
+        anyhow::ensure!(parts.iter().any(|p| p.part == 1), "nothing of {name} is on its bone {}", model.bones[turn_bone as usize].name);
+        let turning = part_points(&model, &parts, 1, GRIP_SPACING);
+        let model = HeldModel::load(gpu, &dir, &model, &parts)?;
+        return Ok(Loaded { weapon: None, model, blocks: Vec::new(), turning });
+    }
     if kind == OBJ_PROP {
         // A prop: the whole model, one piece.
         let dir = root.join(game);
@@ -89,7 +169,7 @@ pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32) -> anyhow:
             .map(|(mesh, m)| HeldPart { part: 0, mesh, vertices: (0..m.vertices.len() as u32).collect(), indices: m.indices.clone() })
             .collect();
         let model = HeldModel::load(gpu, &dir, &model, &parts)?;
-        return Ok(Loaded { weapon: None, model, blocks: Vec::new() });
+        return Ok(Loaded { weapon: None, model, blocks: Vec::new(), turning: Vec::new() });
     }
     // (Rigs are Metro 2033's so far: `content/rigs/metro2033.toml`.)
     anyhow::ensure!(game == "metro2033", "no rigs for {game}'s guns yet");
@@ -98,7 +178,7 @@ pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32) -> anyhow:
     let model = rustvr_asset::load_model(&dir, key)?;
     let model = HeldModel::load(gpu, &dir, &model, &held_parts(&weapon))?;
     let blocks = weapon.parts.iter().map(|m| crate::blockout::blockout(&m.vertices.iter().map(|v| Vec3::from_array(v.pos)).collect::<Vec<_>>(), &m.indices)).collect();
-    Ok(Loaded { weapon: Some(weapon), model, blocks })
+    Ok(Loaded { weapon: Some(weapon), model, blocks, turning: Vec::new() })
 }
 
 /// Where a prop's model sits on it ([`ObjectDesc::model_pos`], `model_rot`).
@@ -106,6 +186,14 @@ pub fn model_place(d: &ObjectDesc) -> Mat4 {
     let r = Quat::from_array(d.model_rot);
     let r = if r.is_finite() && r.length_squared() > 0.5 { r.normalize() } else { Quat::IDENTITY };
     Mat4::from_rotation_translation(r, Vec3::from_array(d.model_pos))
+}
+
+/// Where a valve's two parts go (the game's world): what stays put where the game has the model,
+/// what turns turned `angle` about the valve's axle (its spawn pose's +Z).
+pub fn valve_places(d: &ObjectDesc, angle: f32) -> Vec<Option<Mat4>> {
+    let at = Mat4::from_rotation_translation(quat(d.spawn_pose.rot), Vec3::from_array(d.spawn_pose.pos));
+    let angle = if angle.is_finite() { angle } else { 0.0 };
+    vec![Some(at * model_place(d)), Some(at * Mat4::from_rotation_z(angle) * model_place(d))]
 }
 
 /// Where each part of an object of `w` goes (tracking space), for its description's kind, its
@@ -129,7 +217,7 @@ impl HeldObjects {
             if self.models.contains_key(&name) {
                 continue;
             }
-            let loaded = match load(gpu, &root, &name, d.kind) {
+            let loaded = match load(gpu, &root, &name, d.kind, d.turn_bone) {
                 Ok(l) => {
                     tracing::info!("runtime: drawing {name} ({} parts)", l.model.parts());
                     Some(l)
@@ -141,6 +229,21 @@ impl HeldObjects {
             };
             self.models.insert(name, loaded);
         }
+    }
+
+    /// The part of each valve the runtime draws that a hand takes it by: its description's id and
+    /// the points of its turning part in the valve's frame.
+    pub fn valve_shapes(&self, objects: &ObjectTable) -> Vec<(u32, Vec<Vec3>)> {
+        let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
+        descs
+            .iter()
+            .filter(|d| d.id != 0 && d.kind == OBJ_VALVE && d.flags & OBJF_RUNTIME_DRAWS != 0)
+            .filter_map(|d| {
+                let l = self.models.get(name_str(&d.name))?.as_ref()?;
+                let m = model_place(d);
+                Some((d.id, l.turning.iter().map(|&p| m.transform_point3(p)).collect()))
+            })
+            .collect()
     }
 
     /// Places this frame's objects from the rig's states: held and holstered ones in tracking space,
@@ -178,6 +281,8 @@ impl HeldObjects {
             let object = Mat4::from_rotation_translation(rot, pos);
             let parts = match &l.weapon {
                 Some(w) => part_places(w, d.kind, s, trigger, object),
+                // A valve: its model where the game has it, the turning part turned as far as it is.
+                None if d.kind == OBJ_VALVE => valve_places(d, s.slide),
                 // A prop: its model where the game draws it on the object.
                 None => vec![Some(object * model_place(d))],
             };
@@ -281,6 +386,30 @@ impl HeldObjects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A switch: a box (bone 0) and a knob on bone 1, with a pointer on bone 2 hung from the knob.
+    /// The knob and what hangs from it turn; the box stays.
+    #[test]
+    fn a_valve_is_drawn_in_what_stays_and_what_turns() {
+        let bone = |name: &str, parent: i32| rustvr_asset::Bone { name: name.into(), parent, ..Default::default() };
+        let bones = vec![bone("box", -1), bone("pointer", 2), bone("knob", 0)];
+        assert_eq!(on_bone(&bones, 2), vec![false, true, true], "the knob and the pointer on it");
+        let v = |b: u8| rustvr_asset::Vertex { bones: [b, 0, 0, 0], weights: [255, 0, 0, 0], ..Default::default() };
+        let mesh = rustvr_asset::Mesh { vertices: vec![v(0), v(0), v(0), v(2), v(1), v(2)], indices: vec![0, 1, 2, 3, 4, 5, 0, 3, 4], ..Default::default() };
+        let model = rustvr_asset::Model { bones, meshes: vec![mesh], ..Default::default() };
+        let parts = valve_parts(&model, &on_bone(&model.bones, 2));
+        let of = |p: usize| parts.iter().find(|h| h.part == p).map(|h| h.indices.clone()).unwrap_or_default();
+        assert_eq!(of(0), vec![0, 1, 2], "the box");
+        assert_eq!(of(1), vec![3, 4, 5, 0, 3, 4], "the knob, and a triangle mostly on it");
+        // Turned: the knob's part turns about the axle, the box's doesn't.
+        let mut d: ObjectDesc = bytemuck::Zeroable::zeroed();
+        d.spawn_pose = Pose { pos: [1.0, 2.0, 3.0], valid: 1, rot: Quat::IDENTITY.to_array() };
+        d.model_rot = Quat::IDENTITY.to_array();
+        let places = valve_places(&d, std::f32::consts::FRAC_PI_2);
+        let p = |k: usize| places[k].unwrap().transform_point3(Vec3::X);
+        assert!(p(0).distance(Vec3::new(2.0, 2.0, 3.0)) < 1e-5);
+        assert!(p(1).distance(Vec3::new(1.0, 3.0, 3.0)) < 1e-5, "a quarter turn about +Z");
+    }
 
     /// The Kalash 2012 as an adapter registers it: the runtime reads the model from its name, and
     /// places the parts as the range does (the magazine with its own object, the glass on the body,

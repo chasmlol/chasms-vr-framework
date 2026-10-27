@@ -169,8 +169,10 @@ struct Obj {
     throw: Option<ThrowState>,
     /// What a hanging object hangs from (`OBJF_HANGING`): the fixed anchor its joint holds.
     hang: Option<RigidBodyHandle>,
-    /// A valve's wheel ([`OBJ_VALVE`]).
+    /// A valve's wheel ([`OBJ_VALVE`]), and the part of it a hand takes (points in the wheel's
+    /// frame; empty: its rim), from the model the runtime draws it with ([`Rig::set_valve_shape`]).
     valve: Option<valve::Valve>,
+    valve_shape: Vec<Vec3>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -806,6 +808,7 @@ impl Rig {
                     let v = valve::Valve::new(pos, rot, d.radius, d.mass, d.friction).with_range(d.turn_min, d.turn_max, d.detent);
                     valve::Valve { max_speed: d.fire_rate.max(0.0), twist: v.twist || d.joint_flags & JOINT_TWIST != 0, ..v }
                 }),
+                valve_shape: Vec::new(),
             },
         );
         // A valve's wheel turns on its axle, never anywhere else.
@@ -1133,6 +1136,14 @@ impl Rig {
         }
     }
 
+    /// The part a hand takes of the valves described by `desc` (the game's description id): `shape`,
+    /// points of the part that turns in the wheel's frame (the model the runtime draws it with).
+    pub fn set_valve_shape(&mut self, desc: u32, shape: &[Vec3]) {
+        for o in self.objects.values_mut().filter(|o| o.desc.id == desc && o.valve.is_some()) {
+            o.valve_shape = shape.to_vec();
+        }
+    }
+
     /// Turns the valves: each by the hands on it (cranking its rim towards their controllers, or
     /// twisting it as far as their wrists have turned) against its friction (`stiffness`: the
     /// player's setting), and puts it and those hands where it's turned to (a hand that's just
@@ -1166,7 +1177,7 @@ impl Rig {
             for (i, g) in grips {
                 let h = &self.hands.as_ref().unwrap()[i];
                 let b = h.body;
-                let (p, q) = (v.rim(g.at), (v.rot() * g.rot).normalize());
+                let (p, q) = (v.point(g.at), (v.rot() * g.rot).normalize());
                 let time = travel_time(transition, g.from.0.distance(p));
                 let k = if time > 1e-3 { smooth((self.now - g.since) / time as f64) } else { 1.0 };
                 self.physics.set_pose(b, g.from.0.lerp(p, k), g.from.1.slerp(q, k).normalize());
@@ -1392,7 +1403,7 @@ impl Rig {
         }
         // A valve's rim within reach.
         if hover == Hover::None {
-            let rim = self.objects.iter().filter_map(|(id, o)| Some((*id, o.valve.as_ref()?.nearest(palm).1))).filter(|(_, d)| *d < valve::REACH).min_by(|a, b| a.1.total_cmp(&b.1));
+            let rim = self.objects.iter().filter_map(|(id, o)| Some((*id, o.valve.as_ref()?.nearest_on(&o.valve_shape, palm).1))).filter(|(_, d)| *d < valve::REACH).min_by(|a, b| a.1.total_cmp(&b.1));
             if let Some((id, _)) = rim {
                 hover = Hover::Valve(id);
             }
@@ -1544,9 +1555,11 @@ impl Rig {
                 self.take(id, i, caught)
             }
             Hover::Valve(id) => {
-                // The hand goes to the rim where it's nearest and holds on there, as it sits.
-                let Some(v) = self.objects.get(&id).and_then(|o| o.valve) else { return };
-                let (at, _) = v.nearest(palm);
+                // The hand goes to the turning part (or the rim) where it's nearest and holds on
+                // there, as it sits.
+                let Some(o) = self.objects.get(&id) else { return };
+                let Some(v) = o.valve else { return };
+                let (at, _) = v.nearest_on(&o.valve_shape, palm);
                 let from = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
                 let now = self.now;
                 let h = &mut self.hands.as_mut().unwrap()[i];
@@ -1554,7 +1567,7 @@ impl Rig {
                 h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now, turn0: v.angle, twisted: 0.0, wrist });
                 let c = h.collider;
                 self.physics.set_groups(c, groups_none());
-                self.emit(Cue::Grab, Some(i), Some(id), v.rim(at), 0.7);
+                self.emit(Cue::Grab, Some(i), Some(id), v.point(at), 0.7);
             }
             Hover::Slot(slot) => {
                 if let Some(id) = self.slots[slot as usize].take() {

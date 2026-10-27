@@ -472,6 +472,10 @@ impl Session {
                 self.objects_seq = seq;
                 self.rig.sync(&self.objects);
                 self.held_objects.sync(&self.gpu, &self.objects);
+                // The valves the runtime draws are taken by the part of their model that turns.
+                for (desc, shape) in self.held_objects.valve_shapes(&self.objects) {
+                    self.rig.set_valve_shape(desc, &shape);
+                }
                 tracing::info!("runtime: {} objects registered (table {})", self.objects.count, seq);
             }
             let seq = self.link.hand_poses_seq();
