@@ -651,3 +651,32 @@ fn a_solve_takes_well_under_a_tenth_of_a_millisecond() {
     println!("one body solve: {:.1} us (checksum {checksum})", per * 1e6);
     assert!(per < 1e-4, "{:.1} us per solve", per * 1e6);
 }
+
+#[test]
+fn stick_walking_leaves_the_arms_where_they_are() {
+    // Holding a gun with both hands, head and hands still: the stick walks on and stops. What the
+    // player sees of their arms (shoulders, elbows) mustn't move with the gait: in VR, walking with
+    // the stick isn't the body moving.
+    let mut s = solver();
+    let stand = named_pose("two_hand_hip");
+    let still = settle(&mut s, &stand, 120);
+    let walking = TrackedInput { locomotion: Vec3::new(0.0, 0.0, 1.4), ..stand };
+    let watched = [Joint::LeftUpperArm, Joint::RightUpperArm, Joint::LeftLowerArm, Joint::RightLowerArm, Joint::UpperChest];
+    let mut worst = (0.0f32, Joint::UpperChest);
+    let mut check = |o: &BodyOutput| {
+        for j in watched {
+            let d = pos(o, j).distance(pos(&still, j));
+            if d > worst.0 {
+                worst = (d, j);
+            }
+        }
+    };
+    for o in run(&mut s, 3.0, |_| walking) {
+        check(&o);
+    }
+    for o in run(&mut s, 1.5, |_| stand) {
+        check(&o);
+    }
+    eprintln!("stick walking: the arms moved {:.1} cm at most ({:?})", worst.0 * 100.0, worst.1);
+    assert!(worst.0 < 0.01, "stick walking moved {:?} {:.1} cm", worst.1, worst.0 * 100.0);
+}

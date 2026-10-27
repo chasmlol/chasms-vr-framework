@@ -51,9 +51,11 @@ impl Chain {
     }
 
     /// Moves the hips down by `dy` (up when negative) and spreads the change over the spine, so it
-    /// stretches or compresses instead of the feet leaving the floor.
+    /// stretches or compresses instead of the feet leaving the floor. The upper chest stays: the
+    /// shoulders, and with them the arms, are the player's own, which a walking gait (or a stretch
+    /// for the feet) mustn't move.
     pub fn shift_hips(&mut self, dy: f32) {
-        for (i, share) in [1.0, 0.75, 0.5, 0.25].into_iter().enumerate() {
+        for (i, share) in [1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0].into_iter().enumerate() {
             self.pos[i].y -= dy * share;
         }
         self.refresh_frames();
