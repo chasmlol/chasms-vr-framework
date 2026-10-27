@@ -461,6 +461,14 @@
 #define RVR_OBJ_MELEE 5
 
 /**
+ * Something a valve works, drawn by the runtime ([`OBJF_RUNTIME_DRAWS`]): a gate a wheel winds up.
+ * It stands at its spawn pose (its model at `model_pos` / `model_rot`); its part on `turn_bone`
+ * moves by `drive_travel` as the valve `driven_by` turns from 0 to `drive_turn`. Not a body the
+ * hands meet: only drawn.
+ */
+#define RVR_OBJ_DRIVEN 7
+
+/**
  * Anything turned by hand on an axle fixed in the world: a valve's wheel, a switch's knob, a lever.
  * Centre and axis (+Z) its spawn pose, the rim `radius` out, `mass` its weight, `friction` what
  * it takes to turn, the range it turns in and the clicks it holds in (`turn_min`, `turn_max`,

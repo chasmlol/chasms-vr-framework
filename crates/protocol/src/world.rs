@@ -352,13 +352,25 @@ pub struct ObjectDesc {
     /// the rest of the model stays where `spawn_pose` and `model_pos` / `model_rot` put it (the
     /// game's own mechanism, drawn by the runtime: the switch's box, its knob turned by the hand).
     pub turn_bone: u32,
-    pub _p_turn: [u32; 3],
+    /// Driven things ([`OBJ_DRIVEN`]): the [`ObjectDesc::id`] of the valve that works it, and how
+    /// far that valve turns (radians) to work it all the way; its part on `turn_bone` then moves by
+    /// `drive_travel` (object space, metres), in step with the valve.
+    pub driven_by: u32,
+    pub drive_turn: f32,
+    pub _p_drive: u32,
+    pub drive_travel: [f32; 3],
+    pub _p_travel: f32,
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;
 pub const OBJ_MAGAZINE: u32 = 3;
 pub const OBJ_THROWABLE: u32 = 4;
 pub const OBJ_MELEE: u32 = 5;
+/// Something a valve works, drawn by the runtime ([`OBJF_RUNTIME_DRAWS`]): a gate a wheel winds up.
+/// It stands at its spawn pose (its model at `model_pos` / `model_rot`); its part on `turn_bone`
+/// moves by `drive_travel` as the valve `driven_by` turns from 0 to `drive_turn`. Not a body the
+/// hands meet: only drawn.
+pub const OBJ_DRIVEN: u32 = 7;
 /// Anything turned by hand on an axle fixed in the world: a valve's wheel, a switch's knob, a lever.
 /// Centre and axis (+Z) its spawn pose, the rim `radius` out, `mass` its weight, `friction` what
 /// it takes to turn, the range it turns in and the clicks it holds in (`turn_min`, `turn_max`,
@@ -889,7 +901,7 @@ const _: () = {
     assert!(size_of::<HandState>() == 48);
     assert!(size_of::<RtBody>() == 32 + 32 * JOINT_COUNT + 64 + 96);
     assert!(OFF_BODY + size_of::<RtBody>() <= OFF_OBJECTS);
-    assert!(size_of::<ObjectDesc>() == 400);
+    assert!(size_of::<ObjectDesc>() == 416);
     assert!(size_of::<ObjectState>() == 96);
     assert!(size_of::<GamePose>() == 48);
     assert!(OFF_GAME_POSES.is_multiple_of(64));

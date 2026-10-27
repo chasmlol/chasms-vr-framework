@@ -731,7 +731,8 @@ impl Rig {
         // Templates first: a gun loads itself from its magazine template as it's added.
         self.templates = descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_TEMPLATE != 0).copied().collect();
         for d in descs {
-            if d.id == 0 || d.flags & OBJF_TEMPLATE != 0 {
+            // (A driven thing is only drawn: no body, nothing the hands meet.)
+            if d.id == 0 || d.flags & OBJF_TEMPLATE != 0 || d.kind == OBJ_DRIVEN {
                 continue;
             }
             seen.push(d.id);

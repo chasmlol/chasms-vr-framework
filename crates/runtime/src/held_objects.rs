@@ -147,8 +147,8 @@ pub fn part_points(model: &rustvr_asset::Model, parts: &[HeldPart], part: usize,
 pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32, turn_bone: u32) -> anyhow::Result<Loaded> {
     use anyhow::Context;
     let (game, key) = rustvr_guns::desc::parse_model_name(name).with_context(|| format!("{name:?} isn't <game>/<asset key>"))?;
-    if kind == OBJ_VALVE {
-        // A mechanism: what stays put, and what the hand turns.
+    if kind == OBJ_VALVE || kind == OBJ_DRIVEN {
+        // A mechanism: what stays put, and what the hand turns (or the valve moves).
         let dir = root.join(game);
         let model = rustvr_asset::load_model(&dir, key)?;
         anyhow::ensure!((turn_bone as usize) < model.bones.len(), "{name} has no bone {turn_bone}");
@@ -194,6 +194,16 @@ pub fn valve_places(d: &ObjectDesc, angle: f32) -> Vec<Option<Mat4>> {
     let at = Mat4::from_rotation_translation(quat(d.spawn_pose.rot), Vec3::from_array(d.spawn_pose.pos));
     let angle = if angle.is_finite() { angle } else { 0.0 };
     vec![Some(at * model_place(d)), Some(at * Mat4::from_rotation_z(angle) * model_place(d))]
+}
+
+/// Where a driven thing's two parts go (the game's world): what stays put where the game has the
+/// model, what moves (a gate) `drive_travel` along as far as its valve has turned towards
+/// `drive_turn` (`angle`).
+pub fn driven_places(d: &ObjectDesc, angle: f32) -> Vec<Option<Mat4>> {
+    let at = Mat4::from_rotation_translation(quat(d.spawn_pose.rot), Vec3::from_array(d.spawn_pose.pos));
+    let share = if d.drive_turn > 0.0 && angle.is_finite() { (angle / d.drive_turn).clamp(0.0, 1.0) } else { 0.0 };
+    let moved = Mat4::from_translation(Vec3::from_array(d.drive_travel) * share);
+    vec![Some(at * model_place(d)), Some(at * moved * model_place(d))]
 }
 
 /// Where each part of an object of `w` goes (tracking space), for its description's kind, its
@@ -287,6 +297,15 @@ impl HeldObjects {
                 None => vec![Some(object * model_place(d))],
             };
             self.placed.push(Placed { name: name.to_string(), parts, world, hand });
+        }
+        // What the valves work (a gate), with them.
+        for d in descs.iter().filter(|d| d.id != 0 && d.kind == OBJ_DRIVEN && d.flags & OBJF_RUNTIME_DRAWS != 0) {
+            let name = name_str(&d.name);
+            if !matches!(self.models.get(name), Some(Some(_))) {
+                continue;
+            }
+            let angle = states.states[..(states.count as usize).min(MAX_OBJECTS)].iter().find(|s| s.desc == d.driven_by && s.id != 0).map_or(0.0, |s| s.slide);
+            self.placed.push(Placed { name: name.to_string(), parts: driven_places(d, angle), world: true, hand: None });
         }
         self.place(map);
     }
@@ -386,6 +405,19 @@ impl HeldObjects {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gate a valve winds up: its moving part goes up as far as the valve has turned of the way.
+    #[test]
+    fn a_driven_gate_goes_up_with_its_valve() {
+        let mut d: ObjectDesc = bytemuck::Zeroable::zeroed();
+        d.kind = OBJ_DRIVEN;
+        d.spawn_pose = Pose { pos: [10.0, 0.0, 0.0], valid: 1, rot: Quat::IDENTITY.to_array() };
+        d.model_rot = Quat::IDENTITY.to_array();
+        (d.drive_turn, d.drive_travel) = (4.0, [0.0, 1.7, 0.0]);
+        let y = |angle: f32| driven_places(&d, angle)[1].unwrap().transform_point3(Vec3::ZERO).y;
+        assert!(y(0.0).abs() < 1e-6 && (y(2.0) - 0.85).abs() < 1e-5 && (y(9.0) - 1.7).abs() < 1e-5 && y(-1.0).abs() < 1e-6);
+        assert_eq!(driven_places(&d, 2.0)[0].unwrap().transform_point3(Vec3::ZERO), Vec3::new(10.0, 0.0, 0.0), "its frame stays put");
+    }
 
     /// A switch: a box (bone 0) and a knob on bone 1, with a pointer on bone 2 hung from the knob.
     /// The knob and what hangs from it turn; the box stays.
