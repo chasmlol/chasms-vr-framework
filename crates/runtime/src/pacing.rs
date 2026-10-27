@@ -41,7 +41,24 @@ pub struct Pacing {
     timers: Vec<Timer>,
     next: usize,
     open: Option<usize>,
+    /// Time spent waiting each frame (ms), by what for (`Wait`).
+    waits: [Vec<f32>; WAITS],
 }
+
+/// What the runtime's frame can wait on.
+#[derive(Clone, Copy)]
+pub enum Wait {
+    /// The headset's next frame (xrWaitFrame).
+    Headset = 0,
+    /// The game's picture (its slot, held while the game draws into it).
+    Picture = 1,
+    /// An image of the headset's to draw into (xrWaitSwapchainImage).
+    Image = 2,
+    /// Handing the frame to the headset (xrEndFrame).
+    Submit = 3,
+}
+const WAITS: usize = 4;
+const WAIT_NAMES: [&str; WAITS] = ["the headset's frame", "the game's picture", "a headset image", "handing the frame over"];
 
 fn query(gpu: &Gpu, kind: D3D11_QUERY) -> Result<ID3D11Query> {
     let mut q = None;
@@ -95,6 +112,7 @@ impl Pacing {
             timers,
             next: 0,
             open: None,
+            waits: Default::default(),
         })
     }
 
@@ -159,6 +177,11 @@ impl Pacing {
         self.warped += warped as u32;
     }
 
+    /// Waited `ms` on `what` this frame.
+    pub fn wait(&mut self, what: Wait, ms: f32) {
+        self.waits[what as usize].push(ms);
+    }
+
     /// The game's stereo picture couldn't be moved to this frame: it came without its depth (the
     /// linear kind), or without where its eyes were in the world.
     pub fn not_moved(&mut self, no_depth: bool, no_map: bool) {
@@ -208,6 +231,13 @@ impl Pacing {
             self.no_depth,
             self.no_map
         );
+        let mut line = line;
+        line.push_str("; waited on");
+        for (k, v) in self.waits.iter_mut().enumerate() {
+            let m = mean(v);
+            line.push_str(&format!(" {} {m:.2} ms (95% under {:.1}, most {:.1}){}", WAIT_NAMES[k], percentile(v, 0.95), percentile(v, 1.0), if k + 1 < WAITS { "," } else { "" }));
+            v.clear();
+        }
         self.since = Some(now);
         (self.frames, self.late, self.pictures, self.with_player, self.framework, self.in_frame, self.warped) = (0, 0, 0, 0, 0, 0, 0);
         (self.no_depth, self.no_map) = (0, 0);

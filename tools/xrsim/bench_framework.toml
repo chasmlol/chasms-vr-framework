@@ -1,0 +1,12 @@
+# The framework on its own (tools/xrsim): rustvr-play with its test range, the emulated headset
+# at the user's size (Virtual Desktop, 3072x3264 an eye) and far faster than any headset, so
+# nothing waits on the display: how fast the runtime and the range can go. The runtime's
+# `pacing:` lines (every 10 s) and the range's log have the numbers.
+duration = 40
+refresh = 2000
+eye_size = [3072, 3264]
+
+[[key]]
+t = 0
+left = { pos = [-0.2, -0.3, 0.3], yaw = 0, pitch = 0, squeeze = 0 }
+right = { pos = [0.2, -0.3, 0.3], yaw = 0, pitch = 0, squeeze = 0 }

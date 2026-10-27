@@ -322,7 +322,10 @@ impl Session {
 
     /// One headset frame. Ok(false) when the backend has finished.
     pub fn step(&mut self) -> Result<bool> {
-        let frame = match self.backend.wait_frame() {
+        let t_wait = std::time::Instant::now();
+        let waited = self.backend.wait_frame();
+        let headset_wait = t_wait.elapsed().as_secs_f32() * 1000.0;
+        let frame = match waited {
             Ok(Some(f)) => f,
             Ok(None) => {
                 self.link.heartbeat_runtime();
@@ -335,6 +338,7 @@ impl Session {
         };
         let now = frame.display_time_ns as f64 * 1e-9;
         self.pacing.frame(frame.display_time_ns, 1.0 / self.backend.refresh_hz().max(30.0) as f64);
+        self.pacing.wait(crate::pacing::Wait::Headset, headset_wait);
         self.link.heartbeat_runtime();
         if let Some(w) = &mut self.spectator
             && !w.pump(&self.gpu)
@@ -1046,10 +1050,14 @@ impl Session {
         menu_mode: bool,
         alive: bool,
     ) -> Result<()> {
+        let t_wait = std::time::Instant::now();
         let eyes = self.backend.eye_targets(&self.gpu)?;
+        self.pacing.wait(crate::pacing::Wait::Image, t_wait.elapsed().as_secs_f32() * 1000.0);
         self.pacing.gpu_begin(&self.gpu);
         let shown = self.shown.and_then(|(slot, info)| self.targets.as_ref().map(|t| (&t.slots[slot], info)));
+        let t_wait = std::time::Instant::now();
         let locked = shown.filter(|(slot, _)| slot.acquire(50));
+        self.pacing.wait(crate::pacing::Wait::Picture, t_wait.elapsed().as_secs_f32() * 1000.0);
         let s = &self.settings.current;
         let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && !menu_mode && alive);
         let framework = self.mech.framework_view && self.rig_active_last;
@@ -1435,7 +1443,9 @@ impl Session {
             }
         }
         self.pacing.gpu_end(&self.gpu);
+        let t_wait = std::time::Instant::now();
         self.backend.submit(&self.gpu, &poses, &fovs)?;
+        self.pacing.wait(crate::pacing::Wait::Submit, t_wait.elapsed().as_secs_f32() * 1000.0);
         if let Some(w) = &self.spectator {
             let now = frame.display_time_ns as f64 * 1e-9;
             if let Some((dir, last)) = &mut self.spectator_capture
