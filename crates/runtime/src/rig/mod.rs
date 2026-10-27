@@ -1170,9 +1170,15 @@ impl Rig {
                 }
                 grips.push((i, *g));
             }
+            // One the game moves itself (a valve on the gate it winds, which the game may let down):
+            // with no hand turning it, where the game has it.
+            let game = (pulls.is_empty() && self.objects[&id].desc.flags & OBJF_GAME_MOVED != 0).then(|| self.game_poses.get(&id).map(|&(_, q)| q)).flatten();
             let o = self.objects.get_mut(&id).unwrap();
             let v = o.valve.as_mut().unwrap();
-            v.step(&pulls, dt, stiffness);
+            match game {
+                Some(q) => v.follow(q, dt),
+                None => v.step(&pulls, dt, stiffness),
+            }
             let (v, body) = (*v, o.body);
             self.physics.move_kinematic(body, v.centre, v.rot());
             for (i, g) in grips {

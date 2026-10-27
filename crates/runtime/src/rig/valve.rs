@@ -16,6 +16,9 @@
 //!   turns it as far as the hand has turned about the axle since it took hold, up to
 //!   [`WRIST_TORQUE`].
 //!
+//! One the game moves itself (`OBJF_GAME_MOVED`: a valve on a gate the game may let down) follows
+//! the game's pose of it ([`Valve::follow`]) whenever no hand is turning it.
+//!
 //! Either way each hand adds its own: a light one follows the hand, a stiff one needs both hands
 //! or won't give, and the hand stays on it (the ghost shows where the controller is). It may turn
 //! within a range only (`turn_min`..`turn_max`, a switch's quarter turn), clicking into either end
@@ -38,6 +41,8 @@ pub const TWIST_RADIUS: f32 = 0.06;
 /// Within this far (radians) of a click it pulls into it, and how stiffly (N m per radian).
 const DETENT_ZONE: f32 = 0.3;
 const DETENT_SPRING: f32 = 40.0;
+/// The fastest (rad/s) one the game moves goes where the game has it.
+pub const GAME_FOLLOW: f32 = 6.0;
 /// How far from the rim (metres) a palm takes hold of it.
 pub const REACH: f32 = 0.1;
 const SUBSTEPS: usize = 4;
@@ -163,6 +168,20 @@ impl Valve {
         shape.iter().map(|&q| (q, q.distance(local))).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap_or_else(|| self.nearest(p))
     }
 
+    /// Towards the game's pose of it (`rot`, its rotation in the world): turned as far as that is
+    /// about its axle (the nearest way round), no faster than [`GAME_FOLLOW`], within its range.
+    pub fn follow(&mut self, rot: Quat, dt: f32) {
+        let rel = self.base.inverse() * rot;
+        let raw = 2.0 * rel.z.atan2(rel.w);
+        let off = (raw - self.angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        let step = off.clamp(-GAME_FOLLOW * dt, GAME_FOLLOW * dt);
+        self.angle += step;
+        if self.limited() {
+            self.angle = self.angle.clamp(self.min, self.max);
+        }
+        self.vel = if dt > 0.0 { step / dt } else { 0.0 };
+    }
+
     /// One step: each gripping hand pulls or twists (each its own: two hands, twice the force),
     /// its clicks pull it in, friction holds or drags, and its range stops it. `stiffness` scales
     /// its friction and clicks (the player's setting: 1 as the game made it).
@@ -223,6 +242,27 @@ impl Valve {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One the game moves goes where the game has it, the nearest way round and no faster than it
+    /// may.
+    #[test]
+    fn a_valve_the_game_moves_follows_it() {
+        let mut v = Valve::new(Vec3::ZERO, Quat::IDENTITY, 0.3, 3.0, 4.0).with_range(0.0, 5.5, 0.0);
+        v.angle = 3.0;
+        // The game has it at 2.5 (turned back: its gate let down).
+        for _ in 0..90 {
+            v.follow(Quat::from_rotation_z(2.5), 1.0 / 90.0);
+        }
+        assert!((v.angle - 2.5).abs() < 1e-4, "{}", v.angle);
+        // Past half a turn on: unwrapped (5.0 rad, not -1.28).
+        for _ in 0..90 {
+            v.follow(Quat::from_rotation_z(5.0), 1.0 / 90.0);
+        }
+        assert!((v.angle - 5.0).abs() < 1e-4, "{}", v.angle);
+        // Not faster than it may.
+        v.follow(Quat::from_rotation_z(3.0), 0.1);
+        assert!((v.angle - (5.0 - GAME_FOLLOW * 0.1)).abs() < 1e-4);
+    }
 
     /// A switch's handle sticking out one way from the hub: the hand takes it on the handle, not
     /// on a circle round the hub; and holds that point of it as it turns.
