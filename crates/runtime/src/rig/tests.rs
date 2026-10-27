@@ -2309,6 +2309,37 @@ fn turn_valve(s: &mut Sim, centre: Vec3, radius: f32) {
 }
 
 #[test]
+fn a_switch_knob_is_twisted_on_by_the_wrist_and_clicks_in() {
+    // A rotary switch: a 3 cm knob on the wall ahead, a quarter turn from off to on.
+    let centre = Vec3::new(0.25, 1.3, 0.55);
+    let mut d = valve_desc(44, centre, 0.03, 0.05);
+    (d.turn_min, d.turn_max, d.detent) = (0.0, std::f32::consts::FRAC_PI_2, 0.8);
+    let mut s = Sim::with(&[d]);
+    s.step(5);
+    assert!(s.rig.objects[&44].valve.unwrap().twist, "that small, it's twisted");
+    s.move_hand(1, centre + Vec3::new(0.0, 0.03, -0.15), 30);
+    s.move_hand(1, centre + Vec3::new(0.0, 0.03, -0.03), 20);
+    s.grip(1, 1.0);
+    s.step(20);
+    assert!(s.state(44).flags & OS_HELD_RIGHT != 0, "the hand has the knob");
+    // The wrist turns a quarter turn and a bit about the knob's axle (towards the player).
+    let axis = s.rig.objects[&44].valve.unwrap().axis();
+    for k in 1..=45 {
+        let a = 1.8 * k as f32 / 45.0;
+        s.set_rot(1, Quat::from_axis_angle(axis, a));
+        s.step(1);
+    }
+    s.step(30);
+    let on = s.state(44).slide;
+    assert!((on - std::f32::consts::FRAC_PI_2).abs() < 0.02, "turned on, to its stop: {on}");
+    // Let go: it stays on, clicked in.
+    s.grip(1, 0.0);
+    s.step(90);
+    let still = s.state(44).slide;
+    assert!((still - std::f32::consts::FRAC_PI_2).abs() < 0.03, "and stays on: {still}");
+}
+
+#[test]
 fn a_valve_turns_with_the_hand_on_its_rim() {
     let centre = Vec3::new(0.3, 1.2, 0.6);
     let mut s = Sim::with(&[valve_desc(40, centre, 0.2, 0.5)]);

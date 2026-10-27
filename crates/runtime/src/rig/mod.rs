@@ -802,7 +802,10 @@ impl Rig {
                 seat_armed: true,
                 throw: ThrowState::new(&d),
                 hang: None,
-                valve: (d.kind == OBJ_VALVE).then(|| valve::Valve { max_speed: d.fire_rate.max(0.0), ..valve::Valve::new(pos, rot, d.radius, d.mass, d.friction) }),
+                valve: (d.kind == OBJ_VALVE).then(|| {
+                    let v = valve::Valve::new(pos, rot, d.radius, d.mass, d.friction).with_range(d.turn_min, d.turn_max, d.detent);
+                    valve::Valve { max_speed: d.fire_rate.max(0.0), twist: v.twist || d.joint_flags & JOINT_TWIST != 0, ..v }
+                }),
             },
         );
         // A valve's wheel turns on its axle, never anywhere else.
@@ -1130,22 +1133,37 @@ impl Rig {
         }
     }
 
-    /// Turns the valves: each by the hands on its rim (pulling towards their controllers) against
-    /// its friction, and puts its wheel and those hands where it's turned to (a hand that's just
+    /// Turns the valves: each by the hands on it (cranking its rim towards their controllers, or
+    /// twisting it as far as their wrists have turned) against its friction (`stiffness`: the
+    /// player's setting), and puts it and those hands where it's turned to (a hand that's just
     /// taken hold on its way there over `transition` seconds).
-    fn valves(&mut self, dt: f32, transition: f32) {
+    fn valves(&mut self, dt: f32, transition: f32, stiffness: f32) {
         let ids: Vec<u32> = self.objects.iter().filter(|(_, o)| o.valve.is_some()).map(|(id, _)| *id).collect();
         for id in ids {
-            let hands = self.hands.as_ref();
-            let grips: Vec<(usize, valve::ValveGrip, Vec3)> = hands
-                .map(|hs| hs.iter().enumerate().filter_map(|(i, h)| h.valve.filter(|g| g.id == id).map(|g| (i, g, h.target.0))).collect())
-                .unwrap_or_default();
+            let Some(v) = self.objects[&id].valve else { continue };
+            // A wrist's turn about the axle since it took hold (unwrapped, so turning past half a
+            // turn goes on rather than flipping round).
+            let mut pulls = Vec::new();
+            let mut grips: Vec<(usize, valve::ValveGrip)> = Vec::new();
+            for (i, h) in self.hands.iter_mut().flatten().enumerate() {
+                let Some(g) = h.valve.as_mut().filter(|g| g.id == id) else { continue };
+                if v.twist {
+                    let w = v.wrist(h.target.1);
+                    let d = (w - g.wrist + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                    g.twisted += d;
+                    g.wrist = w;
+                    pulls.push(valve::Pull::Twist { to: g.turn0 + g.twisted });
+                } else {
+                    pulls.push(valve::Pull::Rim { at: g.at, toward: h.target.0 });
+                }
+                grips.push((i, *g));
+            }
             let o = self.objects.get_mut(&id).unwrap();
             let v = o.valve.as_mut().unwrap();
-            v.step(&grips.iter().map(|(_, g, c)| (g.at, *c)).collect::<Vec<_>>(), dt);
+            v.step(&pulls, dt, stiffness);
             let (v, body) = (*v, o.body);
             self.physics.move_kinematic(body, v.centre, v.rot());
-            for (i, g, _) in grips {
+            for (i, g) in grips {
                 let h = &self.hands.as_ref().unwrap()[i];
                 let b = h.body;
                 let (p, q) = (v.rim(g.at), (v.rot() * g.rot).normalize());
@@ -1532,7 +1550,8 @@ impl Rig {
                 let from = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
                 let now = self.now;
                 let h = &mut self.hands.as_mut().unwrap()[i];
-                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now });
+                let wrist = v.wrist(h.target.1);
+                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now, turn0: v.angle, twisted: 0.0, wrist });
                 let c = h.collider;
                 self.physics.set_groups(c, groups_none());
                 self.emit(Cue::Grab, Some(i), Some(id), v.rim(at), 0.7);
@@ -2999,7 +3018,7 @@ impl Rig {
                 Holder::Stuck { .. } | Holder::Gone => {}
             }
         }
-        self.valves(dt, s.interaction.grab_transition);
+        self.valves(dt, s.interaction.grab_transition, s.interaction.mechanism_stiffness);
         // Empty hands follow their controllers; past the leash they snap back, unless the
         // controller is through the world (a wall, the floor): then the hand stays against it.
         let now = self.now;

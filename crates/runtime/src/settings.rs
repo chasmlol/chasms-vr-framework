@@ -221,6 +221,9 @@ pub struct Interaction {
     pub mag_slam_release: bool,
     /// 0 = everything moves with the hand, 1 = heavy things lag (the Boneworks feel).
     pub weight: f32,
+    /// How hard a game's mechanisms (valves, switches, levers) are to turn: their stiffness as the
+    /// game made it times this (0.25: easy, 2: twice as stiff).
+    pub mechanism_stiffness: f32,
     /// Multiplies throw speed (on top of the speed-dependent gain every throw gets).
     pub throw_scale: f32,
     /// How grenades arm: the other hand pulls the pin, or a button on the hand holding it.
@@ -395,6 +398,7 @@ impl Default for Interaction {
             easy_mag: true,
             mag_slam_release: true,
             weight: 0.5,
+            mechanism_stiffness: 1.0,
             throw_scale: 1.0,
             grenade_arming: GrenadeArming::Pin,
             knife_assist: true,

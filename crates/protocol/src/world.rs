@@ -340,15 +340,28 @@ pub struct ObjectDesc {
     pub model_pos: [f32; 3],
     pub _p_model: f32,
     pub model_rot: [f32; 4],
+    /// Valves ([`OBJ_VALVE`]): the angle range it turns in (radians from where it arrives, about
+    /// its +Z; `turn_min == turn_max`: no limit, a wheel), and how hard (N m) it holds in the
+    /// clicks at both ends (0: none): a switch's knob, a lever.
+    pub turn_min: f32,
+    pub turn_max: f32,
+    pub detent: f32,
+    pub joint_flags: u32, // JOINT_*
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;
 pub const OBJ_MAGAZINE: u32 = 3;
 pub const OBJ_THROWABLE: u32 = 4;
 pub const OBJ_MELEE: u32 = 5;
-/// A wheel on an axle fixed in the world, turned by hand: centre and axis (+Z) its spawn pose, the
-/// rim `radius` out, `mass` its weight, `friction` what it takes to turn (`rig::valve`).
+/// Anything turned by hand on an axle fixed in the world: a valve's wheel, a switch's knob, a lever.
+/// Centre and axis (+Z) its spawn pose, the rim `radius` out, `mass` its weight, `friction` what
+/// it takes to turn, the range it turns in and the clicks it holds in (`turn_min`, `turn_max`,
+/// `detent`) and how a hand turns it (`joint_flags`) (`rig::valve`). Its state's `slide` is how
+/// far it's turned: the game reads that to work its own mechanism.
 pub const OBJ_VALVE: u32 = 6;
+/// Valves: a knob, turned by the hand's twist about its axis (a wheel is turned by the hand's place
+/// on its rim). The runtime takes any valve smaller than a hand's grip as one.
+pub const JOINT_TWIST: u32 = 1 << 0;
 
 pub const OBJF_GRABBABLE: u32 = 1 << 0;
 /// Gravity gloves can pull it.
@@ -868,7 +881,7 @@ const _: () = {
     assert!(size_of::<HandState>() == 48);
     assert!(size_of::<RtBody>() == 32 + 32 * JOINT_COUNT + 64 + 96);
     assert!(OFF_BODY + size_of::<RtBody>() <= OFF_OBJECTS);
-    assert!(size_of::<ObjectDesc>() == 368);
+    assert!(size_of::<ObjectDesc>() == 384);
     assert!(size_of::<ObjectState>() == 96);
     assert!(size_of::<GamePose>() == 48);
     assert!(OFF_GAME_POSES.is_multiple_of(64));

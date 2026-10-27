@@ -461,10 +461,19 @@
 #define RVR_OBJ_MELEE 5
 
 /**
- * A wheel on an axle fixed in the world, turned by hand: centre and axis (+Z) its spawn pose, the
- * rim `radius` out, `mass` its weight, `friction` what it takes to turn (`rig::valve`).
+ * Anything turned by hand on an axle fixed in the world: a valve's wheel, a switch's knob, a lever.
+ * Centre and axis (+Z) its spawn pose, the rim `radius` out, `mass` its weight, `friction` what
+ * it takes to turn, the range it turns in and the clicks it holds in (`turn_min`, `turn_max`,
+ * `detent`) and how a hand turns it (`joint_flags`) (`rig::valve`). Its state's `slide` is how
+ * far it's turned: the game reads that to work its own mechanism.
  */
 #define RVR_OBJ_VALVE 6
+
+/**
+ * Valves: a knob, turned by the hand's twist about its axis (a wheel is turned by the hand's place
+ * on its rim). The runtime takes any valve smaller than a hand's grip as one.
+ */
+#define RVR_JOINT_TWIST (1 << 0)
 
 #define RVR_OBJF_GRABBABLE (1 << 0)
 

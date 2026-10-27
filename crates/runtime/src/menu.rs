@@ -401,6 +401,7 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
     ui.checkbox(&mut h.mag_slam_release, "Seating a magazine drops a locked slide");
     slider(ui, "Grab reach", &mut h.grab_radius, 0.03, 0.15, " m", 2);
     slider(ui, "Weight (heavy things lag)", &mut h.weight, 0.0, 1.0, "", 2);
+    slider(ui, "Mechanisms' stiffness (valves, switches)", &mut h.mechanism_stiffness, 0.25, 2.0, "x", 2);
     slider(ui, "Throw strength", &mut h.throw_scale, 0.6, 2.0, "x", 2);
     ui.horizontal(|ui| {
         ui.label("Grenades");
