@@ -149,6 +149,9 @@ struct Obj {
     hovered: bool,
     /// Ignore the hands until then (just thrown).
     hands_off_until: f64,
+    /// A hand has had it (held or pulled): a game's prop the runtime draws stays the runtime's to
+    /// draw from then on ([`OS_RUNTIME_DRAWN`]).
+    handled: bool,
     /// Touching the world or another object (a held one knocking into something is felt).
     in_contact: bool,
     /// Held: where the player's walk and turn take it this step, and the share of its velocity the
@@ -653,14 +656,15 @@ impl Rig {
             };
             tints.insert(o.collider, c);
         }
-        // Left out: the hands' and fingers' colliders (the body is drawn there), and what the
-        // runtime draws itself (a gun, its magazines: drawn as their low-poly selves instead).
+        // Left out: the hands' and fingers' colliders (the body is drawn there), and the guns and
+        // magazines the runtime draws itself (drawn as their low-poly selves instead; a game's prop
+        // it draws while in a hand is drawn here as its collision, like any other).
         let mut skip: std::collections::HashSet<ColliderHandle> = std::collections::HashSet::new();
         for h in self.hands.iter().flatten() {
             skip.insert(h.collider);
             skip.extend(h.fingers.iter().filter_map(|f| self.physics.collider_of(*f)));
         }
-        skip.extend(self.objects.values().filter(|o| o.desc.flags & OBJF_RUNTIME_DRAWS != 0).map(|o| o.collider));
+        skip.extend(self.objects.values().filter(|o| o.desc.flags & OBJF_RUNTIME_DRAWS != 0 && o.desc.kind != OBJ_PROP).map(|o| o.collider));
         self.physics.surface_triangles(
             |h, c| (!skip.contains(&h)).then(|| tints.get(&h).copied().unwrap_or(if c.parent().is_some() { [0.75, 0.75, 0.75] } else { [0.55, 0.57, 0.62] })),
             out,
@@ -784,6 +788,7 @@ impl Rig {
                 weapon,
                 hovered: false,
                 hands_off_until: 0.0,
+                handled: false,
                 in_contact: false,
                 carry: None,
                 carried: (Vec3::ZERO, Vec3::ZERO),
@@ -1628,6 +1633,7 @@ impl Rig {
         (o.carry, o.carried) = (None, (Vec3::ZERO, Vec3::ZERO));
         o.through = false;
         o.holder = Holder::Held(i);
+        o.handled = true;
         o.hovered = false;
         if let Some(t) = &mut o.throw {
             t.flight = None;
@@ -2772,6 +2778,7 @@ impl Rig {
                     let (dur, g) = alyx_pull(p.distance(palm));
                     let o = self.objects.get_mut(&id).unwrap();
                     o.holder = Holder::Pulled { hand: i, t0: now, dur, gravity: g };
+                    o.handled = true;
                     // (A game's own prop followed the game until now: the runtime's while it flies.)
                     self.physics.set_kinematic(body, false);
                     self.physics.set_gravity(body, g / GRAVITY);
@@ -3227,8 +3234,8 @@ impl Rig {
             if hovered.contains(id) {
                 flags |= OS_HOVERED;
             }
-            // A game's prop in a hand, or flying to one: drawn with the hands (the game hides its).
-            if o.desc.kind == OBJ_PROP && o.desc.flags & OBJF_RUNTIME_DRAWS != 0 && matches!(o.holder, Holder::Held(_) | Holder::Pulled { .. }) {
+            // A game's prop a hand has had: drawn by the runtime from then on (the game hides its).
+            if o.desc.kind == OBJ_PROP && o.desc.flags & OBJF_RUNTIME_DRAWS != 0 && (o.handled || matches!(o.holder, Holder::Held(_) | Holder::Pulled { .. })) {
                 flags |= OS_RUNTIME_DRAWN;
             }
             // The hands on a valve's rim have it.

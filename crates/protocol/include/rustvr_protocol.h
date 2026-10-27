@@ -490,8 +490,8 @@
  * (`metro2033/wpn_2012`); the game doesn't. A weapon is drawn with its moving parts where its
  * [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
  * (or round) part, in place (magazine space is the gun's). A prop ([`OBJ_PROP`]) the game draws
- * is the runtime's to draw only while it's in the runtime's hands ([`OS_RUNTIME_DRAWN`]), its
- * model at [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece.
+ * is the runtime's to draw once a hand has had it ([`OS_RUNTIME_DRAWN`]), its model at
+ * [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece.
  */
 #define RVR_OBJF_RUNTIME_DRAWS (1 << 6)
 
@@ -771,9 +771,10 @@
 #define RVR_OS_ACTION_OPEN (1 << 15)
 
 /**
- * A prop with [`OBJF_RUNTIME_DRAWS`] a hand holds or pulls: the runtime draws it with the hands,
- * so the game hides its own. (The runtime goes on drawing it for [`RUNTIME_DRAW_TAIL`] seconds
- * after the flag goes, while the game shows its own again.)
+ * A prop with [`OBJF_RUNTIME_DRAWS`] a hand has had (holds, pulls or once did): the runtime draws
+ * it, so the game hides its own. (A game may not draw a thing moved from where its level put it:
+ * Metro files its clutter under the part of the level it starts in.) If the flag goes, the
+ * runtime goes on drawing it for [`RUNTIME_DRAW_TAIL`] seconds while the game shows its own again.
  */
 #define RVR_OS_RUNTIME_DRAWN (1 << 16)
 

@@ -363,8 +363,8 @@ pub const OBJF_TEMPLATE: u32 = 1 << 5;
 /// (`metro2033/wpn_2012`); the game doesn't. A weapon is drawn with its moving parts where its
 /// [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
 /// (or round) part, in place (magazine space is the gun's). A prop ([`OBJ_PROP`]) the game draws
-/// is the runtime's to draw only while it's in the runtime's hands ([`OS_RUNTIME_DRAWN`]), its
-/// model at [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece.
+/// is the runtime's to draw once a hand has had it ([`OS_RUNTIME_DRAWN`]), its model at
+/// [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece.
 pub const OBJF_RUNTIME_DRAWS: u32 = 1 << 6;
 /// Weapons: the game keeps this gun's ammunition (Metro's magazine and reserve), so the runtime's
 /// rounds follow the game's instead of being unlimited. The gun arrives (and comes back with each
@@ -621,9 +621,10 @@ pub const OS_SPENT: u32 = 1 << 14;
 /// Weapons: the action is open and won't fire: a break or swing action unlatched, a bolt lifted or
 /// back, a pump back.
 pub const OS_ACTION_OPEN: u32 = 1 << 15;
-/// A prop with [`OBJF_RUNTIME_DRAWS`] a hand holds or pulls: the runtime draws it with the hands,
-/// so the game hides its own. (The runtime goes on drawing it for [`RUNTIME_DRAW_TAIL`] seconds
-/// after the flag goes, while the game shows its own again.)
+/// A prop with [`OBJF_RUNTIME_DRAWS`] a hand has had (holds, pulls or once did): the runtime draws
+/// it, so the game hides its own. (A game may not draw a thing moved from where its level put it:
+/// Metro files its clutter under the part of the level it starts in.) If the flag goes, the
+/// runtime goes on drawing it for [`RUNTIME_DRAW_TAIL`] seconds while the game shows its own again.
 pub const OS_RUNTIME_DRAWN: u32 = 1 << 16;
 /// See [`OS_RUNTIME_DRAWN`].
 pub const RUNTIME_DRAW_TAIL: f32 = 0.15;
