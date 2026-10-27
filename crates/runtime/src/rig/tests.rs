@@ -1001,6 +1001,64 @@ fn a_held_rifle_stays_in_the_hand_when_the_walk_changes_direction() {
 }
 
 #[test]
+fn a_seated_magazine_stays_on_its_gun_on_the_walk() {
+    let mut s = Sim::new();
+    s.map.origin.y += 0.5;
+    s.map.anchor.y += 0.5;
+    s.take_rifle();
+    let mag = s.rig.mag_of(RIFLE).expect("the rifle arrives with a magazine");
+    // The magazine in the gun's own frame, as the state the renderer draws it from has it.
+    let local = |s: &Sim| {
+        let (gp, gq) = s.rig.object_world_pose(RIFLE).unwrap();
+        let (mp, _) = s.rig.object_world_pose(mag).unwrap();
+        gq.inverse() * (mp - gp)
+    };
+    let at_rest = local(&s);
+    let mut worst = 0.0f32;
+    for v in [Vec3::new(0.0, 0.0, 3.5), Vec3::new(3.5, 0.0, 0.0), Vec3::new(-2.0, 0.0, -2.0), Vec3::ZERO] {
+        for _ in 0..30 {
+            s.map.anchor += v * DT;
+            s.step(1);
+            worst = worst.max(local(&s).distance(at_rest));
+        }
+    }
+    assert!(worst < 0.001, "the magazine shook {:.1} mm against its gun", worst * 1000.0);
+}
+
+#[test]
+fn both_hands_on_the_gun_stay_put_on_the_walk() {
+    // Held in both hands (the support hand on the foregrip), controllers still: walking off,
+    // swinging round and stopping, the hands the renderer draws and the gun stay where they are
+    // in the player's own space.
+    let mut s = Sim::new();
+    s.map.origin.y += 0.5;
+    s.map.anchor.y += 0.5;
+    s.take_rifle();
+    let fore = s.pos(RIFLE) + s.rot(RIFLE) * v3(rifle().foregrip);
+    s.move_hand(0, s.map.inv_point(fore), 30);
+    s.grip(0, 1.0);
+    s.step(90);
+    assert!(s.out.primary_weapon.unwrap().two_handed, "both hands on it");
+    let seen = |s: &Sim| {
+        let (gp, _) = s.rig.object_world_pose(RIFLE).unwrap();
+        [v3(s.out.hands[0].pose.pos), v3(s.out.hands[1].pose.pos), s.map.inv_point(gp)]
+    };
+    let at_rest = seen(&s);
+    let mut worst = [0.0f32; 3];
+    for v in [Vec3::new(0.0, 0.0, 3.5), Vec3::new(3.5, 0.0, 0.0), Vec3::new(-2.0, 0.0, -2.0), Vec3::ZERO] {
+        for _ in 0..30 {
+            s.map.anchor += v * DT;
+            s.step(1);
+            for (k, p) in seen(&s).iter().enumerate() {
+                worst[k] = worst[k].max(p.distance(at_rest[k]));
+            }
+        }
+    }
+    let mm = worst.map(|w| (w * 1000.0).round());
+    assert!(worst.iter().all(|w| *w < 0.003), "moved on the walk (mm): support hand {}, firing hand {}, gun {}", mm[0], mm[1], mm[2]);
+}
+
+#[test]
 fn a_held_rifle_scraping_a_wall_on_the_walk_slides_along_it() {
     let mut s = Sim::new();
     // The same mapping, written as a game would (the rig takes an all-zero one as none yet).

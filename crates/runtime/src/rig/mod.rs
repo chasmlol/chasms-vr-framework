@@ -1956,6 +1956,7 @@ impl Rig {
     /// kicked by recoil.
     fn gun_target(&mut self, id: u32, hand: usize, settings: &Settings, dt: f32) -> (Vec3, Quat) {
         let w = &settings.weapon;
+        let map = self.map;
         let hands = self.hands.as_mut().unwrap();
         let (palm, _) = hands[hand].target;
         let aim = hands[hand].aim_rot;
@@ -1978,10 +1979,13 @@ impl Rig {
         };
         // Two-handed: pivot about the firing hand so the foregrip line runs through the (steadied)
         // support hand, wherever along it the hand is (twice: the closest point moves as it turns).
+        // Steadied in the player's own space, where only the controller moves: in the world the
+        // walk moves it too, and the filter lagging the walk swung the gun (and the support hand
+        // on it) whenever the walk set off, stopped or turned.
         let support = if hands[hand ^ 1].support == Some(id) { Some(hand ^ 1) } else { None };
         if let Some(sh) = support {
-            let raw = hands[sh].target.0;
-            let steady = hands[sh].euro.filter(raw, dt);
+            let raw = hands[sh].grip_t.0;
+            let steady = map.point(hands[sh].euro.filter(raw, dt));
             let grip_w = pos + rot * grip;
             for _ in 0..2 {
                 let on_line = pos + rot * foregrip_point(&o.desc, rot.inverse() * (steady - pos));
@@ -2900,17 +2904,8 @@ impl Rig {
                     self.physics.move_kinematic(body, from.0.lerp(p, k), from.1.slerp(q, k));
                 }
                 Holder::InWeapon(wid) => {
-                    let Some((wp, wr)) = self.obj_pose(wid) else { continue };
-                    let w = &self.objects[&wid];
-                    let o = &self.objects[id];
-                    // In a swung-out cylinder it swings out with it.
-                    let angle = self.hinge_angle(wid);
-                    let turn = actions::hinge_rot(&w.desc, angle);
-                    let h = v3(w.desc.handle);
-                    let offset = v3(w.desc.mag_well) - v3(o.desc.mag_well);
-                    let local = if angle > 0.0 { h + turn * (offset - h) } else { offset };
-                    let rot = if angle > 0.0 { (wr * turn).normalize() } else { wr };
-                    self.physics.move_kinematic(o.body, wp + wr * local, rot);
+                    let Some((p, q)) = self.seated_pose(*id, wid) else { continue };
+                    self.physics.move_kinematic(self.objects[id].body, p, q);
                 }
                 Holder::Pulled { hand, t0, dur, gravity } => {
                     let palm = self.hands.as_ref().unwrap()[hand].target.0;
@@ -3010,7 +3005,30 @@ impl Rig {
         }
     }
 
+    /// Where magazine (or round) `id` seated in weapon `wid` is, the weapon where it is now: on its
+    /// mag well (in a swung-out cylinder, swung out with it).
+    fn seated_pose(&self, id: u32, wid: u32) -> Option<(Vec3, Quat)> {
+        let (wp, wr) = self.obj_pose(wid)?;
+        let (w, o) = (self.objects.get(&wid)?, self.objects.get(&id)?);
+        let angle = self.hinge_angle(wid);
+        let turn = actions::hinge_rot(&w.desc, angle);
+        let h = v3(w.desc.handle);
+        let offset = v3(w.desc.mag_well) - v3(o.desc.mag_well);
+        let local = if angle > 0.0 { h + turn * (offset - h) } else { offset };
+        let rot = if angle > 0.0 { (wr * turn).normalize() } else { wr };
+        Some((wp + wr * local, rot))
+    }
+
     fn after_step(&mut self, inp: &RigInput) {
+        // What's seated in a gun goes where the gun is after the step: put there before it, it
+        // trails the gun by however far the step moved it (a walk's few centimetres: a magazine
+        // shaking against its gun on the move).
+        let seated: Vec<(u32, u32)> = self.objects.iter().filter_map(|(id, o)| if let Holder::InWeapon(w) = o.holder { Some((*id, w)) } else { None }).collect();
+        for (id, wid) in seated {
+            if let Some((p, q)) = self.seated_pose(id, wid) {
+                self.physics.set_pose(self.objects[&id].body, p, q);
+            }
+        }
         let ids: Vec<u32> = self.objects.keys().copied().collect();
         let mut impacts = Vec::new();
         for id in ids {
