@@ -1077,16 +1077,17 @@ impl Session {
         }
         let dom = s.dominant();
         // The gun's own laser (the game's attachment, fitted and on), or the runtime's laser sight
-        // from the muzzle when that's turned on.
+        // from the muzzle when that's turned on: drawn with the body, in its depth.
         let gun_laser = out.weapon.as_ref().filter(|_| !menu_mode).and_then(|w| w.laser.or(s.interaction.laser_sight.then_some(w.muzzle)).map(|o| (w, o)));
-        if let Some((w, origin)) = gun_laser {
+        let laser = gun_laser.map(|(w, origin)| {
             // Up to 30 m, or the first thing in the game's collision.
             let hit = self.map_now.and_then(|map| {
                 let o = map.point(origin);
                 self.rig.physics.ray_world(o, map.rot(Quat::IDENTITY) * w.aim_dir, 30.0).map(|d| d / map.world_per_meter)
             });
-            layers.gun_laser = Some(Laser { origin, end: origin + w.aim_dir * hit.unwrap_or(30.0), hit: hit.is_some() });
-        }
+            rustvr_avatar::LaserBeam { from: origin, to: origin + w.aim_dir * hit.unwrap_or(30.0), hit: hit.is_some() }
+        });
+        self.body.set_laser(laser);
         if layout.game_menu.is_some() || layout.runtime_menu.is_some() {
             let hand = &frame.hands[dom];
             if hand.connected != 0 {

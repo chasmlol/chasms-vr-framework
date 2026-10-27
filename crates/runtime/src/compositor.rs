@@ -219,8 +219,6 @@ pub struct Layers<'a> {
     pub lens: Option<LensLayer<'a>>,
     pub panels: Vec<PanelLayer<'a>>,
     pub laser: Option<Laser>,
-    /// A laser sight from the held gun.
-    pub gun_laser: Option<Laser>,
     /// Controller grip poses to mark (when the game isn't drawing hands).
     pub markers: Vec<(Vec3, Quat)>,
     pub comfort: Comfort,
@@ -398,12 +396,6 @@ impl Compositor {
         for (pos, rot) in &layers.markers {
             self.draw_ribbon(gpu, &cb, eye_pos, *pos, *pos + *rot * Vec3::Z * 0.08, 0.012, Vec4::new(0.35, 0.55, 0.65, 0.9));
             self.draw_dot(gpu, &cb, eye_rot, *pos, 0.022, Vec4::new(0.5, 0.7, 0.8, 0.95));
-        }
-        if let Some(l) = &layers.gun_laser {
-            self.draw_ribbon(gpu, &cb, eye_pos, l.origin, l.end, 0.002, Vec4::new(0.9, 0.12, 0.08, 0.6));
-            if l.hit {
-                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.01, Vec4::new(1.0, 0.25, 0.15, 1.0));
-            }
         }
         if let Some(l) = &layers.laser {
             let color = if l.hit { Vec4::new(0.25, 0.75, 1.0, 0.7) } else { Vec4::new(0.25, 0.5, 0.7, 0.35) };

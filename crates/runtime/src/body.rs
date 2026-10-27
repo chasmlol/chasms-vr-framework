@@ -323,6 +323,13 @@ impl PlayerBody {
         self.plain = plain;
     }
 
+    /// The held gun's laser from now on (None: none), drawn with the body.
+    pub fn set_laser(&mut self, laser: Option<rustvr_avatar::LaserBeam>) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.set_laser(laser);
+        }
+    }
+
     /// Draws the body into one eye, with what the runtime draws of what the player holds (`holding`,
     /// see `crate::held_objects`). `light.sun_dir` must already be in tracking space.
     pub fn draw(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw]) {

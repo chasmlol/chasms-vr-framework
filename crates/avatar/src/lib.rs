@@ -191,6 +191,11 @@ impl Avatar {
         self.renderer.set_shading(gpu, shading);
     }
 
+    /// The held gun's laser from now on (None: none), drawn with the player.
+    pub fn set_laser(&mut self, laser: Option<LaserBeam>) {
+        self.renderer.set_laser(laser);
+    }
+
     /// Draws the body into `target` (an sRGB view of one eye's image, `width` x `height`) as seen
     /// from `eye` with `fov`. With `depth`, the body is hidden behind the game's geometry;
     /// without, it's drawn on top.
@@ -321,6 +326,17 @@ pub struct HeldPart {
     pub mesh: usize,
     pub vertices: Vec<u32>,
     pub indices: Vec<u32>,
+}
+
+/// A gun's laser (tracking space): its beam from `from` to `to`, and its dot there when it hits
+/// something (`hit`). Drawn with the player, in the same depth (the gun hides it) and with the
+/// game's look on its light (its tone curve and grading, its fog, and a glow round the dot for
+/// the bloom the game would give it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaserBeam {
+    pub from: glam::Vec3,
+    pub to: glam::Vec3,
+    pub hit: bool,
 }
 
 /// A held model to draw this eye: each of its parts' model space -> tracking space (None: not

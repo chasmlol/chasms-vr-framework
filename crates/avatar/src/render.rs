@@ -18,7 +18,7 @@ use rustvr_gpu::pipeline::{self, Blend, ConstantBuffer, static_buffer};
 use rustvr_gpu::shader::{Program, element};
 use rustvr_gpu::{Gpu, TexDesc, Texture};
 use rustvr_protocol::{BODYVIS_ARMS, BODYVIS_HANDS, Fov, GAME_LIGHTS_MAX, GameLight, Joint, LIGHT_ATLAS_H, LIGHT_ATLAS_W, LUT_SIZE, Pose};
-use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+use windows::Win32::Graphics::Direct3D::{D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
@@ -226,6 +226,69 @@ float3 fogged(float3 c, float3 pv) {
     float g = sqrt(f) * k * k * (3 - 2 * k);
     float3 fc = lerp(fog_away.rgb, fog_color.rgb, saturate(dot(pv / max(d, 1e-4), sun_view.xyz) - 0.5));
     return lerp(c, fc, g);
+}
+
+// A gun's laser: its beam (a strip facing the eye) and its dot (a disc facing the eye, with a glow
+// for the bloom the game would give it), light added over what's there, with the game's tone
+// curve and grading on it and fading into its fog.
+cbuffer Laser : register(b4) {
+    float4 laser_a;      // xyz: the beam's start, w: its half width (m)
+    float4 laser_b;      // xyz: its end (the dot)
+    float4 laser_color;  // rgb: its light at the core (HDR)
+    float4 laser_mode;   // x: 0 the beam, 1 the dot; y: the dot's glow radius, z: its core's;
+                         // w: a pixel's width a metre away (the beam is never thinner than 2)
+};
+struct LaserOut {
+    float4 pos : SV_Position;
+    float3 world : TEXCOORD0;
+    float2 uv : TEXCOORD1;
+    float view_z : TEXCOORD2;
+};
+LaserOut VSLaser(uint id : SV_VertexID) {
+    float2 c = float2((id & 1) ? 1 : -1, (id & 2) ? 1 : -1);
+    float3 p;
+    if (laser_mode.x < 0.5) {
+        float3 a = laser_a.xyz, b = laser_b.xyz;
+        float3 q = lerp(a, b, c.y * 0.5 + 0.5);
+        float half_width = max(laser_a.w, length(q - eye_pos.xyz) * laser_mode.w);
+        float3 side = normalize(cross(b - a, eye_pos.xyz - (a + b) * 0.5)) * half_width;
+        p = q + side * c.x;
+    } else {
+        float3 d = normalize(laser_b.xyz - eye_pos.xyz);
+        float3 r = normalize(cross(float3(0, 1, 0), d));
+        float3 u = cross(d, r);
+        // (A little towards the eye, so the surface it lies on doesn't cut it.)
+        p = laser_b.xyz - d * 0.02 + (r * c.x + u * c.y) * laser_mode.y;
+    }
+    LaserOut o;
+    o.pos = mul(view_proj, float4(p, 1));
+    o.world = p;
+    o.uv = c;
+    o.view_z = dot(view_z.xyz, p) + view_z.w;
+    return o;
+}
+float4 PSLaser(LaserOut i) : SV_Target {
+    if (behind_game(i.pos, i.view_z)) discard;
+    float3 light;
+    if (laser_mode.x < 0.5) {
+        light = laser_color.rgb * saturate(1 - i.uv.x * i.uv.x);
+    } else {
+        float r = length(i.uv);
+        float core = 1 - smoothstep(laser_mode.z * 0.6, laser_mode.z, r);
+        light = laser_color.rgb * (core * 6 + exp(-r * r * 6) * 0.8);
+    }
+    // Its light fades into the game's fog as anything there would.
+    float d = length(i.world - eye_pos.xyz);
+    if (atlas.w == 0 && fog_fade.y != 0) {
+        float f = saturate(d * fog_fade.y + fog_fade.x);
+        float k = min(20 * f, 1);
+        light *= 1 - sqrt(f) * k * k * (3 - 2 * k);
+    }
+    // The game's tone curve and grading on the light alone (it's added to what's there).
+    if (atlas.w > 0) return float4(light, 0);
+    float3 tm = m_tonemap(max(light, 0));
+    float4 l = grade_tex.SampleLevel(clamp_samp, saturate(tm).bgr, 0);
+    return float4(max(m_display_to_linear(m_grade(tm, l, lit.w != 0)), 0), 0);
 }
 
 // What an opaque fragment writes in alpha: in the game's HDR picture its view depth (metres), as
@@ -475,6 +538,24 @@ struct Vertex {
     /// x: the game's baked vertex AO (255: none).
     ao: [u8; 4],
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct LaserCb {
+    a: [f32; 4],
+    b: [f32; 4],
+    color: [f32; 4],
+    mode: [f32; 4],
+}
+
+/// A laser's look: its beam's half width (m) and light at the core (HDR, Metro's red), its dot's
+/// core radius and light, and the dot's glow as an angle (radians: it stays the size the game's
+/// bloom would make it, however far the dot is).
+const LASER_HALF_WIDTH: f32 = 0.0015;
+const LASER_BEAM: [f32; 3] = [1.2, 0.05, 0.03];
+const LASER_DOT_CORE: f32 = 0.004;
+const LASER_DOT: [f32; 3] = [1.6, 0.08, 0.04];
+const LASER_GLOW_ANGLE: f32 = 0.02;
 
 /// The player's layer over the game's picture, through the game's lens: at each pixel, the layer
 /// where the lens takes the picture from (its warp: the bloom and lens textures' alphas).
@@ -1047,6 +1128,11 @@ pub struct Renderer {
     in_frame: bool,
     /// Testing: the body, and what it holds, each in one flat colour ([`Renderer::set_flat`]).
     flat: Option<([f32; 3], [f32; 3])>,
+    /// The held gun's laser ([`Renderer::set_laser`]), its pass and light added over what's there.
+    laser: Option<crate::LaserBeam>,
+    laser_program: Program,
+    laser_cb: ConstantBuffer<LaserCb>,
+    additive: ID3D11BlendState,
     /// The player drawn on its own, laid over the picture through the game's lens
     /// ([`Renderer::draw`]): the layer (kept until the size or format changes), and the pass.
     layer: Option<Texture>,
@@ -1092,11 +1178,20 @@ impl Renderer {
             depth: Vec::new(),
             in_frame: false,
             flat: None,
+            laser: None,
+            laser_program: Program::with_entries(gpu, &source, "avatar", "VSLaser", "PSLaser", &[])?,
+            laser_cb: ConstantBuffer::new(gpu)?,
+            additive: additive_blend(gpu)?,
             layer: None,
             through_lens: Program::new(gpu, THROUGH_LENS, "avatar_lens", &[])?,
             lens_cb: ConstantBuffer::new(gpu)?,
             premultiplied: pipeline::blend_state(gpu, Blend::Premultiplied)?,
         })
+    }
+
+    /// The held gun's laser from now on (None: none): drawn with the player.
+    pub fn set_laser(&mut self, laser: Option<crate::LaserBeam>) {
+        self.laser = laser;
     }
 
     /// Draw into the game's own HDR picture, before its post chain (an adapter drawing the player in
@@ -1172,7 +1267,10 @@ impl Renderer {
         };
         let (rtv, srv) = self.layer_for(gpu, target, width, height)?;
         unsafe { gpu.ctx.ClearRenderTargetView(&rtv, &[0.0; 4]) };
-        self.draw_into(gpu, &rtv, width, height, eye, fov, frame, depth, body, arms, draw_body, held, special)?;
+        // (The special draws, a collimator's lens, look through to what's behind them: the eye's
+        // picture, once the player is laid over it.)
+        let game_depth = depth.as_ref().map(|d| (d.srv.clone(), d.units_per_meter));
+        self.draw_into(gpu, &rtv, width, height, eye, fov, frame, depth, body, arms, draw_body, held, None)?;
         let ctx = &gpu.ctx;
         self.lens_cb.update(ctx, &[width as f32, height as f32, 0.0, 0.0]);
         unsafe {
@@ -1190,7 +1288,31 @@ impl Renderer {
             ctx.PSSetShaderResources(0, Some(&[None, None, None]));
             ctx.OMSetRenderTargets(None, None);
         }
+        // What the special draws take, over the eye's picture with the player on it, in the player's
+        // depth (the gun's body hides a collimator's lens where it's in front).
+        if let Some(special) = special {
+            let dsv = self.depth_for(gpu, width, height)?;
+            unsafe { ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv) };
+            self.bind_common(ctx, game_depth.as_ref().map(|d| &d.0), width, height);
+            self.specials(gpu, held, special, eye, fov, width, height, game_depth.as_ref().map(|d| (&d.0, d.1)));
+            unsafe {
+                ctx.PSSetShaderResources(0, Some(&[None, None, None, None, None, None, None]));
+                ctx.OMSetRenderTargets(None, None);
+            }
+        }
         Ok(())
+    }
+
+    /// The special draws of what the hands hold (a collimator's lens, `special`), into what's bound.
+    #[allow(clippy::too_many_arguments)]
+    fn specials(&self, gpu: &Gpu, held: &[crate::HeldDraw], special: &mut dyn FnMut(&crate::SpecialDraw), eye: &Pose, fov: &Fov, width: u32, height: u32, game_depth: Option<(&ID3D11ShaderResourceView, f32)>) {
+        let view_proj = projection(fov) * view_matrix(eye);
+        for h in held {
+            for info in h.model.info.iter().filter(|i| i.special) {
+                let Some(model) = h.parts.get(info.part).copied().flatten() else { continue };
+                special(&crate::SpecialDraw { gpu, key: h.key, mesh: info, model, view_proj, near_far: (NEAR, FAR), eye, fov, width, height, game_depth, shading: self.shading });
+            }
+        }
     }
 
     /// The layer the player is drawn into for [`Renderer::draw`] through the game's lens: the
@@ -1278,26 +1400,7 @@ impl Renderer {
                 self.draw_shaded(ctx, &meshes, ALL);
             }
             if let Some(special) = special.as_mut() {
-                let view_proj = projection(fov) * view_matrix(eye);
-                for h in held.iter() {
-                    for info in h.model.info.iter().filter(|i| i.special) {
-                        let Some(model) = h.parts.get(info.part).copied().flatten() else { continue };
-                        special(&crate::SpecialDraw {
-                            gpu,
-                            key: h.key,
-                            mesh: info,
-                            model,
-                            view_proj,
-                            near_far: (NEAR, FAR),
-                            eye,
-                            fov,
-                            width,
-                            height,
-                            game_depth: depth.as_ref().map(|d| (d.srv, d.units_per_meter)),
-                            shading: self.shading,
-                        });
-                    }
-                }
+                self.specials(gpu, held, &mut **special, eye, fov, width, height, depth.as_ref().map(|d| (d.srv, d.units_per_meter)));
                 // (It may have changed any state.)
                 unsafe {
                     ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
@@ -1322,6 +1425,9 @@ impl Renderer {
                 }
             }
             self.draw_ghosts(ctx, ghost_model, ghost_ready);
+        }
+        if let Some(l) = self.laser.filter(|_| draw_body) {
+            self.draw_laser(ctx, eye, fov, width, &l);
         }
         unsafe {
             ctx.PSSetShaderResources(0, Some(&[None, None, None, None, None, None, None]));
@@ -1575,6 +1681,34 @@ impl Renderer {
     }
 
     /// Translucent hands over everything drawn so far, tested against (but not writing) depth.
+    /// The laser's beam and (when it hits) its dot, in the player's depth (no writes), its light
+    /// added.
+    fn draw_laser(&self, ctx: &ID3D11DeviceContext, eye: &Pose, fov: &Fov, width: u32, l: &crate::LaserBeam) {
+        let pixel = (fov.right - fov.left) / width.max(1) as f32;
+        self.laser_program.bind(ctx);
+        unsafe {
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            ctx.OMSetBlendState(&self.additive, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(&self.depth_test, 0);
+            ctx.RSSetState(&self.two_sided);
+            ctx.VSSetConstantBuffers(4, Some(&[Some(self.laser_cb.buf.clone())]));
+            ctx.PSSetConstantBuffers(4, Some(&[Some(self.laser_cb.buf.clone())]));
+        }
+        let rgb = |c: [f32; 3]| [c[0], c[1], c[2], 0.0];
+        let (from, to) = (l.from.extend(LASER_HALF_WIDTH).to_array(), l.to.extend(0.0).to_array());
+        self.laser_cb.update(ctx, &LaserCb { a: from, b: to, color: rgb(LASER_BEAM), mode: [0.0, 0.0, 0.0, pixel] });
+        unsafe { ctx.Draw(4, 0) };
+        if l.hit {
+            let far = l.to.distance(Vec3::from_array(eye.pos));
+            let glow = (far * LASER_GLOW_ANGLE).max(LASER_DOT_CORE * 3.0);
+            // (Its core never smaller than a couple of pixels.)
+            let core = LASER_DOT_CORE.max(far * pixel * 1.5);
+            self.laser_cb.update(ctx, &LaserCb { a: from, b: to, color: rgb(LASER_DOT), mode: [1.0, glow, (core / glow).min(0.5), pixel] });
+            unsafe { ctx.Draw(4, 0) };
+        }
+        unsafe { ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
+    }
+
     fn draw_ghosts(&self, ctx: &ID3D11DeviceContext, ghost_model: &Character, ghost_ready: [bool; 2]) {
         if !ghost_ready.iter().any(|&r| r) {
             return;
@@ -1734,6 +1868,24 @@ fn clamp_sampler(gpu: &Gpu) -> Result<ID3D11SamplerState> {
     let mut s = None;
     unsafe { gpu.device.CreateSamplerState(&desc, Some(&mut s))? };
     s.context("no sampler")
+}
+
+/// Light added to what's there (a laser's).
+fn additive_blend(gpu: &Gpu) -> Result<ID3D11BlendState> {
+    let rt = D3D11_RENDER_TARGET_BLEND_DESC {
+        BlendEnable: true.into(),
+        SrcBlend: D3D11_BLEND_ONE,
+        DestBlend: D3D11_BLEND_ONE,
+        BlendOp: D3D11_BLEND_OP_ADD,
+        SrcBlendAlpha: D3D11_BLEND_ZERO,
+        DestBlendAlpha: D3D11_BLEND_ONE,
+        BlendOpAlpha: D3D11_BLEND_OP_ADD,
+        RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+    };
+    let desc = D3D11_BLEND_DESC { AlphaToCoverageEnable: false.into(), IndependentBlendEnable: false.into(), RenderTarget: [rt; 8] };
+    let mut s = None;
+    unsafe { gpu.device.CreateBlendState(&desc, Some(&mut s))? };
+    s.context("no blend state")
 }
 
 fn frame_constants(width: u32, height: u32, eye: &Pose, fov: &Fov, frame: &AvatarFrame, depth: Option<&DepthInput>) -> FrameCb {

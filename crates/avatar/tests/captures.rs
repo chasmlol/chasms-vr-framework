@@ -412,3 +412,37 @@ fn the_game_lens_bends_the_player_as_it_bends_the_picture() {
         assert!((c1 - c0 + 0.05 * size.0 as f32).abs() < 3.0, "{name}: bent by {:.1} px", c1 - c0);
     }
 }
+
+#[test]
+fn a_laser_shows_and_whats_nearer_hides_it() {
+    let gpu = Gpu::new().unwrap();
+    let size = (400, 400);
+    // Everything 33 cm away (game depth in centimetres): a wall right at the muzzle.
+    let wall = {
+        let texels = vec![33.0f32; (size.0 * size.1) as usize];
+        Texture::upload(&gpu, size.0, size.1, DXGI_FORMAT_R32_FLOAT, &[bytemuck::cast_slice(&texels)]).unwrap()
+    };
+    let nothing = wall_depth(&gpu, size, 0.0);
+    // Red light: the laser's.
+    let red = |px: &[u8]| px.chunks(4).filter(|p| p[0] as i32 > p[1] as i32 + 40 && p[0] > 60).count();
+    for (name, mut avatar) in avatars(&gpu) {
+        let mut scene = Scene::new(pose::arms_down(HEIGHT), [pose::relaxed_hand(); 2]);
+        scene.first_person = true;
+        let eye = scene.eye();
+        let at = |v: Vec3| Vec3::from_array(eye.pos) + Quat::from_array(eye.rot) * v;
+        // From low right, out along the view to a dot 3 m ahead.
+        avatar.set_laser(Some(rustvr_avatar::LaserBeam { from: at(Vec3::new(0.12, -0.15, 0.3)), to: at(Vec3::new(0.0, 0.0, 3.0)), hit: true }));
+        let mut draw = |depth: &Texture| {
+            let d = DepthInput { srv: depth.srv.as_ref().unwrap(), units_per_meter: 100.0, bloom: None, lens: None };
+            render(&gpu, &mut avatar, size, &eye, &HEADSET, &scene, Backdrop::Plain, Some(d))
+        };
+        let shot = draw(&nothing);
+        save(&format!("{name}_laser"), size, &shot);
+        let open = red(&shot);
+        let walled = red(&draw(&wall));
+        avatar.set_laser(None);
+        eprintln!("{name}: laser {open} red pixels in the open, {walled} with a wall 33 cm away");
+        assert!(open > 200, "{name}: the laser shows ({open} pixels)");
+        assert!(walled * 4 < open, "{name}: the wall hides most of it ({walled} of {open})");
+    }
+}
