@@ -18,6 +18,11 @@
 //! [[capture]]
 //! t = 10
 //! name = "menu"
+//!
+//! [[film]]                 # consecutive frames, saved without holding the app up
+//! t = 20
+//! frames = 120
+//! name = "sweep"
 //! ```
 //!
 //! The control file (`<dir>/control.toml`, reread whenever it changes) holds one key without `t`
@@ -72,6 +77,22 @@ pub struct Capture {
     pub name: String,
 }
 
+/// Consecutive frames, each as it's submitted and without holding the app up (copied on the GPU,
+/// read back a frame or two later), for judging motion frame by frame: `films/<name>/NNN.png`
+/// (both eyes as submitted, a quarter size) and `films/<name>/frames.csv` (each frame's script
+/// time, the submitted eyes' poses and fields of view, the hands and the head).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Film {
+    pub t: f64,
+    pub frames: u32,
+    pub name: String,
+    /// Instead of the whole of each eye a quarter size: this part of it at full size (x, y, width,
+    /// height in the submitted image's pixels), the same for both eyes.
+    #[serde(default)]
+    pub crop: Option<[u32; 4]>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Script {
@@ -92,6 +113,8 @@ pub struct Script {
     pub keys: Vec<Key>,
     #[serde(rename = "capture")]
     pub captures: Vec<Capture>,
+    #[serde(rename = "film")]
+    pub films: Vec<Film>,
 }
 
 impl Default for Script {
@@ -108,6 +131,7 @@ impl Default for Script {
             aim_pitch: 0.0,
             keys: Vec::new(),
             captures: Vec::new(),
+            films: Vec::new(),
         }
     }
 }
@@ -118,6 +142,7 @@ impl Script {
         let mut s: Script = toml::from_str(text).map_err(|e| e.to_string())?;
         s.keys.sort_by(|a, b| a.t.total_cmp(&b.t));
         s.captures.sort_by(|a, b| a.t.total_cmp(&b.t));
+        s.films.sort_by(|a, b| a.t.total_cmp(&b.t));
         Ok(s)
     }
 }

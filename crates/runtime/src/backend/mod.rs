@@ -17,6 +17,9 @@ use rustvr_gpu::Gpu;
 pub struct HmdFrame {
     pub index: u64,
     pub display_time_ns: i64,
+    /// When the frame is shown, in QueryPerformanceCounter ticks (0: not known): the clock the
+    /// game's adapter stamps its state with.
+    pub display_qpc: i64,
     /// Seconds since the previous frame.
     pub dt: f32,
     pub hmd: Pose,

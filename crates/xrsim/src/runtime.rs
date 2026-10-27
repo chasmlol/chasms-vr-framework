@@ -60,6 +60,9 @@ pub(crate) struct Submitted {
 
 pub(crate) struct Rt {
     pub start: Instant,
+    /// `start` on the PC's performance counter, and its ticks a second (XR_KHR_win32_convert_performance_counter_time).
+    start_qpc: i64,
+    qpc_freq: i64,
     /// How long the app's frame loop has been held up by captures (saved inside `xrEndFrame`): the
     /// script's clock stops for them, so a key that falls inside one isn't lost.
     pub stalled: Duration,
@@ -94,6 +97,9 @@ pub(crate) struct Rt {
     pub last_layer_count: u32,
     captures_done: usize,
     pending: Vec<String>,
+    /// The film being taken, and how many of the script's have started.
+    pub film: Option<crate::capture::Film>,
+    films_started: usize,
     status_at: Instant,
     fps_count: u64,
     fps_at: Instant,
@@ -141,8 +147,16 @@ impl Rt {
             None => Script::default(),
         };
         let now = Instant::now();
+        let (mut start_qpc, mut qpc_freq) = (0i64, 1i64);
+        unsafe {
+            use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+            let _ = QueryPerformanceCounter(&mut start_qpc);
+            let _ = QueryPerformanceFrequency(&mut qpc_freq);
+        }
         let mut r = Rt {
             start: now,
+            start_qpc,
+            qpc_freq,
             stalled: Duration::ZERO,
             dir,
             script,
@@ -173,6 +187,8 @@ impl Rt {
             last_layer_count: 0,
             captures_done: 0,
             pending: Vec::new(),
+            film: None,
+            films_started: 0,
             status_at: now,
             fps_count: 0,
             fps_at: now,
@@ -195,6 +211,15 @@ impl Rt {
 
     pub fn now_ns(&self) -> i64 {
         self.start.elapsed().as_nanos() as i64 + 1_000_000_000
+    }
+
+    /// An `XrTime` (see [`Rt::now_ns`]) on the PC's performance counter.
+    fn time_to_qpc(&self, t: i64) -> i64 {
+        self.start_qpc + ((t - 1_000_000_000) as i128 * self.qpc_freq as i128 / 1_000_000_000) as i64
+    }
+
+    fn qpc_to_time(&self, q: i64) -> i64 {
+        ((q - self.start_qpc) as i128 * 1_000_000_000 / self.qpc_freq.max(1) as i128) as i64 + 1_000_000_000
     }
 
     fn handle(&mut self) -> u64 {
@@ -282,6 +307,14 @@ impl Rt {
         {
             self.pending.push(c.name.clone());
             self.captures_done += 1;
+        }
+        if self.film.is_none()
+            && let Some(f) = self.script.films.get(self.films_started)
+            && f.t <= t
+        {
+            self.film = Some(crate::capture::Film::new(&f.name, f.frames, f.crop));
+            self.films_started += 1;
+            self.log(&format!("film {} starts ({} frames)", f.name, f.frames));
         }
         if self.script.duration > 0.0 && t > self.script.duration {
             self.quit = true;
@@ -527,6 +560,8 @@ pub unsafe extern "system" fn get_instance_proc_addr(_instance: xr::Instance, na
     }
     let f = table! {
         "xrGetInstanceProcAddr" => get_instance_proc_addr,
+        "xrConvertTimeToWin32PerformanceCounterKHR" => convert_time_to_qpc,
+        "xrConvertWin32PerformanceCounterToTimeKHR" => convert_qpc_to_time,
         "xrEnumerateInstanceExtensionProperties" => enumerate_instance_extension_properties,
         "xrEnumerateApiLayerProperties" => enumerate_api_layer_properties,
         "xrCreateInstance" => create_instance,
@@ -588,15 +623,31 @@ pub unsafe extern "system" fn get_instance_proc_addr(_instance: xr::Instance, na
 }
 
 unsafe extern "system" fn enumerate_instance_extension_properties(_layer: *const c_char, cap: u32, count: *mut u32, out: *mut xr::ExtensionProperties) -> xr::Result {
+    const EXTS: [(&str, u32); 2] = [("XR_KHR_D3D11_enable", 9), ("XR_KHR_win32_convert_performance_counter_time", 1)];
     unsafe {
-        *count = 1;
+        *count = EXTS.len() as u32;
         if cap == 0 {
             return xr::Result::SUCCESS;
         }
-        let p = &mut *out;
-        copy_str(&mut p.extension_name, "XR_KHR_D3D11_enable");
-        p.extension_version = 9;
+        if (cap as usize) < EXTS.len() {
+            return xr::Result::ERROR_SIZE_INSUFFICIENT;
+        }
+        for (i, (name, version)) in EXTS.iter().enumerate() {
+            let p = &mut *out.add(i);
+            copy_str(&mut p.extension_name, name);
+            p.extension_version = *version;
+        }
     }
+    xr::Result::SUCCESS
+}
+
+unsafe extern "system" fn convert_time_to_qpc(_instance: xr::Instance, time: xr::Time, out: *mut i64) -> xr::Result {
+    with_rt!(r => unsafe { *out = r.time_to_qpc(time.as_nanos()) });
+    xr::Result::SUCCESS
+}
+
+unsafe extern "system" fn convert_qpc_to_time(_instance: xr::Instance, qpc: *const i64, out: *mut xr::Time) -> xr::Result {
+    with_rt!(r => unsafe { *out = xr::Time::from_nanos(r.qpc_to_time(*qpc)) });
     xr::Result::SUCCESS
 }
 
@@ -1014,6 +1065,9 @@ unsafe extern "system" fn end_frame(_s: xr::Session, info: *const xr::FrameEndIn
         }
         if !views.is_empty() {
             r.last_layers = views;
+        }
+        if r.film.is_some() {
+            crate::capture::film_frame(r);
         }
         if !r.pending.is_empty() {
             let names = std::mem::take(&mut r.pending);

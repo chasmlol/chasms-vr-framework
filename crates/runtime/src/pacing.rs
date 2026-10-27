@@ -35,6 +35,9 @@ pub struct Pacing {
     framework: u32,
     in_frame: u32,
     warped: u32,
+    /// Frames the game's stereo picture couldn't be moved, by why.
+    no_depth: u32,
+    no_map: u32,
     timers: Vec<Timer>,
     next: usize,
     open: Option<usize>,
@@ -87,6 +90,8 @@ impl Pacing {
             framework: 0,
             in_frame: 0,
             warped: 0,
+            no_depth: 0,
+            no_map: 0,
             timers,
             next: 0,
             open: None,
@@ -154,6 +159,13 @@ impl Pacing {
         self.warped += warped as u32;
     }
 
+    /// The game's stereo picture couldn't be moved to this frame: it came without its depth (the
+    /// linear kind), or without where its eyes were in the world.
+    pub fn not_moved(&mut self, no_depth: bool, no_map: bool) {
+        self.no_depth += no_depth as u32;
+        self.no_map += no_map as u32;
+    }
+
     /// The game gave a new picture (`with_player`: with the player it drew in it, its pose said).
     pub fn picture(&mut self, with_player: bool) {
         self.pictures += 1;
@@ -180,7 +192,7 @@ impl Pacing {
             "the game's picture as it drew it"
         };
         let line = format!(
-            "pacing: {} frames in {secs:.1} s ({:.1}/s), {} shown late; the runtime's work {cm:.1} ms on the CPU (95% under {:.1}, most {:.1}), {gm:.1} ms from its first GPU command to its last (95% under {:.1}, most {:.1}); the game's pictures {:.1}/s ({} with its player's pose); {mode} ({} frames moved, {} with the player moved, {} framework)",
+            "pacing: {} frames in {secs:.1} s ({:.1}/s), {} shown late; the runtime's work {cm:.1} ms on the CPU (95% under {:.1}, most {:.1}), {gm:.1} ms from its first GPU command to its last (95% under {:.1}, most {:.1}); the game's pictures {:.1}/s ({} with its player's pose); {mode} ({} frames moved, {} with the player moved, {} framework; not moved: {} without the game's depth, {} without where its eyes were)",
             self.frames,
             self.frames as f64 / secs,
             self.late,
@@ -192,10 +204,13 @@ impl Pacing {
             self.with_player,
             self.warped,
             self.in_frame,
-            self.framework
+            self.framework,
+            self.no_depth,
+            self.no_map
         );
         self.since = Some(now);
         (self.frames, self.late, self.pictures, self.with_player, self.framework, self.in_frame, self.warped) = (0, 0, 0, 0, 0, 0, 0);
+        (self.no_depth, self.no_map) = (0, 0);
         Some(line)
     }
 }

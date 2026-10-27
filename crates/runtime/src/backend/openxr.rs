@@ -62,6 +62,8 @@ pub struct OpenXrBackend {
     index: u64,
     last_time: Option<i64>,
     event_buf: xr::EventDataBuffer,
+    /// The runtime's time -> QueryPerformanceCounter, when it offers it.
+    to_qpc: Option<xr::sys::pfn::ConvertTimeToWin32PerformanceCounterKHR>,
 }
 
 impl OpenXrBackend {
@@ -74,6 +76,7 @@ impl OpenXrBackend {
         }
         let mut exts = xr::ExtensionSet::default();
         exts.khr_d3d11_enable = true;
+        exts.khr_win32_convert_performance_counter_time = available.khr_win32_convert_performance_counter_time;
         let instance = entry
             .create_instance(
                 &xr::ApplicationInfo { application_name: app_name, application_version: 1, engine_name: "RustVR", engine_version: 1, api_version: xr::Version::new(1, 0, 0) },
@@ -130,6 +133,10 @@ impl OpenXrBackend {
         }
         let refresh = 90.0;
         tracing::info!("openxr: {}x{} per eye, swapchain format {:?}", size.0, size.1, format);
+        let to_qpc = instance.exts().khr_win32_convert_performance_counter_time.map(|e| e.convert_time_to_win32_performance_counter);
+        if to_qpc.is_none() {
+            tracing::warn!("openxr: the runtime can't say when a frame shows in the PC's clock; guessed a frame ahead");
+        }
         Ok((
             OpenXrBackend {
                 _instance: instance,
@@ -149,9 +156,28 @@ impl OpenXrBackend {
                 index: 0,
                 last_time: None,
                 event_buf: xr::EventDataBuffer::new(),
+                to_qpc,
             },
             gpu,
         ))
+    }
+
+    /// When a frame shows, in QueryPerformanceCounter ticks: the runtime's own conversion, or (not
+    /// offered) a frame period from now.
+    fn display_qpc(&self, time: xr::Time, period: xr::Duration) -> i64 {
+        if let Some(f) = self.to_qpc {
+            let mut q = 0i64;
+            if unsafe { f(self._instance.as_raw(), time, &mut q) } == xr::sys::Result::SUCCESS && q > 0 {
+                return q;
+            }
+        }
+        use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+        let (mut now, mut freq) = (0i64, 0i64);
+        unsafe {
+            let _ = QueryPerformanceCounter(&mut now);
+            let _ = QueryPerformanceFrequency(&mut freq);
+        }
+        now + (period.as_nanos() as i128 * freq as i128 / 1_000_000_000) as i64
     }
 
     /// Handles session state changes. Err when the session is over.
@@ -263,6 +289,7 @@ impl Backend for OpenXrBackend {
         let mut f = HmdFrame {
             index: self.index,
             display_time_ns: t_ns,
+            display_qpc: self.display_qpc(time, state.predicted_display_period),
             dt,
             hmd: from_xr(&head.pose, valid),
             user_present: true,

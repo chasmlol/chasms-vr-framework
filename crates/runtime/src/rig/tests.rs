@@ -978,6 +978,62 @@ fn a_held_rifle_walks_and_turns_with_the_player() {
 }
 
 #[test]
+fn a_held_rifle_scraping_a_wall_on_the_walk_slides_along_it() {
+    let mut s = Sim::new();
+    // The same mapping, written as a game would (the rig takes an all-zero one as none yet).
+    s.map.origin.y += 0.5;
+    s.map.anchor.y += 0.5;
+    s.take_rifle();
+    // A long wall on the right, along the way the player walks, its face 12 cm right of the rifle.
+    let r = s.pos(RIFLE);
+    let face = r.x + 0.12;
+    world_box(&mut s.rig, 7, [face + 0.05, r.y, r.z + 3.0], [0.05, 1.0, 4.0]);
+    s.step(1);
+    // The hand pushes the rifle into it, then the player walks on along it.
+    s.move_hand(1, Vec3::new(0.32, 1.3, 0.15), 20);
+    s.step(20);
+    let rel = |s: &Sim| s.map.inv_point(s.pos(RIFLE));
+    let mut last = rel(&s);
+    let mut worst = 0.0f32;
+    for _ in 0..90 {
+        s.map.anchor.z += 2.5 * DT;
+        s.step(1);
+        let now = rel(&s);
+        worst = worst.max(now.distance(last));
+        last = now;
+        assert!(s.pos(RIFLE).x < face, "the wall holds it: {:?}", s.pos(RIFLE));
+    }
+    assert!(worst < 0.01, "it slides along the wall with the player, no jumps: {:.3} m in a step at worst", worst);
+}
+
+#[test]
+fn a_held_rifle_walked_into_a_post_isnt_dragged_behind() {
+    let mut s = Sim::new();
+    s.map.origin.y += 0.5;
+    s.map.anchor.y += 0.5;
+    s.take_rifle();
+    // A post 40 cm ahead of the rifle, right in its way, then a walk on past it.
+    let r = s.pos(RIFLE);
+    world_box(&mut s.rig, 7, [r.x, r.y, r.z + 0.4], [0.03, 0.5, 0.03]);
+    s.step(1);
+    let rel = |s: &Sim| s.map.inv_point(s.pos(RIFLE));
+    let start = rel(&s);
+    let (mut last, mut worst_step, mut worst_off) = (start, 0.0f32, 0.0f32);
+    for _ in 0..80 {
+        s.map.anchor.z += 1.5 * DT;
+        s.step(1);
+        let now = rel(&s);
+        worst_step = worst_step.max(now.distance(last));
+        worst_off = worst_off.max(now.distance(start));
+        last = now;
+    }
+    s.step(30);
+    assert!(worst_off < 0.16, "held back {worst_off:.3} m at most: it goes through once the post holds it back too far");
+    assert!(worst_step < 0.03, "and never jumps: {worst_step:.3} m in a step at worst");
+    assert!(rel(&s).distance(start) < 0.01, "back in the hand past the post: {:.3} m off", rel(&s).distance(start));
+}
+
+#[test]
 fn hands_report_how_they_hold_things() {
     let mut s = Sim::new();
     assert_eq!(s.out.holds, [rustvr_ik::HoldShape::None; 2]);

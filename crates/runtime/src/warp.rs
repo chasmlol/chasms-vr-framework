@@ -15,7 +15,9 @@
 //! to hide behind the game's walls.
 //!
 //! A picture the game drew the player into (`crate::in_frame`) is moved without the player's
-//! pixels ([`WarpSource::mask`]): the player is moved on its own, where it is now.
+//! pixels ([`WarpSource::mask`]): the player is moved on its own, where it is now. So are the
+//! things of the game's a hand holds ([`WarpSource::props`]): each moved again on its own with the
+//! hand ([`WarpSource::only`], its motion as `to_target`), from the game's own pixels and depth.
 
 use std::collections::HashMap;
 
@@ -39,11 +41,14 @@ cbuffer Warp : register(b0) {
     float4x4 to_view;   // the source eye's view space -> the target's view space
     float4 src_tan;     // the source picture's left, right, up, down tangents
     float4 grid;        // x: cells across, y: cells down, z: metres per depth unit, w: farthest point (metres)
-    float4 opts;        // x: 1 to leave out the pixels src_mask has (> 0: the player's)
+    float4 opts;        // x: 1 to leave out the pixels src_mask has (> 0: the player's), y: 1 to leave out
+                        // the ones src_props marks, z: > 0 to keep only the ones it marks so
+    float4 rect;        // the part of the picture drawn (uv: left, top, right, bottom)
 };
 Texture2D src : register(t0);
 Texture2D<float> src_depth : register(t1);
 Texture2D<float> src_mask : register(t2);
+Texture2D<float> src_props : register(t3);
 SamplerState samp : register(s0);
 SamplerState pt : register(s1);
 
@@ -52,7 +57,7 @@ struct WOut { float4 pos : SV_Position; noperspective float2 uv : TEXCOORD0; flo
 
 WOut VSMain(uint id : SV_VertexID) {
     uint across = (uint)grid.x + 1;
-    float2 uv = float2(id % across, id / across) / grid.xy;
+    float2 uv = rect.xy + float2(id % across, id / across) / grid.xy * (rect.zw - rect.xy);
     float d = src_depth.SampleLevel(pt, uv, 0) * grid.z;
     float2 t = float2(lerp(src_tan.x, src_tan.y, uv.x), lerp(src_tan.z, src_tan.w, uv.y));
     // Nothing drawn, or past the far plane: a direction (the sky, the far distance).
@@ -80,8 +85,26 @@ bool near_player(float2 uv) {
     return false;
 }
 
+// A held thing's pixels and the one around them.
+bool near_prop(float2 uv) {
+    uint w, h;
+    src_props.GetDimensions(w, h);
+    int2 c = int2(uv * float2(w, h));
+    [unroll] for (int k = 0; k < 9; k++) {
+        int2 q = clamp(c + int2(k % 3 - 1, k / 3 - 1), 0, int2(w - 1, h - 1));
+        if (src_props.Load(int3(q, 0)) > 0) return true;
+    }
+    return false;
+}
+
 POut PSMain(WOut i) {
     if (opts.x > 0 && near_player(i.uv)) discard;
+    if (opts.y > 0 && near_prop(i.uv)) discard;
+    if (opts.z > 0) {
+        uint w, h;
+        src_props.GetDimensions(w, h);
+        if (abs(src_props.Load(int3(min(uint2(i.uv * float2(w, h)), uint2(w - 1, h - 1)), 0)) - opts.z) > 0.25) discard;
+    }
     POut o;
     o.color = float4(src.Sample(samp, i.uv).rgb, 1);
     o.z = i.vz;
@@ -97,6 +120,7 @@ struct WarpCb {
     src_tan: [f32; 4],
     grid: [f32; 4],
     opts: [f32; 4],
+    rect: [f32; 4],
 }
 
 /// Grid points every this many of the source's pixels.
@@ -105,6 +129,7 @@ pub const CELL_PIXELS: u32 = 6;
 const FARTHEST: f32 = 190.0;
 
 /// One eye picture to move.
+#[derive(Clone, Copy)]
 pub struct WarpSource<'a> {
     pub color: &'a ID3D11ShaderResourceView,
     /// Its depth: distance along its view, in units of `metres_per_unit` metres; 0: nothing drawn.
@@ -119,6 +144,20 @@ pub struct WarpSource<'a> {
     pub metres_per_unit: f32,
     /// Pixels left out where this is above 0 (`R32_FLOAT`: the player's depth in the picture).
     pub mask: Option<&'a ID3D11ShaderResourceView>,
+    /// The held things' pixels (`R32_FLOAT`, each marked with its number): left out, unless `only`.
+    pub props: Option<&'a ID3D11ShaderResourceView>,
+    /// > 0: only the pixels `props` marks with this number are drawn (one held thing, moved with
+    /// the hand: `to_target` is its motion).
+    pub only: f32,
+    /// The part of the picture drawn (uv: left, top, right, bottom), and a grid point every this
+    /// many of its pixels.
+    pub rect: [f32; 4],
+    pub cell: u32,
+}
+
+impl WarpSource<'_> {
+    /// All of the picture, a grid point every [`CELL_PIXELS`].
+    pub const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 }
 
 /// The depth and the seen-from-here depth for one target size.
@@ -245,7 +284,10 @@ impl Warp {
         pipeline::viewport(ctx, target.width, target.height);
         self.program.bind(ctx);
         for s in sources {
-            let cells = (s.width.div_ceil(CELL_PIXELS).max(1), s.height.div_ceil(CELL_PIXELS).max(1));
+            let [u0, v0, u1, v1] = s.rect;
+            let (pw, ph) = (((u1 - u0) * s.width as f32).max(1.0) as u32, ((v1 - v0) * s.height as f32).max(1.0) as u32);
+            let cell = s.cell.max(1);
+            let cells = (pw.div_ceil(cell).max(1), ph.div_ceil(cell).max(1));
             let (ib, count) = self.grid(gpu, cells)?;
             let to_view = source_to_target_view(&s.pose, s.to_target, eye);
             let cb = WarpCb {
@@ -253,13 +295,14 @@ impl Warp {
                 to_view: to_view.to_cols_array(),
                 src_tan: [s.fov.left, s.fov.right, s.fov.up, s.fov.down],
                 grid: [cells.0 as f32, cells.1 as f32, s.metres_per_unit, FARTHEST],
-                opts: [s.mask.is_some() as u32 as f32, 0.0, 0.0, 0.0],
+                opts: [s.mask.is_some() as u32 as f32, (s.props.is_some() && s.only <= 0.0) as u32 as f32, s.only, 0.0],
+                rect: s.rect,
             };
             self.cb.update(ctx, &cb);
             unsafe {
                 ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0 as u32, 1.0, 0);
                 ctx.VSSetShaderResources(0, Some(&[Some(s.color.clone()), Some(s.depth.clone())]));
-                ctx.PSSetShaderResources(0, Some(&[Some(s.color.clone()), Some(s.depth.clone()), s.mask.cloned()]));
+                ctx.PSSetShaderResources(0, Some(&[Some(s.color.clone()), Some(s.depth.clone()), s.mask.cloned(), s.props.cloned()]));
                 ctx.PSSetConstantBuffers(0, Some(&[Some(self.cb.buf.clone())]));
                 ctx.IASetIndexBuffer(&ib, DXGI_FORMAT_R32_UINT, 0);
                 ctx.DrawIndexed(count, 0, 0);
@@ -267,7 +310,7 @@ impl Warp {
         }
         unsafe {
             ctx.VSSetShaderResources(0, Some(&[None, None]));
-            ctx.PSSetShaderResources(0, Some(&[None, None, None]));
+            ctx.PSSetShaderResources(0, Some(&[None, None, None, None]));
             ctx.OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None);
         }
         Ok(())
@@ -313,6 +356,10 @@ mod tests {
             to_target,
             metres_per_unit: 1.0,
             mask: None,
+            props: None,
+            only: 0.0,
+            rect: WarpSource::WHOLE,
+            cell: CELL_PIXELS,
         };
         // Where the red-blue edge is across the middle row.
         let edge = |warp: &mut Warp, to_target: Mat4| -> f32 {

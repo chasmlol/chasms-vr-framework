@@ -72,8 +72,8 @@ pub use lighting::*;
 pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 8;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v9";
+pub const VERSION: u32 = 9;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v10";
 pub const MAPPING_BYTES: usize = 0x004F_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
@@ -552,6 +552,9 @@ pub struct GameState {
     pub seq: u32,
     pub flags: u32, // GS_*
     pub frame: u64,
+    /// When the game's clock stood where `tracking` has the player (QueryPerformanceCounter ticks;
+    /// 0: not known): the runtime carries the walk and turn on from it to when a frame is shown.
+    pub time_qpc: i64,
     pub tracking: TrackingState,
     /// The game's current eye height above the player's feet, metres.
     pub eye_above_feet: f32,
@@ -709,6 +712,10 @@ pub struct SlotInfo {
     /// in, the runtime moves the player's own pixels to where the player is when the picture is
     /// shown.
     pub player_frame: u64,
+    /// The object states the game's held things were placed by in both eyes (the runtime frame of
+    /// [`crate::ObjectStates::frame_index`]; 0: none): the runtime moves their pixels with the hands
+    /// as it does the player's.
+    pub states_frame: u64,
 }
 
 /// A tracking -> world mapping (as [`TrackingState`] gives it): world = anchor + yaw(body_yaw) *
@@ -779,9 +786,9 @@ const _: () = {
     assert!(size_of::<TrackingState>() == 64);
     assert!(size_of::<WeaponRig>() == 144);
     assert!(size_of::<TargetRequest>() == 32);
-    assert!(size_of::<GameState>() == 488);
+    assert!(size_of::<GameState>() == 496);
     assert!(size_of::<LightHint>() == 48);
-    assert!(size_of::<SlotInfo>() == 248);
+    assert!(size_of::<SlotInfo>() == 256);
     assert!(size_of::<SlotMap>() == 32);
     assert!(size_of::<Event>() == 32);
     assert!(OFF_HEADER + size_of::<Header>() <= OFF_SUBMIT);

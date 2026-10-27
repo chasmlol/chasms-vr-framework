@@ -31,6 +31,12 @@ pub fn groups_held(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
 }
 
+/// An object held by `hand` that the world has held back too far: free objects only, until it's
+/// back in the hand and clear of the world.
+pub fn groups_held_through(hand: usize) -> InteractionGroups {
+    InteractionGroups::new(G_HELD[hand], G_OBJECT, InteractionTestMode::And)
+}
+
 /// A hand touches the world and free objects (not what either hand is holding).
 pub fn groups_hand(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HAND[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
@@ -107,6 +113,8 @@ impl Physics {
                     }
                     idx.push([base, base + 1, base + 2]);
                 }
+                // (As loose triangles: Rapier's joining them up to smooth their seams makes them
+                // one-sided by their winding, and the game's face either way.)
                 match ColliderBuilder::trimesh(verts, idx) {
                     Ok(c) => {
                         let h = self.world.insert(RigidBodyBuilder::fixed(), c.collision_groups(groups_world()).friction(0.8));
@@ -306,50 +314,75 @@ impl Physics {
     }
 
     /// Drives a dynamic body towards a target pose by setting its velocity: it arrives in one
-    /// step when nothing is in the way. `max_accel` and `max_ang_accel` limit how hard it may change
-    /// speed and spin (weight: m/s^2, rad/s^2); `gain` < 1 softens it (e.g. while pressing against a
-    /// wall); `ang_gain` is the share of the rotation it makes up each step.
-    #[allow(clippy::too_many_arguments)]
-    pub fn track(&mut self, b: RigidBodyHandle, target_pos: V3, target_rot: Q, dt: f32, gain: f32, max_accel: f32, ang_gain: f32, max_ang_accel: f32) {
+    /// step when nothing is in the way (see [`Drive`]). Returns the carry's share of the velocity
+    /// set (its pivot's, and the spin): next step's [`Drive::carried`].
+    pub fn track(&mut self, b: RigidBodyHandle, target_pos: V3, target_rot: Q, dt: f32, d: &Drive) -> (V3, V3) {
         let rb = &mut self.world.bodies[b];
         let (pos, rot) = from_pose(rb.position());
         let dt = dt.max(1e-4);
-        let to = target_pos - pos;
-        let mut want = to / dt * gain;
-        // Never faster than it could still stop in, so heavy (acceleration-limited) objects
-        // settle onto the hand instead of overshooting and swinging back.
-        let brake = (2.0 * max_accel * to.length()).sqrt();
-        if want.length() > brake {
-            want = want.normalize_or_zero() * brake;
-        }
-        let cur = from_v(rb.linvel());
-        let dv = want - cur;
-        let max_dv = max_accel * dt;
-        if dv.length() > max_dv {
-            want = cur + dv.normalize() * max_dv;
-        }
-        // 20 m/s is beyond any real hand; it only guards against tracking glitches.
-        let want = want.clamp_length_max(20.0);
-        let dq = (target_rot * rot.inverse()).normalize();
+        // What the player's own walk and turn do to it this step: its weight resists only the rest.
+        let (pos_c, rot_c) = d.carry.unwrap_or((pos, rot));
+        let pivot_now = pos + rot * d.pivot;
+        let pivot_c = pos_c + rot_c * d.pivot;
+        let carry_v = (pivot_c - pivot_now) / dt;
+        let carry_w = scaled_axis((rot_c * rot.inverse()).normalize()) / dt;
+        // How it moves now against the player (its pivot): less what the last carry gave it.
+        let com = from_v(rb.center_of_mass());
+        let w_now = from_v(rb.angvel());
+        let v_pivot = from_v(rb.linvel()) + w_now.cross(pivot_now - com);
+        let (was_v, was_w) = d.carried;
+
+        let dq = (target_rot * rot_c.inverse()).normalize();
         let dq = if dq.w < 0.0 { -dq } else { dq };
         let (axis, angle) = dq.to_axis_angle();
-        let mut ang = if angle.is_finite() && axis.is_finite() { axis * (angle / dt * ang_gain.clamp(0.02, 1.0)) } else { V3::ZERO };
+        let mut ang = if angle.is_finite() && axis.is_finite() { axis * (angle / dt * d.ang_gain.clamp(0.02, 1.0)) } else { V3::ZERO };
         // Turning the same way: never faster than it can still stop in, and only so much spin
         // gained or lost per step, so a heavy thing swings round and settles instead of snapping.
         if angle.is_finite() {
-            let brake = (2.0 * max_ang_accel * angle.abs()).sqrt();
+            let brake = (2.0 * d.max_ang_accel * angle.abs()).sqrt();
             if ang.length() > brake {
                 ang = ang.normalize_or_zero() * brake;
             }
-            let cur = from_v(rb.angvel());
+            let cur = w_now - was_w;
             let dw = ang - cur;
-            let max_dw = max_ang_accel * dt;
+            let max_dw = d.max_ang_accel * dt;
             if dw.length() > max_dw {
                 ang = cur + dw.normalize() * max_dw;
             }
         }
-        rb.set_linvel(to_v(want), true);
-        rb.set_angvel(to_v(ang.clamp_length_max(60.0)), true);
+        let ang = (ang + carry_w).clamp_length_max(60.0);
+
+        // The pivot onto the target's.
+        let to = target_pos + target_rot * d.pivot - pivot_c;
+        let mut want = to / dt * d.gain;
+        // Never faster than it could still stop in, so heavy (acceleration-limited) objects
+        // settle onto the hand instead of overshooting and swinging back.
+        let brake = (2.0 * d.max_accel * to.length()).sqrt();
+        if want.length() > brake {
+            want = want.normalize_or_zero() * brake;
+        }
+        let cur = v_pivot - was_v;
+        let dv = want - cur;
+        let max_dv = d.max_accel * dt;
+        if dv.length() > max_dv {
+            want = cur + dv.normalize() * max_dv;
+        }
+        // 20 m/s is beyond any real hand; it only guards against tracking glitches.
+        let want = want.clamp_length_max(20.0) + carry_v;
+        // The engine moves the centre of mass and turns the body about it: the velocity that,
+        // turned as above, leaves the pivot where it's wanted.
+        let rot_next = (Q::from_scaled_axis(ang * dt) * rot).normalize();
+        let com_next = pivot_now + want * dt + rot_next * (from_v(rb.local_center_of_mass()) - d.pivot);
+        rb.set_linvel(to_v((com_next - com) / dt), true);
+        rb.set_angvel(to_v(ang), true);
+        (carry_v, carry_w)
+    }
+
+    /// Collider `c`, where it is now, overlaps the static world.
+    pub fn in_world(&self, c: ColliderHandle) -> bool {
+        let Some(col) = self.world.colliders.get(c) else { return false };
+        let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD, InteractionTestMode::And)).exclude_collider(c);
+        self.world.intersect_shape(*col.position(), col.shape(), filter).next().is_some()
     }
 
     /// True if the collider currently touches the static world or a free object.
@@ -443,6 +476,39 @@ pub fn object_collider(d: &ObjectDesc, hull: Option<&[V3]>) -> ColliderBuilder {
 }
 
 // ---- glam 0.34 <-> Rapier's glam ------------------------------------------------------------
+/// How [`RigPhysics::track`] drives a body onto its target.
+#[derive(Clone, Copy, Debug)]
+pub struct Drive {
+    /// Where a hand holds it (body space): the point driven onto the target's, which it turns about.
+    pub pivot: V3,
+    /// Where the player's own walk and turn take it this step (world pose): it goes along whatever
+    /// its weight, as a velocity, so the world can still stop it.
+    pub carry: Option<(V3, Q)>,
+    /// The share of its velocity (its pivot's, and the spin) the last step's carry gave it, turned
+    /// as the player has turned since: its weight resists changes to the rest only, so the player
+    /// setting off, stopping or turning takes it along at once.
+    pub carried: (V3, V3),
+    /// < 1 softens it: the share of the way it makes up each step.
+    pub gain: f32,
+    /// How hard it may change speed and spin (its weight): m/s^2, rad/s^2.
+    pub max_accel: f32,
+    /// The share of the rotation it makes up each step.
+    pub ang_gain: f32,
+    pub max_ang_accel: f32,
+}
+
+impl Drive {
+    /// Straight there in a step, however hard that is.
+    pub const FREE: Drive = Drive { pivot: V3::ZERO, carry: None, carried: (V3::ZERO, V3::ZERO), gain: 1.0, max_accel: 1e5, ang_gain: 1.0, max_ang_accel: 1e5 };
+}
+
+/// A rotation as axis times angle (radians), the short way round.
+pub fn scaled_axis(q: Q) -> V3 {
+    let q = if q.w < 0.0 { -q } else { q };
+    let v = q.to_scaled_axis();
+    if v.is_finite() { v } else { V3::ZERO }
+}
+
 pub fn to_v(v: V3) -> Vector {
     Vector::new(v.x, v.y, v.z)
 }
@@ -514,12 +580,12 @@ mod tests {
         let (h, _) = p.add_hand(1, V3::new(0.0, 1.0, 0.0), Q::IDENTITY);
         p.set_dt(1.0 / 90.0);
         for _ in 0..5 {
-            p.track(h, V3::new(0.0, 1.0, 0.4), Q::IDENTITY, 1.0 / 90.0, 1.0, 1e5, 1.0, 1e5);
+            p.track(h, V3::new(0.0, 1.0, 0.4), Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
             p.step();
         }
         assert!(p.pose(h).0.distance(V3::new(0.0, 1.0, 0.4)) < 0.01, "free space: on target");
         for _ in 0..30 {
-            p.track(h, V3::new(0.0, 1.0, 1.3), Q::IDENTITY, 1.0 / 90.0, 1.0, 1e5, 1.0, 1e5);
+            p.track(h, V3::new(0.0, 1.0, 1.3), Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
             p.step();
         }
         let z = p.pose(h).0.z;
@@ -543,7 +609,7 @@ mod tests {
         p.set_dt(1.0 / 90.0);
         let mut path = Vec::new();
         for _ in 0..180 {
-            p.track(h, target, Q::IDENTITY, 1.0 / 90.0, 1.0, 1e5, 1.0, 1e5);
+            p.track(h, target, Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
             p.step();
             path.push(p.pose(h).0);
         }

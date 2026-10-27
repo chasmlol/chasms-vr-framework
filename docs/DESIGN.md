@@ -139,6 +139,19 @@ adapters (`tests/header.rs` keeps the two in step).
    only turns a picture for the head, so without this the world steps whenever the game walks or
    turns the player between its pictures, while the hands (drawn every headset frame) don't.
 
+   "The game's mapping now" is itself carried on to when the frame shows
+   (`crates/runtime/src/locomotion.rs`): the adapter stamps each state with when the game's clock
+   stood where it has the player (`GameState::time_qpc`, QueryPerformanceCounter ticks; the
+   OpenXR backend converts each frame's display time to the same clock), and the walk and turn
+   between the game's last two steps go on from there. The game steps at its own uneven pace (Metro
+   once an eye pair), so without this the world stands still for a frame and then jumps, however
+   smoothly the picture is moved. A step that disagrees with what was being shown (a stop, a
+   hitch) is glided out over 60 ms rather than jumped. The rig uses the same mapping, so the hands
+   reach into the world where the player sees it. What a hand holds goes with the walk and turn as
+   a velocity (`rig::physics::Drive::carry`): the world can stop it, its weight only resists the
+   hand's own swing, and if the world holds it more than 10 cm behind the hand it goes through
+   until it's back in the hand and clear (`rig::SLIP`), so it's never dragged along and snapped back.
+
    A game that draws the player inside its own frame (`GS_DRAWS_BODY`, so its fog, bloom, tone
    curve and grading reach it) says which posed player each pair was drawn with
    (`SlotInfo::player_frame`). The runtime poses the player it sends for when the picture will

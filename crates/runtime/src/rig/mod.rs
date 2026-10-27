@@ -149,8 +149,14 @@ struct Obj {
     hovered: bool,
     /// Ignore the hands until then (just thrown).
     hands_off_until: f64,
-    /// Touching the world or another object (held objects soften against it).
+    /// Touching the world or another object (a held one knocking into something is felt).
     in_contact: bool,
+    /// Held: where the player's walk and turn take it this step, and the share of its velocity the
+    /// last one gave it (`physics::Drive::carry`, `carried`).
+    carry: Option<(Vec3, Quat)>,
+    carried: (Vec3, Vec3),
+    /// Held: going through the world for now (`SLIP`).
+    through: bool,
     /// Velocity after the last step, for impact sounds.
     prev_vel: Vec3,
     /// A magazine just taken out of a gun can't seat again until it has left the well.
@@ -368,6 +374,14 @@ const SHOULDER_OUT: f32 = 0.18;
 /// Faster than this (m/s), a hand pushes the way it moves.
 const PUSH_MOVING: f32 = 0.2;
 const LEASH: f32 = 0.7;
+/// A held thing the world holds back further than this from the hand (metres: a fence the walk
+/// carries it along, a doorway it catches in) goes through the world until it's back in the hand
+/// (within `SLIP_BACK`) and clear of it: it's never dragged along behind and then jumps back.
+const SLIP: f32 = 0.1;
+const SLIP_BACK: f32 = 0.02;
+/// The least a held thing speeds up and spins up, however heavy (m/s^2, rad/s^2).
+const MIN_HELD_ACCEL: f32 = 15.0;
+const MIN_HELD_ANG_ACCEL: f32 = 40.0;
 const BLOCKED: f32 = 0.04;
 const FOREGRIP_REACH: f32 = 0.14;
 /// The support hand lets go of the foregrip when its controller is this far from the gun's line.
@@ -771,6 +785,9 @@ impl Rig {
                 hovered: false,
                 hands_off_until: 0.0,
                 in_contact: false,
+                carry: None,
+                carried: (Vec3::ZERO, Vec3::ZERO),
+                through: false,
                 prev_vel: Vec3::ZERO,
                 next_impact: 0.0,
                 seat_armed: true,
@@ -878,6 +895,7 @@ impl Rig {
     /// A loose dynamic body again: gravity, normal damping, colliding with everything.
     fn free_body(&mut self, id: u32, groups: rapier3d::prelude::InteractionGroups) {
         let Some(o) = self.objects.get_mut(&id) else { return };
+        o.through = false;
         o.holder = Holder::Free;
         o.free_since = self.now;
         o.blend = None;
@@ -954,20 +972,24 @@ impl Rig {
         let prev = self.map;
         self.map = inp.map;
         // What the hands hold goes where the player goes (walking, turning): a thing's weight
-        // limits how fast a hand swings it, not how fast the player walks with it.
-        if prev != WorldMap::IDENTITY && prev != inp.map && prev.world_per_meter == inp.map.world_per_meter {
-            let turn = inp.map.yaw() * prev.yaw().inverse();
-            let carry = |p: Vec3, q: Quat| (inp.map.point(prev.inv_point(p)), (turn * q).normalize());
-            for o in self.objects.values_mut().filter(|o| matches!(o.holder, Holder::Held(_))) {
-                let (p, q) = self.physics.pose(o.body);
+        // limits how fast a hand swings it, not how fast the player walks with it. It's carried
+        // as a velocity (`Drive::carry`), so a wall the walk takes it into stops it rather than it
+        // jumping into the wall and being thrown back out.
+        let carrying = prev != WorldMap::IDENTITY && prev != inp.map && prev.world_per_meter == inp.map.world_per_meter;
+        let turn = inp.map.yaw() * prev.yaw().inverse();
+        let carry = |p: Vec3, q: Quat| (inp.map.point(prev.inv_point(p)), (turn * q).normalize());
+        for o in self.objects.values_mut().filter(|o| matches!(o.holder, Holder::Held(_))) {
+            o.carry = carrying.then(|| {
+                // Its own swing turns with the player too.
                 let (v, w) = self.physics.velocity(o.body);
-                let (np, nq) = carry(p, q);
-                self.physics.set_pose(o.body, np, nq);
                 self.physics.set_velocity(o.body, turn * v, turn * w);
-                if let Some((bp, bq, t0, d)) = o.blend {
-                    let (bp, bq) = carry(bp, bq);
-                    o.blend = Some((bp, bq, t0, d));
-                }
+                o.carried = (turn * o.carried.0, turn * o.carried.1);
+                let (p, q) = self.physics.pose(o.body);
+                carry(p, q)
+            });
+            if carrying && let Some((bp, bq, t0, d)) = o.blend {
+                let (bp, bq) = carry(bp, bq);
+                o.blend = Some((bp, bq, t0, d));
             }
         }
         self.frame_index = inp.frame.index;
@@ -1546,6 +1568,22 @@ impl Rig {
     }
 
     /// Puts object `id` in hand `i`. `snap`: ease it into the hand's natural hold (guns always do).
+    /// Testing (`RUSTVR_TEST_TAKE`): the nearest of the game's loose props within 6 m of hand `i`
+    /// (`ours`: only one the runtime moves itself, not one the game simulates), taken into it as
+    /// the gloves' catch would.
+    pub fn test_take_nearest(&mut self, i: usize, ours: bool) -> Option<u32> {
+        let palm = self.hands.as_ref()?[i].target.0;
+        let (id, _) = self
+            .objects
+            .iter()
+            .filter(|(_, o)| o.holder == Holder::Free && o.desc.kind == OBJ_PROP && (!ours || o.desc.flags & OBJF_GAME_SIMULATED == 0))
+            .map(|(&id, o)| (id, self.physics.pose(o.body).0.distance(palm)))
+            .filter(|&(_, d)| d < 6.0 * self.map.world_per_meter)
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        self.take(id, i, true);
+        Some(id)
+    }
+
     fn take(&mut self, id: u32, i: usize, snap: bool) {
         let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
         // Out of the other hand if it was there.
@@ -1586,6 +1624,9 @@ impl Rig {
         if let Holder::Holstered(slot) = o.holder {
             o.home_slot = Some(slot);
         }
+        // Not yet moving with the player: it's taken up from where it was.
+        (o.carry, o.carried) = (None, (Vec3::ZERO, Vec3::ZERO));
+        o.through = false;
         o.holder = Holder::Held(i);
         o.hovered = false;
         if let Some(t) = &mut o.throw {
@@ -2788,25 +2829,48 @@ impl Rig {
                         _ => target,
                     };
                     // Weight: heavy things accelerate less (Godot's 15 -> 300 N idea, scaled by the
-                    // weight setting); stiffness drops to 5% while pressing into the world (HIGGS).
+                    // weight setting).
                     let two = self.hands.as_ref().unwrap()[hand ^ 1].support == Some(*id);
                     let mass = o.desc.mass.max(0.05);
                     // How hard you can move it: a 3.5 kg rifle speeds up at about 30 m/s^2 and spins
                     // at about 60 rad/s^2 in one hand (a quarter turn takes a third of a second),
                     // twice and three times that in two; a pistol nearly and a bottle fully keeps up.
+                    // However heavy (a game's prop can weigh 80 kg), it still follows the hand, a
+                    // little behind: a hand can't feel a weight it can't lift.
                     let heft = (1.0 + 2.0 * s.interaction.weight * mass).powi(2);
-                    let max_accel = 600.0 * if two { 2.2 } else { 1.0 } / heft;
-                    let max_ang_accel = 1200.0 * if two { 3.0 } else { 1.0 } / heft;
-                    let gain = if o.in_contact { 0.05 } else { 1.0 };
-                    let ang_gain = 1.0f32;
-                    let (now_pos, _) = self.physics.pose(o.body);
+                    let max_accel = (600.0 * if two { 2.2 } else { 1.0 } / heft).max(MIN_HELD_ACCEL);
+                    let max_ang_accel = (1200.0 * if two { 3.0 } else { 1.0 } / heft).max(MIN_HELD_ANG_ACCEL);
+                    // Where the hand holds it: the point driven onto the hand, the one it turns about.
+                    let pivot = match o.attach {
+                        Attach::Gun => v3(o.desc.grip),
+                        Attach::Fixed(p, q) => inverse((p, q)).0,
+                    };
+                    let (now_pos, now_rot) = self.physics.pose(o.body);
+                    // Held back by the world too far: through it until it's back in the hand.
+                    let behind = (now_pos + now_rot * pivot).distance(target.0 + target.1 * pivot);
+                    let collider = o.collider;
+                    if !o.through && behind > SLIP {
+                        self.physics.set_groups(collider, physics::groups_held_through(hand));
+                        self.objects.get_mut(id).unwrap().through = true;
+                    } else if o.through && behind < SLIP_BACK && !self.physics.in_world(collider) {
+                        self.physics.set_groups(collider, groups_held(hand));
+                        self.objects.get_mut(id).unwrap().through = false;
+                    }
+                    let o = &self.objects[id];
+                    let (mut carry, mut carried) = (o.carry, o.carried);
                     if now_pos.distance(target.0) > LEASH && self.physics.reachable(head, target.0) {
                         // Stuck behind something while the hand moved on: back into the hand.
                         self.physics.set_pose(o.body, target.0, target.1);
                         self.physics.set_velocity(o.body, Vec3::ZERO, Vec3::ZERO);
+                        (carry, carried) = (None, (Vec3::ZERO, Vec3::ZERO));
                     }
-                    self.physics.track(o.body, target.0, target.1, dt, gain, max_accel, ang_gain, max_ang_accel);
-                    self.physics.set_gravity(o.body, 0.0);
+                    // Pressed into the world it stays as stiff: the world stops it where it is (a
+                    // softer hold only lags it behind and lets it jump on once it's clear).
+                    let drive = physics::Drive { pivot, carry, carried, gain: 1.0, max_accel, ang_gain: 1.0, max_ang_accel };
+                    let body = o.body;
+                    let carried = self.physics.track(body, target.0, target.1, dt, &drive);
+                    self.objects.get_mut(id).unwrap().carried = carried;
+                    self.physics.set_gravity(body, 0.0);
                 }
                 Holder::Holstered(slot) => {
                     let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize]);
@@ -2931,7 +2995,7 @@ impl Rig {
                 self.physics.set_groups(h.collider, groups_hand(i));
             }
             if s.interaction.physics_hands {
-                self.physics.track(h.body, h.target.0, h.target.1, dt, 1.0, 1e5, 1.0, 1e5);
+                self.physics.track(h.body, h.target.0, h.target.1, dt, &physics::Drive::FREE);
             } else {
                 self.physics.set_pose(h.body, h.target.0, h.target.1);
                 self.physics.set_groups(h.collider, groups_none());

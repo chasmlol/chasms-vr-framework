@@ -133,11 +133,13 @@ pub struct Session {
     /// How long after the runtime posed the player the game's picture of it is shown, seconds
     /// (smoothed): what the player is posed ahead for (`crate::in_frame::predict`).
     player_lag: f32,
-    /// The player's walk and turn in the game: the last mapping seen (and when), and how fast it
-    /// moves the world past a fixed point of tracking space (world units a second) and turns it
-    /// (radians a second; smoothed).
-    walk_seen: Option<(f64, WorldMap)>,
-    walk: (Vec3, f32),
+    /// The player's walk and turn in the game, from its stamped steps (`crate::locomotion`), and
+    /// the mapping (tracking -> world) for when this frame is shown: where the world is drawn and
+    /// where the hands reach into it.
+    locomotion: crate::locomotion::Locomotion,
+    map_now: Option<WorldMap>,
+    /// Testing: `RUSTVR_TEST_TAKE` has put a prop in the hand.
+    test_taken: bool,
     /// The last frame's game picture was moved to the headset frame (`crate::warp`).
     warped_last: bool,
     objects_seq: u32,
@@ -266,8 +268,9 @@ impl Session {
             states_ahead: bytemuck::zeroed_box(),
             game_lag: 0.0,
             player_lag: 0.0,
-            walk_seen: None,
-            walk: (Vec3::ZERO, 0.0),
+            locomotion: crate::locomotion::Locomotion::new(),
+            map_now: None,
+            test_taken: false,
             warped_last: false,
             objects_seq: 0,
             hand_poses: bytemuck::zeroed_box(),
@@ -361,27 +364,17 @@ impl Session {
             self.was_alive = alive;
         }
         self.game = if alive { self.link.read_game_state() } else { None };
-        // How fast the game walks and turns the player (for what it draws in a hand, `lead_held`).
-        match self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking)) {
-            Some(m) => {
-                if let Some((t, was)) = self.walk_seen
-                    && now > t
-                {
-                    let dt = (now - t) as f32;
-                    // Where the origin is in the world now against where it was: the walk (a step
-                    // in the room moves the origin and the anchor together, and isn't one).
-                    let moved = m.anchor - was.point(m.origin);
-                    let turn = (m.body_yaw - was.body_yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
-                    // A jump (a snap turn, a teleport, a level) isn't a speed.
-                    let (u, w) = if moved.length() > 1.0 || turn.abs() > 0.3 { (Vec3::ZERO, 0.0) } else { (moved / dt, turn / dt) };
-                    let k = 0.25;
-                    self.walk = (self.walk.0.lerp(u, k), self.walk.1 + (w - self.walk.1) * k);
-                }
-                self.walk_seen = Some((now, m));
+        // Where the game has the player when this frame is shown: its last step, walked and turned
+        // on from when its clock stood there (the game steps at its own, uneven pace).
+        match self.game.as_ref() {
+            Some(g) => {
+                let m = WorldMap::from_state(&g.tracking);
+                self.locomotion.see(g.time_qpc, m);
+                self.map_now = Some(self.locomotion.at(frame.display_qpc, m));
             }
             None => {
-                self.walk_seen = None;
-                self.walk = (Vec3::ZERO, 0.0);
+                self.locomotion.reset();
+                self.map_now = None;
             }
         }
         // A torn read (the adapter writing as we read) keeps the last good copy.
@@ -557,9 +550,25 @@ impl Session {
             }
             let g = self.game.as_ref().unwrap();
             let stand = self.mech.debug.stand_h - floor;
+            // Testing (`RUSTVR_TEST_TAKE=left|right[:ours]`): the first time that hand's grip
+            // closes, the nearest of the game's loose props goes into it (no aiming the gloves;
+            // `ours`: one the runtime moves itself).
+            let test_take = std::env::var("RUSTVR_TEST_TAKE").ok();
+            let test_take = test_take.as_deref().map(|t| t.split_once(':').unwrap_or((t, "")));
+            if let Some((hand, ours)) = test_take.and_then(|(h, rest)| match h {
+                "left" => Some((0usize, rest == "ours")),
+                "right" => Some((1, rest == "ours")),
+                _ => None,
+            }) && !self.test_taken
+                && frame.hands[hand].squeeze > 0.9
+            {
+                self.test_taken = true;
+                let got = self.rig.test_take_nearest(hand, ours);
+                tracing::info!("runtime: test: the nearest prop into the {} hand: {got:?}", if hand == 0 { "left" } else { "right" });
+            }
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
-                map: WorldMap::from_state(&g.tracking),
+                map: self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking)),
                 dt: frame.dt,
                 now,
                 settings: &self.settings.current,
@@ -599,10 +608,9 @@ impl Session {
                 }
             }
             // Every two seconds: where the hands are against their controllers, in the game's world.
-            if let Some(g) = &self.game
+            if let Some(map) = self.map_now
                 && (now / 2.0).floor() != ((now - frame.dt as f64) / 2.0).floor()
             {
-                let map = WorldMap::from_state(&g.tracking);
                 let at = |p: &Pose| map.point(Vec3::from_array(p.pos));
                 let line = |i: usize| {
                     let h = &self.rig_out.hands[i];
@@ -620,11 +628,12 @@ impl Session {
             *self.states_ahead = *self.states;
             // With the picture moved to the headset frame, the world stays put: what the game draws
             // in a hand goes where the walking, turning player will have it too.
-            let walk = self.warped_last.then(|| self.game.as_ref().map(|g| (WorldMap::from_state(&g.tracking), self.walk.0, self.walk.1))).flatten();
+            let (u, w) = self.locomotion.walk();
+            let walk = self.warped_last.then_some(self.map_now.map(|m| (m, u, w))).flatten();
             lead_held(&mut self.states_ahead, &self.objects, self.game_lag, walk);
             self.link.write_object_states(&self.states_ahead);
-            let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
-            self.held_objects.update(&self.objects, &self.states, map.as_ref(), frame.hands.map(|h| h.trigger));
+            self.in_frame.record_states(&self.states_ahead);
+            self.held_objects.update(&self.objects, &self.states, self.map_now.as_ref(), frame.hands.map(|h| h.trigger));
         } else {
             self.held_objects.clear();
         }
@@ -908,8 +917,8 @@ impl Session {
         self.comfort.forward = quat(frame.hmd.rot) * Vec3::Z;
         let mut fade = 0.0;
         if c.wall_fade && self.rig.physics.has_world() && !menu {
-            if let Some(g) = &self.game {
-                let head = WorldMap::from_state(&g.tracking).point(Vec3::from_array(frame.hmd.pos));
+            if let Some(map) = self.map_now {
+                let head = map.point(Vec3::from_array(frame.hmd.pos));
                 fade = (self.rig.physics.sphere_penetration(head, 0.12) / 0.08).clamp(0.0, 1.0);
             }
         }
@@ -1048,10 +1057,12 @@ impl Session {
         // (linear: what the warp reads) and where each eye was in the world, and the game says
         // where the player is now: the
         // world (tracking -> world now, inverted) it's moved into.
-        let world_now = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
+        let world_now = self.map_now;
+        // (Testing, `RUSTVR_TEST_NO_REPROJECT`: the game's picture exactly as it drew it.)
+        let reproject = s.vr.reproject && std::env::var_os("RUSTVR_TEST_NO_REPROJECT").is_none();
         let warp_to = match (&stereo, &world_now) {
             (Some((slot, info)), Some(now))
-                if s.vr.reproject
+                if reproject
                     && info.flags & SLOT_DEPTH != 0
                     && info.depth_flags & (DEPTH_LINEAR | DEPTH_REVERSED) == DEPTH_LINEAR
                     && slot.depth.is_some()
@@ -1062,6 +1073,10 @@ impl Session {
             _ => None,
         };
         self.stats.warped_frames += warp_to.is_some() as u64;
+        if let (Some((slot, info)), None, true) = (&stereo, warp_to, s.vr.reproject) {
+            let depth = info.flags & SLOT_DEPTH != 0 && info.depth_flags & (DEPTH_LINEAR | DEPTH_REVERSED) == DEPTH_LINEAR && slot.depth.is_some();
+            self.pacing.not_moved(!depth, !info.eye_map.iter().all(|m| m.world_per_meter > 0.0));
+        }
         if stereo.is_some() && warp_to.is_some() != self.warped_last {
             tracing::info!("runtime: the game's picture is {}", if warp_to.is_some() { "moved to each headset frame by its depth" } else { "shown as the game drew it" });
         }
@@ -1146,8 +1161,7 @@ impl Session {
         let gun_laser = out.weapon.as_ref().filter(|_| !menu_mode).and_then(|w| w.laser.or(s.interaction.laser_sight.then_some(w.muzzle)).map(|o| (w, o)));
         if let Some((w, origin)) = gun_laser {
             // Up to 30 m, or the first thing in the game's collision.
-            let hit = self.game.as_ref().and_then(|g| {
-                let map = WorldMap::from_state(&g.tracking);
+            let hit = self.map_now.and_then(|map| {
                 let o = map.point(origin);
                 self.rig.physics.ray_world(o, map.rot(Quat::IDENTITY) * w.aim_dir, 30.0).map(|d| d / map.world_per_meter)
             });
@@ -1174,19 +1188,18 @@ impl Session {
         // (A game that draws the body in its own picture has none in the framework view: the runtime
         // draws it there.)
         let draw_body = (self.draws_body || framework) && !menu_mode;
-        let (wpm, light) = match &self.game {
-            Some(g) => {
-                let map = WorldMap::from_state(&g.tracking);
+        let (wpm, light) = match (&self.game, self.map_now) {
+            (Some(g), Some(map)) => {
                 let mut l = g.light;
                 l.sun_dir = (map.inv_rot(Quat::IDENTITY) * Vec3::from_array(l.sun_dir)).to_array();
                 (map.world_per_meter, l)
             }
-            None => (1.0, LightHint::default()),
+            _ => (1.0, LightHint::default()),
         };
         // The game's lighting for the body (the same for both eyes).
         let shading = (draw_body && self.has_game_lighting && s.body.game_lighting).then(|| rustvr_avatar::GameShading {
             lighting: &self.game_lighting,
-            world_rot: self.game.as_ref().map_or(Quat::IDENTITY, |g| WorldMap::from_state(&g.tracking).rot(Quat::IDENTITY)),
+            world_rot: self.map_now.map_or(Quat::IDENTITY, |m| m.rot(Quat::IDENTITY)),
             atlas: stereo.as_ref().and_then(|(slot, _)| slot.lights.as_ref()).and_then(|t| t.srv.as_ref()),
         });
         // The framework view: the physics world in tracking space instead of the game's picture,
@@ -1197,7 +1210,7 @@ impl Session {
         self.stats.held_drawn = held.len() as u32;
         self.stats.held_drawn_frames += (!held.is_empty()) as u64;
         if framework {
-            let map = self.game.as_ref().map(|g| WorldMap::from_state(&g.tracking));
+            let map = self.map_now;
             self.physics_tris.clear();
             self.rig.physics_triangles(&mut self.physics_tris);
             let mut marks = Vec::new();
@@ -1216,7 +1229,7 @@ impl Session {
         // player drawn where it is now, in the game's own colours.
         let in_frame_ready = match (&stereo, warp_to, self.shown) {
             (Some((slot, info)), Some(_), Some((index, _))) if !framework && !menu_mode && !self.draws_body => {
-                self.in_frame.prepare(&self.gpu, index, slot, info, &mut self.body, &self.held_objects).is_some()
+                self.in_frame.prepare(&self.gpu, index, slot, info, &mut self.body, &self.held_objects, &self.objects, &self.game_hulls).is_some()
             }
             _ => false,
         };
@@ -1243,6 +1256,63 @@ impl Session {
                 Some((rustvr_avatar::HeldDraw { model: held_objects.model(name)?, parts, key: name }, then_places[j].as_slice()))
             })
             .collect();
+        // Testing (`RUSTVR_TRACE_IN_FRAME=<file>`): each frame, what the player the game drew is
+        // moved from and to: the right controller, the gun the rig has now and where the game drew
+        // it (tracking space), and how many held objects were paired; then where the world is put
+        // (the mapping's anchor this frame and in the game's last step, the walk, the step's and
+        // the frame's times) and a held prop of the game's now and where the game drew it.
+        if let Some(path) = std::env::var_os("RUSTVR_TRACE_IN_FRAME") {
+            use std::io::Write;
+            let first = |pl: &[(String, Vec<Option<glam::Mat4>>)]| pl.first().and_then(|(_, parts)| parts.iter().flatten().next().map(|m| m.w_axis.truncate()));
+            let gun_now = first(&now_places);
+            let gun_then = then_places.first().and_then(|parts| parts.iter().flatten().next().map(|m| m.w_axis.truncate()));
+            let c = Vec3::from_array(frame.hands[1].grip.pos);
+            let v3s = |v: Option<Vec3>| v.map_or(",,".to_string(), |v| format!("{:.4},{:.4},{:.4}", v.x, v.y, v.z));
+            let descs = &self.objects.descs[..(self.objects.count as usize).min(MAX_OBJECTS)];
+            let prop_now = self.states.states[..(self.states.count as usize).min(MAX_OBJECTS)]
+                .iter()
+                .find(|s| s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) != 0 && s.flags & OS_TRACKING != 0 && descs.iter().any(|d| d.id == s.desc && d.kind == OBJ_PROP && d.flags & OBJF_RUNTIME_DRAWS == 0))
+                .map(|s| Vec3::from_array(s.pose.pos));
+            let prop_then = prepared.and_then(|p| p.held.first()).map(|h| h.then.w_axis.truncate());
+            let (walk_v, _) = self.locomotion.walk();
+            let raw_anchor = self.game.as_ref().map(|g| Vec3::from_array(g.tracking.anchor));
+            // The gun's grip (tracking space): a point of it in front of the eyes.
+            let gun_grip = self.states.states[..(self.states.count as usize).min(MAX_OBJECTS)]
+                .iter()
+                .filter(|s| s.flags & OS_HELD_RIGHT != 0)
+                .find_map(|s| {
+                    let d = descs.iter().find(|d| d.id == s.desc && d.kind == OBJ_WEAPON)?;
+                    let (p, q) = (Vec3::from_array(s.pose.pos), Quat::from_array(s.pose.rot).normalize());
+                    let (p, q) = if s.flags & OS_TRACKING != 0 { (p, q) } else { self.map_now.map(|m| (m.inv_point(p), m.inv_rot(q)))? };
+                    Some(p + q * Vec3::from_array(d.grip))
+                });
+            let line = format!(
+                "{:.5},{},{},{},{},{},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{}\n",
+                frame.display_time_ns as f64 * 1e-9,
+                frame.index,
+                stereo.as_ref().map_or(0, |(_, i)| i.frame_index),
+                stereo.as_ref().map_or(0, |(_, i)| i.player_frame),
+                in_frame_ready as u8,
+                pairs.len(),
+                player_held.len(),
+                c.x,
+                c.y,
+                c.z,
+                v3s(gun_now),
+                v3s(gun_then),
+                v3s(self.map_now.map(|m| m.anchor)),
+                v3s(raw_anchor),
+                v3s(Some(walk_v)),
+                self.game.as_ref().map_or(0, |g| g.time_qpc),
+                frame.display_qpc,
+                v3s(prop_now),
+                v3s(prop_then),
+                v3s(gun_grip)
+            );
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = f.write_all(line.as_bytes());
+            }
+        }
         // The game's pictures of the player, the eye's own first.
         let player_sources = |order: [usize; 2]| -> Vec<rustvr_avatar::PlayerSource> {
             let (Some((slot, info)), Some(p)) = (&stereo, prepared) else { return Vec::new() };
@@ -1267,7 +1337,7 @@ impl Session {
                     Some(to_now) => {
                         // The other eye's first (it fills the edges this one's doesn't reach).
                         let sources = match prepared {
-                            Some(p) => warp_sources_without_player(slot, info, to_now, e, p),
+                            Some(p) => warp_sources_without_player(slot, info, to_now, e, p, &self.states),
                             None => warp_sources(slot, info, to_now, &[e ^ 1, e]),
                         };
                         match warp.draw(&self.gpu, target, eye, fov, &sources).and_then(|_| warp.view_depth(&self.gpu, target.width, target.height)) {
@@ -1318,7 +1388,7 @@ impl Session {
                 // Moved to the steadied camera by its depth: the aiming eye's over the other's.
                 (Some((slot, info)), false, Some(to_now)) => {
                     let sources = match prepared {
-                        Some(p) => warp_sources_without_player(slot, info, to_now, first, p),
+                        Some(p) => warp_sources_without_player(slot, info, to_now, first, p, &self.states),
                         None => warp_sources(slot, info, to_now, &[first ^ 1, first]),
                     };
                     match warp.draw(&self.gpu, target, &cam, &fov, &sources).and_then(|_| warp.view_depth(&self.gpu, target.width, target.height)) {
@@ -1528,7 +1598,7 @@ mod tests {
 /// around, then the other eye's and `own`'s own without them, each over the last where it has the
 /// world. So what's behind the player shows where either eye saw it, and is filled where neither
 /// did.
-fn warp_sources_without_player<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, to_now: glam::Mat4, own: usize, p: &'a crate::in_frame::Prepared) -> Vec<crate::warp::WarpSource<'a>> {
+fn warp_sources_without_player<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, to_now: glam::Mat4, own: usize, p: &'a crate::in_frame::Prepared, states: &ObjectStates) -> Vec<crate::warp::WarpSource<'a>> {
     let mut out = warp_sources(slot, info, to_now, &[own, own ^ 1, own]);
     if out.len() == 3 {
         if let Some(world) = p.world[own].srv.as_ref() {
@@ -1536,10 +1606,29 @@ fn warp_sources_without_player<'a>(slot: &'a crate::targets::Slot, info: &SlotIn
         }
         out[1].mask = p.player[own ^ 1].srv.as_ref();
         out[2].mask = p.player[own].srv.as_ref();
+        out[1].props = p.props[own ^ 1].srv.as_ref();
+        out[2].props = p.props[own].srv.as_ref();
         // The world's depth, without the player the game put in it.
         for (s, k) in out.iter_mut().zip([own, own ^ 1, own]) {
             if let Some(z) = p.depth[k].srv.as_ref() {
                 s.depth = z;
+            }
+        }
+        // Then each of the game's things a hand has, from this eye's picture and depth as the game
+        // drew them, moved as the hand has moved it since (tracking space).
+        let now = &states.states[..(states.count as usize).min(MAX_OBJECTS)];
+        if let Some(own_src) = warp_sources(slot, info, glam::Mat4::IDENTITY, &[own]).pop() {
+            for h in &p.held {
+                let (Some(rect), Some(st)) = (h.rect[own], now.iter().find(|s| s.id == h.id && s.flags & OS_TRACKING != 0)) else { continue };
+                let at = glam::Mat4::from_rotation_translation(Quat::from_array(st.pose.rot).normalize(), Vec3::from_array(st.pose.pos));
+                out.push(crate::warp::WarpSource {
+                    to_target: at * h.then.inverse(),
+                    props: p.props[own].srv.as_ref(),
+                    only: h.mark,
+                    rect,
+                    cell: 2,
+                    ..own_src
+                });
             }
         }
     }
@@ -1566,6 +1655,10 @@ fn warp_sources<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, to_now: gla
                 // The depth is in the game's units: metres in tracking space are that over its scale.
                 metres_per_unit: 1.0 / then.world_per_meter,
                 mask: None,
+                props: None,
+                only: 0.0,
+                rect: crate::warp::WarpSource::WHOLE,
+                cell: crate::warp::CELL_PIXELS,
             })
         })
         .collect()

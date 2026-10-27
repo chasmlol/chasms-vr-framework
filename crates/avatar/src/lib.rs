@@ -173,6 +173,12 @@ impl Avatar {
         self.renderer.set_in_frame(in_frame);
     }
 
+    /// Testing: draw the body in one flat colour and what it holds in another (linear; HDR in the
+    /// game's frame), so a picture of them can be found exactly in each frame; None: as they are.
+    pub fn set_flat(&mut self, colors: Option<([f32; 3], [f32; 3])>) {
+        self.renderer.set_flat(colors);
+    }
+
     /// Shades the body with the game's own lighting model from now on (None: the runtime's own
     /// look). Call once a frame, before drawing the eyes.
     pub fn set_game_shading(&mut self, gpu: &Gpu, shading: Option<&GameShading>) {

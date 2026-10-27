@@ -123,6 +123,15 @@ impl Gpu {
 
 /// Writes tightly packed RGBA8 pixels as a PNG.
 pub fn save_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
+    save_png_with(path, width, height, rgba, png::Compression::Balanced)
+}
+
+/// [`save_png`], quickly (bigger files): for many frames at once.
+pub fn save_png_fast(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
+    save_png_with(path, width, height, rgba, png::Compression::Fast)
+}
+
+fn save_png_with(path: &std::path::Path, width: u32, height: u32, rgba: &[u8], compression: png::Compression) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -130,6 +139,7 @@ pub fn save_png(path: &std::path::Path, width: u32, height: u32, rgba: &[u8]) ->
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), width, height);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
+    enc.set_compression(compression);
     enc.write_header()?.write_image_data(rgba)?;
     Ok(())
 }

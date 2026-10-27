@@ -53,7 +53,7 @@ cbuffer Frame : register(b0) {
     float4 depth;        // x: game depth bound, y: metres per game unit, z: bias, w: bias per metre
     float4 target_size;
     float4 ghost;        // rgb, opacity
-    float4 plain;        // rgb, w: 1 for the plain look (one colour, no textures, a headlamp)
+    float4 plain;        // rgb, w: 1 for the plain look (one colour, no textures, a headlamp), 2 for one flat colour (testing)
 };
 cbuffer Bones : register(b1) {
     float4 bone_rows[MAX_BONES * 3];   // bind model space -> tracking space, 3x4 rows
@@ -147,6 +147,7 @@ bool behind_game(float4 svpos, float z) {
 float4 PSMain(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     if (i.vis < 0) discard;
     if (behind_game(i.pos, i.view_z)) discard;
+    if (plain.w > 1.5) return float4(plain.rgb, atlas.w > 0 ? i.view_z : 1);
     float3 base = tint.rgb;
     if (plain.w > 0) {
         // A mannequin: one colour, lit from the eye, edges darker.
@@ -211,6 +212,7 @@ float4 PSMetro(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     float2 dux = ddx_coarse(i.uv), duy = ddy_coarse(i.uv);
     if (i.vis < 0) discard;
     if (behind_game(i.pos, i.view_z)) discard;
+    if (plain.w > 1.5) return float4(plain.rgb, out_alpha(i.view_z));
     uint cls = (uint)material.z;
     // The game's v2.w: vertex AO × the per-object hemi.
     MFrag f = m_frag(pv, nv, surf_params, i.ao * lit.x);
@@ -350,7 +352,9 @@ float2 clip_uv(float4 c) {
 
 // This point's colour in a picture the game drew it in, if the player shows this point there: its
 // depth within what the player's pixels around its place span (a surface seen edge-on changes
-// depth a lot from one pixel to the next).
+// depth a lot from one pixel to the next). Blended from the four pixels around it that are the
+// player's only: at the player's outline the world beside it doesn't bleed in (it moves on
+// differently).
 bool from_source(Texture2D col, Texture2D<float> pl, float4 clip, float z, out float3 c) {
     c = 0;
     if (clip.w <= 1e-4) return false;
@@ -369,8 +373,47 @@ bool from_source(Texture2D col, Texture2D<float> pl, float4 clip, float z, out f
     }
     float tol = src_info.y + src_info.z * z;
     if (!(hi > 0) || z < lo - tol || z > hi + tol) return false;
-    c = col.SampleLevel(clamp_samp, uv, 0).rgb;
+    float2 t = uv * float2(w, h) - 0.5;
+    int2 base = int2(floor(t));
+    float2 f = t - base;
+    float3 sum = 0;
+    float weight = 0;
+    [unroll] for (int k = 0; k < 4; k++) {
+        int2 o = int2(k & 1, k >> 1);
+        int2 p = clamp(base + o, 0, int2(w - 1, h - 1));
+        float d = pl.Load(int3(p, 0));
+        float wk = (o.x ? f.x : 1 - f.x) * (o.y ? f.y : 1 - f.y);
+        if (d > 0 && abs(d - z) <= 3 * tol) {
+            sum += col.Load(int3(p, 0)).rgb * wk;
+            weight += wk;
+        }
+    }
+    c = weight > 1e-4 ? sum / weight : col.SampleLevel(clamp_samp, uv, 0).rgb;
     return true;
+}
+
+// For a point neither picture shows (a side turned into view since, or behind the other hand
+// then): the colour of the nearest of the player's pixels at about its depth in the picture.
+bool near_source(Texture2D col, Texture2D<float> pl, float4 clip, float z, out float3 c) {
+    c = 0;
+    if (clip.w <= 1e-4) return false;
+    uint w, h;
+    pl.GetDimensions(w, h);
+    int2 at = int2(saturate(clip_uv(clip)) * float2(w, h));
+    float tol = 4 * (src_info.y + src_info.z * z);
+    float best = 1e9;
+    [loop] for (int y = -5; y <= 5; y++) {
+        [loop] for (int x = -5; x <= 5; x++) {
+            int2 p = clamp(at + int2(x, y), 0, int2(w - 1, h - 1));
+            float d = pl.Load(int3(p, 0));
+            float r = x * x + y * y;
+            if (d > 0 && abs(d - z) < tol && r < best) {
+                best = r;
+                c = col.Load(int3(p, 0)).rgb;
+            }
+        }
+    }
+    return best < 1e9;
 }
 
 // The player as the game drew it (its light, its fog, its tone curve and grading: the game's own
@@ -386,7 +429,9 @@ float4 PSReproject(VSRepOut i) : SV_Target {
     if (from_source(src_color0, src_player0, i.clip0, i.was_z.x, c)) return float4(tint ? c * float3(1, 0.35, 0.35) + float3(0.15, 0, 0) : c, 1);
     if (src_info.x > 1 && from_source(src_color1, src_player1, i.clip1, i.was_z.y, c)) return float4(tint ? c * float3(0.35, 1, 0.35) + float3(0, 0.15, 0) : c, 1);
     if (tint) return float4(0, 0, 0.6, 1);
-    // Hidden in the pictures (a side that has turned into view since): the nearest the first has.
+    // Hidden in the pictures: the nearest of the player's pixels around where it would be.
+    if (near_source(src_color0, src_player0, i.clip0, i.was_z.x, c)) return float4(c, 1);
+    if (src_info.x > 1 && near_source(src_color1, src_player1, i.clip1, i.was_z.y, c)) return float4(c, 1);
     return float4(src_color0.SampleLevel(clamp_samp, saturate(clip_uv(i.clip0)), 0).rgb, 1);
 }
 "#;
@@ -948,6 +993,8 @@ pub struct Renderer {
     depth: Vec<Texture>,
     /// Drawing into the game's HDR picture, before its post chain ([`Renderer::set_in_frame`]).
     in_frame: bool,
+    /// Testing: the body, and what it holds, each in one flat colour ([`Renderer::set_flat`]).
+    flat: Option<([f32; 3], [f32; 3])>,
 }
 
 impl Renderer {
@@ -986,6 +1033,7 @@ impl Renderer {
             sampler: pipeline::sampler(gpu, true, true)?,
             depth: Vec::new(),
             in_frame: false,
+            flat: None,
         })
     }
 
@@ -994,6 +1042,12 @@ impl Renderer {
     /// tone maps and grades it. Takes effect at the next [`Renderer::set_shading`].
     pub fn set_in_frame(&mut self, in_frame: bool) {
         self.in_frame = in_frame;
+    }
+
+    /// Testing: draw the body in one flat colour and what it holds in another (linear, HDR in the
+    /// game's frame), so a picture of them can be found exactly in each frame; None: as they are.
+    pub fn set_flat(&mut self, colors: Option<([f32; 3], [f32; 3])>) {
+        self.flat = colors;
     }
 
     /// The game's lighting for this frame (None: the runtime's own look).
@@ -1059,7 +1113,11 @@ impl Renderer {
         main.pose(&input);
         main.upload_body(ctx, show);
 
-        self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, frame, depth.as_ref()));
+        let mut cb = frame_constants(width, height, eye, fov, frame, depth.as_ref());
+        if let Some((c, _)) = self.flat {
+            cb.plain = [c[0], c[1], c[2], 2.0];
+        }
+        self.frame_cb.update(ctx, &cb);
         let dsv = self.depth_for(gpu, width, height)?;
         unsafe {
             ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
@@ -1079,6 +1137,10 @@ impl Renderer {
 
         // What the hands hold, in the same depth (fingers round a grip hide behind it and it behind
         // them), shaded the same way; then the meshes a special draw takes (a collimator's lens).
+        if let (Some((_, c)), false) = (self.flat, held.is_empty()) {
+            cb.plain = [c[0], c[1], c[2], 2.0];
+            self.frame_cb.update(ctx, &cb);
+        }
         if !held.is_empty() {
             for h in held {
                 h.model.upload(ctx, h.parts);

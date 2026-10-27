@@ -6,6 +6,7 @@
 //! would in the headset (a shifted, stretched or cut-off picture; dark grey where the layer has
 //! nothing). `<name>_raw.png` is the submitted images as they are, and `<name>.toml` the numbers.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -141,6 +142,223 @@ fn shrink(img: &Image, width: u32) -> Image {
         }
     }
     Image { w: width, h, px }
+}
+
+/// The mip level films keep (a quarter of the submitted size).
+const FILM_MIP: u32 = 2;
+
+/// A film being taken (`crate::script::Film`).
+pub(crate) struct Film {
+    name: String,
+    left: u32,
+    /// A part of each eye at full size instead of the whole a quarter size (x, y, width, height).
+    crop: Option<[u32; 4]>,
+    /// Per eye: a copy of the submitted image with its mips (made the first frame).
+    mips: Vec<(ID3D11Texture2D, ID3D11ShaderResourceView)>,
+    /// Frames on their way to the CPU (read a frame or two later, never waited for): their row of
+    /// numbers, both eyes, and each eye's size.
+    waiting: VecDeque<(String, [ID3D11Texture2D; 2], [(u32, u32); 2])>,
+    /// Frames read.
+    done: Vec<(String, Image, Image)>,
+    format: DXGI_FORMAT,
+}
+
+impl Film {
+    pub(crate) fn new(name: &str, frames: u32, crop: Option<[u32; 4]>) -> Film {
+        Film { name: name.to_string(), left: frames, crop, mips: Vec::new(), waiting: VecDeque::new(), done: Vec::new(), format: DXGI_FORMAT_UNKNOWN }
+    }
+}
+
+/// A staging texture's pixels, if the GPU has them ready (`wait`: wait until it has).
+fn read_staging(ctx: &ID3D11DeviceContext, t: &ID3D11Texture2D, (w, h): (u32, u32), bgra: bool, wait: bool) -> Option<Image> {
+    unsafe {
+        let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+        let flags = if wait { 0 } else { D3D11_MAP_FLAG_DO_NOT_WAIT.0 as u32 };
+        ctx.Map(t, 0, D3D11_MAP_READ, flags, Some(&mut m)).ok()?;
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for row in 0..h as usize {
+            let src = std::slice::from_raw_parts((m.pData as *const u8).add(row * m.RowPitch as usize), w as usize * 4);
+            px[row * w as usize * 4..(row + 1) * w as usize * 4].copy_from_slice(src);
+        }
+        ctx.Unmap(t, 0);
+        for p in px.chunks_exact_mut(4) {
+            if bgra {
+                p.swap(0, 2);
+            }
+            p[3] = 255;
+        }
+        Some(Image { w, h, px })
+    }
+}
+
+/// This frame into the film (from `xrEndFrame`); the film is saved when it's whole.
+pub(crate) fn film_frame(r: &mut Rt) {
+    let Some(mut f) = r.film.take() else { return };
+    let took = (|| -> Result<bool> {
+        let device = r.device.clone().context("no device")?;
+        let ctx = unsafe { device.GetImmediateContext()? };
+        let bgra = matches!(f.format, DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB | DXGI_FORMAT_B8G8R8A8_TYPELESS);
+        // The ones the GPU has done (all of them once the film is shot).
+        let last = f.left == 0;
+        while let Some((_, st, size)) = f.waiting.front() {
+            let (Some(a), Some(b)) = (read_staging(&ctx, &st[0], size[0], bgra, last), read_staging(&ctx, &st[1], size[1], bgra, last)) else { break };
+            let (row, _, _) = f.waiting.pop_front().unwrap();
+            f.done.push((row, a, b));
+        }
+        if f.left > 0 && r.last_layers.len() >= 2 {
+            let layers = r.last_layers.clone();
+            let mut st: Vec<ID3D11Texture2D> = Vec::new();
+            let mut sizes = [(0, 0); 2];
+            // Where the frame's pictures sit in the eyes' images, and the images' size, in the film's
+            // pixels.
+            let mut place = (0, 0, 0, 0);
+            for (e, l) in layers.iter().take(2).enumerate() {
+                let c = r.chains.get(&l.swapchain).context("the layer's swapchain is gone")?;
+                let i = c.last_released.context("the layer's swapchain has no released image")?;
+                let tex = &c.images[i as usize];
+                f.format = DXGI_FORMAT(c.format as i32);
+                if let Some([x, y, w, h]) = f.crop {
+                    // A part at full size: straight from the submitted image.
+                    let (x, y) = (x.min(c.width.saturating_sub(1)), y.min(c.height.saturating_sub(1)));
+                    let (w, h) = (w.min(c.width - x).max(1), h.min(c.height - y).max(1));
+                    let desc = D3D11_TEXTURE2D_DESC {
+                        Width: w,
+                        Height: h,
+                        MipLevels: 1,
+                        ArraySize: 1,
+                        Format: f.format,
+                        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                        Usage: D3D11_USAGE_STAGING,
+                        BindFlags: 0,
+                        CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                        MiscFlags: 0,
+                    };
+                    let mut s = None;
+                    let b = D3D11_BOX { left: x, top: y, front: 0, right: x + w, bottom: y + h, back: 1 };
+                    unsafe {
+                        device.CreateTexture2D(&desc, None, Some(&mut s))?;
+                        ctx.CopySubresourceRegion(s.as_ref().context("the film's staging texture")?, 0, 0, 0, 0, tex, 0, Some(&b));
+                    }
+                    st.push(s.context("the film's staging texture")?);
+                    sizes[e] = (w, h);
+                    place = (x, y, c.width, c.height);
+                    continue;
+                }
+                place = (0, 0, (c.width >> FILM_MIP).max(1), (c.height >> FILM_MIP).max(1));
+                if f.mips.len() <= e {
+                    let desc = D3D11_TEXTURE2D_DESC {
+                        Width: c.width,
+                        Height: c.height,
+                        MipLevels: FILM_MIP + 1,
+                        ArraySize: 1,
+                        Format: f.format,
+                        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                        Usage: D3D11_USAGE_DEFAULT,
+                        BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                        CPUAccessFlags: 0,
+                        MiscFlags: D3D11_RESOURCE_MISC_GENERATE_MIPS.0 as u32,
+                    };
+                    let mut t = None;
+                    unsafe { device.CreateTexture2D(&desc, None, Some(&mut t))? };
+                    let t = t.context("the film's texture")?;
+                    let mut v = None;
+                    unsafe { device.CreateShaderResourceView(&t, None, Some(&mut v))? };
+                    f.mips.push((t, v.context("the film's view")?));
+                }
+                let (mt, mv) = &f.mips[e];
+                let (w, h) = ((c.width >> FILM_MIP).max(1), (c.height >> FILM_MIP).max(1));
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: w,
+                    Height: h,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: f.format,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Usage: D3D11_USAGE_STAGING,
+                    BindFlags: 0,
+                    CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                    MiscFlags: 0,
+                };
+                let mut s = None;
+                unsafe {
+                    device.CreateTexture2D(&desc, None, Some(&mut s))?;
+                    ctx.CopySubresourceRegion(mt, 0, 0, 0, 0, tex, 0, None);
+                    ctx.GenerateMips(mv);
+                }
+                let s = s.context("the film's staging texture")?;
+                unsafe { ctx.CopySubresourceRegion(&s, 0, 0, 0, 0, mt, FILM_MIP, None) };
+                st.push(s);
+                sizes[e] = (w, h);
+            }
+            let q = |p: &xr::Posef| format!("{},{},{},{},{},{},{}", p.position.x, p.position.y, p.position.z, p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w);
+            let fv = |v: &xr::Fovf| format!("{},{},{},{}", v.angle_left, v.angle_right, v.angle_up, v.angle_down);
+            let hand = |h: usize| {
+                let (p, o) = r.pose.hand_pose(h);
+                format!("{},{},{},{},{},{},{}", p.x, p.y, p.z, o.x, o.y, o.z, o.w)
+            };
+            let (hp, hq) = (r.pose.head.pos, r.pose.head.rot());
+            let row = format!(
+                "{},{:.5},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                r.frames,
+                r.script_time(),
+                q(&layers[0].pose),
+                fv(&layers[0].fov),
+                q(&layers[1].pose),
+                fv(&layers[1].fov),
+                hand(0),
+                hand(1),
+                hp.x,
+                hp.y,
+                hp.z,
+                hq.x,
+                hq.y,
+                hq.z,
+                hq.w,
+                place.2,
+                place.3,
+                place.0,
+                place.1
+            );
+            let [a, b]: [ID3D11Texture2D; 2] = st.try_into().map_err(|_| anyhow::anyhow!("two eyes"))?;
+            f.waiting.push_back((row, [a, b], sizes));
+            f.left -= 1;
+        }
+        Ok(f.left == 0 && f.waiting.is_empty())
+    })();
+    match took {
+        Ok(false) => r.film = Some(f),
+        Ok(true) => {
+            let began = std::time::Instant::now();
+            let saved = save_film(r, &f);
+            let took = began.elapsed();
+            r.stalled += took;
+            let msg = match saved {
+                Ok(dir) => format!("film {} -> {} ({} frames, {:.2} s to save, script time {:.3})", f.name, dir.display(), f.done.len(), took.as_secs_f64(), r.script_time()),
+                Err(e) => format!("film {}: {e:#}", f.name),
+            };
+            r.log(&msg);
+        }
+        Err(e) => {
+            let msg = format!("film {}: {e:#}", f.name);
+            r.log(&msg);
+        }
+    }
+}
+
+fn save_film(r: &Rt, f: &Film) -> Result<PathBuf> {
+    let dir = r.dir.join("films").join(&f.name);
+    std::fs::create_dir_all(&dir)?;
+    let mut csv = String::from(
+        "frame,t,l_px,l_py,l_pz,l_qx,l_qy,l_qz,l_qw,l_fl,l_fr,l_fu,l_fd,r_px,r_py,r_pz,r_qx,r_qy,r_qz,r_qw,r_fl,r_fr,r_fu,r_fd,lh_px,lh_py,lh_pz,lh_qx,lh_qy,lh_qz,lh_qw,rh_px,rh_py,rh_pz,rh_qx,rh_qy,rh_qz,rh_qw,head_px,head_py,head_pz,head_qx,head_qy,head_qz,head_qw,img_w,img_h,crop_x,crop_y\n",
+    );
+    for (k, (row, a, b)) in f.done.iter().enumerate() {
+        let both = side_by_side(a, b);
+        rustvr_gpu::save_png_fast(&dir.join(format!("{k:03}.png")), both.w, both.h, &both.px)?;
+        csv.push_str(row);
+        csv.push('\n');
+    }
+    std::fs::write(dir.join("frames.csv"), csv)?;
+    Ok(dir)
 }
 
 /// Saves capture `name` from the frame just submitted. Returns the picture's path.

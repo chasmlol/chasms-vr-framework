@@ -17,6 +17,12 @@
 //!   without the player's old pixels: where the other eye saw the world behind them that shows,
 //!   and where neither did it's filled from around ([`Fill`]). (The game's depth has the player in
 //!   it, as the game's own passes need: the depth behind the player is filled from around too.)
+//!
+//! The game's own things a hand holds (its props, which it draws itself) are moved the same way:
+//! the adapter says which object states each pair placed them by (`SlotInfo::states_frame`), the
+//! runtime keeps the states it sent, finds each held thing's pixels in the pictures (where the
+//! game's depth lies within its hull, drawn where it was sent: [`HeldProp`]) and moves them with
+//! the hand (`crate::warp`, [`crate::warp::WarpSource::only`]), the world without them.
 
 use std::collections::VecDeque;
 
@@ -121,14 +127,27 @@ pub fn predict(pd: &mut RtPlayerDraw, hands: &[Controller; 2], free: [bool; 2], 
     }
 }
 
+/// A thing of the game's a hand has (one it draws itself) in the shown pair: its object, its number
+/// in [`Prepared::props`], where it was sent (tracking space) and the part of each eye's picture
+/// it's in (uv: left, top, right, bottom).
+pub struct HeldProp {
+    pub id: u32,
+    pub mark: f32,
+    pub then: Mat4,
+    pub rect: [Option<[f32; 4]>; 2],
+}
+
 /// For the shown pair of eyes: which of each eye's pixels are the player's (its view depth there,
 /// 0 elsewhere) and the picture with them filled from the world around.
 pub struct Prepared {
-    key: (usize, u32, u64, u64),
+    key: (usize, u32, u64, u64, u64),
     pub player: [Texture; 2],
     pub world: [Texture; 2],
     /// The world's depth without the player (the game's units, 0: nothing drawn).
     pub depth: [Texture; 2],
+    /// The held things' pixels, each marked with its [`HeldProp::mark`] (0: none).
+    pub props: [Texture; 2],
+    pub held: Vec<HeldProp>,
 }
 
 pub struct InFrame {
@@ -138,6 +157,9 @@ pub struct InFrame {
     now: Option<Box<RtPlayerDraw>>,
     prepared: Option<Prepared>,
     fill: Fill,
+    marks: Marks,
+    /// The object states sent (as the adapter got them), oldest first.
+    sent_states: VecDeque<Box<ObjectStates>>,
     /// Pairs whose pose was no longer kept (said now and then).
     missed: u64,
     /// The first pair readied has been said.
@@ -146,7 +168,7 @@ pub struct InFrame {
 
 impl InFrame {
     pub fn new(gpu: &Gpu) -> Result<InFrame> {
-        Ok(InFrame { sent: VecDeque::new(), now: None, prepared: None, fill: Fill::new(gpu)?, missed: 0, said: false })
+        Ok(InFrame { sent: VecDeque::new(), now: None, prepared: None, fill: Fill::new(gpu)?, marks: Marks::new(gpu)?, sent_states: VecDeque::new(), missed: 0, said: false })
     }
 
     /// The pose sent for the game to draw (as the adapter got it).
@@ -154,6 +176,13 @@ impl InFrame {
         let mut b = if self.sent.len() >= KEPT { self.sent.pop_front().unwrap() } else { Box::default() };
         *b = *pd;
         self.sent.push_back(b);
+    }
+
+    /// The object states sent (as the adapter got them).
+    pub fn record_states(&mut self, states: &ObjectStates) {
+        let mut b = if self.sent_states.len() >= KEPT { self.sent_states.pop_front().unwrap() } else { bytemuck::zeroed_box() };
+        *b = *states;
+        self.sent_states.push_back(b);
     }
 
     /// The player as it is this frame (None: the game doesn't draw it now).
@@ -189,12 +218,14 @@ impl InFrame {
         info: &SlotInfo,
         body: &mut crate::body::PlayerBody,
         held: &crate::held_objects::HeldObjects,
+        table: &ObjectTable,
+        hulls: &GameHulls,
     ) -> Option<&Prepared> {
         if info.player_frame == 0 || self.now.is_none() {
             return None;
         }
         let depth = slot.depth.as_ref()?;
-        let key = (index, info.generation, info.frame_index, info.player_frame);
+        let key = (index, info.generation, info.frame_index, info.player_frame, info.states_frame);
         if self.prepared.as_ref().is_some_and(|p| p.key == key) {
             return self.prepared.as_ref();
         }
@@ -217,18 +248,55 @@ impl InFrame {
                         player: [t(DXGI_FORMAT_R32_FLOAT)?, t(DXGI_FORMAT_R32_FLOAT)?],
                         world: [t(DXGI_FORMAT_R16G16B16A16_FLOAT)?, t(DXGI_FORMAT_R16G16B16A16_FLOAT)?],
                         depth: [t(DXGI_FORMAT_R32_FLOAT)?, t(DXGI_FORMAT_R32_FLOAT)?],
+                        props: [t(DXGI_FORMAT_R32_FLOAT)?, t(DXGI_FORMAT_R32_FLOAT)?],
+                        held: Vec::new(),
                     }
                 }
             };
             p.key = key;
+            // The game's things in a hand, as the states the pair placed them by have them.
+            p.held.clear();
+            let then_states = (info.states_frame != 0).then(|| self.sent_states.iter().rev().find(|s| s.frame_index == info.states_frame)).flatten();
+            let mut shapes: Vec<Vec<Vec3>> = Vec::new();
+            if let Some(st) = then_states {
+                let descs = &table.descs[..(table.count as usize).min(MAX_OBJECTS)];
+                for s in &st.states[..(st.count as usize).min(MAX_OBJECTS)] {
+                    if s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT | OS_PULLED) == 0 || s.flags & OS_TRACKING == 0 || p.held.len() >= MAX_HELD_PROPS {
+                        continue;
+                    }
+                    let Some(d) = descs.iter().find(|d| d.id == s.desc && d.id != 0) else { continue };
+                    if d.kind != OBJ_PROP || d.flags & OBJF_RUNTIME_DRAWS != 0 {
+                        continue;
+                    }
+                    let local = prop_hull(d, hulls);
+                    if local.len() < 4 {
+                        continue;
+                    }
+                    let then = Mat4::from_rotation_translation(Quat::from_array(s.pose.rot).normalize(), Vec3::from_array(s.pose.pos));
+                    let tris = hull_triangles(&local, then);
+                    if tris.is_empty() {
+                        continue;
+                    }
+                    p.held.push(HeldProp { id: s.id, mark: (p.held.len() + 1) as f32, then, rect: [None; 2] });
+                    shapes.push(tris);
+                }
+            }
             let places: Vec<(String, Vec<Option<Mat4>>)> = objects(then).iter().map(|o| (name_str(&o.name).to_string(), part_places(o))).collect();
             let draws: Vec<HeldDraw> = places.iter().filter_map(|(name, parts)| Some(HeldDraw { model: held.model(name)?, parts, key: name })).collect();
             for e in 0..2 {
                 let (Some(color), Some(z)) = (slot.eyes[e].srv.as_ref(), depth[e].srv.as_ref()) else { anyhow::bail!("eye {e} has no picture") };
-                let world = rustvr_avatar::DepthInput { srv: z, units_per_meter: info.eye_map[e].world_per_meter.max(1e-6) };
+                let wpm = info.eye_map[e].world_per_meter.max(1e-6);
+                let world = rustvr_avatar::DepthInput { srv: z, units_per_meter: wpm };
                 body.draw_view_depth(gpu, p.player[e].rtv.as_ref().unwrap(), w, h, &info.eye_pose[e], &info.fov[e], then, world, &draws)?;
-                self.fill.run(gpu, color, p.player[e].srv.as_ref().unwrap(), &p.world[e])?;
-                self.fill.run_depth(gpu, z, p.player[e].srv.as_ref().unwrap(), &p.depth[e])?;
+                // The held things' pixels: where the game's depth lies within each one's hull.
+                unsafe { gpu.ctx.ClearRenderTargetView(p.props[e].rtv.as_ref().unwrap(), &[0.0; 4]) };
+                for (k, tris) in shapes.iter().enumerate() {
+                    let rect = self.marks.mark(gpu, &p.props[e], z, 1.0 / wpm, &info.eye_pose[e], &info.fov[e], tris, p.held[k].mark)?;
+                    p.held[k].rect[e] = rect;
+                }
+                let (pl, pr) = (p.player[e].srv.as_ref().unwrap(), p.props[e].srv.as_ref().unwrap());
+                self.fill.run(gpu, color, pl, pr, &p.world[e])?;
+                self.fill.run_depth(gpu, z, pl, pr, &p.depth[e])?;
             }
             Ok(p)
         })();
@@ -251,7 +319,7 @@ impl InFrame {
 const FILL: &str = r#"
 Texture2D a : register(t0);
 Texture2D b : register(t1);
-Texture2D c : register(t2);
+Texture2D c3 : register(t2);
 SamplerState lin : register(s0);
 
 float4 VSMain(uint id : SV_VertexID) : SV_Position {
@@ -259,30 +327,31 @@ float4 VSMain(uint id : SV_VertexID) : SV_Position {
     return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
 }
 
-// The picture (a) premultiplied by how much of each pixel is the world: none where the player
-// (b: its view depth, > 0) is, or right beside it (the game's anti-aliasing blends the player's
-// edge into its neighbours).
-float4 PSStart(float4 p : SV_Position) : SV_Target {
+// How much of a pixel is the world: none where the player (b: its view depth, > 0) or a held
+// thing (c: its mark) is, or right beside them (the game's anti-aliasing blends their edges into
+// their neighbours).
+float world_at(int2 c) {
     uint w, h;
     b.GetDimensions(w, h);
-    int2 c = int2(p.xy);
-    float world = 1;
     [unroll] for (int k = 0; k < 9; k++) {
-        if (b.Load(int3(clamp(c + int2(k % 3 - 1, k / 3 - 1), 0, int2(w - 1, h - 1)), 0)).r > 0) world = 0;
+        int3 q = int3(clamp(c + int2(k % 3 - 1, k / 3 - 1), 0, int2(w - 1, h - 1)), 0);
+        if (b.Load(q).r > 0 || c3.Load(q).r > 0) return 0;
     }
+    return 1;
+}
+
+// The picture (a) premultiplied by how much of each pixel is the world.
+float4 PSStart(float4 p : SV_Position) : SV_Target {
+    int2 c = int2(p.xy);
+    float world = world_at(c);
     return float4(a.Load(int3(c, 0)).rgb * world, world);
 }
 
 // The depth (a, 0: nothing drawn) as the picture is in PSStart: inverse depth (the far and the sky
 // mix sensibly), premultiplied by how much of each pixel is the world.
 float4 PSStartDepth(float4 p : SV_Position) : SV_Target {
-    uint w, h;
-    b.GetDimensions(w, h);
     int2 c = int2(p.xy);
-    float world = 1;
-    [unroll] for (int k = 0; k < 9; k++) {
-        if (b.Load(int3(clamp(c + int2(k % 3 - 1, k / 3 - 1), 0, int2(w - 1, h - 1)), 0)).r > 0) world = 0;
-    }
+    float world = world_at(c);
     float d = a.Load(int3(c, 0)).r;
     return float4((d > 0 ? 1 / d : 0) * world, 0, 0, world);
 }
@@ -291,7 +360,7 @@ float4 PSStartDepth(float4 p : SV_Position) : SV_Target {
 // filled inverse depth (a) back as depth (0: nothing there).
 float PSEndDepth(float4 p : SV_Position) : SV_Target {
     int3 px = int3(p.xy, 0);
-    if (b.Load(px).a >= 1) return c.Load(px).r;
+    if (b.Load(px).a >= 1) return c3.Load(px).r;
     float inv = a.Load(px).r;
     return inv > 1e-5 ? 1 / inv : 0;
 }
@@ -354,17 +423,17 @@ impl Fill {
 
     /// `color` with the pixels where `player` (view depth, > 0) is filled from around, into `out`
     /// (RGBA16F, the same size).
-    fn run(&mut self, gpu: &Gpu, color: &ID3D11ShaderResourceView, player: &ID3D11ShaderResourceView, out: &Texture) -> Result<()> {
+    fn run(&mut self, gpu: &Gpu, color: &ID3D11ShaderResourceView, player: &ID3D11ShaderResourceView, props: &ID3D11ShaderResourceView, out: &Texture) -> Result<()> {
         self.levels_for(gpu, out.width, out.height)?;
-        self.pull_push(gpu, &self.start, color, player, out, None);
+        self.pull_push(gpu, &self.start, color, player, props, out, None);
         Ok(())
     }
 
     /// The depth `depth` (R32F) with the player's pixels filled from the world's around them, into
     /// `out` (R32F, the same size).
-    fn run_depth(&mut self, gpu: &Gpu, depth: &ID3D11ShaderResourceView, player: &ID3D11ShaderResourceView, out: &Texture) -> Result<()> {
+    fn run_depth(&mut self, gpu: &Gpu, depth: &ID3D11ShaderResourceView, player: &ID3D11ShaderResourceView, props: &ID3D11ShaderResourceView, out: &Texture) -> Result<()> {
         self.levels_for(gpu, out.width, out.height)?;
-        self.pull_push(gpu, &self.start_depth, depth, player, out, Some(&self.end_depth));
+        self.pull_push(gpu, &self.start_depth, depth, player, props, out, Some(&self.end_depth));
         Ok(())
     }
 
@@ -387,7 +456,8 @@ impl Fill {
 
     /// Pull-push from `start` (its inputs `input` and `player`) into `out`, through the last pass
     /// `end` when given (else the filled values go straight into `out`).
-    fn pull_push(&self, gpu: &Gpu, start: &Program, input: &ID3D11ShaderResourceView, player: &ID3D11ShaderResourceView, out: &Texture, end: Option<&Program>) {
+    #[allow(clippy::too_many_arguments)]
+    fn pull_push(&self, gpu: &Gpu, start: &Program, input: &ID3D11ShaderResourceView, player: &ID3D11ShaderResourceView, props: &ID3D11ShaderResourceView, out: &Texture, end: Option<&Program>) {
         let ctx = &gpu.ctx;
         let pass = |program: &Program, target: &Texture, inputs: [Option<ID3D11ShaderResourceView>; 3]| unsafe {
             ctx.OMSetRenderTargets(Some(&[target.rtv.clone()]), None);
@@ -406,7 +476,7 @@ impl Fill {
             ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
         }
         let n = self.levels.len();
-        pass(start, &self.levels[0].0, [Some(input.clone()), Some(player.clone()), None]);
+        pass(start, &self.levels[0].0, [Some(input.clone()), Some(player.clone()), Some(props.clone())]);
         for k in 1..n {
             pass(&self.pull, &self.levels[k].0, [self.levels[k - 1].0.srv.clone(), None, None]);
         }
@@ -419,6 +489,196 @@ impl Fill {
             pass(end, out, [self.levels[0].1.srv.clone(), self.levels[0].0.srv.clone(), Some(input.clone())]);
         }
         unsafe { ctx.OMSetRenderTargets(None, None) };
+    }
+}
+
+/// Held things drawn at most (each a mark in [`Prepared::props`]).
+const MAX_HELD_PROPS: usize = 6;
+/// Hull triangles' corners at most (the mark pipeline's constant buffer).
+const MAX_HULL_CORNERS: usize = 1020;
+
+/// A held thing's hull in its own space: the game's (its collision) or its box.
+fn prop_hull(d: &ObjectDesc, hulls: &GameHulls) -> Vec<Vec3> {
+    if let Some(h) = hulls.hulls[..(hulls.count as usize).min(MAX_GAME_HULLS)].iter().find(|h| h.id == d.id && h.count >= 4) {
+        return h.points[..(h.count as usize).min(MAX_HULL_POINTS)].iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
+    }
+    let (c, h) = (Vec3::from_array(d.center), Vec3::from_array(d.half_extents));
+    if h.min_element() <= 0.0 {
+        return Vec::new();
+    }
+    (0..8).map(|k| c + h * Vec3::new(if k & 1 == 0 { -1.0 } else { 1.0 }, if k & 2 == 0 { -1.0 } else { 1.0 }, if k & 4 == 0 { -1.0 } else { 1.0 })).collect()
+}
+
+/// The convex hull of `points` as triangle corners, placed by `at` (tracking space).
+fn hull_triangles(points: &[Vec3], at: Mat4) -> Vec<Vec3> {
+    let pts: Vec<rapier3d::prelude::Vector> = points.iter().map(|p| rapier3d::prelude::Vector::new(p.x, p.y, p.z)).collect();
+    let (verts, tris) = rapier3d::parry::transformation::convex_hull(&pts);
+    tris.iter()
+        .flat_map(|t| t.iter().map(|&i| verts[i as usize]))
+        .map(|v| at.transform_point3(Vec3::new(v.x, v.y, v.z)))
+        .take(MAX_HULL_CORNERS / 3 * 3)
+        .collect()
+}
+
+const MARKS: &str = r#"
+cbuffer Hull : register(b0) {
+    float4x4 hull_clip;     // tracking space -> the eye's clip space
+    float4 hull_z;          // view z = dot(xyz, p) + w
+    float4 hull_info;       // x: the mark, y: tolerance (metres), z: metres per game depth unit
+    float4 corners[1020];   // the hull's triangles, where the game drew the thing (tracking space)
+};
+Texture2D<float> hull_near : register(t0);
+Texture2D<float> hull_far : register(t1);
+Texture2D<float> game_depth : register(t2);
+
+struct HOut { float4 pos : SV_Position; float z : TEXCOORD0; };
+HOut VSHull(uint id : SV_VertexID) {
+    float3 p = corners[id].xyz;
+    HOut o;
+    o.pos = mul(hull_clip, float4(p, 1));
+    o.z = dot(hull_z.xyz, p) + hull_z.w;
+    return o;
+}
+
+// The hull's nearest (blended with min) and farthest (max) view depth at each pixel.
+struct HZ { float near_z : SV_Target0; float far_z : SV_Target1; };
+HZ PSHull(HOut i) {
+    HZ o;
+    o.near_z = i.z;
+    o.far_z = i.z;
+    return o;
+}
+
+float4 VSFull(uint id : SV_VertexID) : SV_Position {
+    float2 uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+
+// The thing's pixels: where the game drew something within its hull.
+float PSMark(float4 p : SV_Position) : SV_Target {
+    int3 px = int3(p.xy, 0);
+    float n = hull_near.Load(px), f = hull_far.Load(px);
+    if (n > 1e8 || !(f > 0)) discard;
+    float d = game_depth.Load(px) * hull_info.z;
+    if (!(d > 0) || d < n - hull_info.y || d > f + hull_info.y) discard;
+    return hull_info.x;
+}
+"#;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct HullCb {
+    clip: [f32; 16],
+    z: [f32; 4],
+    info: [f32; 4],
+    corners: [[f32; 4]; MAX_HULL_CORNERS],
+}
+
+/// Finds a held thing's pixels in a picture ([`Prepared::props`]).
+struct Marks {
+    hull: Program,
+    mark: Program,
+    cb: pipeline::ConstantBuffer<HullCb>,
+    cbs: Box<HullCb>,
+    minmax: ID3D11BlendState,
+    raster: ID3D11RasterizerState,
+    /// The hull's near and far depth, for the picture size.
+    near_far: Option<(Texture, Texture)>,
+}
+
+impl Marks {
+    fn new(gpu: &Gpu) -> Result<Marks> {
+        let rt = |op| D3D11_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: true.into(),
+            SrcBlend: D3D11_BLEND_ONE,
+            DestBlend: D3D11_BLEND_ONE,
+            BlendOp: op,
+            SrcBlendAlpha: D3D11_BLEND_ONE,
+            DestBlendAlpha: D3D11_BLEND_ONE,
+            BlendOpAlpha: op,
+            RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+        };
+        let mut desc = D3D11_BLEND_DESC { AlphaToCoverageEnable: false.into(), IndependentBlendEnable: true.into(), RenderTarget: Default::default() };
+        desc.RenderTarget[0] = rt(D3D11_BLEND_OP_MIN);
+        desc.RenderTarget[1] = rt(D3D11_BLEND_OP_MAX);
+        let mut minmax = None;
+        unsafe { gpu.device.CreateBlendState(&desc, Some(&mut minmax))? };
+        Ok(Marks {
+            hull: Program::with_entries(gpu, MARKS, "marks", "VSHull", "PSHull", &[])?,
+            mark: Program::with_entries(gpu, MARKS, "marks", "VSFull", "PSMark", &[])?,
+            cb: pipeline::ConstantBuffer::new(gpu)?,
+            cbs: bytemuck::zeroed_box(),
+            minmax: minmax.unwrap(),
+            raster: pipeline::raster_state(gpu, false, false)?,
+            near_far: None,
+        })
+    }
+
+    /// Marks `mark` into `out` (R32F, the picture's size) where the picture's depth (`depth`, R32F,
+    /// `metres_per_unit`) lies within the hull `tris` (tracking space) seen from `eye`. Returns the
+    /// part of the picture the hull covers (uv), None when it's out of view.
+    #[allow(clippy::too_many_arguments)]
+    fn mark(&mut self, gpu: &Gpu, out: &Texture, depth: &ID3D11ShaderResourceView, metres_per_unit: f32, eye: &Pose, fov: &Fov, tris: &[Vec3], mark: f32) -> Result<Option<[f32; 4]>> {
+        let (w, h) = (out.width, out.height);
+        let view = crate::compositor::view_matrix(eye);
+        let clip = crate::compositor::projection(fov) * view;
+        // Where it is in the picture (nothing behind the eye).
+        let (mut lo, mut hi) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));
+        for p in tris {
+            let c = clip * p.extend(1.0);
+            if c.w <= 0.01 {
+                continue;
+            }
+            let uv = glam::Vec2::new(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
+            (lo, hi) = (lo.min(uv), hi.max(uv));
+        }
+        if lo.x > hi.x || hi.x < 0.0 || hi.y < 0.0 || lo.x > 1.0 || lo.y > 1.0 {
+            return Ok(None);
+        }
+        let pad = glam::Vec2::new(8.0 / w as f32, 8.0 / h as f32);
+        let (lo, hi) = ((lo - pad).clamp(glam::Vec2::ZERO, glam::Vec2::ONE), (hi + pad).clamp(glam::Vec2::ZERO, glam::Vec2::ONE));
+        if self.near_far.as_ref().is_none_or(|(n, _)| (n.width, n.height) != (w, h)) {
+            let t = || Texture::new(gpu, &TexDesc::target(w, h, DXGI_FORMAT_R32_FLOAT));
+            self.near_far = Some((t()?, t()?));
+        }
+        let (near, far) = self.near_far.as_ref().unwrap();
+        let cb = &mut self.cbs;
+        cb.clip = clip.to_cols_array();
+        cb.z = view.row(2).to_array();
+        cb.info = [mark, 0.02, metres_per_unit, 0.0];
+        let n = tris.len().min(MAX_HULL_CORNERS);
+        for (k, p) in tris.iter().take(n).enumerate() {
+            cb.corners[k] = p.extend(1.0).to_array();
+        }
+        self.cb.update(&gpu.ctx, cb);
+        let ctx = &gpu.ctx;
+        unsafe {
+            ctx.ClearRenderTargetView(near.rtv.as_ref().unwrap(), &[1e9; 4]);
+            ctx.ClearRenderTargetView(far.rtv.as_ref().unwrap(), &[0.0; 4]);
+            ctx.OMSetRenderTargets(Some(&[near.rtv.clone(), far.rtv.clone()]), None);
+            ctx.OMSetBlendState(&self.minmax, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(None, 0);
+            ctx.RSSetState(&self.raster);
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.IASetInputLayout(None);
+            ctx.VSSetConstantBuffers(0, Some(&[Some(self.cb.buf.clone())]));
+            ctx.PSSetConstantBuffers(0, Some(&[Some(self.cb.buf.clone())]));
+        }
+        pipeline::viewport(ctx, w, h);
+        self.hull.bind(ctx);
+        unsafe {
+            ctx.Draw(n as u32, 0);
+            ctx.OMSetRenderTargets(Some(&[out.rtv.clone()]), None);
+            ctx.OMSetBlendState(None, None, 0xFFFF_FFFF);
+            ctx.PSSetShaderResources(0, Some(&[near.srv.clone(), far.srv.clone(), Some(depth.clone())]));
+        }
+        self.mark.bind(ctx);
+        unsafe {
+            ctx.Draw(3, 0);
+            ctx.PSSetShaderResources(0, Some(&[None, None, None]));
+            ctx.OMSetRenderTargets(None, None);
+        }
+        Ok(Some([lo.x, lo.y, hi.x, hi.y]))
     }
 }
 
@@ -501,8 +761,9 @@ mod tests {
         let src = Texture::upload(&gpu, n, n, DXGI_FORMAT_R8G8B8A8_UNORM, &[&color]).unwrap();
         let mask = Texture::upload(&gpu, n, n, R32, &[bytemuck::cast_slice(&player)]).unwrap();
         let out = Texture::new(&gpu, &TexDesc::target(n, n, DXGI_FORMAT_R16G16B16A16_FLOAT)).unwrap();
+        let no_props = Texture::upload(&gpu, n, n, R32, &[bytemuck::cast_slice(&vec![0f32; (n * n) as usize])]).unwrap();
         let mut fill = Fill::new(&gpu).unwrap();
-        fill.run(&gpu, src.srv.as_ref().unwrap(), mask.srv.as_ref().unwrap(), &out).unwrap();
+        fill.run(&gpu, src.srv.as_ref().unwrap(), mask.srv.as_ref().unwrap(), no_props.srv.as_ref().unwrap(), &out).unwrap();
         let raw = out.read_raw(&gpu).unwrap();
         let half = |h: u16| {
             let (e, m) = (((h >> 10) & 0x1f) as i32, (h & 0x3ff) as f32);
@@ -537,8 +798,9 @@ mod tests {
         let up = |v: &[f32]| Texture::upload(&gpu, n, n, DXGI_FORMAT_R32_FLOAT, &[bytemuck::cast_slice(v)]).unwrap();
         let (d, p) = (up(&depth), up(&player));
         let out = Texture::new(&gpu, &TexDesc::target(n, n, DXGI_FORMAT_R32_FLOAT)).unwrap();
+        let no_props = up(&vec![0f32; (n * n) as usize]);
         let mut fill = Fill::new(&gpu).unwrap();
-        fill.run_depth(&gpu, d.srv.as_ref().unwrap(), p.srv.as_ref().unwrap(), &out).unwrap();
+        fill.run_depth(&gpu, d.srv.as_ref().unwrap(), p.srv.as_ref().unwrap(), no_props.srv.as_ref().unwrap(), &out).unwrap();
         let got: Vec<f32> = bytemuck::cast_slice(&out.read_raw(&gpu).unwrap()).to_vec();
         let mid = got[(32 * n + 32) as usize];
         assert!((mid - 5.0).abs() < 0.05, "the middle of the player is the wall behind: {mid}");
