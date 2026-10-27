@@ -1126,9 +1126,9 @@ impl Session {
         // the body and hands plain (the runtime's own look) and the guns as their collision.
         self.body.set_game_shading(&self.gpu, shading.as_ref().filter(|_| !framework));
         self.body.set_plain(framework);
-        let held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
-        self.stats.held_drawn = held.len() as u32;
-        self.stats.held_drawn_frames += (!held.is_empty()) as u64;
+        let drawn = if draw_body && !framework { self.held_objects.draws().len() } else { 0 };
+        self.stats.held_drawn = drawn as u32;
+        self.stats.held_drawn_frames += (drawn > 0) as u64;
         if framework {
             let map = self.map_now;
             self.physics_tris.clear();
@@ -1146,6 +1146,8 @@ impl Session {
         }
         let body = &mut self.body;
         let physics_view = &mut self.physics_view;
+        let held_objects = &mut self.held_objects;
+        let map_now = self.map_now;
         for e in 0..2 {
             let target = &eyes[e];
             let (eye, fov) = (&poses[e], &fovs[e]);
@@ -1165,6 +1167,11 @@ impl Session {
                 }
             }
             let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: wpm, bloom: bloom_srv.as_ref(), lens: lens_srv.as_ref() });
+            // What the hands hold, and what lies in the game's world placed where this eye's picture
+            // shows it (the mapping the game drew it with).
+            let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| WorldMap::from_slot(&info.eye_map[e]));
+            held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
+            let held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
                 if framework {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {
@@ -1196,6 +1203,10 @@ impl Session {
                 }
                 _ => crate::compositor::Background::Void,
             };
+            // (Placed by the picture it's drawn over: the first eye's.)
+            let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| WorldMap::from_slot(&info.eye_map[first]));
+            self.held_objects.place(eye_map.as_ref().or(self.map_now.as_ref()));
+            let held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");

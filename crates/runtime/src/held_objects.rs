@@ -30,10 +30,15 @@ pub struct Loaded {
     pub blocks: Vec<Vec<(Vec3, Vec3)>>,
 }
 
-/// One object to draw this frame: its model (by name) and each part's place in tracking space.
+/// One object to draw this frame: its model (by name) and each part's place: in tracking space
+/// (held or holstered: it goes with the player), or in the game's world (`world`: lying about),
+/// placed into tracking space for each picture by that picture's own mapping
+/// ([`HeldObjects::place`]): where the game was when it drew the picture the object is drawn over,
+/// so it stays put on the game's floor however the player moves.
 struct Placed {
     name: String,
     parts: Vec<Option<Mat4>>,
+    world: bool,
     /// The hand holding it.
     hand: Option<usize>,
 }
@@ -43,6 +48,8 @@ pub struct HeldObjects {
     /// By model name; None: it failed to load (said once).
     models: HashMap<String, Option<Loaded>>,
     placed: Vec<Placed>,
+    /// Each placed object's parts in tracking space, for the picture being drawn ([`HeldObjects::place`]).
+    parts_now: Vec<Vec<Option<Mat4>>>,
     /// Props a hand had lately: drawn until then ([`RUNTIME_DRAW_TAIL`] after the hand lets go,
     /// while the game shows its own again).
     props_until: HashMap<u32, f64>,
@@ -137,7 +144,8 @@ impl HeldObjects {
     }
 
     /// Places this frame's objects from the rig's states: held and holstered ones in tracking space,
-    /// the rest in the game's world through `map` (None: not drawn). `triggers`: each controller's
+    /// the rest in the game's world (placed for each picture, [`HeldObjects::place`]). `map`: the
+    /// runtime's mapping now, which places them until then. `triggers`: each controller's
     /// trigger (a held gun's trigger follows its hand's). The game's props only while a hand has
     /// them ([`OS_RUNTIME_DRAWN`], and a moment after); `now` in seconds.
     pub fn update(&mut self, objects: &ObjectTable, states: &ObjectStates, map: Option<&WorldMap>, triggers: [f32; 2], now: f64) {
@@ -160,12 +168,7 @@ impl HeldObjects {
                 }
             }
             let (pos, rot) = (Vec3::from_array(s.pose.pos), quat(s.pose.rot));
-            let (pos, rot) = if s.flags & OS_TRACKING != 0 {
-                (pos, rot)
-            } else {
-                let Some(map) = map else { continue };
-                (map.inv_point(pos), map.inv_rot(rot))
-            };
+            let world = s.flags & OS_TRACKING == 0;
             let hand = match s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) {
                 OS_HELD_LEFT => Some(0),
                 OS_HELD_RIGHT => Some(1),
@@ -178,13 +181,31 @@ impl HeldObjects {
                 // A prop: its model where the game draws it on the object.
                 None => vec![Some(object * model_place(d))],
             };
-            self.placed.push(Placed { name: name.to_string(), parts, hand });
+            self.placed.push(Placed { name: name.to_string(), parts, world, hand });
+        }
+        self.place(map);
+    }
+
+    /// Places the objects lying in the game's world into tracking space by `map`: the mapping of the
+    /// picture they're drawn over (each eye's own, `SlotInfo::eye_map`), so they sit exactly where
+    /// that picture shows the world. None: they aren't drawn.
+    pub fn place(&mut self, map: Option<&WorldMap>) {
+        let to_tracking = map.map(|m| m.matrix().inverse());
+        self.parts_now.clear();
+        for p in &self.placed {
+            let parts = match (p.world, to_tracking) {
+                (false, _) => p.parts.clone(),
+                (true, Some(m)) => p.parts.iter().map(|q| q.map(|q| m * q)).collect(),
+                (true, None) => vec![None; p.parts.len()],
+            };
+            self.parts_now.push(parts);
         }
     }
 
     /// Nothing to draw this frame (no game, or the rig isn't running).
     pub fn clear(&mut self) {
         self.placed.clear();
+        self.parts_now.clear();
     }
 
     /// This frame's objects as the protocol carries them to an adapter that draws the player
@@ -192,13 +213,14 @@ impl HeldObjects {
     pub fn drawn(&self) -> Vec<DrawnObject> {
         self.placed
             .iter()
+            .zip(&self.parts_now)
             .take(DRAWN_OBJECTS_MAX)
-            .map(|p| {
+            .map(|(p, parts)| {
                 let mut o: DrawnObject = bytemuck::Zeroable::zeroed();
                 let n = p.name.len().min(o.name.len() - 1);
                 o.name[..n].copy_from_slice(&p.name.as_bytes()[..n]);
-                o.part_count = p.parts.len().min(DRAWN_PARTS_MAX) as u32;
-                for (k, m) in p.parts.iter().enumerate().take(DRAWN_PARTS_MAX) {
+                o.part_count = parts.len().min(DRAWN_PARTS_MAX) as u32;
+                for (k, m) in parts.iter().enumerate().take(DRAWN_PARTS_MAX) {
                     o.set_part(k, m.map(|m| [0, 1, 2].map(|r| m.row(r).to_array())));
                 }
                 o
@@ -209,11 +231,11 @@ impl HeldObjects {
     /// This frame's objects as the framework view draws them (tracking space): each part's boxes,
     /// coloured by what it is (the magazine, the bolt or charging handle, the trigger, the rest).
     pub fn framework_triangles(&self, out: &mut Vec<([Vec3; 3], [f32; 3])>) {
-        for p in &self.placed {
+        for (p, parts) in self.placed.iter().zip(&self.parts_now) {
             let Some(Some(l)) = self.models.get(&p.name) else { continue };
             let Some(w) = &l.weapon else { continue };
             for (i, blocks) in l.blocks.iter().enumerate() {
-                let Some(Some(m)) = p.parts.get(i) else { continue };
+                let Some(Some(m)) = parts.get(i) else { continue };
                 let color = if w.mag_parts.contains(&i) {
                     [0.95, 0.78, 0.2]
                 } else if w.bolt_parts.contains(&i) {
@@ -243,13 +265,14 @@ impl HeldObjects {
         self.placed.iter().take(DRAWN_OBJECTS_MAX).map(|p| p.hand).collect()
     }
 
-    /// This frame's draws (see [`HeldObjects::update`]).
+    /// This frame's draws, as last placed ([`HeldObjects::update`], [`HeldObjects::place`]).
     pub fn draws(&self) -> Vec<HeldDraw<'_>> {
         self.placed
             .iter()
-            .filter_map(|p| {
+            .zip(&self.parts_now)
+            .filter_map(|(p, parts)| {
                 let l = self.models.get(&p.name)?.as_ref()?;
-                Some(HeldDraw { model: &l.model, parts: &p.parts, key: &p.name })
+                Some(HeldDraw { model: &l.model, parts, key: &p.name })
             })
             .collect()
     }
