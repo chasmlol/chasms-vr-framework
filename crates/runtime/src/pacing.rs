@@ -29,15 +29,8 @@ pub struct Pacing {
     cpu: Vec<f32>,
     gpu: Vec<f32>,
     pictures: u32,
-    /// New pictures with the player the game drew in them (its pose said).
-    with_player: u32,
-    /// Frames in the framework view, with the game's player moved, warped without one.
+    /// Frames in the framework view.
     framework: u32,
-    in_frame: u32,
-    warped: u32,
-    /// Frames the game's stereo picture couldn't be moved, by why.
-    no_depth: u32,
-    no_map: u32,
     timers: Vec<Timer>,
     next: usize,
     open: Option<usize>,
@@ -103,12 +96,7 @@ impl Pacing {
             cpu: Vec::new(),
             gpu: Vec::new(),
             pictures: 0,
-            with_player: 0,
             framework: 0,
-            in_frame: 0,
-            warped: 0,
-            no_depth: 0,
-            no_map: 0,
             timers,
             next: 0,
             open: None,
@@ -170,11 +158,9 @@ impl Pacing {
     }
 
     /// The runtime's CPU time for the frame (ms), and what it showed.
-    pub fn cpu(&mut self, ms: f32, framework: bool, in_frame: bool, warped: bool) {
+    pub fn cpu(&mut self, ms: f32, framework: bool) {
         self.cpu.push(ms);
         self.framework += framework as u32;
-        self.in_frame += in_frame as u32;
-        self.warped += warped as u32;
     }
 
     /// Waited `ms` on `what` this frame.
@@ -182,17 +168,9 @@ impl Pacing {
         self.waits[what as usize].push(ms);
     }
 
-    /// The game's stereo picture couldn't be moved to this frame: it came without its depth (the
-    /// linear kind), or without where its eyes were in the world.
-    pub fn not_moved(&mut self, no_depth: bool, no_map: bool) {
-        self.no_depth += no_depth as u32;
-        self.no_map += no_map as u32;
-    }
-
-    /// The game gave a new picture (`with_player`: with the player it drew in it, its pose said).
-    pub fn picture(&mut self, with_player: bool) {
+    /// The game gave a new picture.
+    pub fn picture(&mut self) {
         self.pictures += 1;
-        self.with_player += with_player as u32;
     }
 
     /// Every ten seconds (at `now`, seconds): the report, and a fresh count.
@@ -205,17 +183,9 @@ impl Pacing {
         let (mut cpu, mut gpu) = (std::mem::take(&mut self.cpu), std::mem::take(&mut self.gpu));
         let mean = |v: &[f32]| if v.is_empty() { 0.0 } else { v.iter().sum::<f32>() / v.len() as f32 };
         let (cm, gm) = (mean(&cpu), mean(&gpu));
-        let mode = if self.framework * 2 > self.frames {
-            "the framework view"
-        } else if self.in_frame * 2 > self.frames {
-            "the game's picture moved, the player it drew moved to where it is"
-        } else if self.warped * 2 > self.frames {
-            "the game's picture moved"
-        } else {
-            "the game's picture as it drew it"
-        };
+        let mode = if self.framework * 2 > self.frames { "the framework view" } else { "the game's picture" };
         let line = format!(
-            "pacing: {} frames in {secs:.1} s ({:.1}/s), {} shown late; the runtime's work {cm:.1} ms on the CPU (95% under {:.1}, most {:.1}), {gm:.1} ms from its first GPU command to its last (95% under {:.1}, most {:.1}); the game's pictures {:.1}/s ({} with its player's pose); {mode} ({} frames moved, {} with the player moved, {} framework; not moved: {} without the game's depth, {} without where its eyes were)",
+            "pacing: {} frames in {secs:.1} s ({:.1}/s), {} shown late; the runtime's work {cm:.1} ms on the CPU (95% under {:.1}, most {:.1}), {gm:.1} ms from its first GPU command to its last (95% under {:.1}, most {:.1}); the game's pictures {:.1}/s; {mode}",
             self.frames,
             self.frames as f64 / secs,
             self.late,
@@ -223,13 +193,7 @@ impl Pacing {
             percentile(&mut cpu, 1.0),
             percentile(&mut gpu, 0.95),
             percentile(&mut gpu, 1.0),
-            self.pictures as f64 / secs,
-            self.with_player,
-            self.warped,
-            self.in_frame,
-            self.framework,
-            self.no_depth,
-            self.no_map
+            self.pictures as f64 / secs
         );
         let mut line = line;
         line.push_str("; waited on");
@@ -239,8 +203,7 @@ impl Pacing {
             v.clear();
         }
         self.since = Some(now);
-        (self.frames, self.late, self.pictures, self.with_player, self.framework, self.in_frame, self.warped) = (0, 0, 0, 0, 0, 0, 0);
-        (self.no_depth, self.no_map) = (0, 0);
+        (self.frames, self.late, self.pictures, self.framework) = (0, 0, 0, 0);
         Some(line)
     }
 }
