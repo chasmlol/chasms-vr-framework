@@ -1,7 +1,8 @@
 //! Objects the runtime draws itself: what an adapter registers with [`OBJF_RUNTIME_DRAWS`] (a gun
-//! the player holds, its magazines). The game draws the world; the player, and what the player
-//! holds, are the runtime's: drawn with the body by the avatar ([`rustvr_avatar::HeldModel`]), in
-//! the same depth and with the game's own materials and lighting, wherever the rig has them.
+//! the player holds, its magazines; one of the game's props while a hand has it). The game draws
+//! the world; the player, and what the player holds, are the runtime's: drawn with the body by the
+//! avatar ([`rustvr_avatar::HeldModel`]), in the same depth and with the game's own materials and
+//! lighting, wherever the rig has them.
 //!
 //! The model is the one the object's name gives (`<game>/<asset key>`, `rustvr_guns::desc::
 //! model_name`) in the runtime's asset cache, rigged by `content/rigs/<game>.toml`: exactly the gun
@@ -20,9 +21,10 @@ use rustvr_protocol::*;
 
 use crate::rig::WorldMap;
 
-/// A model loaded for drawing: the gun it is (its parts and how they move) and its GPU model.
+/// A model loaded for drawing: the gun it is (its parts and how they move; None: a prop, one
+/// piece) and its GPU model.
 pub struct Loaded {
-    pub weapon: Weapon,
+    pub weapon: Option<Weapon>,
     pub model: HeldModel,
     /// Each part as boxes (model space): the framework view's low-poly gun ([`crate::blockout`]).
     pub blocks: Vec<Vec<(Vec3, Vec3)>>,
@@ -41,6 +43,9 @@ pub struct HeldObjects {
     /// By model name; None: it failed to load (said once).
     models: HashMap<String, Option<Loaded>>,
     placed: Vec<Placed>,
+    /// Props a hand had lately: drawn until then ([`RUNTIME_DRAW_TAIL`] after the hand lets go,
+    /// while the game shows its own again).
+    props_until: HashMap<u32, f64>,
 }
 
 fn quat(a: [f32; 4]) -> Quat {
@@ -62,10 +67,23 @@ pub fn held_parts(w: &Weapon) -> Vec<HeldPart> {
         .collect()
 }
 
-/// Loads `name` (`<game>/<key>`) from the asset cache under `root`.
-pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str) -> anyhow::Result<Loaded> {
+/// Loads `name` (`<game>/<key>`) from the asset cache under `root`, for an object of `kind`.
+pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32) -> anyhow::Result<Loaded> {
     use anyhow::Context;
     let (game, key) = rustvr_guns::desc::parse_model_name(name).with_context(|| format!("{name:?} isn't <game>/<asset key>"))?;
+    if kind == OBJ_PROP {
+        // A prop: the whole model, one piece.
+        let dir = root.join(game);
+        let model = rustvr_asset::load_model(&dir, key)?;
+        let parts: Vec<HeldPart> = model
+            .meshes
+            .iter()
+            .enumerate()
+            .map(|(mesh, m)| HeldPart { part: 0, mesh, vertices: (0..m.vertices.len() as u32).collect(), indices: m.indices.clone() })
+            .collect();
+        let model = HeldModel::load(gpu, &dir, &model, &parts)?;
+        return Ok(Loaded { weapon: None, model, blocks: Vec::new() });
+    }
     // (Rigs are Metro 2033's so far: `content/rigs/metro2033.toml`.)
     anyhow::ensure!(game == "metro2033", "no rigs for {game}'s guns yet");
     let dir = root.join(game);
@@ -73,7 +91,14 @@ pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str) -> anyhow::Result<Loa
     let model = rustvr_asset::load_model(&dir, key)?;
     let model = HeldModel::load(gpu, &dir, &model, &held_parts(&weapon))?;
     let blocks = weapon.parts.iter().map(|m| crate::blockout::blockout(&m.vertices.iter().map(|v| Vec3::from_array(v.pos)).collect::<Vec<_>>(), &m.indices)).collect();
-    Ok(Loaded { weapon, model, blocks })
+    Ok(Loaded { weapon: Some(weapon), model, blocks })
+}
+
+/// Where a prop's model sits on it ([`ObjectDesc::model_pos`], `model_rot`).
+pub fn model_place(d: &ObjectDesc) -> Mat4 {
+    let r = Quat::from_array(d.model_rot);
+    let r = if r.is_finite() && r.length_squared() > 0.5 { r.normalize() } else { Quat::IDENTITY };
+    Mat4::from_rotation_translation(r, Vec3::from_array(d.model_pos))
 }
 
 /// Where each part of an object of `w` goes (tracking space), for its description's kind, its
@@ -97,7 +122,7 @@ impl HeldObjects {
             if self.models.contains_key(&name) {
                 continue;
             }
-            let loaded = match load(gpu, &root, &name) {
+            let loaded = match load(gpu, &root, &name, d.kind) {
                 Ok(l) => {
                     tracing::info!("runtime: drawing {name} ({} parts)", l.model.parts());
                     Some(l)
@@ -113,9 +138,11 @@ impl HeldObjects {
 
     /// Places this frame's objects from the rig's states: held and holstered ones in tracking space,
     /// the rest in the game's world through `map` (None: not drawn). `triggers`: each controller's
-    /// trigger (a held gun's trigger follows its hand's).
-    pub fn update(&mut self, objects: &ObjectTable, states: &ObjectStates, map: Option<&WorldMap>, triggers: [f32; 2]) {
+    /// trigger (a held gun's trigger follows its hand's). The game's props only while a hand has
+    /// them ([`OS_RUNTIME_DRAWN`], and a moment after); `now` in seconds.
+    pub fn update(&mut self, objects: &ObjectTable, states: &ObjectStates, map: Option<&WorldMap>, triggers: [f32; 2], now: f64) {
         self.placed.clear();
+        self.props_until.retain(|_, until| *until > now);
         let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
         for s in &states.states[..(states.count as usize).min(MAX_OBJECTS)] {
             if s.id == 0 || s.flags & OS_SPENT != 0 {
@@ -124,6 +151,14 @@ impl HeldObjects {
             let Some(d) = descs.iter().find(|d| d.id == s.desc && d.id != 0 && d.flags & OBJF_RUNTIME_DRAWS != 0) else { continue };
             let name = name_str(&d.name);
             let Some(Some(l)) = self.models.get(name) else { continue };
+            if d.kind == OBJ_PROP {
+                if s.flags & OS_RUNTIME_DRAWN != 0 {
+                    self.props_until.insert(s.id, now + RUNTIME_DRAW_TAIL as f64);
+                }
+                if !self.props_until.contains_key(&s.id) {
+                    continue;
+                }
+            }
             let (pos, rot) = (Vec3::from_array(s.pose.pos), quat(s.pose.rot));
             let (pos, rot) = if s.flags & OS_TRACKING != 0 {
                 (pos, rot)
@@ -137,7 +172,12 @@ impl HeldObjects {
                 _ => None,
             };
             let trigger = hand.map_or(0.0, |h| triggers[h]);
-            let parts = part_places(&l.weapon, d.kind, s, trigger, Mat4::from_rotation_translation(rot, pos));
+            let object = Mat4::from_rotation_translation(rot, pos);
+            let parts = match &l.weapon {
+                Some(w) => part_places(w, d.kind, s, trigger, object),
+                // A prop: its model where the game draws it on the object.
+                None => vec![Some(object * model_place(d))],
+            };
             self.placed.push(Placed { name: name.to_string(), parts, hand });
         }
     }
@@ -171,7 +211,7 @@ impl HeldObjects {
     pub fn framework_triangles(&self, out: &mut Vec<([Vec3; 3], [f32; 3])>) {
         for p in &self.placed {
             let Some(Some(l)) = self.models.get(&p.name) else { continue };
-            let w = &l.weapon;
+            let Some(w) = &l.weapon else { continue };
             for (i, blocks) in l.blocks.iter().enumerate() {
                 let Some(Some(m)) = p.parts.get(i) else { continue };
                 let color = if w.mag_parts.contains(&i) {

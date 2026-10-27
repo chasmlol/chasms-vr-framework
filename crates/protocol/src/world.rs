@@ -335,6 +335,11 @@ pub struct ObjectDesc {
     /// +Z. The game's own laser attachment, mounted where the game mounts it.
     pub laser: [f32; 3],
     pub _p_laser: f32,
+    /// Props with [`OBJF_RUNTIME_DRAWS`]: where their model sits in object space (the game draws
+    /// the model at the object's pose composed with this one; all zero: at the object's pose).
+    pub model_pos: [f32; 3],
+    pub _p_model: f32,
+    pub model_rot: [f32; 4],
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;
@@ -357,7 +362,9 @@ pub const OBJF_TEMPLATE: u32 = 1 << 5;
 /// the model its `name` gives as `<game>/<asset key>` in the runtime's asset cache
 /// (`metro2033/wpn_2012`); the game doesn't. A weapon is drawn with its moving parts where its
 /// [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
-/// (or round) part, in place (magazine space is the gun's).
+/// (or round) part, in place (magazine space is the gun's). A prop ([`OBJ_PROP`]) the game draws
+/// is the runtime's to draw only while it's in the runtime's hands ([`OS_RUNTIME_DRAWN`]), its
+/// model at [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece.
 pub const OBJF_RUNTIME_DRAWS: u32 = 1 << 6;
 /// Weapons: the game keeps this gun's ammunition (Metro's magazine and reserve), so the runtime's
 /// rounds follow the game's instead of being unlimited. The gun arrives (and comes back with each
@@ -614,6 +621,12 @@ pub const OS_SPENT: u32 = 1 << 14;
 /// Weapons: the action is open and won't fire: a break or swing action unlatched, a bolt lifted or
 /// back, a pump back.
 pub const OS_ACTION_OPEN: u32 = 1 << 15;
+/// A prop with [`OBJF_RUNTIME_DRAWS`] a hand holds or pulls: the runtime draws it with the hands,
+/// so the game hides its own. (The runtime goes on drawing it for [`RUNTIME_DRAW_TAIL`] seconds
+/// after the flag goes, while the game shows its own again.)
+pub const OS_RUNTIME_DRAWN: u32 = 1 << 16;
+/// See [`OS_RUNTIME_DRAWN`].
+pub const RUNTIME_DRAW_TAIL: f32 = 0.15;
 
 pub const SLOT_HIP_RIGHT: u32 = 0;
 pub const SLOT_HIP_LEFT: u32 = 1;
@@ -854,7 +867,7 @@ const _: () = {
     assert!(size_of::<HandState>() == 48);
     assert!(size_of::<RtBody>() == 32 + 32 * JOINT_COUNT + 64 + 96);
     assert!(OFF_BODY + size_of::<RtBody>() <= OFF_OBJECTS);
-    assert!(size_of::<ObjectDesc>() == 336);
+    assert!(size_of::<ObjectDesc>() == 368);
     assert!(size_of::<ObjectState>() == 96);
     assert!(size_of::<GamePose>() == 48);
     assert!(OFF_GAME_POSES.is_multiple_of(64));

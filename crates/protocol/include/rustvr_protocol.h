@@ -489,7 +489,9 @@
  * the model its `name` gives as `<game>/<asset key>` in the runtime's asset cache
  * (`metro2033/wpn_2012`); the game doesn't. A weapon is drawn with its moving parts where its
  * [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
- * (or round) part, in place (magazine space is the gun's).
+ * (or round) part, in place (magazine space is the gun's). A prop ([`OBJ_PROP`]) the game draws
+ * is the runtime's to draw only while it's in the runtime's hands ([`OS_RUNTIME_DRAWN`]), its
+ * model at [`ObjectDesc::model_pos`] / `model_rot`: whole, one piece.
  */
 #define RVR_OBJF_RUNTIME_DRAWS (1 << 6)
 
@@ -767,6 +769,18 @@
  * back, a pump back.
  */
 #define RVR_OS_ACTION_OPEN (1 << 15)
+
+/**
+ * A prop with [`OBJF_RUNTIME_DRAWS`] a hand holds or pulls: the runtime draws it with the hands,
+ * so the game hides its own. (The runtime goes on drawing it for [`RUNTIME_DRAW_TAIL`] seconds
+ * after the flag goes, while the game shows its own again.)
+ */
+#define RVR_OS_RUNTIME_DRAWN (1 << 16)
+
+/**
+ * See [`OS_RUNTIME_DRAWN`].
+ */
+#define RVR_RUNTIME_DRAW_TAIL 0.15
 
 #define RVR_SLOT_HIP_RIGHT 0
 

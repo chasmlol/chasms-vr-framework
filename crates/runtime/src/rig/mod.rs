@@ -3227,6 +3227,10 @@ impl Rig {
             if hovered.contains(id) {
                 flags |= OS_HOVERED;
             }
+            // A game's prop in a hand, or flying to one: drawn with the hands (the game hides its).
+            if o.desc.kind == OBJ_PROP && o.desc.flags & OBJF_RUNTIME_DRAWS != 0 && matches!(o.holder, Holder::Held(_) | Holder::Pulled { .. }) {
+                flags |= OS_RUNTIME_DRAWN;
+            }
             // The hands on a valve's rim have it.
             for (i, h) in hands.into_iter().flatten().enumerate() {
                 if h.valve.is_some_and(|g| g.id == *id) {
