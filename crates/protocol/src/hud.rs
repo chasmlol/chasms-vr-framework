@@ -34,6 +34,11 @@ pub const HUD_PROMPTS: u32 = 6;
 pub const HUD_CENTER: u32 = 7;
 /// Not drawn at all (e.g. the crosshair).
 pub const HUD_HIDDEN: u32 = 8;
+/// What the game says about the thing in a hand (its own panel of a thing's name and numbers): over
+/// the thing a hand holds or pulls, turned to the eyes, fading with it; with nothing in a hand,
+/// where it is on the flat screen. A game with this piece has its own card for what's held, so the
+/// runtime draws none of its own ([`crate::ItemInfos`]).
+pub const HUD_HELD: u32 = 9;
 
 // ---- layout flags -------------------------------------------------------------------------------
 /// Don't draw what no element covers.

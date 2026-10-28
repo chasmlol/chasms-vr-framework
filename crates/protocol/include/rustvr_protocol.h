@@ -559,6 +559,14 @@
 #define RVR_HUD_HIDDEN 8
 
 /**
+ * What the game says about the thing in a hand (its own panel of a thing's name and numbers): over
+ * the thing a hand holds or pulls, turned to the eyes, fading with it; with nothing in a hand,
+ * where it is on the flat screen. A game with this piece has its own card for what's held, so the
+ * runtime draws none of its own ([`crate::ItemInfos`]).
+ */
+#define RVR_HUD_HELD 9
+
+/**
  * Don't draw what no element covers.
  */
 #define RVR_HUDL_REST_HIDDEN (1 << 0)

@@ -47,7 +47,12 @@ pub struct Attach {
     pub gun: Option<(Mat4, Vec3, Vec3)>,
     /// The off hand's controller grip pose.
     pub off_hand: Option<(Vec3, Quat)>,
+    /// Where the card of the thing in a hand goes (over it, eased), and how strongly it shows.
+    pub held: Option<(Vec3, f32)>,
 }
+
+/// How wide the game's own card of a thing in a hand is (metres).
+pub const HELD_WIDTH: f32 = 0.2;
 
 /// A head-following anchor with a dead zone: it holds still while the head turns less than `dead`
 /// away from it, then catches up until it's within a couple of degrees, and stops.
@@ -161,6 +166,10 @@ impl HudPlacer {
                     panel.height = panel.width * dv / du / aspect;
                     Some((panel, 1.0))
                 }
+                HUD_HELD if at.held.is_some() => at.held.map(|(c, opacity)| {
+                    let (w, h) = sized(HELD_WIDTH / du, f32::MAX);
+                    (facing_eye(c, head_pos, w, h), opacity)
+                }),
                 HUD_HIDDEN => None,
                 // The centre, and anything else: where it was on the flat screen.
                 _ => {
@@ -279,7 +288,7 @@ mod tests {
         let gun = Mat4::from_translation(Vec3::new(0.15, 1.35, 0.35));
         let sight = Vec3::new(0.15, 1.40, 0.30);
         let wrist_ahead = (Vec3::new(-0.05, 1.45, 0.35), Quat::IDENTITY);
-        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead) };
+        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), held: None };
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
         let ammo = p.iter().find(|p| p.role == HUD_AMMO).unwrap();
         assert!(ammo.panel.center.distance(sight) < 0.15 && ammo.panel.center.x < sight.x, "{:?}", ammo.panel.center);

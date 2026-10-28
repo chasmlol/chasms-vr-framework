@@ -1092,6 +1092,7 @@ impl Session {
                         let at = crate::hud::Attach {
                             gun,
                             off_hand: (off.connected != 0).then(|| (Vec3::from_array(off.grip.pos), quat(off.grip.rot))),
+                            held: self.card.map(|(p, opacity)| (p.center, opacity)),
                         };
                         let aspect = p.width / p.height.max(1e-4);
                         let pieces = self.hud.place(
@@ -1121,7 +1122,9 @@ impl Session {
         if !hud_shown {
             self.hud.reset();
         }
-        if let Some((p, opacity)) = self.card.filter(|_| !menu_mode) {
+        // (A game with its own card of what's held, `HUD_HELD`, has it placed there instead.)
+        let game_card = self.hud_layout.entries().iter().any(|e| e.role == HUD_HELD);
+        if let Some((p, opacity)) = self.card.filter(|_| !menu_mode && !game_card) {
             layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, self.item_card.srv()) });
         }
         if let Some(p) = layout.runtime_menu {
