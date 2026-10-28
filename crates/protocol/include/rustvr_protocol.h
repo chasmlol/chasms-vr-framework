@@ -413,6 +413,11 @@
  */
 #define RVR_DMGF_BOTH_WAYS (1 << 0)
 
+/**
+ * Only guards: meets blows (blocks, parries) and never hits (an axe's haft, a sword's grip).
+ */
+#define RVR_DMGF_GUARD (1 << 1)
+
 #define RVR_MAX_SPELLS 96
 
 /**

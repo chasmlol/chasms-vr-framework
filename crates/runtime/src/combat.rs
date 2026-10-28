@@ -55,6 +55,10 @@ const NORMAL_DEG: f32 = 60.0;
 const GLANCING: f32 = 0.3;
 /// Above this the parry is a parry: the player's weapon moving into the attack (m/s).
 const PARRY_SPEED: f32 = 2.0;
+/// The chest, this far under the eyes (metres): where a blow's way ends.
+const CHEST_BELOW_EYES: f32 = 0.35;
+/// A guard closer to the chest than this is the body itself being hit, not a block (metres).
+const BODY_SPARE: f32 = 0.15;
 /// The trigger charges past this and releases below that.
 const TRIGGER_ON: f32 = 0.6;
 const TRIGGER_OFF: f32 = 0.3;
@@ -348,6 +352,9 @@ impl Combat {
                 let prev = self.prev.get(&id).filter(|v| v.len() == now.len()).cloned();
                 if let (Some(prev), false) = (prev, inp.paused) {
                     for (di, d) in desc.damagers[..now.len()].iter().enumerate() {
+                        if d.flags & DMGF_GUARD != 0 {
+                            continue;
+                        }
                         let frame = (wq * Vec3::from_array(d.b) - wq * Vec3::from_array(d.a)).normalize_or_zero();
                         let edge = (wq * Vec3::from_array(d.edge)).normalize_or_zero();
                         self.sweep(inp, &bodies, h, id, d.kind, d.flags, d.radius, frame, edge, &prev[di], &now[di], dt, &mut events);
@@ -429,23 +436,32 @@ impl Combat {
         events.push(ev);
     }
 
-    /// The weapon meeting a creature's attacking weapon.
+    /// The weapon meeting a creature's attacking weapon, or put across the blow's way to the
+    /// player: from its weapon to the player's chest (a game whose blows land by reach, where the
+    /// weapon never touches the player, is blocked by a guard between them).
     #[allow(clippy::too_many_arguments)]
     fn blocks(&mut self, inp: &CombatInput, hand: usize, object: u32, desc: &MeleeDesc, prev: &[[Vec3; SAMPLES]], now: &[[Vec3; SAMPLES]], dt: f32, events: &mut Vec<CombatEvent>) {
         let n = (self.actors.count as usize).min(MAX_ACTORS);
+        let chest = inp.map.point(Vec3::from_array(inp.frame.hmd.pos)) - Vec3::Y * CHEST_BELOW_EYES;
         for actor in &self.actors.actors[..n] {
             if actor.flags & ACT_ATTACKING == 0 || self.block_until.get(&actor.id).is_some_and(|&t| t > inp.now) {
                 continue;
             }
             let (wa, wb) = (Vec3::from_array(actor.weapon_a), Vec3::from_array(actor.weapon_b));
+            // The blow's way: the weapon, then on to the player (short of the body itself).
+            let to_chest = chest - wb;
+            let reach_end = wb + to_chest * (1.0 - (BODY_SPARE / to_chest.length().max(1e-3)).min(1.0));
+            let ways = [(wa, wb), (wb, reach_end)];
             for (di, d) in desc.damagers[..now.len()].iter().enumerate() {
                 let (a, b) = (now[di][0], now[di][SAMPLES - 1]);
-                let (s, t) = closest_segments(a, b, wa, wb);
-                let (p, q) = (a.lerp(b, s), wa.lerp(wb, t));
-                if p.distance(q) > actor.weapon_radius + d.radius {
+                let Some((p, q)) = ways.iter().map(|&(wa, wb)| {
+                    let (s, t) = closest_segments(a, b, wa, wb);
+                    (a.lerp(b, s), wa.lerp(wb, t))
+                }).find(|(p, q)| p.distance(*q) <= actor.weapon_radius + d.radius) else {
                     continue;
-                }
-                let k = ((s * (SAMPLES - 1) as f32).round() as usize).min(SAMPLES - 1);
+                };
+                let s = (p - a).dot(b - a) / (b - a).length_squared().max(1e-8);
+                let k = ((s.clamp(0.0, 1.0) * (SAMPLES - 1) as f32).round() as usize).min(SAMPLES - 1);
                 let vel = (now[di][k] - prev[di][k]) / dt;
                 let parry = vel.dot((q - p).normalize_or_zero()) > PARRY_SPEED || vel.length() > PARRY_SPEED * 1.5;
                 self.block_until.insert(actor.id, inp.now + BLOCK_COOLDOWN);

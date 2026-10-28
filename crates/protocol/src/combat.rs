@@ -121,6 +121,8 @@ pub const DMG_PUNCH: u32 = 4;
 
 /// Cuts both ways along `edge` (a double-edged blade).
 pub const DMGF_BOTH_WAYS: u32 = 1 << 0;
+/// Only guards: meets blows (blocks, parries) and never hits (an axe's haft, a sword's grip).
+pub const DMGF_GUARD: u32 = 1 << 1;
 
 /// One part of a weapon that hurts one way (a sword: its edges cut, its point stabs, its flat and
 /// hilt bludgeon): the segment `a`..`b` in the weapon's model space, `radius` thick.
