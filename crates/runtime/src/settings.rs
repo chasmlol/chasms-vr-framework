@@ -423,7 +423,7 @@ impl Default for Input {
     fn default() -> Self {
         Input {
             dominant_hand: Hand::Right,
-            stick_deadzone: 0.15,
+            stick_deadzone: 0.08,
             two_handed_aim: true,
             two_handed_grab_dist: 0.25,
             gestures: true,

@@ -238,6 +238,20 @@ fn deadzone(v: f32, dz: f32) -> f32 {
     if a < dz { 0.0 } else { v.signum() * (a - dz) / (1.0 - dz) }
 }
 
+/// A stick past `inner` of its throw, rescaled to start from nothing there and reach 1 at `outer`
+/// (a stick's rim rarely reads a full 1), its direction kept whatever it is.
+fn radial_deadzone(x: f32, y: f32, inner: f32, outer: f32) -> (f32, f32) {
+    let m = x.hypot(y);
+    if m <= inner || m <= 1e-6 {
+        return (0.0, 0.0);
+    }
+    let k = ((m - inner) / (outer - inner).max(1e-3)).min(1.0) / m;
+    (x * k, y * k)
+}
+
+/// The stick's reach that counts as all the way.
+const STICK_RIM: f32 = 0.95;
+
 fn v3(a: [f32; 3]) -> Vec3 {
     Vec3::from_array(a)
 }
@@ -728,7 +742,7 @@ impl Mechanics {
         // ---------------- controls
         let mut held = 0u64;
         let dz = c.input.stick_deadzone;
-        let (mut mx, mut my) = (deadzone(oc.stick[0], dz), deadzone(oc.stick[1], dz));
+        let (mut mx, mut my) = radial_deadzone(oc.stick[0], oc.stick[1], dz, STICK_RIM);
         if c.comfort.move_relative == MoveRelative::OffHand && oc.connected != 0 {
             let d = yaw_of(q(oc.aim.rot) * Vec3::Z) - head_yaw;
             let (s, co) = d.sin_cos();
@@ -1268,6 +1282,20 @@ mod tests {
     use super::*;
     use crate::backend::sim::pose;
     use bytemuck::Zeroable;
+
+    #[test]
+    fn the_stick_counts_from_its_deadzone_to_its_rim_in_any_direction() {
+        // Inside the deadzone: nothing.
+        assert_eq!(radial_deadzone(0.05, 0.03, 0.08, STICK_RIM), (0.0, 0.0));
+        // From its edge, a gradual rise; all the way at the rim and past it.
+        let (_, y) = radial_deadzone(0.0, 0.08 + (STICK_RIM - 0.08) * 0.5, 0.08, STICK_RIM);
+        assert!((y - 0.5).abs() < 1e-5);
+        assert!((radial_deadzone(0.0, -STICK_RIM, 0.08, STICK_RIM).1 + 1.0).abs() < 1e-5);
+        assert!((radial_deadzone(0.0, 1.0, 0.08, STICK_RIM).1 - 1.0).abs() < 1e-5);
+        // A diagonal keeps its direction (no axis snapped off).
+        let (x, y) = radial_deadzone(0.3, 0.6, 0.08, STICK_RIM);
+        assert!((x / y - 0.5).abs() < 1e-5);
+    }
 
     fn standing() -> HmdFrame {
         let mut f = HmdFrame { index: 1, dt: 1.0 / 90.0, user_present: true, ..Default::default() };
