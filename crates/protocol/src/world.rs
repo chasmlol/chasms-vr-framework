@@ -368,8 +368,9 @@ pub const OBJ_THROWABLE: u32 = 4;
 pub const OBJ_MELEE: u32 = 5;
 /// Something a valve works, drawn by the runtime ([`OBJF_RUNTIME_DRAWS`]): a gate a wheel winds up.
 /// It stands at its spawn pose (its model at `model_pos` / `model_rot`); its part on `turn_bone`
-/// moves by `drive_travel` as the valve `driven_by` turns from 0 to `drive_turn`. Not a body the
-/// hands meet: only drawn.
+/// moves by `drive_travel` as the valve `driven_by` turns from 0 to `drive_turn`; with
+/// [`OBJF_GAME_MOVED`], where the game's pose of it has that part whenever the game gives one (the
+/// game moves it some itself). Not a body the hands meet: only drawn.
 pub const OBJ_DRIVEN: u32 = 7;
 /// Anything turned by hand on an axle fixed in the world: a valve's wheel, a switch's knob, a lever.
 /// Centre and axis (+Z) its spawn pose, the rim `radius` out, `mass` its weight, `friction` what

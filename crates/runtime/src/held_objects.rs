@@ -200,10 +200,23 @@ pub fn valve_places(d: &ObjectDesc, angle: f32) -> Vec<Option<Mat4>> {
 /// model, what moves (a gate) `drive_travel` along as far as its valve has turned towards
 /// `drive_turn` (`angle`).
 pub fn driven_places(d: &ObjectDesc, angle: f32) -> Vec<Option<Mat4>> {
-    let at = Mat4::from_rotation_translation(quat(d.spawn_pose.rot), Vec3::from_array(d.spawn_pose.pos));
     let share = if d.drive_turn > 0.0 && angle.is_finite() { (angle / d.drive_turn).clamp(0.0, 1.0) } else { 0.0 };
+    driven_places_at(d, share)
+}
+
+/// The same, its moving part `share` of the way along `drive_travel`.
+fn driven_places_at(d: &ObjectDesc, share: f32) -> Vec<Option<Mat4>> {
+    let at = Mat4::from_rotation_translation(quat(d.spawn_pose.rot), Vec3::from_array(d.spawn_pose.pos));
     let moved = Mat4::from_translation(Vec3::from_array(d.drive_travel) * share);
     vec![Some(at * model_place(d)), Some(at * moved * model_place(d))]
+}
+
+/// How far along `drive_travel` (share of the way) the game's pose `p` of a driven thing has its
+/// moving part.
+fn driven_share_at(d: &ObjectDesc, p: Vec3) -> f32 {
+    let travel = Vec3::from_array(d.drive_travel);
+    let local = quat(d.spawn_pose.rot).inverse() * (p - Vec3::from_array(d.spawn_pose.pos));
+    if travel.length_squared() < 1e-8 { 0.0 } else { (local.dot(travel) / travel.length_squared()).clamp(0.0, 1.0) }
 }
 
 /// Where each part of an object of `w` goes (tracking space), for its description's kind, its
@@ -261,7 +274,7 @@ impl HeldObjects {
     /// runtime's mapping now, which places them until then. `triggers`: each controller's
     /// trigger (a held gun's trigger follows its hand's). The game's props only while a hand has
     /// them ([`OS_RUNTIME_DRAWN`], and a moment after); `now` in seconds.
-    pub fn update(&mut self, objects: &ObjectTable, states: &ObjectStates, map: Option<&WorldMap>, triggers: [f32; 2], now: f64) {
+    pub fn update(&mut self, objects: &ObjectTable, states: &ObjectStates, game: &GamePoses, map: Option<&WorldMap>, triggers: [f32; 2], now: f64) {
         self.placed.clear();
         self.props_until.retain(|_, until| *until > now);
         let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
@@ -304,8 +317,18 @@ impl HeldObjects {
             if !matches!(self.models.get(name), Some(Some(_))) {
                 continue;
             }
-            let angle = states.states[..(states.count as usize).min(MAX_OBJECTS)].iter().find(|s| s.desc == d.driven_by && s.id != 0).map_or(0.0, |s| s.slide);
-            self.placed.push(Placed { name: name.to_string(), parts: driven_places(d, angle), world: true, hand: None });
+            // Where the game has it (it moves it some itself), or as far as its valve is turned.
+            let given = (d.flags & OBJF_GAME_MOVED != 0)
+                .then(|| game.poses[..(game.count as usize).min(MAX_OBJECTS)].iter().find(|p| p.id == d.id && p.pose.valid != 0))
+                .flatten();
+            let parts = match given {
+                Some(p) => driven_places_at(d, driven_share_at(d, Vec3::from_array(p.pose.pos))),
+                None => {
+                    let angle = states.states[..(states.count as usize).min(MAX_OBJECTS)].iter().find(|s| s.desc == d.driven_by && s.id != 0).map_or(0.0, |s| s.slide);
+                    driven_places(d, angle)
+                }
+            };
+            self.placed.push(Placed { name: name.to_string(), parts, world: true, hand: None });
         }
         self.place(map);
     }

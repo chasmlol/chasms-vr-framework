@@ -610,7 +610,7 @@ impl Session {
             }
             self.link.write_game_pushes(&self.game_pushes);
             self.link.write_object_states(&self.states);
-            self.held_objects.update(&self.objects, &self.states, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
+            self.held_objects.update(&self.objects, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
             self.held_objects.clear();
         }
