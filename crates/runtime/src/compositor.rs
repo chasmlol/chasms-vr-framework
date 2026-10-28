@@ -125,6 +125,13 @@ float4 PSQuad(VOut i) : SV_Target {
         if (r > 1) discard;
         return color * saturate((1 - r) * 3);
     }
+    if (mode == 4) {
+        // A glow: light added to what's behind, bright at its heart and fading to nothing.
+        float r = length(i.local);
+        if (r > 1) discard;
+        float g = pow(saturate(1 - r), 2.5) + 0.6 * saturate(1 - r * 3);
+        return float4(color.rgb * g, 0);
+    }
     if (mode == 3) {
         float r = length(i.local);
         if (r > 1) discard;
@@ -181,6 +188,7 @@ pub enum Background<'a> {
 const MODE_TEXTURE: f32 = 0.0;
 const MODE_SOLID: f32 = 1.0;
 const MODE_DOT: f32 = 2.0;
+const MODE_GLOW: f32 = 4.0;
 const MODE_LENS: f32 = 3.0;
 
 /// One textured panel to draw.
@@ -212,6 +220,16 @@ pub struct LensLayer<'a> {
     pub reticle: u32,
 }
 
+/// Light gathered at a point (a spell held ready in a palm): a camera-facing glow, added to what's
+/// behind it.
+#[derive(Clone, Copy, Debug)]
+pub struct Glow {
+    pub at: Vec3,
+    pub radius: f32,
+    /// Linear colour, any brightness.
+    pub color: Vec3,
+}
+
 pub struct Laser {
     pub origin: Vec3,
     pub end: Vec3,
@@ -226,6 +244,7 @@ pub struct Layers<'a> {
     pub laser: Option<Laser>,
     /// Controller grip poses to mark (when the game isn't drawing hands).
     pub markers: Vec<(Vec3, Quat)>,
+    pub glows: Vec<Glow>,
     pub comfort: Comfort,
 }
 
@@ -401,6 +420,15 @@ impl Compositor {
         for (pos, rot) in &layers.markers {
             self.draw_ribbon(gpu, &cb, eye_pos, *pos, *pos + *rot * Vec3::Z * 0.08, 0.012, Vec4::new(0.35, 0.55, 0.65, 0.9));
             self.draw_dot(gpu, &cb, eye_rot, *pos, 0.022, Vec4::new(0.5, 0.7, 0.8, 0.95));
+        }
+        for g in &layers.glows {
+            let mut c = cb;
+            c.center = g.at.extend(1.0).to_array();
+            c.axis_x = (eye_rot * Vec3::X * g.radius).extend(0.0).to_array();
+            c.axis_y = (eye_rot * Vec3::Y * g.radius).extend(0.0).to_array();
+            c.color = g.color.extend(0.0).to_array();
+            c.params = [MODE_GLOW, 0.0, 1.0, 0.0];
+            self.draw_quad(gpu, &c, None);
         }
         if let Some(l) = &layers.laser {
             let color = if l.hit { Vec4::new(0.25, 0.75, 1.0, 0.7) } else { Vec4::new(0.25, 0.5, 0.7, 0.35) };

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::backend::{Backend, HmdFrame};
-use crate::compositor::{Comfort, Compositor, Laser, Layers, LensLayer, PanelLayer};
+use crate::compositor::{Comfort, Compositor, Glow, Laser, Layers, LensLayer, PanelLayer};
 use crate::mechanics::{Cursor, MechInput, MechOutput, Mechanics};
 use crate::menu::{RuntimeMenu, Status};
 use crate::panels::{self, PanelId};
@@ -1137,6 +1137,14 @@ impl Session {
                     layers.markers.push((Vec3::from_array(h.grip.pos), quat(h.grip.rot)));
                 }
             }
+        }
+        // A spell held ready: its light gathering in the palm (the spell's own colour), growing as it
+        // charges, with a flicker.
+        for c in self.combat.charging.iter().flatten() {
+            let t = (frame.display_time_ns as f64 * 1e-9 % 1000.0) as f32;
+            let flicker = 1.0 + 0.12 * (t * 23.0).sin() + 0.08 * (t * 37.0 + 1.3).sin();
+            let color = Vec3::from_array(c.color).max(Vec3::splat(0.05));
+            layers.glows.push(Glow { at: c.palm, radius: (0.03 + 0.06 * c.charge) * flicker, color: color * (0.6 + 1.6 * c.charge) });
         }
 
         // The player's body goes between the game's picture and the overlays, behind the game's
