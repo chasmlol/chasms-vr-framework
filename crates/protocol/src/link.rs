@@ -298,6 +298,54 @@ impl Link {
     pub fn read_game_poses_into(&self, out: &mut GamePoses) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_GAME_POSES), out) }
     }
+
+    // ---- combat ([`crate::combat`]) -------------------------------------------------------------
+    /// Adapter: the creatures near the player, every frame.
+    pub fn write_actors(&self, v: &Actors) {
+        unsafe { seq_write(self.base.add(OFF_ACTORS), v) }
+    }
+    pub fn read_actors_into(&self, out: &mut Actors) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_ACTORS), out) }
+    }
+    /// Adapter: the blades of the melee weapons it offers.
+    pub fn write_melee(&self, v: &MeleeTable) {
+        unsafe { seq_write(self.base.add(OFF_MELEE), v) }
+    }
+    pub fn read_melee_into(&self, out: &mut MeleeTable) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_MELEE), out) }
+    }
+    /// Adapter: the player's spells and magicka.
+    pub fn write_spells(&self, v: &Spells) {
+        unsafe { seq_write(self.base.add(OFF_SPELLS), v) }
+    }
+    pub fn read_spells_into(&self, out: &mut Spells) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_SPELLS), out) }
+    }
+    /// Runtime: a melee hit, block or cast for the game.
+    pub fn push_combat_event(&self, ev: &CombatEvent) {
+        let written = self.u64_at(OFF_COMBAT_EVENTS + offset_of!(CombatEvents, written));
+        let n = written.load(Ordering::Relaxed);
+        let slot = OFF_COMBAT_EVENTS + offset_of!(CombatEvents, events) + (n as usize % COMBAT_EVENT_SLOTS) * size_of::<CombatEvent>();
+        unsafe { plain_write(self.base.add(slot), ev) };
+        written.store(n + 1, Ordering::Release);
+    }
+    /// Adapter: the combat events after the `read` first ones (`read` is then how many there have
+    /// been). One that fell more than a ring behind skips ahead to the newest.
+    pub fn read_combat_events(&self, read: &mut u64) -> Vec<CombatEvent> {
+        let written = self.u64_at(OFF_COMBAT_EVENTS + offset_of!(CombatEvents, written)).load(Ordering::Acquire);
+        if written < *read {
+            *read = written; // the runtime started again
+        }
+        let from = (*read).max(written.saturating_sub(COMBAT_EVENT_SLOTS as u64));
+        let out = (from..written)
+            .map(|n| {
+                let slot = OFF_COMBAT_EVENTS + offset_of!(CombatEvents, events) + (n as usize % COMBAT_EVENT_SLOTS) * size_of::<CombatEvent>();
+                unsafe { plain_read(self.base.add(slot)) }
+            })
+            .collect();
+        *read = written;
+        out
+    }
     /// Runtime: publish the posed player (see [`RtPlayerDraw`]).
     pub fn write_player_draw(&self, v: &RtPlayerDraw) {
         unsafe { seq_write(self.base.add(OFF_PLAYER_DRAW), v) }

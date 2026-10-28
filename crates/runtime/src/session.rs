@@ -113,6 +113,9 @@ pub struct Session {
     /// The player's hands and the game's objects (active once the game registers objects).
     pub rig: Rig,
     pub rig_out: RigOutput,
+    combat: crate::combat::Combat,
+    /// Hands whose trigger casts a spell this frame (`crate::combat`).
+    spell_hands: [bool; 2],
     objects: Box<ObjectTable>,
     states: Box<ObjectStates>,
     /// How long after the runtime's frame the game's picture of it is shown, seconds (smoothed).
@@ -242,6 +245,8 @@ impl Session {
             world: Arc::new(Mutex::new(World::default())),
             rig: Rig::default(),
             rig_out: RigOutput::default(),
+            combat: crate::combat::Combat::default(),
+            spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
             states: bytemuck::zeroed_box(),
             game_lag: 0.0,
@@ -550,15 +555,17 @@ impl Session {
                 let got = self.rig.test_take_nearest(hand, ours);
                 tracing::info!("runtime: test: the nearest prop into the {} hand: {got:?}", if hand == 0 { "left" } else { "right" });
             }
+            let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
+            let rig_paused = menu_mode || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
-                map: self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking)),
+                map: rig_map,
                 dt: frame.dt,
                 now,
                 settings: &self.settings.current,
                 eye_height: if stand > 1.0 { stand } else { 1.7 },
                 crouched: g.flags & GS_CROUCHED != 0,
-                paused: menu_mode || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0,
+                paused: rig_paused,
                 infinite_ammo: g.flags & GS_INFINITE_AMMO != 0,
             });
             // One event, one frame: the pulse and the sound together. The same cue for the same
@@ -603,6 +610,25 @@ impl Session {
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
             }
             self.rig.write_states(&mut self.states);
+            // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
+            self.combat.read(&self.link);
+            let combat = self.combat.update(&crate::combat::CombatInput {
+                rig: &self.rig,
+                out: &self.rig_out,
+                map: &rig_map,
+                frame: &frame,
+                dominant: self.settings.current.dominant(),
+                now,
+                dt: frame.dt,
+                paused: rig_paused,
+            });
+            for ev in &combat {
+                self.link.push_combat_event(ev);
+            }
+            for p in &self.combat.pulses {
+                self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
+            }
+            self.spell_hands = self.combat.spell_hands(self.settings.current.dominant());
             // Where the hands push the game's own props.
             self.game_pushes.count = self.rig.game_pushes.len().min(MAX_GAME_PUSHES) as u32;
             for (i, p) in self.rig.game_pushes.iter().take(MAX_GAME_PUSHES).enumerate() {
@@ -633,6 +659,7 @@ impl Session {
             aux_aspect,
             rumble,
             rig: rig_active.then_some(&self.rig_out),
+            spell_hands: if rig_active { self.spell_hands } else { [false; 2] },
             game_shots: std::mem::take(&mut self.game_shots),
             held_kicks: &self.held_kicks,
         });

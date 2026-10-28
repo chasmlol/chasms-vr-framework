@@ -24,6 +24,7 @@
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+mod combat;
 mod content;
 mod effects;
 mod hits;
@@ -105,7 +106,9 @@ struct Game {
     target_flash: Vec<f64>,
     impacts: VecDeque<(Vec3, f64)>,
     stats: [u32; 24],
-    stats_f: [f32; 12],
+    stats_f: [f32; 16],
+    /// The connection the combat tables were last written for.
+    combat_for: u32,
     connected_once: bool,
     gone_since: Option<std::time::Instant>,
     /// Physical mode's objects (None: legacy mode).
@@ -156,7 +159,7 @@ impl Game {
         let assets = rustvr_asset::default_root();
         let mut renderer = Renderer::new(&gpu, assets.clone())?;
         let (grid, plain) = content::room();
-        let scenery = vec![renderer.upload(&gpu, &grid)?, renderer.upload(&gpu, &plain)?];
+        let scenery = vec![renderer.upload(&gpu, &grid)?, renderer.upload(&gpu, &plain)?, renderer.upload(&gpu, &combat::dummy_mesh())?];
         let targets = content::targets();
         let target_meshes = targets.iter().map(|t| renderer.upload(&gpu, &content::target_mesh(t))).collect::<Result<Vec<_>>>()?;
         let mut cube_data = MeshData::default();
@@ -260,7 +263,8 @@ impl Game {
             cursor_was_down: false,
             impacts: VecDeque::new(),
             stats: [0; 24],
-            stats_f: [0.0; 12],
+            stats_f: [0.0; 16],
+            combat_for: u32::MAX,
             connected_once: false,
             gone_since: None,
             armory,
@@ -326,6 +330,7 @@ impl Game {
             a.register(&self.adapter);
             a.update(&self.adapter);
         }
+        self.combat(now);
 
         // ---- game logic
         if pressed(&presses, Action::Menu) {
@@ -510,6 +515,51 @@ impl Game {
     }
 
     /// The loose objects a bullet can hit, as boxes (not what the hands hold or wear).
+    /// The dummy, the sword's blade and the fire bolt for the runtime; its hits and casts counted.
+    fn combat(&mut self, _now: f64) {
+        self.adapter.write_actors(&combat::actors());
+        if self.combat_for != self.adapter.connections() && self.adapter.connected() {
+            self.combat_for = self.adapter.connections();
+            let swords: Vec<u32> = self.armory.as_ref().map(|a| a.ids_of_kind(OBJ_MELEE)).unwrap_or_default();
+            self.adapter.write_melee(&combat::melee_table(&swords));
+            self.adapter.write_spells(&combat::spells());
+        }
+        for ev in self.adapter.combat_events() {
+            tracing::info!(
+                "range: combat {} on {} (part {}) by {}, strength {:.2}, speed {:.1} m/s, flags {:#x}, at {:.2?} towards {:.2?}",
+                match ev.kind {
+                    CE_HIT => "hit",
+                    CE_BLOCK => "block",
+                    CE_CAST => "cast",
+                    _ => "?",
+                },
+                ev.actor,
+                ev.part,
+                ev.object,
+                ev.strength,
+                ev.speed,
+                ev.flags,
+                ev.point,
+                ev.dir
+            );
+            match ev.kind {
+                CE_HIT => {
+                    self.stats_f[rs::F_MELEE_HITS] += 1.0;
+                    if ev.flags & CEF_POWER != 0 {
+                        self.stats_f[rs::F_MELEE_POWER] += 1.0;
+                    }
+                }
+                CE_CAST => {
+                    self.stats_f[rs::F_CASTS] += 1.0;
+                    if ev.actor == combat::DUMMY_ID {
+                        self.stats_f[rs::F_CASTS_AT_DUMMY] += 1.0;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn object_boxes(&self, v: &View) -> Vec<ObjBox> {
         let Some(a) = &self.armory else { return Vec::new() };
         a.states()

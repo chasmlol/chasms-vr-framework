@@ -59,12 +59,14 @@ use bytemuck::{Pod, Zeroable};
 
 #[cfg(windows)]
 pub mod link;
+pub mod combat;
 pub mod hud;
 pub mod sound;
 pub mod world;
 pub mod lighting;
 pub mod player;
 
+pub use combat::*;
 pub use hud::*;
 pub use sound::*;
 pub use world::*;
@@ -72,9 +74,9 @@ pub use lighting::*;
 pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 9;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v10";
-pub const MAPPING_BYTES: usize = 0x004F_0000;
+pub const VERSION: u32 = 10;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v11";
+pub const MAPPING_BYTES: usize = 0x0052_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;
@@ -612,7 +614,7 @@ pub struct GameState {
     pub light: LightHint,
     /// Adapter-defined counters (diagnostics and tests): see the adapter's docs.
     pub stats: [u32; 24],
-    pub stats_f: [f32; 12],
+    pub stats_f: [f32; 16],
     /// Adapter name, UTF-8, NUL-terminated. Also selects the runtime's settings profile.
     pub name: [u8; 32],
 }
@@ -834,7 +836,7 @@ const _: () = {
     assert!(size_of::<TrackingState>() == 64);
     assert!(size_of::<WeaponRig>() == 144);
     assert!(size_of::<TargetRequest>() == 32);
-    assert!(size_of::<GameState>() == 496);
+    assert!(size_of::<GameState>() == 512);
     assert!(size_of::<LightHint>() == 48);
     assert!(size_of::<SlotInfo>() == 256);
     assert!(size_of::<SlotMap>() == 32);
@@ -901,6 +903,12 @@ pub mod range_stats {
     pub const F_KNIFE_HITS: usize = 10;
     /// Visual effects alive (muzzle flashes, smoke, tracers, bullet holes, casings, debris).
     pub const F_FX_LIVE: usize = 11;
+    /// The runtime's melee hits on the dummy, those that were power hits, its casts, and those cast
+    /// at the dummy (`range/src/combat.rs`).
+    pub const F_MELEE_HITS: usize = 12;
+    pub const F_MELEE_POWER: usize = 13;
+    pub const F_CASTS: usize = 14;
+    pub const F_CASTS_AT_DUMMY: usize = 15;
 }
 
 /// Reads a NUL-terminated UTF-8 name field.

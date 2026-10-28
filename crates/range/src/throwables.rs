@@ -241,7 +241,7 @@ pub fn sound_set(t: &Throwable) -> &str {
 
 /// Everything the range throws: the built-in ones, then Metro's.
 pub fn all(root: &std::path::Path) -> Vec<Throwable> {
-    let mut v = vec![builtin_frag(), builtin_knife()];
+    let mut v = vec![builtin_frag(), builtin_knife(), crate::combat::sword()];
     v.extend(metro_throwables(root));
     v
 }
@@ -263,6 +263,8 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_LEFT + 1),
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_RIGHT + 1),
         (find("builtin_knife").unwrap(), Vec3::new(-0.91, top, 1.05), SLOT_BELT + 1),
+        // The sword, its handle towards the player.
+        (find("builtin_sword").unwrap(), Vec3::new(-0.72, top, 0.82), 0),
     ];
     for (key, x) in [("throw_dynamite", -0.53), ("throw_incendiary", -0.61), ("throw_sticky_dynamite", -0.71)] {
         if let Some(i) = find(key) {

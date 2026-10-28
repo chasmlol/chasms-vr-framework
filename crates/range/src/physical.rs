@@ -538,6 +538,11 @@ impl Armory {
         }
     }
 
+    /// The ids of every object of a kind (`OBJ_*`).
+    pub fn ids_of_kind(&self, kind: u32) -> Vec<u32> {
+        self.table.descs[..(self.table.count as usize).min(MAX_OBJECTS)].iter().filter(|d| d.id != 0 && d.kind == kind).map(|d| d.id).collect()
+    }
+
     pub fn desc(&self, id: u32) -> Option<&ObjectDesc> {
         self.descs.get(&id)
     }

@@ -90,6 +90,8 @@ pub struct MechInput<'a> {
     pub rumble: Option<f32>,
     /// The rig's frame when it owns the hands (the game registered objects).
     pub rig: Option<&'a RigOutput>,
+    /// Hands whose trigger charges a spell (`crate::combat`): it's not the game's "use".
+    pub spell_hands: [bool; 2],
     /// Legacy mode's recoil: the shots the game says it fired since the last frame
     /// (`EV_GAME_SHOTS`), and its held gun's kicks (`KICK_OBJECT_HELD`).
     pub game_shots: u32,
@@ -1104,10 +1106,10 @@ impl Mechanics {
             if self.btn_a[h].down && !gun_hand(h) {
                 *held |= Action::Jump.bit();
             }
-            if self.btn_trig[h].pressed() && !busy[h] && !targeting[h] {
+            if self.btn_trig[h].pressed() && !busy[h] && !targeting[h] && !inp.spell_hands[h] {
                 self.press(Action::Use);
             }
-            if self.btn_trig[h].down && !busy[h] && !targeting[h] && inp.now - self.btn_trig[h].t0 > LONG_PRESS {
+            if self.btn_trig[h].down && !busy[h] && !targeting[h] && !inp.spell_hands[h] && inp.now - self.btn_trig[h].t0 > LONG_PRESS {
                 *held |= Action::UseHold.bit();
             }
         }
@@ -1306,6 +1308,7 @@ mod tests {
             aux_aspect: 1.0,
             rumble: None,
             rig: None,
+            spell_hands: [false; 2],
             game_shots,
             held_kicks,
         })

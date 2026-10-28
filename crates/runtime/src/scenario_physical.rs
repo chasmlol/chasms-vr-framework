@@ -172,6 +172,11 @@ fn table_knife(objs: &[ObjSnap]) -> Option<ObjSnap> {
 }
 
 /// The thrown object, in the live snapshot.
+/// The sword on the throwables' table.
+fn table_sword(objs: &[ObjSnap]) -> Option<ObjSnap> {
+    objs.iter().find(|o| o.kind == OBJ_MELEE && o.flags & OS_HOLSTERED == 0).copied()
+}
+
 fn live(see: &See, id: u32) -> Option<ObjSnap> {
     see.world.objects.iter().find(|o| o.id == id).copied()
 }
@@ -863,6 +868,76 @@ pub fn all() -> Vec<Scenario> {
                 check(2.9, "and stays there", |c| ensure(throwable(c, THROW_KNIFE).is_some_and(|k| k.flags & OS_STUCK != 0), || "fell out".into())),
             ],
             captures: vec![(1.0, "knife_aim"), (1.5, "knife_flight"), (2.5, "knife_stuck")],
+        },
+        Scenario {
+            name: "sword",
+            about: "physical: the sword from the throwables' table in the right hand, a chop down through the training dummy: a clean, strong hit; then a slow touch: none",
+            duration: 3.2,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(s) = table_sword(objs) else { return b };
+                    let above = s.at(s.grip) + Vec3::Y * 0.05;
+                    // The blade forward and level, its edges up and down (the back of the hand to
+                    // the flat): raised, then brought down through the dummy's chest, then (after a
+                    // pause) laid on it slowly.
+                    let up = Vec3::new(0.2, 1.75, 0.42);
+                    let down = Vec3::new(0.2, 0.95, 0.42);
+                    let rest = Body::rest().hands[1].pos;
+                    b.hands[1].pos = keys(t, &[(0.0, rest), (0.4, above), (0.6, above), (1.0, up), (1.2, up), (1.36, down), (1.8, down), (2.2, Vec3::new(0.2, 1.38, 0.42)), (2.8, Vec3::new(0.2, 1.22, 0.42))]);
+                    b.hands[1].rot = qkeys(t, &[(0.6, Quat::IDENTITY), (1.0, look_rot(Vec3::Z))]);
+                    b.hands[1].squeeze = on(t, &[(0.5, 3.2)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.0, "the sword is in the right hand", |c| ensure(c.objects.iter().any(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0), || "not held".into())),
+                check(1.6, "the chop hit the dummy, cleanly and hard", |c| {
+                    ensure(c.stat_f(rs::F_MELEE_HITS) == 1.0 && c.stat_f(rs::F_MELEE_POWER) <= 1.0, || format!("hits {}, power {}", c.stat_f(rs::F_MELEE_HITS), c.stat_f(rs::F_MELEE_POWER)))
+                }),
+                check(3.1, "laying it on slowly isn't another hit", |c| ensure(c.stat_f(rs::F_MELEE_HITS) == 1.0, || format!("hits {}", c.stat_f(rs::F_MELEE_HITS)))),
+            ],
+            captures: vec![(1.2, "sword_raised"), (1.4, "sword_chop")],
+        },
+        Scenario {
+            name: "spell",
+            about: "physical: the off hand charges the fire bolt with its trigger (half a second) and lets go pointing at the training dummy: one cast, aimed at the dummy; let go too soon: nothing",
+            duration: 3.0,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, _, _| {
+                    let mut b = Body::rest();
+                    // The palm on the line from the left shoulder (at the eyes) to the dummy's chest.
+                    let shoulder = Vec3::new(-0.18, 1.7, 0.0);
+                    let chest = Vec3::new(0.15, 1.25, 1.15);
+                    let dir = (chest - shoulder).normalize();
+                    let palm = shoulder + dir * 0.5 - Vec3::new(0.0, 0.0, 0.06);
+                    let rest = Body::rest().hands[0].pos;
+                    b.hands[0].pos = keys(t, &[(0.0, rest), (0.4, palm)]);
+                    b.hands[0].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.4, look_rot(dir))]);
+                    // Charged 0.8 s and let go; then a short tap (0.2 s, not charged).
+                    b.hands[0].trigger = on(t, &[(0.5, 1.3), (2.0, 2.2)]);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.5, "one fire bolt, aimed at the dummy", |c| {
+                    ensure(c.stat_f(rs::F_CASTS) == 1.0 && c.stat_f(rs::F_CASTS_AT_DUMMY) == 1.0, || format!("casts {}, at the dummy {}", c.stat_f(rs::F_CASTS), c.stat_f(rs::F_CASTS_AT_DUMMY)))
+                }),
+                check(2.9, "a tap isn't a cast", |c| ensure(c.stat_f(rs::F_CASTS) == 1.0, || format!("casts {}", c.stat_f(rs::F_CASTS)))),
+            ],
+            captures: vec![(1.0, "spell_charging")],
         },
         Scenario {
             name: "game_dynamite",

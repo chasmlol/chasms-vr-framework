@@ -158,8 +158,8 @@ pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32, turn_bone:
         let model = HeldModel::load(gpu, &dir, &model, &parts)?;
         return Ok(Loaded { weapon: None, model, blocks: Vec::new(), turning });
     }
-    if kind == OBJ_PROP {
-        // A prop: the whole model, one piece.
+    if kind == OBJ_PROP || kind == OBJ_MELEE {
+        // A prop or a melee weapon: the whole model, one piece.
         let dir = root.join(game);
         let model = rustvr_asset::load_model(&dir, key)?;
         let parts: Vec<HeldPart> = model

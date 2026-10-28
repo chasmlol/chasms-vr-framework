@@ -93,6 +93,8 @@ pub struct Adapter {
     connections: u32,
     pub tracking: TrackingMapper,
     pub presses: actions::Presses,
+    /// How many combat events have been read ([`Adapter::combat_events`]).
+    combat_read: u64,
 }
 
 impl Adapter {
@@ -114,6 +116,7 @@ impl Adapter {
             connections: 0,
             tracking: TrackingMapper::default(),
             presses: actions::Presses::default(),
+            combat_read: 0,
         }
     }
 
@@ -470,6 +473,47 @@ impl Adapter {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// The creatures near the player (see [`Actors`]): every frame.
+    pub fn write_actors(&self, actors: &Actors) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_actors(actors);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The blades of the melee weapons the game offers (see [`MeleeTable`]): when they change.
+    pub fn write_melee(&self, table: &MeleeTable) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_melee(table);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The player's spells and magicka (see [`Spells`]): when they change.
+    pub fn write_spells(&self, spells: &Spells) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_spells(spells);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The melee hits, blocks and casts since the last call (see [`CombatEvent`]).
+    pub fn combat_events(&mut self) -> Vec<CombatEvent> {
+        match &self.link {
+            Some(l) if self.connected => l.read_combat_events(&mut self.combat_read),
+            _ => Vec::new(),
         }
     }
 

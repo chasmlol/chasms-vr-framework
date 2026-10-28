@@ -1671,12 +1671,13 @@ impl Rig {
         let Some(o) = self.objects.get_mut(&id) else { return };
         let (pos, rot) = self.physics.pose(o.body);
         let gun = o.desc.kind == OBJ_WEAPON;
-        let hold = authored(o.desc.grip_rot).filter(|_| o.desc.kind == OBJ_THROWABLE);
+        let hold = authored(o.desc.grip_rot).filter(|_| matches!(o.desc.kind, OBJ_THROWABLE | OBJ_MELEE));
         o.attach = if gun {
             Attach::Gun
         } else if let Some(g) = hold {
-            // A throwable the game rigged sits in the hand the way it's held (a knife by its
-            // handle, a grenade with its pin to the other hand), whichever way it was picked up.
+            // A throwable or melee weapon the game rigged sits in the hand the way it's held (a
+            // knife or a sword by its handle, a grenade with its pin to the other hand), whichever
+            // way it was picked up.
             let g = if i == 0 { mirror_grip(g) } else { g };
             let rel = inverse((v3(o.desc.grip), g));
             Attach::Fixed(rel.0, rel.1)
@@ -3250,6 +3251,8 @@ impl Rig {
             out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::PistolGrip,
+                // A melee weapon's handle in the fist.
+                Some(o) if o.desc.kind == OBJ_MELEE => rustvr_ik::HoldShape::Foregrip,
                 Some(o) if is_round(&o.desc) => rustvr_ik::HoldShape::Small,
                 Some(o) if o.desc.kind == OBJ_MAGAZINE => rustvr_ik::HoldShape::Magazine,
                 // A knife's handle in the fist.
