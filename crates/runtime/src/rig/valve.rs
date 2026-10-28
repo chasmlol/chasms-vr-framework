@@ -12,9 +12,9 @@
 //!
 //! * **cranked** (a wheel): the hand pulls its point on the rim towards the controller like an
 //!   arm would, up to [`ARM_FORCE`];
-//! * **twisted** (a knob, `JOINT_TWIST`, or anything smaller than [`TWIST_RADIUS`]): the wrist
-//!   turns it as far as the hand has turned about the axle since it took hold, up to
-//!   [`WRIST_TORQUE`].
+//! * **twisted** (a knob, `JOINT_TWIST`, anything smaller than [`TWIST_RADIUS`], or anything held
+//!   within that of its axle: a switch's handle by its middle): the wrist turns it as far as the
+//!   hand has turned about the axle since it took hold, up to [`WRIST_TORQUE`].
 //!
 //! One the game moves itself (`OBJF_GAME_MOVED`: a valve on a gate the game may let down) follows
 //! the game's pose of it ([`Valve::follow`]) whenever no hand is turning it.
@@ -36,7 +36,8 @@ pub const ARM_FORCE: f32 = 180.0;
 /// wrist can twist, N m (about what a firm grip turns a stiff tap with).
 pub const WRIST_STIFFNESS: f32 = 60.0;
 pub const WRIST_TORQUE: f32 = 6.0;
-/// A knob: anything no bigger than this round (metres) is twisted, not cranked.
+/// A knob: anything no bigger than this round (metres), or held no further than this from its axle,
+/// is twisted, not cranked.
 pub const TWIST_RADIUS: f32 = 0.06;
 /// Within this far (radians) of a click it pulls into it, and how stiffly (N m per radian).
 const DETENT_ZONE: f32 = 0.3;
@@ -118,6 +119,12 @@ impl Valve {
     pub fn with_range(self, min: f32, max: f32, detent: f32) -> Valve {
         let (min, max) = if min <= max { (min, max) } else { (max, min) };
         Valve { min, max, detent: detent.max(0.0), ..self }
+    }
+
+    /// Whether a hand holding it at `at` (its own frame) twists it rather than cranks it: a knob,
+    /// or anything held near its axle (where an arm has no leverage, a wrist has).
+    pub fn twisted_at(&self, at: Vec3) -> bool {
+        self.twist || at.truncate().length() <= TWIST_RADIUS
     }
 
     pub fn limited(&self) -> bool {
@@ -363,6 +370,15 @@ mod tests {
             let to = from + by * (k.min(steps) as f32 / steps as f32);
             v.step(&vec![Pull::Twist { to }; hands], 1.0 / 90.0, stiffness);
         }
+    }
+
+    /// A switch's long handle is cranked by its end and twisted by its middle.
+    #[test]
+    fn a_handle_held_by_its_middle_is_twisted() {
+        let v = Valve::new(Vec3::ZERO, Quat::IDENTITY, 0.13, 0.5, 0.4);
+        assert!(!v.twist);
+        assert!(!v.twisted_at(Vec3::new(0.12, 0.0, 0.02)), "by its end: cranked");
+        assert!(v.twisted_at(Vec3::new(0.03, 0.01, 0.04)), "by its middle: twisted");
     }
 
     #[test]

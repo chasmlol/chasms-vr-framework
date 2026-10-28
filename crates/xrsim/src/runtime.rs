@@ -69,8 +69,9 @@ pub(crate) struct Rt {
     pub dir: PathBuf,
     pub script: Script,
     control: Option<Control>,
-    control_stamp: Option<std::time::SystemTime>,
-    control_checked: Instant,
+    /// The control file as it changes, read on a thread of its own (no file system in the frame
+    /// loop: a film writing beside it slowed a check of it to a second at times).
+    control_rx: std::sync::mpsc::Receiver<Result<Control, String>>,
     last_capture_cmd: Option<String>,
     pub pose: Pose,
     /// Each hand's velocity now (stage space: metres and radians a second), from the script.
@@ -153,6 +154,7 @@ impl Rt {
             let _ = QueryPerformanceCounter(&mut start_qpc);
             let _ = QueryPerformanceFrequency(&mut qpc_freq);
         }
+        let control_path = dir.join("control.toml");
         let mut r = Rt {
             start: now,
             start_qpc,
@@ -161,8 +163,7 @@ impl Rt {
             dir,
             script,
             control: None,
-            control_stamp: None,
-            control_checked: now,
+            control_rx: watch_control(control_path),
             last_capture_cmd: None,
             pose: Pose::default(),
             hand_vel: [(Vec3::ZERO, Vec3::ZERO); 2],
@@ -257,34 +258,29 @@ impl Rt {
     fn tick(&mut self) {
         let t = self.script_time();
         let mut pose = sample(&self.script, t);
-        if self.control_checked.elapsed() > Duration::from_millis(100) {
-            self.control_checked = Instant::now();
-            let path = self.dir.join("control.toml");
-            let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            if stamp.is_some() && stamp != self.control_stamp {
-                self.control_stamp = stamp;
-                match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| Control::parse(&t)) {
-                    Ok(c) => {
-                        self.log(&format!("control: {c:?}"));
-                        if let Some(name) = &c.capture
-                            && self.last_capture_cmd.as_ref() != Some(name)
-                        {
-                            self.pending.push(name.clone());
-                            self.last_capture_cmd = Some(name.clone());
-                        }
-                        if let Some(f) = c.focused {
-                            self.set_focus(f);
-                        }
-                        if c.quit == Some(true) {
-                            self.quit = true;
-                        }
-                        // Live pose values accumulate over every control file seen.
-                        let mut merged = self.control.take().unwrap_or_default();
-                        merge(&mut merged, &c);
-                        self.control = Some(merged);
+        while let Ok(read) = self.control_rx.try_recv() {
+            match read {
+                Ok(c) => {
+                    self.log(&format!("control: {:?} {:?} {:?}, {} keys of a path", c.head, c.left, c.right, c.keys.len()));
+                    if let Some(name) = &c.capture
+                        && self.last_capture_cmd.as_ref() != Some(name)
+                    {
+                        self.pending.push(name.clone());
+                        self.last_capture_cmd = Some(name.clone());
                     }
-                    Err(e) => self.log(&format!("control.toml: {e}")),
+                    if let Some(f) = c.focused {
+                        self.set_focus(f);
+                    }
+                    if c.quit == Some(true) {
+                        self.quit = true;
+                    }
+                    self.script.play_from(t, &c.keys);
+                    // Live pose values accumulate over every control file seen.
+                    let mut merged = self.control.take().unwrap_or_default();
+                    merge(&mut merged, &c);
+                    self.control = Some(merged);
                 }
+                Err(e) => self.log(&format!("control.toml: {e}")),
             }
         }
         if let Some(c) = &self.control {
@@ -312,7 +308,7 @@ impl Rt {
             && let Some(f) = self.script.films.get(self.films_started)
             && f.t <= t
         {
-            self.film = Some(crate::capture::Film::new(&f.name, f.frames, f.crop, f.every.unwrap_or(1)));
+            self.film = Some(crate::capture::Film::new(&f.name, f.frames, f.crop, f.every.unwrap_or(1), f.mip.unwrap_or(crate::capture::FILM_MIP)));
             self.films_started += 1;
             self.log(&format!("film {} starts ({} frames)", f.name, f.frames));
         }
@@ -448,6 +444,26 @@ impl Rt {
             _ => (0.0, glam::Vec2::ZERO),
         }
     }
+}
+
+/// Watches the control file at `path` on a thread of its own: each time it changes, it as read.
+fn watch_control(path: PathBuf) -> std::sync::mpsc::Receiver<Result<Control, String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stamp = None;
+        loop {
+            std::thread::sleep(Duration::from_millis(50));
+            let now = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            if now.is_some() && now != stamp {
+                stamp = now;
+                let read = std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| Control::parse(&t));
+                if tx.send(read).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    rx
 }
 
 fn merge(into: &mut Control, c: &Control) {
@@ -1019,13 +1035,21 @@ unsafe extern "system" fn wait_frame(_s: xr::Session, _info: *const xr::FrameWai
             std::thread::sleep(due - now);
         }
     }
+    let asked = Instant::now();
     with_rt!(r => {
         let now = Instant::now();
+        // (A frame held up here shows in a film as a jump: said, with where.)
+        let locked = now - asked;
         r.last_frame = Some(match r.last_frame {
             Some(l) if now.duration_since(l) < period * 2 => l + period,
             _ => now,
         });
         r.tick();
+        let ticked = now.elapsed();
+        if locked + ticked > Duration::from_millis(50) {
+            let msg = format!("xrWaitFrame held up {:.0} ms ({:.0} waiting for the runtime's lock, {:.0} in the tick)", (locked + ticked).as_secs_f64() * 1000.0, locked.as_secs_f64() * 1000.0, ticked.as_secs_f64() * 1000.0);
+            r.log(&msg);
+        }
         r.frames += 1;
         r.fps_count += 1;
         if r.fps_at.elapsed() > Duration::from_secs(1) {
@@ -1067,7 +1091,12 @@ unsafe extern "system" fn end_frame(_s: xr::Session, info: *const xr::FrameEndIn
             r.last_layers = views;
         }
         if r.film.is_some() {
+            let began = Instant::now();
             crate::capture::film_frame(r);
+            if began.elapsed() > Duration::from_millis(50) {
+                let msg = format!("xrEndFrame held up {:.0} ms by the film", began.elapsed().as_secs_f64() * 1000.0);
+                r.log(&msg);
+            }
         }
         if !r.pending.is_empty() {
             let names = std::mem::take(&mut r.pending);

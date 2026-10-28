@@ -27,7 +27,9 @@
 //!
 //! The control file (`<dir>/control.toml`, reread whenever it changes) holds one key without `t`
 //! that overrides the script from then on, plus one-shot commands: `capture = "name"`,
-//! `focused = false` (the headset's dashboard over the app), `quit = true`.
+//! `focused = false` (the headset's dashboard over the app), `quit = true`. It may also hold a path
+//! to play from when it's read: `[[key]]`s whose `t` is seconds from then, eased into from wherever
+//! the script is (a test driver's reach for something it has found, say).
 
 use glam::{Quat, Vec2, Vec3};
 use serde::Deserialize;
@@ -78,8 +80,8 @@ pub struct Capture {
 }
 
 /// Consecutive frames, each as it's submitted and without holding the app up (copied on the GPU,
-/// read back a frame or two later), for judging motion frame by frame: `films/<name>/NNN.png`
-/// (both eyes as submitted, a quarter size) and `films/<name>/frames.csv` (each frame's script
+/// read back a frame or two later, written as they come), for judging motion frame by frame:
+/// `films/<name>/NNN.png` (both eyes as submitted, a quarter size unless `mip` says) and `films/<name>/frames.csv` (each frame's script
 /// time, the submitted eyes' poses and fields of view, the hands and the head).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +97,9 @@ pub struct Film {
     /// gives 30 frames a second); 1 when not given.
     #[serde(default)]
     pub every: Option<u32>,
+    /// The size kept of each eye: its mip level (0 the whole, 1 half, 2 a quarter: the default).
+    #[serde(default)]
+    pub mip: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -162,11 +167,28 @@ pub struct Control {
     pub capture: Option<String>,
     pub focused: Option<bool>,
     pub quit: Option<bool>,
+    /// A path from when it's read (each key's `t` seconds from then).
+    #[serde(rename = "key")]
+    pub keys: Vec<Key>,
 }
 
 impl Control {
     pub fn parse(text: &str) -> Result<Control, String> {
         toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+impl Script {
+    /// Plays `path` from script time `t` on (its keys' times from then): eased into from the pose
+    /// at `t`, then held at its end. Later keys of the script come after it as they were.
+    pub fn play_from(&mut self, t: f64, path: &[Key]) {
+        if path.is_empty() {
+            return;
+        }
+        // A key at `t` that changes nothing: the path eases from where things are now, not from
+        // the script's last key.
+        self.keys.push(Key { t, ..Default::default() });
+        self.keys.extend(path.iter().map(|k| Key { t: t + k.t.max(0.0), ..k.clone() }));
     }
 }
 
@@ -362,6 +384,24 @@ mod tests {
         p.hands[1].pos = [0.0, 0.0, 0.5];
         let (pos, _) = p.hand_pose(1);
         assert!(pos.abs_diff_eq(Vec3::new(0.5, 1.7, 0.0), 1e-5), "half a metre in front of a head turned right: {pos:?}");
+    }
+
+    #[test]
+    fn a_path_from_the_control_file_eases_from_where_things_are() {
+        let mut s = Script::parse("[[key]]
+t = 0
+right = { pos = [0.2, -0.5, 0.3] }
+").unwrap();
+        let c = Control::parse("[[key]]
+t = 1
+right = { pos = [0.4, -0.5, 0.3], squeeze = 1 }
+").unwrap();
+        s.play_from(10.0, &c.keys);
+        // Until it's read, as it was; then from there to the path's key over its second.
+        assert_eq!(sample(&s, 10.0).hands[1].pos, [0.2, -0.5, 0.3]);
+        assert!((sample(&s, 10.5).hands[1].pos[0] - 0.3).abs() < 1e-5);
+        let end = sample(&s, 12.0).hands[1];
+        assert_eq!((end.pos, end.squeeze), ([0.4, -0.5, 0.3], 1.0));
     }
 
     #[test]

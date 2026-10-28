@@ -323,6 +323,14 @@ impl PlayerBody {
         self.plain = plain;
     }
 
+    /// Testing: the body in one flat colour and what the runtime draws with it in another (None:
+    /// shaded as ever).
+    pub fn set_flat(&mut self, colors: Option<([f32; 3], [f32; 3])>) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.set_flat(colors);
+        }
+    }
+
     /// The held gun's laser from now on (None: none), drawn with the body.
     pub fn set_laser(&mut self, gpu: &Gpu, laser: Option<rustvr_avatar::LaserBeam>) {
         if let Some(a) = self.avatar.as_mut() {

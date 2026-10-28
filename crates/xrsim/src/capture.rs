@@ -144,8 +144,8 @@ fn shrink(img: &Image, width: u32) -> Image {
     Image { w: width, h, px }
 }
 
-/// The mip level films keep (a quarter of the submitted size).
-const FILM_MIP: u32 = 2;
+/// The mip level films keep unless told (a quarter of the submitted size).
+pub(crate) const FILM_MIP: u32 = 2;
 
 /// A film being taken (`crate::script::Film`).
 pub(crate) struct Film {
@@ -156,19 +156,52 @@ pub(crate) struct Film {
     /// Only every this many frames, and how many until the next.
     every: u32,
     skip: u32,
+    /// The mip level kept (each halves the size).
+    mip: u32,
     /// Per eye: a copy of the submitted image with its mips (made the first frame).
     mips: Vec<(ID3D11Texture2D, ID3D11ShaderResourceView)>,
     /// Frames on their way to the CPU (read a frame or two later, never waited for): their row of
     /// numbers, both eyes, and each eye's size.
     waiting: VecDeque<(String, [ID3D11Texture2D; 2], [(u32, u32); 2])>,
-    /// Frames read.
-    done: Vec<(String, Image, Image)>,
+    /// Frames read: their rows, their pictures on their way to the disk as they come (a thread
+    /// of their own: a long film at a good size would fill the memory), and the first error.
+    done: Vec<String>,
+    writer: Option<(std::sync::mpsc::Sender<(usize, Image, Image)>, std::thread::JoinHandle<Result<()>>)>,
     format: DXGI_FORMAT,
 }
 
 impl Film {
-    pub(crate) fn new(name: &str, frames: u32, crop: Option<[u32; 4]>, every: u32) -> Film {
-        Film { name: name.to_string(), left: frames, crop, every: every.max(1), skip: 0, mips: Vec::new(), waiting: VecDeque::new(), done: Vec::new(), format: DXGI_FORMAT_UNKNOWN }
+    pub(crate) fn new(name: &str, frames: u32, crop: Option<[u32; 4]>, every: u32, mip: u32) -> Film {
+        Film {
+            name: name.to_string(),
+            left: frames,
+            crop,
+            every: every.max(1),
+            skip: 0,
+            mip: mip.min(4),
+            mips: Vec::new(),
+            waiting: VecDeque::new(),
+            done: Vec::new(),
+            writer: None,
+            format: DXGI_FORMAT_UNKNOWN,
+        }
+    }
+
+    /// Frame `k` (both eyes) to the disk, on the writer's thread.
+    fn write(&mut self, dir: PathBuf, k: usize, a: Image, b: Image) {
+        let (tx, _) = self.writer.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<(usize, Image, Image)>();
+            let thread = std::thread::spawn(move || -> Result<()> {
+                std::fs::create_dir_all(&dir)?;
+                for (k, a, b) in rx {
+                    let both = side_by_side(&a, &b);
+                    rustvr_gpu::save_png_fast(&dir.join(format!("{k:03}.png")), both.w, both.h, &both.px)?;
+                }
+                Ok(())
+            });
+            (tx, thread)
+        });
+        let _ = tx.send((k, a, b));
     }
 }
 
@@ -206,7 +239,9 @@ pub(crate) fn film_frame(r: &mut Rt) {
         while let Some((_, st, size)) = f.waiting.front() {
             let (Some(a), Some(b)) = (read_staging(&ctx, &st[0], size[0], bgra, last), read_staging(&ctx, &st[1], size[1], bgra, last)) else { break };
             let (row, _, _) = f.waiting.pop_front().unwrap();
-            f.done.push((row, a, b));
+            let k = f.done.len();
+            f.done.push(row);
+            f.write(r.dir.join("films").join(&f.name), k, a, b);
         }
         let take = f.skip == 0;
         f.skip = if take { f.every - 1 } else { f.skip - 1 };
@@ -249,12 +284,12 @@ pub(crate) fn film_frame(r: &mut Rt) {
                     place = (x, y, c.width, c.height);
                     continue;
                 }
-                place = (0, 0, (c.width >> FILM_MIP).max(1), (c.height >> FILM_MIP).max(1));
+                place = (0, 0, (c.width >> f.mip).max(1), (c.height >> f.mip).max(1));
                 if f.mips.len() <= e {
                     let desc = D3D11_TEXTURE2D_DESC {
                         Width: c.width,
                         Height: c.height,
-                        MipLevels: FILM_MIP + 1,
+                        MipLevels: f.mip + 1,
                         ArraySize: 1,
                         Format: f.format,
                         SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
@@ -271,7 +306,7 @@ pub(crate) fn film_frame(r: &mut Rt) {
                     f.mips.push((t, v.context("the film's view")?));
                 }
                 let (mt, mv) = &f.mips[e];
-                let (w, h) = ((c.width >> FILM_MIP).max(1), (c.height >> FILM_MIP).max(1));
+                let (w, h) = ((c.width >> f.mip).max(1), (c.height >> f.mip).max(1));
                 let desc = D3D11_TEXTURE2D_DESC {
                     Width: w,
                     Height: h,
@@ -291,7 +326,7 @@ pub(crate) fn film_frame(r: &mut Rt) {
                     ctx.GenerateMips(mv);
                 }
                 let s = s.context("the film's staging texture")?;
-                unsafe { ctx.CopySubresourceRegion(&s, 0, 0, 0, 0, mt, FILM_MIP, None) };
+                unsafe { ctx.CopySubresourceRegion(&s, 0, 0, 0, 0, mt, f.mip, None) };
                 st.push(s);
                 sizes[e] = (w, h);
             }
@@ -334,7 +369,7 @@ pub(crate) fn film_frame(r: &mut Rt) {
         Ok(false) => r.film = Some(f),
         Ok(true) => {
             let began = std::time::Instant::now();
-            let saved = save_film(r, &f);
+            let saved = save_film(r, &mut f);
             let took = began.elapsed();
             r.stalled += took;
             let msg = match saved {
@@ -350,15 +385,18 @@ pub(crate) fn film_frame(r: &mut Rt) {
     }
 }
 
-fn save_film(r: &Rt, f: &Film) -> Result<PathBuf> {
+fn save_film(r: &Rt, f: &mut Film) -> Result<PathBuf> {
     let dir = r.dir.join("films").join(&f.name);
     std::fs::create_dir_all(&dir)?;
+    // The pictures written (the last of them now).
+    if let Some((tx, thread)) = f.writer.take() {
+        drop(tx);
+        thread.join().map_err(|_| anyhow::anyhow!("the film's writer panicked"))??;
+    }
     let mut csv = String::from(
         "frame,t,l_px,l_py,l_pz,l_qx,l_qy,l_qz,l_qw,l_fl,l_fr,l_fu,l_fd,r_px,r_py,r_pz,r_qx,r_qy,r_qz,r_qw,r_fl,r_fr,r_fu,r_fd,lh_px,lh_py,lh_pz,lh_qx,lh_qy,lh_qz,lh_qw,rh_px,rh_py,rh_pz,rh_qx,rh_qy,rh_qz,rh_qw,head_px,head_py,head_pz,head_qx,head_qy,head_qz,head_qw,img_w,img_h,crop_x,crop_y\n",
     );
-    for (k, (row, a, b)) in f.done.iter().enumerate() {
-        let both = side_by_side(a, b);
-        rustvr_gpu::save_png_fast(&dir.join(format!("{k:03}.png")), both.w, both.h, &both.px)?;
+    for row in &f.done {
         csv.push_str(row);
         csv.push('\n');
     }

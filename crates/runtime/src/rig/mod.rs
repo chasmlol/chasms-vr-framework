@@ -1159,7 +1159,7 @@ impl Rig {
             let mut grips: Vec<(usize, valve::ValveGrip)> = Vec::new();
             for (i, h) in self.hands.iter_mut().flatten().enumerate() {
                 let Some(g) = h.valve.as_mut().filter(|g| g.id == id) else { continue };
-                if v.twist {
+                if v.twisted_at(g.at) {
                     let w = v.wrist(h.target.1);
                     let d = (w - g.wrist + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
                     g.twisted += d;

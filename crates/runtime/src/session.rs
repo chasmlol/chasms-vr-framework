@@ -1131,6 +1131,15 @@ impl Session {
         // the body and hands plain (the runtime's own look) and the guns as their collision.
         self.body.set_game_shading(&self.gpu, shading.as_ref().filter(|_| !framework));
         self.body.set_plain(framework);
+        // Testing (`RUSTVR_FLAT_PLAYER=1`): the body flat green and everything the runtime draws for
+        // it (what it holds, the game's things it draws) flat magenta, to tell them from the game's
+        // own in a picture.
+        {
+            static FLAT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *FLAT.get_or_init(|| std::env::var("RUSTVR_FLAT_PLAYER").is_ok_and(|v| v == "1")) {
+                self.body.set_flat(Some(([0.0, 1.0, 0.0], [1.0, 0.0, 1.0])));
+            }
+        }
         let drawn = if draw_body && !framework { self.held_objects.draws().len() } else { 0 };
         self.stats.held_drawn = drawn as u32;
         self.stats.held_drawn_frames += (drawn > 0) as u64;
