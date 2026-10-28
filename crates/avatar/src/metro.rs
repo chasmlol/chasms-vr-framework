@@ -65,6 +65,10 @@ pub enum Class {
     GlassTint = 6,
     /// Forward: the environment reflection, blended.
     GlassReflect = 7,
+    /// Not Metro's: Gamebryo's per-pixel lighting (`gamebryo.rs`, Oblivion's `ShadowLightShader`).
+    GamebryoLit = 8,
+    /// Gamebryo's skin (Oblivion's `SkinShader`).
+    GamebryoSkin = 9,
 }
 
 impl Class {
@@ -79,7 +83,14 @@ impl Class {
             Shader::Emissive => Class::Emissive,
             Shader::GlassTint => Class::GlassTint,
             Shader::GlassReflect => Class::GlassReflect,
+            Shader::GamebryoLit => Class::GamebryoLit,
+            Shader::GamebryoSkin => Class::GamebryoSkin,
         })
+    }
+
+    /// Gamebryo's (drawn by `PSGamebryo`, with Gamebryo's lighting).
+    pub fn gamebryo(self) -> bool {
+        matches!(self, Class::GamebryoLit | Class::GamebryoSkin)
     }
 
     /// Drawn blended after the opaque classes (the game's forward pass).
@@ -98,6 +109,8 @@ impl Class {
             Class::Emissive => (false, true, false),
             Class::GlassTint => (false, false, false),
             Class::GlassReflect => (false, false, true),
+            // (The normal and glow maps when the mesh has them.)
+            Class::GamebryoLit | Class::GamebryoSkin => (false, false, false),
         }
     }
 }
@@ -315,7 +328,7 @@ pub fn gbuffer(class: Class, f: &Fragment, n: Vec3, x: &Texels, surface: &Surfac
             out.albedo = x.env * envmap_color * spec2 * a + albedo;
             out.spec = spec2;
         }
-        Class::Emissive | Class::GlassTint | Class::GlassReflect => unreachable!("not a G-buffer class"),
+        Class::Emissive | Class::GlassTint | Class::GlassReflect | Class::GamebryoLit | Class::GamebryoSkin => unreachable!("not a G-buffer class"),
     }
     out
 }

@@ -457,6 +457,39 @@ float4 PSMetroGlass(VSOut i) : SV_Target {
     return float4(finish(fogged(c.rgb, pv), i.pos), m_bad(c.aaa) ? 0 : saturate(c.a));
 }
 
+// Gamebryo's per-pixel lighting (gamebryo.rs: Oblivion's ShadowLightShader and SkinShader), in the
+// display's range as the game's back buffer holds it, written through the sRGB target. The game's
+// textures raw; the lights and the eye in tracking space (the lighting's `eye` is the identity).
+float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
+    float3 dpx = ddx(i.world), dpy = ddy(i.world);
+    float2 dux = ddx(i.uv), duy = ddy(i.uv);
+    if (i.vis < 0) discard;
+    if (behind_game(i.pos, i.view_z)) discard;
+    if (plain.w > 1.5) return float4(plain.rgb, 1);
+    float4 base = albedo.Sample(samp, i.uv);
+    if (material.y > 0 && base.a < 0.5) discard;
+    // The base times the vertex colour (the game's are grey: the vertex's AO byte holds it).
+    float3 c = base.rgb * i.ao;
+    // The inside of the shell, seen through a cut (the game culls it): the ambient, dark.
+    if (!front) return float4(m_display_to_linear(c * amb.rgb * 0.3), 1);
+    float3 nv = normalize(i.normal);
+    float4 nm = options.x > 0 ? bump_tex.Sample(samp, i.uv) : float4(0.5, 0.5, 1, 0);
+    float3 t, b;
+    gb_frame(dpx, dpy, dux, duy, nv, t, b);
+    float3 nt = normalize(nm.rgb * 2 - 1);
+    float3 n = normalize(nt.x * t + nt.y * b + nt.z * nv);
+    float3 v = normalize(eye_pos.xyz - i.world);
+    float3 glow = options.y > 0 ? detail_tex.Sample(samp, i.uv).rgb * surf_color.rgb : 0;
+    bool skin = (uint)material.z == GB_SKIN;
+    float gloss = surf_params.y > 0 ? surf_params.x : 0;
+    float3 d = 0, s = 0;
+    uint count = (uint)envc.w;
+    for (uint k = 0; k < count; k++) gb_light(lights[k], i.world, n, v, skin, gloss, nm.a, d, s);
+    float3 col = saturate(c * saturate(amb.rgb + glow + d) + s);
+    if (fog_fade.y != 0) col = lerp(col, fog_color.rgb, saturate(length(eye_pos.xyz - i.world) * fog_fade.y + fog_fade.x));
+    return float4(m_display_to_linear(col), 1);
+}
+
 float4 PSGhost(VSOut i) : SV_Target {
     if (i.vis < 0) discard;
     float3 n = normalize(i.normal);
@@ -942,7 +975,14 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
         _ => None,
     };
     let (surf_params, surf_color, emissive) = m.material.as_ref().map_or(([0.0; 4], [0.0; 4], 0.0), |mat| (mat.params, mat.color, mat.emissive));
-    let options = m.material.as_ref().map_or([0.0; 4], |mat| [mat.env.is_some() as u32 as f32, mat.fresnel as u32 as f32, 0.0, 0.0]);
+    let options = m.material.as_ref().map_or([0.0; 4], |mat| {
+        if mat.class.gamebryo() {
+            // Gamebryo's: whether it has a normal map and a glow map.
+            [mat.bump.is_some() as u32 as f32, mat.detail.is_some() as u32 as f32, 0.0, 0.0]
+        } else {
+            [mat.env.is_some() as u32 as f32, mat.fresnel as u32 as f32, 0.0, 0.0]
+        }
+    });
     let class = metro.as_ref().map_or(0.0, |mm| mm.class as u32 as f32);
     let material = MaterialCb {
         tint: [m.tint[0], m.tint[1], m.tint[2], 1.0],
@@ -1196,6 +1236,7 @@ pub struct Renderer {
     /// The game's shading (metro.rs): opaque classes and forward glass.
     metro: Program,
     metro_glass: Program,
+    gamebryo: Program,
     /// The player's view depth ([`Renderer::draw_view_depth`]) and the game's own pixels of the
     /// player moved to where it is now ([`Renderer::draw_reprojected`]).
     view_z: Program,
@@ -1250,13 +1291,14 @@ impl Renderer {
             element(b"BLENDWEIGHT\0", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 36),
             element(b"COLOR\0", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 40),
         ];
-        let source = format!("{}{SHADER}", metro::HLSL);
+        let source = format!("{}{}{SHADER}", metro::HLSL, crate::gamebryo::HLSL);
         let (lut, lut_srv) = lut_texture(gpu)?;
         Ok(Renderer {
             opaque: Program::new(gpu, &source, "avatar", &layout)?,
             ghost: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSGhost", &layout)?,
             metro: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSMetro", &layout)?,
             metro_glass: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSMetroGlass", &layout)?,
+            gamebryo: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSGamebryo", &layout)?,
             view_z: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSViewZ", &layout)?,
             reproject: Program::with_entries(gpu, &source, "avatar", "VSReproject", "PSReproject", &layout)?,
             sources_cb: ConstantBuffer::new(gpu)?,
@@ -1751,15 +1793,25 @@ impl Renderer {
         fn metro_of(m: &GpuMesh, shading: bool) -> Option<&MetroMesh> {
             m.metro.as_ref().filter(|_| shading)
         }
-        let mut bound: Option<bool> = None;
+        // (0: the runtime's own look, 1: Metro's, 2: Gamebryo's.)
+        let mut bound: Option<u32> = None;
         for &m in meshes {
             let metro = metro_of(m, shading);
             if metro.is_some_and(|mm| mm.class.forward()) {
                 continue;
             }
-            if bound != Some(metro.is_some()) {
-                if metro.is_some() { self.metro.bind(ctx) } else { self.opaque.bind(ctx) }
-                bound = Some(metro.is_some());
+            let program = match metro {
+                None => 0,
+                Some(mm) if mm.class.gamebryo() => 2,
+                Some(_) => 1,
+            };
+            if bound != Some(program) {
+                match program {
+                    0 => self.opaque.bind(ctx),
+                    1 => self.metro.bind(ctx),
+                    _ => self.gamebryo.bind(ctx),
+                }
+                bound = Some(program);
             }
             draw_mesh(ctx, m, range);
         }
@@ -2064,4 +2116,16 @@ fn projection(fov: &Fov) -> Mat4 {
         Vec4::new(-(fov.left + fov.right) / w, -(fov.up + fov.down) / h, range, 1.0),
         Vec4::new(0.0, 0.0, -range * NEAR, 0.0),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_shader_compiles() {
+        let source = format!("{}{}{}", super::metro::HLSL, crate::gamebryo::HLSL, super::SHADER);
+        for (vs, ps) in [("VSMain", "PSMain"), ("VSMain", "PSMetro"), ("VSMain", "PSMetroGlass"), ("VSMain", "PSGamebryo"), ("VSMain", "PSGhost")] {
+            rustvr_gpu::shader::compile(&source, "avatar", vs, "vs_5_0").unwrap_or_else(|e| panic!("{vs}: {e:#}"));
+            rustvr_gpu::shader::compile(&source, "avatar", ps, "ps_5_0").unwrap_or_else(|e| panic!("{ps}: {e:#}"));
+        }
+    }
 }

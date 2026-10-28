@@ -115,6 +115,16 @@ pub enum Shader {
     /// the reticle's angular size once it is collimated (0: unknown); `yzw` are 0. See
     /// docs/research/metro-collimator.md.
     Reticle,
+    /// Gamebryo's per-pixel lighting (Oblivion's `ShadowLightShader`): the base texture lit by the
+    /// ambient and each light through the normal map ([`Material::bump`], tangent space, its alpha
+    /// the specular mask), the glow map ([`Material::detail`]) lit by the emittance colour. For the
+    /// Gamebryo shaders, `params` = (glossiness: the specular power, 1 when the material has
+    /// specular, 0, 0) and `color` = (emittance rgb, alpha); [`Vertex::ao`] is the vertex colour
+    /// (the game's are grey), which the base texture is multiplied by.
+    GamebryoLit,
+    /// Gamebryo's skin (Oblivion's `SkinShader`): as [`Shader::GamebryoLit`] with each light's
+    /// grazing rim, half its colour times (1 − N·V)³.
+    GamebryoSkin,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]

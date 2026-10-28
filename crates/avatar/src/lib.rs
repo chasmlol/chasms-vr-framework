@@ -43,6 +43,7 @@
 
 pub mod collimator;
 pub mod fit;
+pub mod gamebryo;
 pub mod held;
 pub mod metro;
 mod names;

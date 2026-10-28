@@ -12,8 +12,10 @@
 //! the region where the game evaluates its first-person lighting: the light atlas
 //! ([`TexKind::Lights`](crate::TexKind::Lights), see [`LIGHT_TILE`]).
 //!
-//! The model is Metro 2033 Redux's (docs/research/metro-viewmodel-lighting.md); a game whose
-//! renderer differs adds its terms here.
+//! Which game's shading model the terms are for is [`GameLighting::model`]: Metro 2033 Redux's
+//! ([`LM_METRO`], docs/research/metro-viewmodel-lighting.md), or Gamebryo's forward per-pixel
+//! lighting as Oblivion's shaders do it ([`LM_GAMEBRYO`], see there). A game whose renderer differs
+//! adds its model here.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -58,6 +60,29 @@ pub const GL_SHADOWED: u32 = 3;
 pub const GL_SHADOWED_PLAIN: u32 = 4;
 /// "Ambient" omni: no N·L, no specular.
 pub const GL_AMBIENT: u32 = 5;
+
+// ---- shading models ([`GameLighting::model`]) -------------------------------------------------
+/// Metro 2033 Redux's deferred shading (everything above).
+pub const LM_METRO: u32 = 0;
+/// Gamebryo's forward per-pixel lighting, as Oblivion's `ShadowLightShader` and `SkinShader` do it
+/// (the Oblivion adapter's docs/research/oblivion-lighting.md): in the display's 0..1 range, each
+/// light's diffuse capped at 1 and attenuated, summed with the ambient and capped at 1, lighting the
+/// base texture (times the vertex colour); each light's specular (the normal map's alpha) added;
+/// then the fog. The terms used:
+///
+/// * [`GameLighting::ambient`]: the ambient light (rgb);
+/// * [`GameLighting::lights`]: [`GL_GB_DIRECTIONAL`] (`pos.xyz` the direction towards it) and
+///   [`GL_GB_POINT`] (`pos.xyz` where it is, `pos.w` = 1/R², R its radius in metres), `color` the
+///   light's colour as the game's shaders get it (its diffuse times its dimmer and fades);
+/// * [`GameLighting::fog_color`] and [`GameLighting::fog_fade`] (amount = saturate(distance·y + x)).
+///
+/// Its `eye` is the identity: positions and directions are in tracking space. The rest is unused.
+pub const LM_GAMEBRYO: u32 = 1;
+
+/// Gamebryo: a directional light (the sun, or an interior's), `pos.xyz` towards it.
+pub const GL_GB_DIRECTIONAL: u32 = 16;
+/// Gamebryo: a point light, attenuated as `saturate(1 − d²/R²)`.
+pub const GL_GB_POINT: u32 = 17;
 
 // ---- light flags ------------------------------------------------------------------------------
 /// The light reaches the first-person model (its volume was shaded with depth test Always: the
@@ -121,6 +146,9 @@ pub struct GameLighting {
     /// byte), index `(b·16 + g)·16 + r`, applied as
     /// `out = saturate(tonemapped) + 2·lut(tonemapped.bgr).bgr − 1`.
     pub lut: [u32; LUT_SIZE * LUT_SIZE * LUT_SIZE],
+    /// Whose shading model the terms are for: [`LM_METRO`] or [`LM_GAMEBRYO`].
+    pub model: u32,
+    pub _pad_model: [u32; 3],
 }
 
 impl Default for GameLighting {
