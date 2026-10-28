@@ -59,6 +59,7 @@ use bytemuck::{Pod, Zeroable};
 
 #[cfg(windows)]
 pub mod link;
+pub mod avatar;
 pub mod combat;
 pub mod hud;
 pub mod sound;
@@ -66,6 +67,7 @@ pub mod world;
 pub mod lighting;
 pub mod player;
 
+pub use avatar::*;
 pub use combat::*;
 pub use hud::*;
 pub use sound::*;

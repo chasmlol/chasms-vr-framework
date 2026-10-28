@@ -498,6 +498,17 @@ impl Adapter {
         }
     }
 
+    /// The player's body as the game makes it up (see [`AvatarDesc`]): when it changes.
+    pub fn write_avatar(&self, desc: &AvatarDesc) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_avatar(desc);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The player's spells and magicka (see [`Spells`]): when they change.
     pub fn write_spells(&self, spells: &Spells) -> bool {
         match &self.link {

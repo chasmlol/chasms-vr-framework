@@ -435,6 +435,63 @@ pub(crate) struct SourceMaterial {
     pub env: Option<Arc<asset::Texture>>,
 }
 
+/// A body put together from a game's parts (see [`rustvr_protocol::AvatarDesc`]): the skeleton
+/// model's bones, and the meshes of every part (each skinned to those bones in their order), from
+/// the asset cache folder `dir`, with the texture swaps applied (a part's texture or bump map
+/// named first is drawn with the second, when the cache has it). A part that doesn't fit the
+/// skeleton is left out.
+pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &[(String, String)]) -> Result<AvatarSource> {
+    let skel = asset::load_model(dir, skeleton).with_context(|| format!("the skeleton {skeleton}"))?;
+    // (A swap to a texture the cache doesn't have keeps the part's own.)
+    let have = |key: &str| dir.join("textures").join(format!("{key}.{}", asset::TEXTURE_EXT)).is_file();
+    let swap = |k: &mut String| {
+        if let Some((_, to)) = swaps.iter().find(|(from, to)| from == k && have(to)) {
+            *k = to.clone();
+        }
+    };
+    let mut model = asset::Model { version: asset::FORMAT_VERSION, source: format!("{skeleton} with {} parts", parts.len()), bones: skel.bones, ..Default::default() };
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for key in parts {
+        let part = match asset::load_model(dir, key) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("avatar: part {key}: {e:#}");
+                continue;
+            }
+        };
+        if part.bones.len() != model.bones.len() || part.bones.iter().zip(&model.bones).any(|(a, b)| a.name != b.name) {
+            tracing::warn!("avatar: part {key} isn't skinned to the skeleton {skeleton}: left out");
+            continue;
+        }
+        for k in 0..3 {
+            lo[k] = lo[k].min(part.bounds_min[k]);
+            hi[k] = hi[k].max(part.bounds_max[k]);
+        }
+        for mut m in part.meshes {
+            swap(&mut m.texture);
+            swap(&mut m.material.bump);
+            model.meshes.push(m);
+        }
+    }
+    anyhow::ensure!(!model.meshes.is_empty(), "no part of the body could be loaded");
+    (model.bounds_min, model.bounds_max) = (lo, hi);
+    let mut textures = HashMap::new();
+    for m in &model.meshes {
+        for key in [&m.texture, &m.material.bump, &m.material.detail, &m.material.env] {
+            if key.is_empty() || textures.contains_key(key) {
+                continue;
+            }
+            match asset::load_texture(dir, key) {
+                Ok(t) => {
+                    textures.insert(key.clone(), t);
+                }
+                Err(e) => tracing::warn!("avatar: texture {key}: {e:#}"),
+            }
+        }
+    }
+    Ok(AvatarSource::Built { model, textures })
+}
+
 /// The skeleton of the built-in mannequin (Unity humanoid names, bound in the reference T-pose),
 /// for building models in memory ([`AvatarSource::Built`]).
 pub fn mannequin_skeleton() -> Vec<asset::Bone> {

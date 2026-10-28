@@ -48,6 +48,10 @@ pub struct PlayerBody {
     fingers: [FingerSolver; 2],
     avatar: Option<Avatar>,
     avatar_tried: bool,
+    /// The body the game makes up (`rustvr_protocol::AvatarDesc`), as last asked for, and being
+    /// put together off the frame.
+    game_body_seq: u32,
+    game_body: Option<std::sync::mpsc::Receiver<anyhow::Result<AvatarSource>>>,
     pub body: RtBody,
     /// Ghost hands (canonical hand frames), drawn translucent.
     pub ghosts: [Option<Pose>; 2],
@@ -114,6 +118,8 @@ impl Default for PlayerBody {
             fingers: [FingerSolver::new(), FingerSolver::new()],
             avatar: None,
             avatar_tried: false,
+            game_body_seq: 0,
+            game_body: None,
             body: bytemuck::Zeroable::zeroed(),
             ghosts: [None; 2],
             held: [None; 2],
@@ -273,9 +279,44 @@ impl PlayerBody {
         &self.body
     }
 
+    /// The body the game makes up, when it has changed: put together from its parts off the frame
+    /// (`rustvr_avatar::compose`), then drawn instead of the avatar so far.
+    pub fn read_game_body(&mut self, link: &rustvr_protocol::link::Link) {
+        let mut d: rustvr_protocol::AvatarDesc = bytemuck::Zeroable::zeroed();
+        if !link.read_avatar_into(&mut d) || d.seq == self.game_body_seq {
+            return;
+        }
+        self.game_body_seq = d.seq;
+        let split = |name: &str| name.split_once('/').map(|(g, k)| (g.to_owned(), k.to_owned()));
+        let Some((game, skeleton)) = split(rustvr_protocol::name_str(&d.skeleton)) else {
+            tracing::warn!("runtime: the game's body names no skeleton");
+            return;
+        };
+        let parts: Vec<String> = (0..(d.count as usize).min(rustvr_protocol::MAX_AVATAR_PARTS)).filter_map(|i| split(d.part(i)).map(|(_, k)| k)).collect();
+        let swaps: Vec<(String, String)> = (0..(d.swap_count as usize).min(rustvr_protocol::MAX_AVATAR_SWAPS)).map(|i| d.swap(i)).map(|(a, b)| (a.to_owned(), b.to_owned())).collect();
+        tracing::info!("runtime: the game's body: {game}/{skeleton} with {} parts ({}), {} texture swaps", parts.len(), parts.join(", "), swaps.len());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = rustvr_asset::default_root().join(&game);
+        std::thread::spawn(move || {
+            let _ = tx.send(rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps));
+        });
+        self.game_body = Some(rx);
+    }
+
     /// Loads the avatar the first time it's needed: Metro's Miller when the extracted assets are
-    /// there (local test content), else the built-in mannequin.
+    /// there (local test content), else the built-in mannequin; later, the body the game makes up.
     fn avatar(&mut self, gpu: &Gpu) -> Option<&mut Avatar> {
+        if let Some(Ok(built)) = self.game_body.as_ref().map(|rx| rx.try_recv()) {
+            self.game_body = None;
+            self.avatar_tried = true;
+            match built.and_then(|source| Avatar::new(gpu, source)) {
+                Ok(a) => {
+                    tracing::info!("runtime: drawing the game's body");
+                    self.avatar = Some(a);
+                }
+                Err(e) => tracing::error!("runtime: the game's body: {e:#}"),
+            }
+        }
         if !self.avatar_tried {
             self.avatar_tried = true;
             let dir = rustvr_asset::default_root().join("metro2033");

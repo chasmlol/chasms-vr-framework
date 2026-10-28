@@ -321,6 +321,13 @@ impl Link {
     pub fn read_spells_into(&self, out: &mut Spells) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_SPELLS), out) }
     }
+    /// Adapter: the player's body as the game makes it up.
+    pub fn write_avatar(&self, v: &AvatarDesc) {
+        unsafe { seq_write(self.base.add(OFF_AVATAR), v) }
+    }
+    pub fn read_avatar_into(&self, out: &mut AvatarDesc) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_AVATAR), out) }
+    }
     /// Runtime: a melee hit, block or cast for the game.
     pub fn push_combat_event(&self, ev: &CombatEvent) {
         let written = self.u64_at(OFF_COMBAT_EVENTS + offset_of!(CombatEvents, written));

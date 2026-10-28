@@ -8,9 +8,9 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 9
+#define RVR_VERSION 10
 
-#define RVR_MAPPING_BYTES 5177344
+#define RVR_MAPPING_BYTES 5373952
 
 #define RVR_OFF_HEADER 0
 
@@ -313,6 +313,190 @@
 #define RVR_HAPTIC_FIRING_HAND 2
 
 #define RVR_HAPTIC_OFF_HAND 3
+
+#define RVR_MAX_AVATAR_PARTS 24
+
+#define RVR_MAX_AVATAR_SWAPS 16
+
+#define RVR_OFF_COMBAT 5177344
+
+#define RVR_OFF_ACTORS RVR_OFF_COMBAT
+
+#define RVR_MAX_ACTORS 24
+
+#define RVR_MAX_ACTOR_PARTS 16
+
+#define RVR_PART_TORSO 0
+
+#define RVR_PART_HEAD 1
+
+#define RVR_PART_ARM 2
+
+#define RVR_PART_HAND 3
+
+#define RVR_PART_LEG 4
+
+#define RVR_PART_FOOT 5
+
+/**
+ * A shield or a held weapon: hitting it is a block, not a wound.
+ */
+#define RVR_PART_SHIELD 6
+
+#define RVR_PART_TAIL 7
+
+#define RVR_MAT_FLESH 0
+
+#define RVR_MAT_LEATHER 1
+
+#define RVR_MAT_CHAINMAIL 2
+
+#define RVR_MAT_PLATE 3
+
+#define RVR_MAT_BONE 4
+
+#define RVR_MAT_WOOD 5
+
+#define RVR_MAT_STONE 6
+
+#define RVR_MAT_ETHEREAL 7
+
+/**
+ * Alive (hits on a dead body still count, as a corpse).
+ */
+#define RVR_ACT_ALIVE (1 << 0)
+
+#define RVR_ACT_HOSTILE (1 << 1)
+
+/**
+ * Swinging or thrusting at someone: `weapon_a`..`weapon_b` is its blade, and the player's weapon
+ * or shield meeting it is a block.
+ */
+#define RVR_ACT_ATTACKING (1 << 2)
+
+/**
+ * Holding its guard up.
+ */
+#define RVR_ACT_BLOCKING (1 << 3)
+
+/**
+ * Lying down, knocked over or ragdolled.
+ */
+#define RVR_ACT_DOWN (1 << 4)
+
+#define RVR_MAX_MELEE 32
+
+#define RVR_MAX_DAMAGERS 4
+
+/**
+ * Cuts along `edge` (its frame: `edge` is the direction it cuts in).
+ */
+#define RVR_DMG_SLASH 1
+
+/**
+ * Stabs along the blade, at the tip.
+ */
+#define RVR_DMG_PIERCE 2
+
+/**
+ * Bludgeons (any direction).
+ */
+#define RVR_DMG_BLUNT 3
+
+/**
+ * A fist (the hand itself).
+ */
+#define RVR_DMG_PUNCH 4
+
+/**
+ * Cuts both ways along `edge` (a double-edged blade).
+ */
+#define RVR_DMGF_BOTH_WAYS (1 << 0)
+
+#define RVR_MAX_SPELLS 96
+
+/**
+ * On the caster.
+ */
+#define RVR_DELIVER_SELF 0
+
+/**
+ * On what the casting hand touches.
+ */
+#define RVR_DELIVER_TOUCH 1
+
+/**
+ * Thrown at a target (a bolt or projectile).
+ */
+#define RVR_DELIVER_TARGET 2
+
+/**
+ * The spell the game has ready (its "selected" or "equipped" one).
+ */
+#define RVR_SPELL_SELECTED (1 << 0)
+
+/**
+ * Enough magicka (and nothing else stops it) to cast it now.
+ */
+#define RVR_SPELL_CASTABLE (1 << 1)
+
+/**
+ * A power (once a day) or a lesser power: no magicka.
+ */
+#define RVR_SPELL_POWER (1 << 2)
+
+/**
+ * The player has it on a quick slot (a favourite).
+ */
+#define RVR_SPELL_FAVOURITE (1 << 3)
+
+#define RVR_COMBAT_EVENT_SLOTS 128
+
+/**
+ * A melee hit: `actor` and its `part` (the game's index), struck by `object` (0: a fist) with a
+ * damager of `kind`; `strength` 0..1+ (1: a full-strength hit), `speed` the impact speed (m/s);
+ * `point` where, `dir` which way the blade was moving.
+ */
+#define RVR_CE_HIT 1
+
+/**
+ * The player's weapon or shield (`object`; 0 a hand) met `actor`'s attacking weapon: a block, or
+ * with `CEF_PARRY` a parry (the player's weapon moving into it).
+ */
+#define RVR_CE_BLOCK 2
+
+/**
+ * A spell cast: `spell` from `hand` (0 left, 1 right), from `point` along `dir`; `actor` the one a
+ * touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1).
+ */
+#define RVR_CE_CAST 3
+
+/**
+ * A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
+ */
+#define RVR_CEF_GLANCING (1 << 0)
+
+/**
+ * A stab that went in.
+ */
+#define RVR_CEF_PENETRATED (1 << 1)
+
+/**
+ * A thrown weapon's hit.
+ */
+#define RVR_CEF_THROWN (1 << 2)
+
+/**
+ * Hard enough to stagger (the game's own "power attack").
+ */
+#define RVR_CEF_POWER (1 << 3)
+
+#define RVR_CEF_PARRY (1 << 4)
+
+/**
+ * From behind the creature.
+ */
+#define RVR_CEF_BACK (1 << 5)
 
 
 
@@ -1122,6 +1306,18 @@
  */
 #define RVR_F_FX_LIVE 11
 
+/**
+ * The runtime's melee hits on the dummy, those that were power hits, its casts, and those cast
+ * at the dummy (`range/src/combat.rs`).
+ */
+#define RVR_F_MELEE_HITS 12
+
+#define RVR_F_MELEE_POWER 13
+
+#define RVR_F_CASTS 14
+
+#define RVR_F_CASTS_AT_DUMMY 15
+
 enum RVR_TexKind
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
   : uint32_t
@@ -1202,6 +1398,14 @@ typedef uint32_t RVR_Joint;
 #endif // __cplusplus
 
 #define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, RVR_TexKind_BloomLeft, RVR_TexKind_BloomRight, RVR_TexKind_LensLeft, RVR_TexKind_LensRight, }
+
+
+
+
+
+
+
+
 
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
 

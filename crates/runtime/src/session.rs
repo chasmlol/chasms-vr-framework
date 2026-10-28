@@ -610,6 +610,8 @@ impl Session {
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
             }
             self.rig.write_states(&mut self.states);
+            // The body the game makes up, when it changes.
+            self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
             self.combat.read(&self.link);
             let combat = self.combat.update(&crate::combat::CombatInput {
