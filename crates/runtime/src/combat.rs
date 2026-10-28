@@ -219,6 +219,8 @@ struct Caster {
     palm: Option<Vec3>,
     vel: Vec3,
     cooldown_until: f64,
+    /// A spell went off and the trigger is still held: the next one waits for it to be let go.
+    held_after_cast: bool,
 }
 
 /// A hand's spell, as it's being charged (for drawing it in the hand).
@@ -510,8 +512,11 @@ impl Combat {
                 continue;
             };
             let trigger = inp.frame.hands[h].trigger;
+            if trigger < TRIGGER_OFF {
+                c.held_after_cast = false;
+            }
             if !c.charging {
-                if trigger > TRIGGER_ON && inp.now >= c.cooldown_until && spell.flags & SPELL_CASTABLE != 0 {
+                if trigger > TRIGGER_ON && !c.held_after_cast && inp.now >= c.cooldown_until && spell.flags & SPELL_CASTABLE != 0 {
                     c.charging = true;
                     c.charge = 0.0;
                     c.ready = false;
@@ -552,6 +557,7 @@ impl Combat {
                 _ => self.aim(inp, h, palm, vel),
             };
             self.casters[h].cooldown_until = inp.now + 0.25;
+            self.casters[h].held_after_cast = !released;
             let ev = CombatEvent {
                 kind: CE_CAST,
                 actor,
