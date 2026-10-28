@@ -70,6 +70,8 @@ pub struct PhysicsView {
     depth: Vec<Texture>,
     solid: ID3D11RasterizerState,
     outline: ID3D11RasterizerState,
+    /// Draw the outlines alone, bright (shapes over the game's picture, which shows through).
+    pub wireframe_only: bool,
     depth_test: ID3D11DepthStencilState,
     opaque: ID3D11BlendState,
 }
@@ -109,6 +111,7 @@ impl PhysicsView {
             depth: Vec::new(),
             solid: raster(D3D11_FILL_SOLID, 0)?,
             outline: raster(D3D11_FILL_WIREFRAME, -200)?,
+            wireframe_only: false,
             depth_test: pipeline::depth_state(gpu, true, true)?,
             opaque: pipeline::blend_state(gpu, pipeline::Blend::Opaque)?,
         })
@@ -163,8 +166,9 @@ impl PhysicsView {
         pipeline::viewport(ctx, target.width, target.height);
         self.program.bind(ctx);
         let n = self.vertices.len() as u32;
-        // Solid, then the outlines on top.
-        for (raster, outline) in [(&self.solid, 0.0), (&self.outline, 1.0)] {
+        // Solid, then the outlines on top (or bright outlines alone, over something else).
+        let passes = if self.wireframe_only { vec![(&self.outline, 0.0)] } else { vec![(&self.solid, 0.0), (&self.outline, 1.0)] };
+        for (raster, outline) in passes {
             cb.eye[3] = outline;
             self.cb.update(ctx, &cb);
             unsafe {

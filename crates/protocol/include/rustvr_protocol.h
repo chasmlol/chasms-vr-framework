@@ -418,6 +418,12 @@
  */
 #define RVR_DMGF_GUARD (1 << 1)
 
+/**
+ * An axe's edge: an axe's limits (the cut within 45 degrees of the edge, into the
+ * surface within 80, at 3 m/s whatever the armour) instead of a sword's (35, 60, by armour).
+ */
+#define RVR_DMGF_AXE (1 << 2)
+
 #define RVR_MAX_SPELLS 96
 
 /**

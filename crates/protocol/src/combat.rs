@@ -123,6 +123,9 @@ pub const DMG_PUNCH: u32 = 4;
 pub const DMGF_BOTH_WAYS: u32 = 1 << 0;
 /// Only guards: meets blows (blocks, parries) and never hits (an axe's haft, a sword's grip).
 pub const DMGF_GUARD: u32 = 1 << 1;
+/// An axe's edge: an axe's limits (the cut within 45 degrees of the edge, into the surface within
+/// 80, at 3 m/s whatever the armour) instead of a sword's (35, 60, by armour).
+pub const DMGF_AXE: u32 = 1 << 2;
 
 /// One part of a weapon that hurts one way (a sword: its edges cut, its point stabs, its flat and
 /// hilt bludgeon): the segment `a`..`b` in the weapon's model space, `radius` thick.

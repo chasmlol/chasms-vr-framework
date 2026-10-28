@@ -1193,8 +1193,26 @@ impl Session {
             let mut guns = Vec::new();
             self.held_objects.framework_triangles(&mut guns);
             let tris = self.physics_tris.iter().map(to_tracking).chain(guns);
+            self.physics_view.wireframe_only = false;
             if let Err(e) = self.physics_view.set_triangles(&self.gpu, tris, marks.iter().map(to_tracking)) {
                 tracing::warn!("framework view: {e:#}");
+            }
+        }
+        // Testing (`RUSTVR_DEBUG_COMBAT=1`): what the combat judges, over the game's picture.
+        static DEBUG_COMBAT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let debug_combat = !framework && *DEBUG_COMBAT.get_or_init(|| std::env::var("RUSTVR_DEBUG_COMBAT").is_ok_and(|v| v == "1"));
+        if debug_combat {
+            let mut shapes = Vec::new();
+            self.combat.debug_shapes(&mut shapes);
+            // (And the world's collision the rig has, to hold up to the game's picture.)
+            self.physics_tris.clear();
+            self.rig.physics_triangles(&mut self.physics_tris);
+            shapes.extend(self.physics_tris.iter().copied());
+            let map = self.map_now;
+            let tracking = shapes.iter().map(|(t, c)| (map.as_ref().map_or(*t, |m| t.map(|p| m.inv_point(p))), *c));
+            self.physics_view.wireframe_only = true;
+            if let Err(e) = self.physics_view.set_triangles(&self.gpu, tracking, std::iter::empty()) {
+                tracing::warn!("combat debug view: {e:#}");
             }
         }
         let body = &mut self.body;
@@ -1233,6 +1251,9 @@ impl Session {
                 }
                 if draw_body {
                     body.draw(gpu, target, eye, fov, light, if framework { None } else { depth.take() }, &held);
+                }
+                if debug_combat && let Err(e) = physics_view.draw(gpu, target, eye, fov) {
+                    tracing::warn!("combat debug view: {e:#}");
                 }
             });
         }

@@ -10,12 +10,13 @@
 //! * the contact's impact velocity (the blade's, relative to the body) must reach the material's
 //!   minimum for the damage type;
 //! * an edge must be moving along its cutting direction, within 35 degrees across the blade, and
-//!   meet the surface within 60 degrees;
+//!   meet the surface within 60 degrees (an axe's: 45 and 80);
 //! * a point must be moving along the blade within 35 degrees.
 //!
 //! A blade at a bad angle is a weak, glancing blunt hit. The speed sets the strength, and fast
 //! enough is a power hit (the game's stagger). Each creature takes one hit per swing from each
-//! weapon. An empty fist punches. The player's weapon meeting a creature's attacking weapon is a
+//! weapon, and a blade is judged as it meets the creature: one that went in too slowly or at a bad
+//! angle doesn't hit later from inside it, only once it has come out and meets it again. An empty fist punches. The player's weapon meeting a creature's attacking weapon is a
 //! block, and a parry when it's moving into it.
 //!
 //! **Magic**: the off hand, empty, is the spell hand while the game has a spell ready. Holding its
@@ -47,10 +48,14 @@ const BLOCK_COOLDOWN: f64 = 0.8;
 const FIST_FORWARD: f32 = 0.08;
 const FIST_RADIUS: f32 = 0.05;
 const FIST_SQUEEZE: f32 = 0.6;
-/// The damagers' angle limits (degrees).
+/// The damagers' angle limits (degrees): a sword's, an axe's.
 const SLASH_ACROSS_DEG: f32 = 35.0;
 const PIERCE_DEG: f32 = 35.0;
 const NORMAL_DEG: f32 = 60.0;
+const AXE_ACROSS_DEG: f32 = 45.0;
+const AXE_NORMAL_DEG: f32 = 80.0;
+/// An axe needs this much (m/s) whatever it meets.
+const AXE_MIN_SPEED: f32 = 3.0;
 /// A glancing blow's strength, against a clean one's.
 const GLANCING: f32 = 0.3;
 /// Above this the parry is a parry: the player's weapon moving into the attack (m/s).
@@ -131,9 +136,10 @@ pub fn judge(c: &Contact) -> Option<(f32, u32)> {
             // Across the blade: the velocity without its part along the blade, against the edge.
             let across = (dir - c.along * dir.dot(c.along)).normalize_or_zero();
             let ways: &[f32] = if c.flags & DMGF_BOTH_WAYS != 0 { &[1.0, -1.0] } else { &[1.0] };
+            let (across_deg, normal_deg) = if c.flags & DMGF_AXE != 0 { (AXE_ACROSS_DEG, AXE_NORMAL_DEG) } else { (SLASH_ACROSS_DEG, NORMAL_DEG) };
             ways.iter().any(|&s| {
                 let e = c.edge * s;
-                within(across, e, SLASH_ACROSS_DEG) && within(-c.normal, e, NORMAL_DEG)
+                within(across, e, across_deg) && within(-c.normal, e, normal_deg)
             })
         }
         DMG_PIERCE => within(dir, c.along, PIERCE_DEG) && within(-c.normal, c.along, NORMAL_DEG),
@@ -146,7 +152,7 @@ pub fn judge(c: &Contact) -> Option<(f32, u32)> {
     } else {
         return None;
     };
-    let min = min_speed(kind, c.material);
+    let min = if clean && c.flags & DMGF_AXE != 0 { AXE_MIN_SPEED } else { min_speed(kind, c.material) };
     if speed < min {
         return None;
     }
@@ -159,6 +165,31 @@ pub fn judge(c: &Contact) -> Option<(f32, u32)> {
         flags |= CEF_PENETRATED;
     }
     Some((strength, flags))
+}
+
+/// A capsule `a`..`b` of `radius` as the box around it (12 triangles), for drawing.
+fn capsule_box(a: Vec3, b: Vec3, radius: f32, color: [f32; 3], out: &mut Vec<([Vec3; 3], [f32; 3])>) {
+    let axis = (b - a).normalize_or(Vec3::Y);
+    let (u, v) = (axis.any_orthonormal_vector() * radius, axis.cross(axis.any_orthonormal_vector()) * radius);
+    let (a, b) = (a - axis * radius, b + axis * radius);
+    let corner = |end: Vec3, i: i32, j: i32| end + u * i as f32 + v * j as f32;
+    let ring = |end: Vec3| [corner(end, -1, -1), corner(end, 1, -1), corner(end, 1, 1), corner(end, -1, 1)];
+    let (ra, rb) = (ring(a), ring(b));
+    for k in 0..4 {
+        let m = (k + 1) % 4;
+        out.push(([ra[k], ra[m], rb[m]], color));
+        out.push(([ra[k], rb[m], rb[k]], color));
+    }
+    out.push(([ra[0], ra[2], ra[1]], color));
+    out.push(([ra[0], ra[3], ra[2]], color));
+    out.push(([rb[0], rb[1], rb[2]], color));
+    out.push(([rb[0], rb[2], rb[3]], color));
+}
+
+/// Testing (`RUSTVR_DEBUG_COMBAT=1`): every contact is logged with how it was judged.
+fn debug_combat() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RUSTVR_DEBUG_COMBAT").is_ok_and(|v| v == "1"))
 }
 
 /// The closest points between segments `p0..p1` and `q0..q1`: (s, t) along each, 0..1.
@@ -241,6 +272,10 @@ pub struct Combat {
     prev: HashMap<u32, Vec<[Vec3; SAMPLES]>>,
     /// Each body part's centre last frame, by (actor, part index).
     prev_parts: HashMap<(u32, usize), Vec3>,
+    /// The damagers in a creature last frame (actor, object, damager): judged as they went in, not
+    /// again until they've come out.
+    touching: std::collections::HashSet<(u32, u32, usize)>,
+    touching_now: std::collections::HashSet<(u32, u32, usize)>,
     hit_until: HashMap<(u32, u32), f64>,
     block_until: HashMap<u32, f64>,
     casters: [Caster; 2],
@@ -257,6 +292,8 @@ impl Default for Combat {
             spells: bytemuck::zeroed_box(),
             prev: HashMap::new(),
             prev_parts: HashMap::new(),
+            touching: Default::default(),
+            touching_now: Default::default(),
             hit_until: HashMap::new(),
             block_until: HashMap::new(),
             casters: Default::default(),
@@ -288,6 +325,39 @@ struct Body<'a> {
 }
 
 impl Combat {
+    /// Testing (`RUSTVR_DEBUG_COMBAT=1`): what's judged, as world-space triangles with colours:
+    /// every creature's body parts (green; red while it attacks, and its blade yellow), and each
+    /// held weapon's damagers where they were last judged (edges orange, points magenta, blunt
+    /// heads cyan, guards blue).
+    pub fn debug_shapes(&self, out: &mut Vec<([Vec3; 3], [f32; 3])>) {
+        let n = (self.actors.count as usize).min(MAX_ACTORS);
+        for a in &self.actors.actors[..n] {
+            let attacking = a.flags & ACT_ATTACKING != 0;
+            for p in &a.parts[..(a.count as usize).min(MAX_ACTOR_PARTS)] {
+                let c = if attacking { [0.9, 0.2, 0.2] } else { [0.2, 0.9, 0.3] };
+                capsule_box(Vec3::from_array(p.a), Vec3::from_array(p.b), p.radius, c, out);
+            }
+            if attacking {
+                capsule_box(Vec3::from_array(a.weapon_a), Vec3::from_array(a.weapon_b), 0.02, [0.95, 0.9, 0.2], out);
+            }
+        }
+        for (id, points) in &self.prev {
+            let Some(desc) = self.melee_desc(*id) else { continue };
+            for (d, p) in desc.damagers[..(desc.count as usize).min(MAX_DAMAGERS)].iter().zip(points) {
+                let c = if d.flags & DMGF_GUARD != 0 {
+                    [0.2, 0.4, 1.0]
+                } else {
+                    match d.kind {
+                        DMG_SLASH => [1.0, 0.55, 0.1],
+                        DMG_PIERCE => [1.0, 0.2, 0.9],
+                        _ => [0.2, 0.9, 0.95],
+                    }
+                };
+                capsule_box(p[0], p[SAMPLES - 1], d.radius.max(0.008), c, out);
+            }
+        }
+    }
+
     /// The tables the game wrote (reads the link once a frame; what's unchanged stays).
     #[cfg(windows)]
     pub fn read(&mut self, link: &rustvr_protocol::link::Link) {
@@ -359,7 +429,7 @@ impl Combat {
                         }
                         let frame = (wq * Vec3::from_array(d.b) - wq * Vec3::from_array(d.a)).normalize_or_zero();
                         let edge = (wq * Vec3::from_array(d.edge)).normalize_or_zero();
-                        self.sweep(inp, &bodies, h, id, d.kind, d.flags, d.radius, frame, edge, &prev[di], &now[di], dt, &mut events);
+                        self.sweep(inp, &bodies, h, id, di, d.kind, d.flags, d.radius, frame, edge, &prev[di], &now[di], dt, &mut events);
                     }
                     self.blocks(inp, h, id, &desc, &prev, &now, dt, &mut events);
                 }
@@ -376,12 +446,13 @@ impl Combat {
                     && let Some(prev) = self.prev.get(&key).cloned()
                 {
                     let along = inp.map.rot(hq) * Vec3::Y;
-                    self.sweep(inp, &bodies, h, 0, DMG_PUNCH, 0, FIST_RADIUS, along, along, &prev[0], &now[0], dt, &mut events);
+                    self.sweep(inp, &bodies, h, 0, h, DMG_PUNCH, 0, FIST_RADIUS, along, along, &prev[0], &now[0], dt, &mut events);
                 }
                 seen.insert(key, now.to_vec());
             }
         }
         self.prev = seen;
+        self.touching = std::mem::take(&mut self.touching_now);
         self.magic(inp, &bodies, &mut events);
         self.hit_until.retain(|_, &mut t| t > inp.now);
         self.block_until.retain(|_, &mut t| t > inp.now);
@@ -390,21 +461,33 @@ impl Combat {
 
     /// One damager's sweep (its sample points from `prev` to `now`) against every body.
     #[allow(clippy::too_many_arguments)]
-    fn sweep(&mut self, inp: &CombatInput, bodies: &[Body], hand: usize, object: u32, kind: u32, flags: u32, radius: f32, along: Vec3, edge: Vec3, prev: &[Vec3; SAMPLES], now: &[Vec3; SAMPLES], dt: f32, events: &mut Vec<CombatEvent>) {
-        // The earliest contact of any sample with any body.
+    fn sweep(&mut self, inp: &CombatInput, bodies: &[Body], hand: usize, object: u32, damager: usize, kind: u32, flags: u32, radius: f32, along: Vec3, edge: Vec3, prev: &[Vec3; SAMPLES], now: &[Vec3; SAMPLES], dt: f32, events: &mut Vec<CombatEvent>) {
+        // The earliest contact of any sample with any body (a creature it's still in from last
+        // frame is no new contact: it stays in, unjudged).
         let mut best: Option<(f32, usize, Vec3, Vec3, Vec3)> = None;
         for body in bodies {
             let key = (body.actor.id, object);
-            if self.hit_until.get(&key).is_some_and(|&t| t > inp.now) {
-                continue;
-            }
             let (a, b) = (Vec3::from_array(body.part.a), Vec3::from_array(body.part.b));
             let reach = body.part.radius + radius;
-            for k in 0..SAMPLES {
+            let contact = |k: usize| {
                 let (s, t) = closest_segments(prev[k], now[k], a, b);
                 let p = prev[k].lerp(now[k], s);
                 let on_axis = a.lerp(b, t);
-                if p.distance(on_axis) <= reach && best.is_none_or(|(bs, ..)| s < bs) {
+                (s, p, on_axis, p.distance(on_axis) <= reach)
+            };
+            let entry = (body.actor.id, object, damager);
+            if self.touching.contains(&entry) {
+                if (0..SAMPLES).any(|k| contact(k).3) {
+                    self.touching_now.insert(entry);
+                }
+                continue;
+            }
+            if self.hit_until.get(&key).is_some_and(|&t| t > inp.now) {
+                continue;
+            }
+            for k in 0..SAMPLES {
+                let (s, p, on_axis, touches) = contact(k);
+                if touches && best.is_none_or(|(bs, ..)| s < bs) {
                     let vel = (now[k] - prev[k]) / dt - body.vel;
                     let normal = (p - on_axis).normalize_or(-vel.normalize_or_zero());
                     best = Some((s, bodies.iter().position(|x| std::ptr::eq(x, body)).unwrap(), p, vel, normal));
@@ -413,8 +496,25 @@ impl Combat {
         }
         let Some((_, bi, point, vel, normal)) = best else { return };
         let body = &bodies[bi];
+        self.touching_now.insert((body.actor.id, object, damager));
         let contact = Contact { kind, flags, along, edge, vel, normal, material: body.part.material };
-        let Some((strength, cef)) = judge(&contact) else { return };
+        let judged = judge(&contact);
+        if debug_combat() {
+            let dir = vel.normalize_or_zero();
+            let across = (dir - along * dir.dot(along)).normalize_or_zero();
+            let deg = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
+            tracing::info!(
+                "combat: contact kind {kind} with {:#x} part {} ({}): {:.1} m/s, across the blade vs its edge {:.0} deg, into the surface vs the edge {:.0} deg, along the blade vs the way it moves {:.0} deg -> {judged:?}",
+                body.actor.id,
+                body.index,
+                body.part.kind,
+                vel.length(),
+                deg(across, edge),
+                deg(-normal, edge),
+                deg(dir, along)
+            );
+        }
+        let Some((strength, cef)) = judged else { return };
         self.hit_until.insert((body.actor.id, object), inp.now + HIT_COOLDOWN);
         let ev = CombatEvent {
             kind: CE_HIT,
