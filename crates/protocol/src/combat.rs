@@ -47,6 +47,14 @@ pub const MAT_BONE: u32 = 4;
 pub const MAT_WOOD: u32 = 5;
 pub const MAT_STONE: u32 = 6;
 pub const MAT_ETHEREAL: u32 = 7;
+/// The ground: dirt, grass, snow.
+pub const MAT_EARTH: u32 = 8;
+
+/// A blade bites into it and sticks (wood, earth, flesh and what's worn over it but metal), not
+/// glancing off (stone, metal, bone).
+pub fn biteable(material: u32) -> bool {
+    matches!(material, MAT_FLESH | MAT_LEATHER | MAT_WOOD | MAT_EARTH)
+}
 
 /// One capsule of a creature's body: from `a` to `b`, `radius` thick.
 #[repr(C)]

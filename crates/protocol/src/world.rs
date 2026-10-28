@@ -421,6 +421,10 @@ pub const OBJF_HANGING: u32 = 1 << 9;
 /// With [`OBJF_GAME_SIMULATED`]: the game moves it itself (a kinematic body: a character, a door,
 /// a cable it animates), so nobody takes or pushes it; it's followed and shown.
 pub const OBJF_GAME_MOVED: u32 = 1 << 10;
+/// Something to take (one of the game's things lying about): let go of in any of the body's slots
+/// (whatever's there, however big it is), it's stowed: [`OS_STOWED`], out of the hands and not
+/// drawn, for the game to take into the player's inventory (and drop from the table).
+pub const OBJF_LOOT: u32 = 1 << 11;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 
@@ -662,6 +666,8 @@ pub const OS_ACTION_OPEN: u32 = 1 << 15;
 pub const OS_RUNTIME_DRAWN: u32 = 1 << 16;
 /// See [`OS_RUNTIME_DRAWN`].
 pub const RUNTIME_DRAW_TAIL: f32 = 0.15;
+/// A thing to take ([`OBJF_LOOT`]) put in a body slot (`slot`): the game takes it.
+pub const OS_STOWED: u32 = 1 << 17;
 
 pub const SLOT_HIP_RIGHT: u32 = 0;
 pub const SLOT_HIP_LEFT: u32 = 1;
@@ -870,6 +876,9 @@ pub const COL_CLEAR: u32 = 1;
 pub const COL_MESH: u32 = 2;
 /// [`ColBox`]: replaces (or adds) box `id`.
 pub const COL_BOX: u32 = 3;
+/// [`ColMesh`] + `count` bytes: each triangle's material (`MAT_*`, [`crate::combat`]), in the order
+/// of mesh `id`'s triangles as last sent (after its [`COL_MESH`]). What a blade can bite into.
+pub const COL_MESH_MATERIALS: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]

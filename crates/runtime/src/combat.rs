@@ -16,7 +16,10 @@
 //! A blade at a bad angle is a weak, glancing blunt hit. The speed sets the strength, and fast
 //! enough is a power hit (the game's stagger). Each creature takes one hit per swing from each
 //! weapon, and a blade is judged as it meets the creature: one that went in too slowly or at a bad
-//! angle doesn't hit later from inside it, only once it has come out and meets it again. An empty fist punches. The player's weapon meeting a creature's attacking weapon is a
+//! angle doesn't hit later from inside it, only once it has come out and meets it again.
+//!
+//! A hard chop of an axe's edge, or a stab of a point, stays in what it went into (a creature, or
+//! the world's wood and earth): [`Combat::embeds`], held there by the rig (`rig::embed`). An empty fist punches. The player's weapon meeting a creature's attacking weapon is a
 //! block, and a parry when it's moving into it.
 //!
 //! **Magic**: the off hand, empty, is the spell hand while the game has a spell ready. Holding its
@@ -36,6 +39,7 @@ use glam::{Quat, Vec3};
 use rustvr_protocol::*;
 
 use crate::backend::HmdFrame;
+use crate::rig::embed;
 use crate::rig::{Rig, RigOutput, WorldMap};
 
 /// Each damager is followed at this many points along it.
@@ -282,6 +286,8 @@ pub struct Combat {
     pub pulses: Vec<Pulse>,
     pub charging: [Option<Charging>; 2],
     pub debug: CombatDebug,
+    /// Blades that went in and stay in, this frame (for the rig).
+    pub embeds: Vec<embed::Request>,
 }
 
 impl Default for Combat {
@@ -300,6 +306,7 @@ impl Default for Combat {
             pulses: Vec::new(),
             charging: [None, None],
             debug: CombatDebug::default(),
+            embeds: Vec::new(),
         }
     }
 }
@@ -358,6 +365,15 @@ impl Combat {
         }
     }
 
+    /// Every creature's body parts (world): ((actor, part index), (a, b)).
+    pub fn actor_parts(&self) -> Vec<((u32, usize), (Vec3, Vec3))> {
+        let n = (self.actors.count as usize).min(MAX_ACTORS);
+        self.actors.actors[..n]
+            .iter()
+            .flat_map(|a| a.parts[..(a.count as usize).min(MAX_ACTOR_PARTS)].iter().enumerate().map(move |(i, p)| ((a.id, i), (Vec3::from_array(p.a), Vec3::from_array(p.b)))))
+            .collect()
+    }
+
     /// The tables the game wrote (reads the link once a frame; what's unchanged stays).
     #[cfg(windows)]
     pub fn read(&mut self, link: &rustvr_protocol::link::Link) {
@@ -391,6 +407,7 @@ impl Combat {
     /// One frame: hits, blocks and casts (each returned for the game, and counted).
     pub fn update(&mut self, inp: &CombatInput) -> Vec<CombatEvent> {
         self.pulses.clear();
+        self.embeds.clear();
         let mut events = Vec::new();
         let dt = inp.dt.max(1e-4);
         // The bodies, with how fast each part moves.
@@ -429,7 +446,34 @@ impl Combat {
                         }
                         let frame = (wq * Vec3::from_array(d.b) - wq * Vec3::from_array(d.a)).normalize_or_zero();
                         let edge = (wq * Vec3::from_array(d.edge)).normalize_or_zero();
-                        self.sweep(inp, &bodies, h, id, di, d.kind, d.flags, d.radius, frame, edge, &prev[di], &now[di], dt, &mut events);
+                        let hit = self.sweep(inp, &bodies, h, id, di, d.kind, d.flags, d.radius, frame, edge, &prev[di], &now[di], dt, &mut events);
+                        // An axe's edge chopping in, or a point stabbing in, hard enough: it stays.
+                        let stab = d.kind == DMG_PIERCE;
+                        let chop = d.kind == DMG_SLASH && d.flags & DMGF_AXE != 0;
+                        if !(stab || chop) || self.embeds.iter().any(|e| e.object == id) {
+                            continue;
+                        }
+                        let (way, speed_needed, depth, max_depth) = if stab {
+                            (frame, embed::STAB_SPEED, (d.depth * 0.5).max(0.03), if d.depth > 0.0 { d.depth } else { embed::STAB_MAX_DEPTH })
+                        } else {
+                            (edge, embed::AXE_SPEED, embed::AXE_DEPTH, embed::AXE_MAX_DEPTH)
+                        };
+                        let local = |p: Vec3| {
+                            // The point of the damager nearest where it met.
+                            let (a, b) = (Vec3::from_array(d.a), Vec3::from_array(d.b));
+                            let l = wq.inverse() * (p - wp);
+                            let t = if (b - a).length_squared() > 1e-9 { ((l - a).dot(b - a) / (b - a).length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+                            a.lerp(b, t)
+                        };
+                        if let Some((actor, part, point, vel, material)) = hit {
+                            if vel.length() >= speed_needed && biteable(material) {
+                                self.embeds.push(embed::Request { object: id, into: embed::Into::Actor { id: actor, part }, point, dir: way, sample: local(point), depth, max_depth });
+                            }
+                            continue;
+                        }
+                        if let Some((point, _)) = self.bite_world(inp, d.kind, d.flags, frame, edge, &prev[di], &now[di], dt, speed_needed) {
+                            self.embeds.push(embed::Request { object: id, into: embed::Into::World, point, dir: way, sample: local(point), depth, max_depth });
+                        }
                     }
                     self.blocks(inp, h, id, &desc, &prev, &now, dt, &mut events);
                 }
@@ -461,7 +505,8 @@ impl Combat {
 
     /// One damager's sweep (its sample points from `prev` to `now`) against every body.
     #[allow(clippy::too_many_arguments)]
-    fn sweep(&mut self, inp: &CombatInput, bodies: &[Body], hand: usize, object: u32, damager: usize, kind: u32, flags: u32, radius: f32, along: Vec3, edge: Vec3, prev: &[Vec3; SAMPLES], now: &[Vec3; SAMPLES], dt: f32, events: &mut Vec<CombatEvent>) {
+    /// A clean hit: (actor, part index, where, the impact velocity, the part's material).
+    fn sweep(&mut self, inp: &CombatInput, bodies: &[Body], hand: usize, object: u32, damager: usize, kind: u32, flags: u32, radius: f32, along: Vec3, edge: Vec3, prev: &[Vec3; SAMPLES], now: &[Vec3; SAMPLES], dt: f32, events: &mut Vec<CombatEvent>) -> Option<(u32, usize, Vec3, Vec3, u32)> {
         // The earliest contact of any sample with any body (a creature it's still in from last
         // frame is no new contact: it stays in, unjudged).
         let mut best: Option<(f32, usize, Vec3, Vec3, Vec3)> = None;
@@ -494,7 +539,7 @@ impl Combat {
                 }
             }
         }
-        let Some((_, bi, point, vel, normal)) = best else { return };
+        let (_, bi, point, vel, normal) = best?;
         let body = &bodies[bi];
         self.touching_now.insert((body.actor.id, object, damager));
         let contact = Contact { kind, flags, along, edge, vel, normal, material: body.part.material };
@@ -514,7 +559,7 @@ impl Combat {
                 deg(dir, along)
             );
         }
-        let Some((strength, cef)) = judged else { return };
+        let (strength, cef) = judged?;
         self.hit_until.insert((body.actor.id, object), inp.now + HIT_COOLDOWN);
         let ev = CombatEvent {
             kind: CE_HIT,
@@ -531,11 +576,41 @@ impl Combat {
             dir: vel.normalize_or_zero().to_array(),
             ..Default::default()
         };
-        let _ = body.index;
         self.debug.hits += 1;
         self.debug.last = Some(ev);
         self.pulses.push(Pulse { hand, seconds: 0.05 + 0.07 * strength.min(1.0), frequency: 110.0, amplitude: (0.35 + 0.55 * strength).min(1.0) });
         events.push(ev);
+        (cef & CEF_GLANCING == 0).then_some((body.actor.id, body.index, point, vel, body.part.material))
+    }
+
+    /// A damager's sweep against the world's static collision: where it chopped (an axe's edge,
+    /// leading, into the surface: the axe's angle limits) or stabbed (along the blade) into
+    /// something it bites, at least `speed` fast: (where, its material).
+    #[allow(clippy::too_many_arguments)]
+    fn bite_world(&self, inp: &CombatInput, kind: u32, flags: u32, along: Vec3, edge: Vec3, prev: &[Vec3; SAMPLES], now: &[Vec3; SAMPLES], dt: f32, speed: f32) -> Option<(Vec3, u32)> {
+        let within = |a: Vec3, b: Vec3, deg: f32| a.dot(b) >= deg.to_radians().cos();
+        for k in 0..SAMPLES {
+            let way = now[k] - prev[k];
+            let len = way.length();
+            if len < 1e-4 || len / dt < speed {
+                continue;
+            }
+            let Some(hit) = inp.rig.world_hit(prev[k], way, len) else { continue };
+            let dir = way / len;
+            let material = hit.material?;
+            if !biteable(material) {
+                return None;
+            }
+            let clean = if kind == DMG_PIERCE {
+                within(dir, along, PIERCE_DEG) && within(-hit.normal, along, NORMAL_DEG)
+            } else {
+                let across = (dir - along * dir.dot(along)).normalize_or_zero();
+                let (across_deg, normal_deg) = if flags & DMGF_AXE != 0 { (AXE_ACROSS_DEG, AXE_NORMAL_DEG) } else { (SLASH_ACROSS_DEG, NORMAL_DEG) };
+                within(across, edge, across_deg) && within(-hit.normal, edge, normal_deg)
+            };
+            return clean.then_some((prev[k] + dir * hit.distance, material));
+        }
+        None
     }
 
     /// The weapon meeting a creature's attacking weapon, or put across the blow's way to the

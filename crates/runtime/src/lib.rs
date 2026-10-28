@@ -13,6 +13,7 @@ pub mod mechanics;
 pub mod menu;
 pub mod held_objects;
 pub mod hud;
+pub mod item_card;
 pub mod panels;
 pub mod physics_view;
 pub mod rig;

@@ -2488,3 +2488,37 @@ fn letting_go_of_a_valve_far_from_the_controller_glides_the_hand_back_at_a_hands
     s.step((time * 0.6 / DT) as usize + 2);
     assert!(v3(s.out.hands[1].pose.pos).distance(controller) < 0.01, "back with the controller");
 }
+
+#[test]
+fn a_thing_to_take_is_stowed_in_any_slot_even_a_full_one() {
+    let mut loot = obj(BOTTLE, OBJ_PROP, Vec3::new(0.0, 0.9, 0.5), [0.03, 0.1, 0.03], 0.5);
+    loot.flags |= OBJF_LOOT | OBJF_HOLSTERABLE | OBJF_PULLABLE;
+    let mut s = Sim::with(&[]);
+    s.table.descs[0] = loot;
+    s.table.seq += 1;
+    s.rig.sync(&s.table);
+    s.step(20);
+    // The pistol on the right hip first.
+    s.move_hand(1, s.pos(PISTOL) + Vec3::new(0.0, 0.12, 0.0), 40);
+    s.grip(1, 1.0);
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.2), 20);
+    s.move_hand(1, Vec3::new(0.21, 1.16, 0.04), 30);
+    s.grip(1, 0.0);
+    assert_eq!(s.rig.holstered(SLOT_HIP_RIGHT), Some(PISTOL));
+    s.move_hand(1, Vec3::new(0.2, 1.1, 0.2), 20);
+    // The bottle into the same, full, slot: stowed (the pistol stays).
+    s.take(1, BOTTLE);
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.2), 20);
+    s.move_hand(1, Vec3::new(0.21, 1.16, 0.04), 30);
+    s.grip(1, 0.0);
+    let st = s.state(BOTTLE);
+    assert!(st.flags & OS_STOWED != 0 && st.slot == SLOT_HIP_RIGHT, "stowed: {:#x} slot {}", st.flags, st.slot);
+    assert!(st.flags & (OS_HELD_LEFT | OS_HELD_RIGHT | OS_HOLSTERED | OS_RUNTIME_DRAWN) == 0);
+    assert_eq!(s.rig.holstered(SLOT_HIP_RIGHT), Some(PISTOL), "the pistol is still there");
+    assert_eq!(s.rig.debug.stowed, 1);
+    // It doesn't fall or come back to a hand.
+    let at = s.pos(BOTTLE);
+    s.step(60);
+    assert!(s.pos(BOTTLE).distance(at) < 1e-3);
+    assert_eq!(s.rig.held(1), None);
+}

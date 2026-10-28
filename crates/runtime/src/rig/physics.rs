@@ -58,9 +58,20 @@ pub fn groups_none() -> InteractionGroups {
     InteractionGroups::new(Group::NONE, Group::NONE, InteractionTestMode::And)
 }
 
+/// Where a ray met the static world.
+#[derive(Clone, Copy, Debug)]
+pub struct WorldHit {
+    pub distance: f32,
+    pub normal: V3,
+    /// The triangle's material (`MAT_*`) when the game gave its meshes theirs.
+    pub material: Option<u32>,
+}
+
 pub struct Physics {
     pub world: PhysicsWorld,
     meshes: HashMap<u32, (RigidBodyHandle, ColliderHandle)>,
+    /// Each mesh's triangles' materials (`COL_MESH_MATERIALS`).
+    materials: HashMap<u32, Vec<u8>>,
     boxes: HashMap<u32, (RigidBodyHandle, ColliderHandle)>,
     /// Number of static triangles loaded (diagnostics).
     pub triangles: usize,
@@ -70,7 +81,7 @@ impl Default for Physics {
     fn default() -> Self {
         let mut world = PhysicsWorld::new();
         world.gravity = Vector::new(0.0, -9.81, 0.0);
-        Physics { world, meshes: HashMap::new(), boxes: HashMap::new(), triangles: 0 }
+        Physics { world, meshes: HashMap::new(), materials: HashMap::new(), boxes: HashMap::new(), triangles: 0 }
     }
 }
 
@@ -91,7 +102,13 @@ impl Physics {
                 for (_, (b, _)) in self.meshes.drain().chain(self.boxes.drain()) {
                     self.world.remove_body_with_colliders(b, true);
                 }
+                self.materials.clear();
                 self.triangles = 0;
+            }
+            COL_MESH_MATERIALS if payload.len() >= size_of::<ColMesh>() => {
+                let head: ColMesh = bytemuck::pod_read_unaligned(&payload[..size_of::<ColMesh>()]);
+                let m = &payload[size_of::<ColMesh>()..];
+                self.materials.insert(head.id, m[..(head.count as usize).min(m.len())].to_vec());
             }
             COL_MESH if payload.len() >= size_of::<ColMesh>() => {
                 let head: ColMesh = bytemuck::pod_read_unaligned(&payload[..size_of::<ColMesh>()]);
@@ -100,6 +117,8 @@ impl Physics {
                 if let Some((b, _)) = self.meshes.remove(&head.id) {
                     self.world.remove_body_with_colliders(b, true);
                 }
+                // (Its materials come after it, if the game has them.)
+                self.materials.remove(&head.id);
                 if count == 0 {
                     return;
                 }
@@ -423,6 +442,18 @@ impl Physics {
         let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
         let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD | G_OBJECT, InteractionTestMode::And)).exclude_collider(skip);
         self.world.cast_ray_and_get_normal(&ray, max, true, filter).map(|(c, hit)| (hit.time_of_impact, c, from_v(hit.normal)))
+    }
+
+    /// First static-world hit along a ray: how far, its surface, and what it's made of.
+    pub fn world_hit(&self, origin: V3, dir: V3, max: f32) -> Option<WorldHit> {
+        let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
+        let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD, InteractionTestMode::And));
+        let (c, hit) = self.world.cast_ray_and_get_normal(&ray, max, true, filter)?;
+        let material = match hit.feature {
+            FeatureId::Face(i) => self.meshes.iter().find(|(_, (_, h))| *h == c).and_then(|(id, _)| self.materials.get(id)).and_then(|m| m.get(i as usize)).map(|&m| m as u32),
+            _ => None,
+        };
+        Some(WorldHit { distance: hit.time_of_impact, normal: from_v(hit.normal), material })
     }
 
     /// The collider belongs to the static world.

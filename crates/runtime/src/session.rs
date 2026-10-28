@@ -100,6 +100,9 @@ pub struct Session {
     /// The rig ran this step (there's a physics world to show).
     rig_active_last: bool,
     menu: RuntimeMenu,
+    /// The card beside a thing in the hand, and this frame's place for it (and how strongly).
+    item_card: crate::item_card::ItemCard,
+    card: Option<(panels::Panel, f32)>,
     layout: panels::Layout,
     targets: Option<SharedTargets>,
     generation: u32,
@@ -227,6 +230,8 @@ impl Session {
             physics_tris: Vec::new(),
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
+            item_card: crate::item_card::ItemCard::new(&gpu)?,
+            card: None,
             gpu,
             link,
             sec: Security::for_this_user(),
@@ -610,10 +615,14 @@ impl Session {
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
             }
             self.rig.write_states(&mut self.states);
+            // What the thing in a hand is, on a card beside it.
+            self.item_card.read(&self.link);
+            self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
             // The body the game makes up, when it changes.
             self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
             self.combat.read(&self.link);
+            self.rig.set_actor_parts(self.combat.actor_parts());
             let combat = self.combat.update(&crate::combat::CombatInput {
                 rig: &self.rig,
                 out: &self.rig_out,
@@ -626,6 +635,10 @@ impl Session {
             });
             for ev in &combat {
                 self.link.push_combat_event(ev);
+            }
+            // Blades that went in and stay in.
+            for r in std::mem::take(&mut self.combat.embeds) {
+                self.rig.embed(&r);
             }
             for p in &self.combat.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
@@ -641,6 +654,7 @@ impl Session {
             self.held_objects.update(&self.objects, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
             self.held_objects.clear();
+            self.card = None;
         }
         if let (true, Some(a)) = (self.opts.offline_audio && !self.opts.audio, &self.audio) {
             a.render((frame.dt.clamp(0.0, 0.1) * OFFLINE_RATE as f32).round() as usize);
@@ -1106,6 +1120,9 @@ impl Session {
             }
         if !hud_shown {
             self.hud.reset();
+        }
+        if let Some((p, opacity)) = self.card.filter(|_| !menu_mode) {
+            layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, self.item_card.srv()) });
         }
         if let Some(p) = layout.runtime_menu {
             layers.panels.push(PanelLayer::whole(p, self.menu.srv()));

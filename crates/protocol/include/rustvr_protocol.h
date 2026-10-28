@@ -362,6 +362,11 @@
 #define RVR_MAT_ETHEREAL 7
 
 /**
+ * The ground: dirt, grass, snow.
+ */
+#define RVR_MAT_EARTH 8
+
+/**
  * Alive (hits on a dead body still count, as a corpse).
  */
 #define RVR_ACT_ALIVE (1 << 0)
@@ -564,6 +569,22 @@
  */
 #define RVR_HUDL_ADDITIVE (1 << 1)
 
+#define RVR_MAX_ITEM_INFOS 48
+
+#define RVR_MAX_ITEM_STATS 6
+
+/**
+ * Taking it is stealing: someone else owns it (the game's red hand).
+ */
+#define RVR_ITEM_STOLEN (1 << 0)
+
+#define RVR_ITEM_ENCHANTED (1 << 1)
+
+/**
+ * A quest needs it.
+ */
+#define RVR_ITEM_QUEST (1 << 2)
+
 /**
  * The [`SoundPack`] region.
  */
@@ -742,6 +763,13 @@
  * a cable it animates), so nobody takes or pushes it; it's followed and shown.
  */
 #define RVR_OBJF_GAME_MOVED (1 << 10)
+
+/**
+ * Something to take (one of the game's things lying about): let go of in any of the body's slots
+ * (whatever's there, however big it is), it's stowed: [`OS_STOWED`], out of the hands and not
+ * drawn, for the game to take into the player's inventory (and drop from the table).
+ */
+#define RVR_OBJF_LOOT (1 << 11)
 
 /**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
@@ -998,6 +1026,11 @@
  */
 #define RVR_RUNTIME_DRAW_TAIL 0.15
 
+/**
+ * A thing to take ([`OBJF_LOOT`]) put in a body slot (`slot`): the game takes it.
+ */
+#define RVR_OS_STOWED (1 << 17)
+
 #define RVR_SLOT_HIP_RIGHT 0
 
 #define RVR_SLOT_HIP_LEFT 1
@@ -1107,6 +1140,12 @@
  * [`ColBox`]: replaces (or adds) box `id`.
  */
 #define RVR_COL_BOX 3
+
+/**
+ * [`ColMesh`] + `count` bytes: each triangle's material (`MAT_*`, [`crate::combat`]), in the order
+ * of mesh `id`'s triangles as last sent (after its [`COL_MESH`]). What a blade can bite into.
+ */
+#define RVR_COL_MESH_MATERIALS 4
 
 /**
  * The region (after the HUD layout's place before it grew the mapping).

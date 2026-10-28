@@ -328,6 +328,13 @@ impl Link {
     pub fn read_avatar_into(&self, out: &mut AvatarDesc) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_AVATAR), out) }
     }
+    /// Adapter: what the things it offers are ([`ItemInfos`]).
+    pub fn write_item_infos(&self, v: &ItemInfos) {
+        unsafe { seq_write(self.base.add(OFF_ITEM_INFO), v) }
+    }
+    pub fn read_item_infos_into(&self, out: &mut ItemInfos) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_ITEM_INFO), out) }
+    }
     /// Runtime: a melee hit, block or cast for the game.
     pub fn push_combat_event(&self, ev: &CombatEvent) {
         let written = self.u64_at(OFF_COMBAT_EVENTS + offset_of!(CombatEvents, written));
