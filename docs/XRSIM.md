@@ -178,46 +178,19 @@ says so.
 Performance is measured only roughly. The frame rate in `status.toml` is real, but there is no
 GPU-timed compositor.
 
-## Metro 2033 Redux
+## Games
 
-`tools\xrsim_metro.ps1 -Script <script.toml> [-Out <dir>] [-NoBuild]` does the whole run:
-
-1. builds the adapter, the runtime and the emulator;
-2. closes Metro gracefully and installs the adapter;
-3. runs `rustvr-play` on the emulated headset and starts Metro through Steam;
-4. waits for the script to end;
-5. copies the runtime's and the adapter's logs into `<dir>` (default `captures\xrsim`).
-
-Environment variables pass through to the runtime. Put `background = true` in the game folder's
-`rustvr-metro.toml` so that Metro doesn't take focus or show its window while you work.
-
-There are two scripts.
-
-**`tools\xrsim\metro_hands.toml`** presses A through the intros and the main menu into the first
-level. It then captures the runtime's hands in Metro's world in three poses:
-
-| Capture | Hands |
-|---|---|
-| `hands_down` | At the hips |
-| `hands_out` | Stretched out in front |
-| `hands_apart` | Spread to the sides |
-
-The hands must follow the controllers, and Metro's own arms and gun must not show.
-
-**`tools\xrsim\metro_smoke.toml`** also presses through the menus, then turns the head right and
-left and opens and closes the pause menu. It captures each step:
-
-| Captures | Moment |
-|---|---|
-| `boot*` | The menus on their panel |
-| `turning_*`, `look_*` | The head turns |
-| `menu*` | The pause menu |
-| `resumed` | Back in the game |
+A game adapter's repository wraps a whole run in one script: it builds the adapter, the runtime and
+the emulator, installs the adapter in the game, runs `rustvr-play` on the emulated headset and
+starts the game, waits for the script to end and copies the runtime's and the adapter's logs.
+Metro 2033 Redux's is `tools\xrsim_metro.ps1` in its adapter's repository (chasms-vr-metro,
+`docs/XRSIM_METRO.md`).
 
 ## For AI agents
 
 1. Write a script that does what the player did, with a capture at each moment that matters.
-2. Run it. For Metro use `tools\xrsim_metro.ps1`; for other apps use `rustvr-xrsim run`. Use a
+2. Run it. For a game use its adapter's script (Metro: `tools\xrsim_metro.ps1`); for other apps
+   use `rustvr-xrsim run`. Use a
    background shell, because the run blocks until the script ends.
 3. Read the captures. Look at `<name>.png` before `_raw.png`, and check the `.toml` when the picture
    looks shifted.

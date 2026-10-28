@@ -1,8 +1,9 @@
 //! The cache format the test range loads its guns, hands and bodies from.
 //!
-//! Extractors (such as `metro-assets`) read a game's own archives and write these files into
-//! `local_assets/` at the repository root. That folder is git-ignored: the files come from games
-//! the user owns and are only for local testing. They are never committed or redistributed.
+//! Extractors (such as the Metro adapter's `metro-assets`) read a game's own archives and write
+//! these files into `local_assets/` at the repository root ([`repo_root`]). That folder is
+//! git-ignored: the files come from games the user owns and are only for local testing. They are
+//! never committed or redistributed.
 //!
 //! Layout of `local_assets/<game>/`:
 //!
@@ -224,13 +225,22 @@ pub struct Index {
     pub items: Vec<Item>,
 }
 
-/// The `local_assets/` folder at the repository root, or `RUSTVR_ASSETS` if set.
+/// The `local_assets/` folder at the repository root ([`repo_root`]), or `RUSTVR_ASSETS` if set.
 pub fn default_root() -> PathBuf {
     if let Some(p) = std::env::var_os("RUSTVR_ASSETS") {
         return PathBuf::from(p);
     }
-    // crates/asset -> repository root
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("local_assets")
+    repo_root().join("local_assets")
+}
+
+/// The repository this was built from, where `local_assets/` and `captures/` are: this one, or one
+/// that has it inside (a game adapter's, with this framework as its `framework/` submodule), the
+/// nearest that has a `local_assets/`.
+pub fn repo_root() -> PathBuf {
+    // crates/asset -> this repository's root
+    let own = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let own = own.canonicalize().unwrap_or(own);
+    own.ancestors().find(|d| d.join("local_assets").is_dir()).map(Path::to_path_buf).unwrap_or(own)
 }
 
 pub fn save_model(dir: &Path, key: &str, model: &Model) -> Result<()> {

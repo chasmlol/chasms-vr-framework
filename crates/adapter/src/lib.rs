@@ -523,12 +523,10 @@ impl Drop for Adapter {
 
 /// The sound pack an extractor wrote for `game` (`<local_assets>/<game>/sounds`, e.g. what
 /// `metro-extract` writes for `metro2033`), if it's there: for [`Adapter::set_sound_pack`].
-/// `local_assets` is `RUSTVR_ASSETS`, or the one in the repository this was built from.
+/// `local_assets` is `RUSTVR_ASSETS`, or the one in the repository this was built from
+/// ([`rustvr_asset::default_root`]).
 pub fn local_sound_pack(game: &str) -> Option<std::path::PathBuf> {
-    let root = std::env::var_os("RUSTVR_ASSETS")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("local_assets"));
-    let dir = root.join(game).join("sounds");
+    let dir = rustvr_asset::default_root().join(game).join("sounds");
     dir.join("sounds.toml").is_file().then_some(dir)
 }
 

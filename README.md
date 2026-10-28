@@ -1,8 +1,9 @@
-# RustVR
+# Chasms VR Framework
 
 One VR player experience that connects into any flat game.
 
-RustVR is a VR runtime written in Rust. It runs as its own process and owns everything about your body
+The Chasms VR Framework (RustVR in the code: its crates are `rustvr-*`) is a VR runtime written in
+Rust. It runs as its own process and owns everything about your body
 in VR: head, physics hands, a full body (IK), picking things up and throwing them, holsters, the ammo
 pouch over your shoulder, guns with real magazines, chambers and slides, two-handed aiming, aiming
 down sights, scopes, gravity gloves, interaction sounds and haptics, body gestures, melee, turning,
@@ -16,9 +17,8 @@ same, tested VR experience, and a new game only needs an adapter.
 > **Status: early.** The runtime, its player controller (physics hands, full body, physical guns),
 > the protocol, the adapter SDK and a test range work end to end and are tested headlessly; the
 > runtime has run on a Quest 3 through Virtual Desktop. Metro 2033 Redux runs in VR through its
-> adapter (stereo, the gun in your hand, the HUD placed for VR, Metro's own sounds; see
-> [docs/METRO.md](docs/METRO.md)), tested in the game with a simulated headset; it doesn't hand its
-> guns to the player controller yet.
+> adapter, which lives in its own repository (chasms-vr-metro) with this one as its `framework/`
+> submodule.
 
 See [docs/DESIGN.md](docs/DESIGN.md) for how it fits together.
 
@@ -32,8 +32,6 @@ See [docs/DESIGN.md](docs/DESIGN.md) for how it fits together.
 | `crates/gpu` | Direct3D 11 helpers: devices, shared textures, shaders, PNGs, egui painting |
 | `crates/range` | `rustvr-range.exe`: a fake game for testing (an empty range with targets and guns) |
 | `crates/xrsim` | `rustvr-xrsim`: an emulated headset (an OpenXR runtime) for playtesting any VR app without one ([docs/XRSIM.md](docs/XRSIM.md)) |
-| `crates/metro` | The Metro 2033 Redux adapter (`dinput8.dll`) |
-| `crates/metro-assets` | `metro-extract`: copies Metro's guns, hands, props and sounds from your install into `local_assets/` |
 | `crates/asset` | The format of `local_assets/` |
 | `crates/ik` | Full-body IK from the head and hands |
 | `crates/avatar` | Draws the player's body and hands: over the game's picture, or inside the game's frame by its adapter |
@@ -69,17 +67,15 @@ Each scenario saves what the headset would have shown into `captures/<scenario>/
 
 To playtest a real VR app without a headset, run it on the emulated headset. This covers the
 runtime's real OpenXR path, or a game through it. A script moves the head and controllers, and the
-emulator saves what each eye would see. See [docs/XRSIM.md](docs/XRSIM.md); for Metro, use
-`tools\xrsim_metro.ps1`.
+emulator saves what each eye would see. See [docs/XRSIM.md](docs/XRSIM.md); a game adapter's
+repository has a script that does a whole run in its game.
 
-To use Metro 2033's own guns in the range (optional; you need the game installed):
-
-```bat
-target\debug\metro-extract
-```
-
-This reads your install and writes into `local_assets/`, which is git-ignored. Never commit or share
-those files: they're the game's. It includes a sound pack (`local_assets/metro2033/sounds`): the range
+To use Metro 2033's own guns in the range (optional; you need the game installed), run
+`metro-extract` from the Metro adapter's repository. It reads your install and writes into
+`local_assets/`, which is git-ignored. `local_assets/` is at the repository root, or in a folder
+above it: in a game adapter's repository, which has this one as its `framework/` submodule, the
+adapter's own. Never commit or share
+those files: they're the game's. They include a sound pack (`local_assets/metro2033/sounds`): the range
 hands it to the runtime, which then plays Metro's own sounds (each gun's shots and their echo,
 its reload, the casings landing, grabs and holsters, the bombs lit, thrown and going off, the
 throwing knife's flight and hit) instead of its synthesised ones.
@@ -129,18 +125,13 @@ too.
 Settings live in `%LOCALAPPDATA%\RustVR\settings.toml` (per-game overrides go in
 `profiles/<adapter>.toml`) and can be changed from the in-headset menu.
 
-## Playing Metro 2033 Redux in VR
+## Games
 
-```bat
-cargo build --release -p rustvr-metro -p rustvr-runtime
-python tools\install_metro.py
-```
+Each game's adapter is its own repository, with this one as its `framework/` git submodule:
 
-Then start Metro 2033 Redux from Steam as usual: the adapter starts the RustVR runtime in the
-background, which takes the headset. Metro renders its world for your eyes, and the runtime's player
-controller (your hands and body) is drawn in it; the controllers walk and work the menus. Collision,
-Metro's NPCs and guns aren't connected yet. See [docs/METRO.md](docs/METRO.md);
-`python tools\install_metro.py --uninstall` takes it out again.
+| Game | Repository |
+|---|---|
+| Metro 2033 Redux | chasms-vr-metro |
 
 ## License
 

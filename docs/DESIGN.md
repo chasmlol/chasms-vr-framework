@@ -60,8 +60,9 @@ Supporting crates:
   game's geometry using its depth: over the game's picture in the runtime, or, SkyCraft's way,
   inside the game's own frame by an adapter that sets `GS_DRAWS_BODY` (the runtime posts the posed
   player as `RtPlayerDraw`; Metro's adapter draws it into Metro's HDR scene before its post chain).
-- `crates/metro-assets`: reads Metro 2033 Redux's archives (`metro-extract`): models, textures,
-  recoil, and its sound pack (`sounds.bin`, §6c). Local test content only, never committed.
+- Metro's `metro-assets` (in the chasms-vr-metro repository) reads Metro 2033 Redux's archives
+  (`metro-extract`): models, textures, recoil, and its sound pack (`sounds.bin`, §6c).
+  Local test content only, never committed.
 - `content/rigs/<game>.toml`: how the hands hold each of a game's guns, measured on its models
   (ours, so committed; `rustvr_asset::rigs` reads them). [RIGGING.md](RIGGING.md) says how to rig
   a gun.
@@ -321,7 +322,7 @@ Everything that follows the head waits for a 20 degree turn, glides back in fron
 stops; it never rolls. The game stays the source of truth for *when* a piece shows: its rectangle
 is drawn every frame, so it appears and fades as the game draws it. Without a layout the HUD is one
 flat screen, as before. Menus are a world-locked panel with a laser (§6). Metro's layout is in
-[METRO.md](METRO.md).
+its adapter's `docs/METRO.md` (the chasms-vr-metro repository).
 
 ## 7. Adapters
 
@@ -426,10 +427,8 @@ Adapters can be written in any language: Rust (hook-and-offset games like Metro,
 - **The emulated headset:** `crates/xrsim` is an OpenXR runtime with no hardware behind it
   ([XRSIM.md](XRSIM.md)). The runtime, or a game through it, runs its real OpenXR path on it. A
   script drives the head and controllers, and captures save what each eye would see.
-  `tools\xrsim_metro.ps1` runs Metro on it with one of two scripts:
-  - `tools\xrsim\metro_hands.toml`: the runtime's hands in Metro's world, at the hips, then out
-    in front, then apart.
-  - `metro_smoke.toml`: the menus, head turns, the pause menu.
+  A game adapter's repository runs its game on it with one script (Metro's:
+  `tools\xrsim_metro.ps1`, in chasms-vr-metro).
 - **Nothing opens a window.** Nothing launches a game, Steam, SteamVR or Virtual Desktop. The
   range renders offscreen, and builds and child processes run at below-normal priority.
 
