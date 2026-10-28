@@ -1068,7 +1068,9 @@ impl Session {
                                 self.stats.hud_pieces[self.stats.hud_piece_count] = (piece.role, piece.panel.center);
                                 self.stats.hud_piece_count += 1;
                             }
-                            layers.panels.push(PanelLayer { panel: piece.panel, srv: hud.srv.as_ref().unwrap(), opacity: piece.opacity, uv: piece.uv });
+                            // The game's layout says its HUD has no usable alpha: added to the view.
+                            let additive = self.hud_layout.flags & HUDL_ADDITIVE != 0 && info.flags & SLOT_STEREO != 0;
+                            layers.panels.push(PanelLayer { panel: piece.panel, srv: hud.srv.as_ref().unwrap(), opacity: piece.opacity, uv: piece.uv, additive });
                         }
                         hud_shown = true;
                     }

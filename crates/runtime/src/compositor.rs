@@ -27,7 +27,7 @@ cbuffer Draw : register(b0) {
     float4 axis_y;           // half height (towards v = 0)
     float4 color;            // premultiplied, linear
     float4 uv_rect;          // u0 v0 u1 v1
-    float4 params;           // x mode, y reticle, z opacity
+    float4 params;           // x mode, y reticle, z opacity, w 1: added to what's behind
     float4x4 view_proj_src;  // the re-projected picture's eye
 };
 Texture2D tex : register(t0);
@@ -138,7 +138,10 @@ float4 PSQuad(VOut i) : SV_Target {
         float vignette = saturate((1 - r) * 12);
         return float4(c * vignette, 1);
     }
-    return tex.Sample(samp, i.uv) * params.z;
+    float4 t = tex.Sample(samp, i.uv) * params.z;
+    // Added to what's behind (a texture whose alpha means nothing): premultiplied with no coverage.
+    if (params.w > 0.5) t.a = 0;
+    return t;
 }
 "#;
 
@@ -187,12 +190,14 @@ pub struct PanelLayer<'a> {
     pub opacity: f32,
     /// The part of the texture shown: u0, v0, u1, v1.
     pub uv: [f32; 4],
+    /// Its colour is added to what's behind it (its alpha is ignored).
+    pub additive: bool,
 }
 
 impl<'a> PanelLayer<'a> {
     /// The whole texture on `panel`.
     pub fn whole(panel: Panel, srv: &'a ID3D11ShaderResourceView) -> Self {
-        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0] }
+        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0], additive: false }
     }
 }
 
@@ -389,7 +394,7 @@ impl Compositor {
             c.center = p.panel.center.extend(1.0).to_array();
             c.axis_x = (p.panel.right * p.panel.width * 0.5).extend(0.0).to_array();
             c.axis_y = (p.panel.up * p.panel.height * 0.5).extend(0.0).to_array();
-            c.params = [MODE_TEXTURE, 0.0, p.opacity, 0.0];
+            c.params = [MODE_TEXTURE, 0.0, p.opacity, if p.additive { 1.0 } else { 0.0 }];
             c.uv_rect = p.uv;
             self.draw_quad(gpu, &c, Some(p.srv));
         }
