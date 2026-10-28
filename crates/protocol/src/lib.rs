@@ -447,7 +447,7 @@ pub enum Action {
     Melee = 15,
     /// Off-hand wrist turned up in front of the eyes.
     Watch = 16,
-    /// Grip squeezed with a hand at the face (Metro: gas mask).
+    /// Grip squeezed with a hand at the eyes (Metro: gas mask on or off).
     GestureFace = 17,
     /// ... on top of the head (Metro: night vision).
     GestureHeadTop = 18,
@@ -472,6 +472,10 @@ pub enum Action {
     WeaponWheel = 32,
     /// The radial action menu is open.
     Inventory = 33,
+    /// Grip squeezed with a hand at the mouth (Metro: the gas mask's filter changed).
+    GestureMouth = 34,
+    /// An open hand swept across the eyes (Metro: the gas mask wiped).
+    GestureWipe = 35,
     /// Adapter-defined actions, picked from the radial menu.
     Custom0 = 40,
     Custom1 = 41,
@@ -521,6 +525,8 @@ impl Action {
         Action::AbilityRight,
         Action::WeaponWheel,
         Action::Inventory,
+        Action::GestureMouth,
+        Action::GestureWipe,
         Action::Custom0,
         Action::Custom1,
         Action::Custom2,
@@ -571,6 +577,8 @@ impl Action {
             Action::AbilityRight => "ability_right",
             Action::WeaponWheel => "weapon_wheel",
             Action::Inventory => "inventory",
+            Action::GestureMouth => "gesture_mouth",
+            Action::GestureWipe => "gesture_wipe",
             Action::Custom0 => "custom0",
             Action::Custom1 => "custom1",
             Action::Custom2 => "custom2",

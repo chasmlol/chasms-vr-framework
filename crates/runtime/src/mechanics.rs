@@ -117,7 +117,7 @@ pub struct MechDebug {
     pub two_handed: bool,
     pub ads: bool,
     pub reloads: u32,
-    pub gestures: [u32; 5],
+    pub gestures: [u32; 7],
     pub following: bool,
     pub phys_crouch: bool,
     pub game_crouched: bool,
@@ -193,7 +193,10 @@ impl Btn {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Zone {
     None,
+    /// The eyes (the face's upper part)...
     Face,
+    /// ...and the mouth (its lower part).
+    Mouth,
     HeadTop,
     Chest,
     Shoulder,
@@ -204,7 +207,7 @@ enum Zone {
 /// head frame (pitch included), so face and top of head follow where you look.
 fn zone_of(local: Vec3, full: Vec3) -> Zone {
     if full.z > -0.02 && full.z < 0.20 && full.x.abs() < 0.12 && full.y > -0.14 && full.y < 0.08 {
-        return Zone::Face;
+        return if full.y > MOUTH_BELOW { Zone::Face } else { Zone::Mouth };
     }
     if full.y > 0.06 && full.y < 0.30 && full.x.abs() < 0.14 && full.z > -0.15 && full.z < 0.12 {
         return Zone::HeadTop;
@@ -220,6 +223,13 @@ fn zone_of(local: Vec3, full: Vec3) -> Zone {
     }
     Zone::None
 }
+
+/// The face's lower part, the mouth, below this (metres under the eyes).
+const MOUTH_BELOW: f32 = -0.06;
+/// An open hand sweeping across the eyes this fast (m/s, sideways in the head's frame) wipes them,
+/// at most once in this long (s).
+const WIPE_SPEED: f32 = 0.7;
+const WIPE_COOLDOWN: f64 = 0.6;
 
 fn deadzone(v: f32, dz: f32) -> f32 {
     let a = v.abs();
@@ -332,6 +342,7 @@ pub struct Mechanics {
     rack_start: Option<Vec3>,
     rig_id: u64,
     melee_cooldown: f64,
+    wipe_cooldown: f64,
     flick_cooldown: f64,
     last_zone: [Zone; 2],
     last_rumble: f32,
@@ -377,6 +388,7 @@ impl Default for Mechanics {
             rack_start: None,
             rig_id: 0,
             melee_cooldown: 0.0,
+            wipe_cooldown: 0.0,
             flick_cooldown: 0.0,
             last_zone: [Zone::None; 2],
             last_rumble: 0.0,
@@ -954,6 +966,7 @@ impl Mechanics {
                 }
                 let (action, i) = match z {
                     Zone::Face => (Action::GestureFace, 0),
+                    Zone::Mouth => (Action::GestureMouth, 5),
                     Zone::HeadTop => (Action::GestureHeadTop, 1),
                     Zone::Chest => (Action::GestureChest, 2),
                     Zone::Shoulder => (Action::GestureShoulder, 3),
@@ -963,6 +976,21 @@ impl Mechanics {
                 self.press(action);
                 self.debug.gestures[i] += 1;
                 self.haptic(h, 0.06, 120.0, 0.8);
+            }
+            // Wiping the eyes: an open hand swept sideways across them.
+            for h in 0..2 {
+                let hand = &f.hands[h];
+                if hand.connected == 0 || hand.squeeze > 0.5 || busy[h] || now < self.wipe_cooldown {
+                    continue;
+                }
+                let (local, full) = head_local(hmd_pos, hmd_rot, v3(hand.grip.pos));
+                let across = (hmd_rot.inverse() * v3(hand.vel)).x.abs();
+                if zone_of(local, full) == Zone::Face && across > WIPE_SPEED {
+                    self.press(Action::GestureWipe);
+                    self.debug.gestures[6] += 1;
+                    self.wipe_cooldown = now + WIPE_COOLDOWN;
+                    self.haptic(h, 0.05, 140.0, 0.5);
+                }
             }
             // Watch: off-hand wrist held in front of the face with the inside of the wrist up.
             if oc.connected != 0 {
