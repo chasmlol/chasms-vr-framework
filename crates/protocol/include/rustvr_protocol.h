@@ -590,6 +590,13 @@
 #define RVR_HUD_TARGET 12
 
 /**
+ * What the eyes are on (a crosshair, what it can activate: "Open Door", a name): where the head
+ * looks, fixed to it (it says what looking there does), its `offset` from that point (the group's
+ * units). Pieces drawn there are small, so it stays out of the way.
+ */
+#define RVR_HUD_GAZE 13
+
+/**
  * The laser points at it: where it hits is where the game's cursor goes (and the trigger clicks).
  */
 #define RVR_HUDE_POINT (1 << 0)
@@ -632,6 +639,11 @@
  * In front of it, between it and the eyes.
  */
 #define RVR_SIDE_FRONT 3
+
+/**
+ * Over it (a speaker's name over their head).
+ */
+#define RVR_SIDE_ABOVE 4
 
 /**
  * Don't draw what no element covers.
