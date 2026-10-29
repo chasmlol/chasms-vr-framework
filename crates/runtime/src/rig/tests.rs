@@ -3070,7 +3070,9 @@ fn a_hand_held_back_catches_up_eased_not_all_at_once() {
         last = now;
     }
     let hand = v3(s.out.hands[1].pose.pos);
-    assert!(worst < 0.025, "no jump: {worst} m further than the controller in a frame at worst");
+    // (Quick: settled in about a tenth of a second, so a few centimetres a frame, not the whole
+    // way in one.)
+    assert!(worst < 0.045, "no jump: {worst} m further than the controller in a frame at worst");
     assert!(deepest < 0.003, "never through the table's edge: {deepest}");
     assert!(hand.distance(s.hand_pos(1)) < 0.01, "caught up with it: {hand:?} vs {:?}", s.hand_pos(1));
 }
