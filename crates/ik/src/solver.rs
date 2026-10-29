@@ -68,13 +68,11 @@ impl BodySolver {
         self.skel = Skeleton::new(&self.params, self.calibration);
     }
 
-    /// The arm span (as [`Calibration::arm_span`] takes it) at which the arms just come straight in
+    /// The arm span (as [`Calibration::arm_span`] takes it) at which the arms are just straight in
     /// every pose given: as this solver lays the arm out (its shoulders where it puts them, the
-    /// clavicle reaching towards the hand), each arm reaching its full length plus the soft zone
-    /// (`BodyParams::arm_soft`), where a drawn arm comes straight, so it does just as the player's
-    /// does. None when no span in range does it.
+    /// clavicle reaching towards the hand), each arm exactly as long as the player's reaches. None
+    /// when no span in range does it.
     pub fn straight_arm_span(&self, poses: &[StraightArms]) -> Option<f32> {
-        let slack = self.params.arm_soft;
         if poses.is_empty() {
             return None;
         }
@@ -108,12 +106,12 @@ impl BodySolver {
         };
         // A longer arm reaches less far past its length.
         let [mut lo, mut hi] = ARM_SPAN_RANGE;
-        if reach(lo) < slack || reach(hi) > slack {
+        if reach(lo) < 0.0 || reach(hi) > 0.0 {
             return None;
         }
         for _ in 0..20 {
             let mid = 0.5 * (lo + hi);
-            if reach(mid) > slack { lo = mid } else { hi = mid }
+            if reach(mid) > 0.0 { lo = mid } else { hi = mid }
         }
         Some(lo)
     }

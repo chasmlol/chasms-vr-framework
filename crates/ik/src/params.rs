@@ -86,11 +86,6 @@ pub struct BodyParams {
     /// to them), so an arm a little short of the player's real one reaches without the forearm
     /// alone making up the difference.
     pub arm_stretch: f32,
-    /// The arm's last stretch to straight, a share of its length either side of full reach: over it
-    /// the elbow straightens at a steady rate rather than snapping straight (`arm::two_bone`'s
-    /// `soft`), straight at full reach plus this. The arms are measured so that's where the
-    /// player's own arm is straight.
-    pub arm_soft: f32,
     /// A hand further than this many arm lengths from the shoulder is tracking loss: the arm hangs
     /// (FRIK 2.25 L).
     pub arm_tracking_loss: f32,
@@ -185,7 +180,6 @@ impl Default for BodyParams {
             clavicle_down: 0.4,
             swivel_tau: 0.06,
             arm_stretch: 1.3,
-            arm_soft: 0.03,
             arm_tracking_loss: 2.25,
 
             foot_spacing: 0.3,

@@ -122,13 +122,6 @@ pub struct TwoBone {
 
 /// Law-of-cosines two-bone solve. Flexion stays inside `[min_flex, max_flex]`: at full reach the
 /// bones stretch (up to `max_stretch`, then the hand floats), near the shoulder they shorten.
-///
-/// `soft` (metres; 0: none) softens the straightening (Harris's soft IK, with a zone that ends): a
-/// chain's bend changes ever faster as it straightens (the last centimetre of reach takes the last
-/// twenty degrees), so a straightening arm snaps straight. From `soft` short of full reach to
-/// `soft` past it, the chain bends as if the end were nearer, straightening at a steady rate to
-/// straight `soft` past full reach, and the bones stretch the little it takes to keep the end on
-/// the target.
 pub fn two_bone(
     shoulder: Vec3,
     target: Vec3,
@@ -136,7 +129,6 @@ pub fn two_bone(
     pole: Vec3,
     flex: [f32; 2],
     max_stretch: f32,
-    soft: f32,
 ) -> TwoBone {
     let [a, b] = lengths;
     let to = target - shoulder;
@@ -144,12 +136,7 @@ pub fn two_bone(
     let axis = to.try_normalize().unwrap_or(-UP);
     let reach = |f: f32| (a * a + b * b + 2.0 * a * b * f.cos()).sqrt();
     let (d_max, d_min) = (reach(flex[0]), reach(flex[1]));
-    let soft = soft.clamp(0.0, 0.25 * d_max);
-    let bend_at = soft_reach(d, d_max, soft);
-    let (k, d_eff) = if bend_at < d {
-        let k = (d / bend_at).min(max_stretch);
-        (k, bend_at * k)
-    } else if d > d_max {
+    let (k, d_eff) = if d > d_max {
         let k = (d / d_max).min(max_stretch);
         (k, d_max * k)
     } else if d < d_min {
@@ -167,19 +154,7 @@ pub fn two_bone(
         elbow,
         forearm: (wrist - elbow).normalize_or(axis),
         fold: (axis * sin_shoulder - side * cos_shoulder).normalize_or(-side),
-        reached: d <= (lengths[0] + lengths[1] + soft) * 1.001,
-    }
-}
-
-/// Where a chain reaching `d` bends as if its end were: `d` until the soft zone (`soft` short of
-/// full reach `d_max`), then easing (with the same slope at its start, none at its end) onto full
-/// reach `soft` past it.
-fn soft_reach(d: f32, d_max: f32, soft: f32) -> f32 {
-    if soft > 0.0 && d > d_max - soft {
-        let u = (d - (d_max - soft)).min(2.0 * soft);
-        d_max - soft + u - u * u / (4.0 * soft)
-    } else {
-        d
+        reached: d <= (lengths[0] + lengths[1]) * 1.001,
     }
 }
 
@@ -221,15 +196,15 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     let axis = (wrist - shoulder).normalize_or(-UP);
     let frame = SwivelFrame::new(axis, up, forward, outward);
     let previous = state.pole.map(|local| q * local);
-    // How straight the arm is drawn (its bend in the soft zone, `two_bone`): 1 with the elbow all
-    // but straight, 0 once it's bent past 30°. Only there does the hand's twist turn the elbow:
-    // bent more, where the elbow points shows, and the position model has it.
+    // How straight the arm is: 1 with the elbow all but straight, 0 once it's bent past 30°. Only
+    // there does the hand's twist turn the elbow: bent more, where the elbow points shows, and the
+    // position model has it.
     let (a, b) = (lengths[0], lengths[1]);
-    let d = soft_reach(shoulder.distance(wrist), a + b, (p.arm_soft * arm).clamp(0.0, 0.25 * (a + b))).min(a + b);
+    let d = shoulder.distance(wrist).min(a + b);
     let flexion = ((d * d - a * a - b * b) / (2.0 * a * b)).clamp(-1.0, 1.0).acos();
     let straight = smoothstep(30f32.to_radians(), 8f32.to_radians(), flexion);
     let target_dir = swivel_target(skel, &frame, sign, rest_shoulder, previous, straight, input, |e| {
-        two_bone(shoulder, wrist, lengths, e, flex, p.arm_stretch, p.arm_soft * arm)
+        two_bone(shoulder, wrist, lengths, e, flex, p.arm_stretch)
     });
     // The headset's own tracking of the elbow: its way out from the shoulder-to-wrist line, the
     // model's where the arm is nearly straight (the way is lost in the tracking's noise there).
@@ -252,7 +227,7 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     let pole = q * pole_local;
     let pole = if pole.reject_from(axis).length_squared() > 1e-6 { pole } else { target_dir };
 
-    let solved = two_bone(shoulder, wrist, lengths, pole, flex, p.arm_stretch, p.arm_soft * arm);
+    let solved = two_bone(shoulder, wrist, lengths, pole, flex, p.arm_stretch);
     let upper_dir = (solved.elbow - shoulder).normalize_or(-UP);
     // The upper arm's +Z faces the way the forearm folds (forward in the T-pose), straight or not.
     let upper = frame_yz(upper_dir, solved.fold, forward);
@@ -393,7 +368,7 @@ mod tests {
         let s = Vec3::ZERO;
         let flex = [10f32.to_radians(), 145f32.to_radians()];
         let w = Vec3::new(0.3, -0.2, 0.25);
-        let r = two_bone(s, w, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05, 0.0);
+        let r = two_bone(s, w, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05);
         assert!(r.reached);
         assert!((r.elbow.distance(s) - 0.3).abs() < 1e-5);
         assert!((r.elbow.distance(w) - 0.3).abs() < 1e-5);
@@ -408,19 +383,19 @@ mod tests {
         let flex = [10f32.to_radians(), 145f32.to_radians()];
         // Fully extended: still 10° of bend, bones stretched slightly to reach.
         let w = Vec3::new(0.6, 0.0, 0.0);
-        let r = two_bone(s, w, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05, 0.0);
+        let r = two_bone(s, w, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05);
         assert!((flexion(s, r.elbow, w) - 10.0).abs() < 0.1);
         assert!(r.reached);
         // Right at the shoulder: at most 145°.
         let w = Vec3::new(0.05, 0.0, 0.0);
-        let r = two_bone(s, w, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05, 0.0);
+        let r = two_bone(s, w, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05);
         assert!(flexion(s, r.elbow, w) < 145.1);
         // Out of reach: stretched, then floating; never NaN.
         let w = Vec3::new(0.62, 0.0, 0.0);
-        assert!(!two_bone(s, w, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05, 0.0).reached);
-        let r = two_bone(s, Vec3::new(2.0, 0.0, 0.0), [0.3, 0.3], Vec3::X, flex, 1.05, 0.0);
+        assert!(!two_bone(s, w, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05).reached);
+        let r = two_bone(s, Vec3::new(2.0, 0.0, 0.0), [0.3, 0.3], Vec3::X, flex, 1.05);
         assert!(r.elbow.is_finite() && !r.reached);
-        let r = two_bone(s, s, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05, 0.0);
+        let r = two_bone(s, s, [0.3, 0.3], Vec3::NEG_Y, flex, 1.05);
         assert!(r.elbow.is_finite() && r.forearm.is_finite());
     }
 

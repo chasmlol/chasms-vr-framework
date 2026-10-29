@@ -310,7 +310,7 @@ pub fn solve_leg(p: &BodyParams, skel: &Skeleton, hip: Vec3, foot: &Foot, lift: 
     let flex = [KNEE_MIN_FLEXION, p.knee_max_flexion_deg.to_radians()];
     // Feet stay planted: the leg stretches as far as it must (the hips have already come down
     // as far as the spine allows).
-    let solved = two_bone(hip, ankle, [a, b], knee_dir, flex, f32::MAX, 0.0);
+    let solved = two_bone(hip, ankle, [a, b], knee_dir, flex, f32::MAX);
     let thigh_dir = (solved.elbow - hip).normalize_or(-UP);
     let upper = frame_yz(thigh_dir, knee_dir, fwd);
     let lower = frame_yz(solved.forearm, knee_dir, fwd);
