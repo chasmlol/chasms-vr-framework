@@ -274,7 +274,8 @@ pub struct ObjectDesc {
     pub min_pressure: f32,
     /// A point on the line of sight (the line runs along +Z through it).
     pub sight: [f32; 3],
-    /// Valves ([`OBJ_VALVE`]): the torque it takes to turn it, N m (its friction).
+    /// Valves ([`OBJ_VALVE`]): the torque it takes to turn it, N m (its friction; a slide's, the
+    /// force, N).
     pub friction: f32,
     /// Charging handle / slide grab point; pulling it back `handle_travel` metres racks the gun.
     /// Bolt and pump actions: the bolt's handle or the pump's forend, worked back and forward after
@@ -334,15 +335,19 @@ pub struct ObjectDesc {
     /// Weapons with [`WPN_LASER`]: where their laser's beam starts (object space); it shines along
     /// +Z. The game's own laser attachment, mounted where the game mounts it.
     pub laser: [f32; 3],
-    pub _p_laser: f32,
+    /// Valves ([`OBJ_VALVE`]): the spring that pulls it back to where it arrives (0), N m a radian
+    /// (a slide's, N a metre): a button, a pull chain, a lever that springs back. 0: none.
+    pub joint_spring: f32,
     /// Props with [`OBJF_RUNTIME_DRAWS`]: where their model sits in object space (the game draws
     /// the model at the object's pose composed with this one; all zero: at the object's pose).
     pub model_pos: [f32; 3],
-    pub _p_model: f32,
+    /// Valves ([`OBJ_VALVE`]): what slows it as it moves, N m s a radian (a slide's, N s a
+    /// metre): the air a door's leaf swings through, a damper. 0: only its friction.
+    pub joint_damping: f32,
     pub model_rot: [f32; 4],
     /// Valves ([`OBJ_VALVE`]): the angle range it turns in (radians from where it arrives, about
-    /// its +Z; `turn_min == turn_max`: no limit, a wheel), and how hard (N m) it holds in the
-    /// clicks at both ends (0: none): a switch's knob, a lever.
+    /// its +Z; `turn_min == turn_max`: no limit, a wheel; a slide's, metres along it), and how hard
+    /// (N m; a slide's, N) it holds in the clicks at both ends (0: none): a switch's knob, a lever.
     pub turn_min: f32,
     pub turn_max: f32,
     pub detent: f32,
@@ -388,15 +393,34 @@ pub const OBJ_MELEE: u32 = 5;
 /// [`OBJF_GAME_MOVED`], where the game's pose of it has that part whenever the game gives one (the
 /// game moves it some itself). Not a body the hands meet: only drawn.
 pub const OBJ_DRIVEN: u32 = 7;
-/// Anything turned by hand on an axle fixed in the world: a valve's wheel, a switch's knob, a lever.
-/// Centre and axis (+Z) its spawn pose, the rim `radius` out, `mass` its weight, `friction` what
-/// it takes to turn, the range it turns in and the clicks it holds in (`turn_min`, `turn_max`,
-/// `detent`) and how a hand turns it (`joint_flags`) (`rig::valve`). Its state's `slide` is how
-/// far it's turned: the game reads that to work its own mechanism.
+/// Anything worked by hand on a hinge or a slide fixed in the world: a valve's wheel, a switch's
+/// knob, a lever, a door's leaf, a lid, a drawer, a button, a pull chain. Centre and axis (+Z) its
+/// spawn pose, the rim `radius` out, `mass` its weight, `friction` what it takes to turn (or slide:
+/// [`JOINT_SLIDE`]), the range it moves in and the clicks it holds in (`turn_min`, `turn_max`,
+/// `detent`), what pulls it back and slows it (`joint_spring`, `joint_damping`) and what kind of
+/// thing it is (`joint_flags`) (`rig::valve`). Its state's `slide` is how far it's turned (or slid):
+/// the game reads that to work its own mechanism. With [`SHAPE_HULL`] its collider is the game's
+/// own shape of the part that moves (in its frame where it arrives), which a hand takes anywhere,
+/// and its inertia about the axle is that shape's.
+///
+/// The game may change its range, stiffness and spring as it goes (a door's latch, its lock): the
+/// runtime takes them whenever the table changes, keeping where it's turned to.
 pub const OBJ_VALVE: u32 = 6;
 /// Valves: a knob, turned by the hand's twist about its axis (a wheel is turned by the hand's place
 /// on its rim). The runtime takes any valve smaller than a hand's grip as one.
 pub const JOINT_TWIST: u32 = 1 << 0;
+/// Valves: it slides along its +Z instead of turning about it (a drawer, a button, a pull chain, a
+/// sliding door, a portcullis): its range, its state's `slide` and its spring in metres, its
+/// friction in N.
+pub const JOINT_SLIDE: u32 = 1 << 1;
+/// Valves: a part that swings or slides through the room (a door's leaf, a lid, a gate). It's solid
+/// to the empty hands (they rest on it as on a wall) and to what they hold, and a hand pressed on
+/// it pushes it (an arm's push where it presses, never a pull); the player's body and the game's
+/// creatures stop it, as a door stops on whoever is in its way.
+pub const JOINT_PANEL: u32 = 1 << 2;
+/// Valves: its own weight moves it (a lid falls shut, a trap door hangs down, a drawbridge drops),
+/// from the centre of mass of its collider.
+pub const JOINT_GRAVITY: u32 = 1 << 3;
 
 pub const OBJF_GRABBABLE: u32 = 1 << 0;
 /// Gravity gloves can pull it.
@@ -641,8 +665,9 @@ pub struct ObjectState {
     /// Weapons: slide / charging handle / bolt / pump position, 0 forward .. 1 fully back. Break and
     /// swing actions: how far the barrels (or cylinder) are open, 0 shut .. 1 fully open
     /// (`action_angle`). Valves ([`OBJ_VALVE`]): how far it's turned about its axis, radians
-    /// (anticlockwise looking down +Z; `ang_vel` is how fast, along the axis). A valve with a hand
-    /// on its rim is [`OS_HELD_LEFT`] / [`OS_HELD_RIGHT`].
+    /// (anticlockwise looking down +Z; `ang_vel` is how fast, along the axis), or slid along it,
+    /// metres ([`JOINT_SLIDE`]; `lin_vel` how fast). A valve with a hand on it is [`OS_HELD_LEFT`] /
+    /// [`OS_HELD_RIGHT`].
     pub slide: f32,
     /// Which [`ObjectDesc`] to draw it with (itself, or the template it was spawned from).
     pub desc: u32,

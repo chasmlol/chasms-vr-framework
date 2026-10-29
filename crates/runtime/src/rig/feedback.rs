@@ -72,6 +72,9 @@ pub enum Cue {
     /// An air gun's pump stroke (pressure building), and its trigger without the pressure to fire.
     Pump,
     AirHiss,
+    /// Something worked on a hinge or a slide (a door, a lever, a drawer) coming against its stop,
+    /// felt by how fast: the game's own part makes its own sound.
+    Stop,
 }
 
 impl Cue {
@@ -123,6 +126,7 @@ impl Cue {
             Cue::PumpForward => "pump_forward",
             Cue::Pump => "pump",
             Cue::AirHiss => "air_hiss",
+            Cue::Stop => "stop",
         }
     }
 }
@@ -196,6 +200,12 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::BoltForward | Cue::PumpForward => (0.045, 140.0, 0.85),
         Cue::Pump => (0.04, 90.0, 0.6),
         Cue::AirHiss => (0.03, 320.0, 0.25),
+        Cue::Stop => {
+            if i < 0.05 {
+                return None;
+            }
+            (0.02 + 0.03 * i, 90.0, (0.25 + 0.65 * i).min(1.0))
+        }
     })
 }
 

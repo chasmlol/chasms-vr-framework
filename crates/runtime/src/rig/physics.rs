@@ -91,6 +91,13 @@ pub fn groups_game_prop() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT, InteractionTestMode::And)
 }
 
+/// A part that swings or slides through the room (a door's leaf, `JOINT_PANEL`): to everything
+/// that meets the world it's the world (the hands rest on it, what they hold stops at it, the
+/// gloves can't pull through it), and loose and held things knock against it.
+pub fn groups_panel() -> InteractionGroups {
+    InteractionGroups::new(G_WORLD, G_OBJECT | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
+}
+
 pub fn groups_none() -> InteractionGroups {
     InteractionGroups::new(Group::NONE, Group::NONE, InteractionTestMode::And)
 }
@@ -222,7 +229,8 @@ impl Physics {
     pub fn set_hulls(&mut self, c: ColliderHandle, parts: &[Vec<V3>], mass: f32) -> bool {
         let (Some(shape), Some(col)) = (hulls_shape(parts), self.world.colliders.get_mut(c)) else { return false };
         col.set_shape(shape);
-        col.set_translation_wrt_parent(Vector::ZERO);
+        // (In the object's own space: a valve's wheel stood its disc on the axle.)
+        col.set_position_wrt_parent(to_pose(V3::ZERO, Q::IDENTITY));
         col.set_mass(mass.max(0.02));
         true
     }
@@ -270,6 +278,56 @@ impl Physics {
         let (a, b) = (self.world.colliders.get(pusher)?, self.world.colliders.get(other)?);
         let c = rapier3d::parry::query::contact(a.position(), a.shape(), b.position(), b.shape(), 0.0).ok()??;
         (c.dist < 0.0).then(|| (from_v(c.point2), from_v(c.normal1), -c.dist))
+    }
+
+    /// Where collider `c` (a hand) touches collider `other`, or is within `within` of it: the
+    /// point on `other` (world), the way from `c` into it, and how far apart they are (less than 0:
+    /// how deep). Where their bodies are now.
+    pub fn touch(&self, c: ColliderHandle, other: ColliderHandle, within: f32) -> Option<(V3, V3, f32)> {
+        let (a, b) = (self.world.colliders.get(c)?, self.world.colliders.get(other)?);
+        let ct = rapier3d::parry::query::contact(&self.collider_pose(a), a.shape(), &self.collider_pose(b), b.shape(), within).ok()??;
+        Some((from_v(ct.point2), from_v(ct.normal1), ct.dist))
+    }
+
+    /// Where a collider is, from its body as it is now (its own position may wait for the next step
+    /// to catch up with a shape or a pose just set).
+    fn collider_pose(&self, col: &Collider) -> rapier3d::math::Pose {
+        let parent = col.parent().and_then(|b| self.world.bodies.get(b)).map(|b| *b.position());
+        match (parent, col.position_wrt_parent()) {
+            (Some(p), Some(rel)) => p * *rel,
+            _ => *col.position(),
+        }
+    }
+
+    /// Whether collider `c`, at `pose` (its body's), meets the capsule from `a` to `b` of `radius`
+    /// (world).
+    pub fn hits_capsule(&self, c: ColliderHandle, pose: (V3, Q), a: V3, b: V3, radius: f32) -> bool {
+        let Some(col) = self.world.colliders.get(c) else { return false };
+        let at = to_pose(pose.0, pose.1) * col.position_wrt_parent().copied().unwrap_or(rapier3d::math::Pose::IDENTITY);
+        let capsule = rapier3d::parry::shape::Capsule::new(to_v(a), to_v(b), radius);
+        rapier3d::parry::query::intersection_test(&at, col.shape(), &rapier3d::math::Pose::IDENTITY, &capsule).is_ok_and(|i| i.intersecting)
+    }
+
+    /// Collider `c`'s mass, its centre of mass (world, where it is now) and its inertia about the
+    /// line through `point` along `axis` (world): its own shape's, at its mass.
+    pub fn inertia_about(&self, c: ColliderHandle, point: V3, axis: V3) -> Option<(f32, V3, f32)> {
+        let col = self.world.colliders.get(c)?;
+        let mp = col.mass_properties();
+        let mass = mp.mass();
+        if !(mass > 0.0) {
+            return None;
+        }
+        let (pos, rot) = from_pose(&self.collider_pose(col));
+        let com = pos + rot * from_v(mp.local_com);
+        // Its inertia about its centre of mass along the axis, then the parallel axis.
+        let n = (rot.inverse() * axis.normalize_or_zero()).normalize_or_zero();
+        let frame = from_q(mp.principal_inertia_local_frame);
+        let principal = from_v(mp.principal_inertia());
+        let in_frame = frame.inverse() * n;
+        let about_com = principal.x * in_frame.x * in_frame.x + principal.y * in_frame.y * in_frame.y + principal.z * in_frame.z * in_frame.z;
+        let off = com - point;
+        let d2 = (off - axis.normalize_or_zero() * off.dot(axis.normalize_or_zero())).length_squared();
+        Some((mass, com, about_com + mass * d2))
     }
 
     /// Every collider's surface as world triangles (the framework view): `tint` gives each its

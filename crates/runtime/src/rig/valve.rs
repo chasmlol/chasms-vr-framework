@@ -1,28 +1,41 @@
-//! Anything turned by hand on an axle: a game's valve or wheel, a switch's knob, a lever, rigged to
-//! an object ([`OBJ_VALVE`]) so any game with one works the same way. The game reads how far it's
-//! turned (its state) and works its own mechanism from that.
+//! Anything worked by hand on a hinge or a slide: a game's valve or wheel, a switch's knob, a lever,
+//! a door's leaf, a lid, a drawer, a button, a pull chain, rigged to an object ([`OBJ_VALVE`]) so any
+//! game with one works the same way. The game reads how far it's turned (its state) and works its
+//! own mechanism from that.
 //!
 //! It turns on an axle fixed in the world: its centre and axis are the object's spawn pose (axis
-//! +Z), its rim `ObjectDesc::radius` out, its own weight `mass` (a ring's inertia, m r^2), and the
-//! turning it resists `ObjectDesc::friction` (N m, static and sliding alike, as an old stiff valve
-//! or a free-running wheel), scaled by the player's stiffness setting. A hand reaching it takes it
-//! where it is: on its rim, or, when the runtime has the model of the part that turns (a game's
-//! switch handle, its wheel), anywhere on that part ([`Valve::nearest_on`]). It turns it one of two
-//! ways:
+//! +Z), its rim `ObjectDesc::radius` out, its own weight `mass` (a ring's inertia, m r^2, or the
+//! inertia of the part's own shape about the axle when the runtime has it: a door is a slab turned
+//! about one edge), and the turning it resists `ObjectDesc::friction` (N m, static and sliding alike,
+//! as an old stiff valve or a free-running wheel), scaled by the player's stiffness setting. Or it
+//! slides along the axis instead (`JOINT_SLIDE`: a drawer, a button), the same in metres and
+//! newtons. It's simulated exactly, one degree of freedom, rather than as a joint in the physics:
+//! it can't come off its hinge, stretch, or be flung off. A hand reaching it takes it where it is:
+//! on its rim, or, when the runtime has the model of the part that turns (a game's switch handle,
+//! its wheel), anywhere on that part ([`Valve::nearest_on`]), or, a part the game draws (a door's
+//! leaf), anywhere on its collider, just where the hand is. It turns it one of two ways:
 //!
-//! * **cranked** (a wheel): the hand pulls its point on the rim towards the controller like an
-//!   arm would, up to [`ARM_FORCE`];
+//! * **cranked** (a wheel, a door): the hand pulls its point towards the controller like an arm
+//!   would, up to [`ARM_FORCE`]; so the leverage is the arm's (near a door's hinge it hardly moves
+//!   it, at its edge it swings it);
 //! * **twisted** (a knob, `JOINT_TWIST`, anything smaller than [`TWIST_RADIUS`], or anything held
 //!   within that of its axle: a switch's handle by its middle): the wrist turns it as far as the
 //!   hand has turned about the axle since it took hold, up to [`WRIST_TORQUE`].
 //!
-//! One the game moves itself (`OBJF_GAME_MOVED`: a valve on a gate the game may let down) follows
-//! the game's pose of it ([`Valve::follow`]) whenever no hand is turning it.
+//! A part that swings through the room (`JOINT_PANEL`, a door's leaf) is pushed by a hand pressed
+//! on it too: the arm's push where it presses ([`Pull::Press`]), never a pull, so a door can be
+//! shoved open with a palm or the back of a hand.
+//!
+//! One the game moves itself (`OBJF_GAME_MOVED`: a valve on a gate the game may let down, a door an
+//! NPC opens) follows the game's pose of it ([`Valve::follow`]) whenever no hand is turning it.
 //!
 //! Either way each hand adds its own: a light one follows the hand, a stiff one needs both hands
-//! or won't give, and the hand stays on it (the ghost shows where the controller is). It may turn
-//! within a range only (`turn_min`..`turn_max`, a switch's quarter turn), clicking into either end
-//! and holding there against up to `detent` (N m). Let go, it spins on until its friction stops
+//! or won't give, and the hand stays on it (the ghost shows where the controller is) until its
+//! controller is [`BREAK`] away. It may turn within a range only (`turn_min`..`turn_max`, a
+//! switch's quarter turn, a door's swing), clicking into either end and holding there against up
+//! to `detent` (N m). Its own weight may move it (`JOINT_GRAVITY`: a lid falls shut), a spring may
+//! pull it back to where it rests (a button, a pull chain: `joint_spring`), and damping slows it
+//! (`joint_damping`: the air a door swings through). Let go, it moves on until its friction stops
 //! it. One geared to something the game moves at its own pace (a gate it winds up) turns no faster
 //! than that (`ObjectDesc::fire_rate`, rad/s).
 
@@ -46,6 +59,12 @@ const DETENT_SPRING: f32 = 40.0;
 pub const GAME_FOLLOW: f32 = 6.0;
 /// How far from the rim (metres) a palm takes hold of it.
 pub const REACH: f32 = 0.1;
+/// A hand held on it lets go once its controller is this far (metres) from where it holds it: a
+/// part fixed in the world can't come with the hand. Sooner than an empty hand's leash (0.7 m), as
+/// the constrained grips of other games let go sooner than free ones (SteamVR's drives at 20 cm,
+/// Godot XR's handles at 30), but late enough that a stiff wheel or a heavy door is leaned on with
+/// the whole arm.
+pub const BREAK: f32 = 0.5;
 const SUBSTEPS: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
@@ -54,9 +73,11 @@ pub struct Valve {
     pub centre: Vec3,
     pub base: Quat,
     pub radius: f32,
+    /// Its inertia about the axle (kg m^2); a slide's, its mass (kg).
     pub inertia: f32,
     pub friction: f32,
-    /// Turned this far about the axis (radians, unbounded), and how fast.
+    /// Turned this far about the axis (radians, unbounded), or slid along it (metres), and how
+    /// fast.
     pub angle: f32,
     pub vel: f32,
     /// The fastest it turns, rad/s (0: as fast as it's pushed).
@@ -67,6 +88,16 @@ pub struct Valve {
     pub detent: f32,
     /// Twisted by the wrist (a knob), not cranked round its rim.
     pub twist: bool,
+    /// Slides along its axis instead of turning about it.
+    pub slide: bool,
+    /// Its weight (N, the world's way down; zero unless its weight moves it) and where it acts:
+    /// the centre of mass, in the wheel's own frame.
+    pub weight: Vec3,
+    pub com: Vec3,
+    /// What pulls it back to 0 (N m a radian, a slide's N a metre), and what slows it as it moves
+    /// (N m s a radian, N s a metre).
+    pub spring: f32,
+    pub damping: f32,
 }
 
 /// What one hand does to it this step.
@@ -76,6 +107,9 @@ pub enum Pull {
     Rim { at: Vec3, toward: Vec3 },
     /// Twisted: the angle the wrist turns it towards.
     Twist { to: f32 },
+    /// Pressed on (a palm on a door's leaf): where (the wheel's own frame), the way it's pushed
+    /// (world) and how deep the controller is in it past the surface: the arm pushes, never pulls.
+    Press { at: Vec3, normal: Vec3, depth: f32 },
 }
 
 /// A hand on a valve: where it holds it (a point in the wheel's own frame) and how the hand sits
@@ -111,7 +145,17 @@ impl Valve {
             max: 0.0,
             detent: 0.0,
             twist: radius <= TWIST_RADIUS,
+            slide: false,
+            weight: Vec3::ZERO,
+            com: Vec3::ZERO,
+            spring: 0.0,
+            damping: 0.0,
         }
+    }
+
+    /// Sliding along its axis rather than turning about it: `inertia` is its mass.
+    pub fn sliding(self, mass: f32) -> Valve {
+        Valve { slide: true, twist: false, inertia: mass.max(0.02), ..self }
     }
 
     /// Turning only between `min` and `max` (radians; equal: no limit), clicking into both ends
@@ -124,7 +168,7 @@ impl Valve {
     /// Whether a hand holding it at `at` (its own frame) twists it rather than cranks it: a knob,
     /// or anything held near its axle (where an arm has no leverage, a wrist has).
     pub fn twisted_at(&self, at: Vec3) -> bool {
-        self.twist || at.truncate().length() <= TWIST_RADIUS
+        !self.slide && (self.twist || at.truncate().length() <= TWIST_RADIUS)
     }
 
     pub fn limited(&self) -> bool {
@@ -140,7 +184,12 @@ impl Valve {
 
     /// The wheel's rotation now.
     pub fn rot(&self) -> Quat {
-        self.base * Quat::from_rotation_z(self.angle)
+        if self.slide { self.base } else { self.base * Quat::from_rotation_z(self.angle) }
+    }
+
+    /// Where its frame's origin is now (a slide's moves along the axis).
+    pub fn origin(&self) -> Vec3 {
+        if self.slide { self.centre + self.axis() * self.angle } else { self.centre }
     }
 
     pub fn axis(&self) -> Vec3 {
@@ -158,12 +207,39 @@ impl Valve {
 
     /// A point of the wheel (its own frame) in the world, as it's turned now.
     pub fn point(&self, local: Vec3) -> Vec3 {
-        self.centre + self.rot() * local
+        self.origin() + self.rot() * local
+    }
+
+    /// A world point in the wheel's own frame, as it's turned now.
+    pub fn local(&self, p: Vec3) -> Vec3 {
+        self.rot().inverse() * (p - self.origin())
+    }
+
+    /// How fast its point `local` (its own frame) moves now (world).
+    pub fn point_vel(&self, local: Vec3) -> Vec3 {
+        if self.slide { self.axis() * self.vel } else { self.axis().cross(self.point(local) - self.centre) * self.vel }
+    }
+
+    /// What a force `f` (world) at its point `local` does to it: the torque about the axle (a
+    /// slide's, the force along it).
+    pub fn drive(&self, local: Vec3, f: Vec3) -> f32 {
+        if self.slide { f.dot(self.axis()) } else { (self.point(local) - self.centre).cross(f).dot(self.axis()) }
+    }
+
+    /// How heavy it is at its point `local` to a hand pushing it there the way it moves: its
+    /// inertia over the lever arm squared (no nearer the axle than a quarter of its rim), a slide's
+    /// its mass.
+    pub fn mass_at(&self, local: Vec3) -> f32 {
+        if self.slide {
+            return self.inertia;
+        }
+        let r = local.truncate().length().max(self.radius * 0.25).max(0.02);
+        self.inertia / (r * r)
     }
 
     /// The rim's nearest point to `p` (the wheel's frame) and how far `p` is from it.
     pub fn nearest(&self, p: Vec3) -> (Vec3, f32) {
-        let local = self.rot().inverse() * (p - self.centre);
+        let local = self.local(p);
         let on = self.ring(local.y.atan2(local.x));
         (on, local.distance(on))
     }
@@ -171,7 +247,7 @@ impl Valve {
     /// The nearest of `shape`'s points to `p` (the turning part, in the wheel's frame) and how far
     /// `p` is from it; with no shape, the rim's.
     pub fn nearest_on(&self, shape: &[Vec3], p: Vec3) -> (Vec3, f32) {
-        let local = self.rot().inverse() * (p - self.centre);
+        let local = self.local(p);
         shape.iter().map(|&q| (q, q.distance(local))).min_by(|a, b| a.1.total_cmp(&b.1)).unwrap_or_else(|| self.nearest(p))
     }
 
@@ -189,31 +265,51 @@ impl Valve {
         self.vel = if dt > 0.0 { step / dt } else { 0.0 };
     }
 
+    /// A slide towards the game's pose of it (`pos`, where the game has its frame's origin): as far
+    /// along its axis, no faster than [`GAME_FOLLOW`] (metres a second), within its range.
+    pub fn follow_slide(&mut self, pos: Vec3, dt: f32) {
+        let raw = (pos - self.centre).dot(self.axis());
+        let step = (raw - self.angle).clamp(-GAME_FOLLOW * dt, GAME_FOLLOW * dt);
+        self.angle += step;
+        if self.limited() {
+            self.angle = self.angle.clamp(self.min, self.max);
+        }
+        self.vel = if dt > 0.0 { step / dt } else { 0.0 };
+    }
+
     /// One step: each gripping hand pulls or twists (each its own: two hands, twice the force),
-    /// its clicks pull it in, friction holds or drags, and its range stops it. `stiffness` scales
-    /// its friction and clicks (the player's setting: 1 as the game made it).
+    /// each pressing one pushes, its weight, spring and clicks pull it, friction holds or drags,
+    /// and its range stops it. `stiffness` scales its friction and clicks (the player's setting: 1
+    /// as the game made it).
     pub fn step(&mut self, pulls: &[Pull], dt: f32, stiffness: f32) {
         let h = dt / SUBSTEPS as f32;
-        let axis = self.axis();
         let (friction, detent) = (self.friction * stiffness, self.detent * stiffness);
-        // An arm, and a wrist, are damped springs: critically damped on its own inertia.
-        let m_eff = self.inertia / (self.radius * self.radius);
-        let damp = 2.0 * (ARM_STIFFNESS * m_eff).sqrt();
+        // An arm, and a wrist, are damped springs: critically damped on what they move.
         let wrist_damp = 2.0 * (WRIST_STIFFNESS * self.inertia).sqrt();
         for _ in 0..SUBSTEPS {
             let mut torque = 0.0;
             for pull in pulls {
                 torque += match *pull {
                     Pull::Rim { at, toward } => {
-                        let p = self.point(at);
-                        let r = p - self.centre;
-                        let v = axis.cross(r) * self.vel;
-                        let f = ((toward - p) * ARM_STIFFNESS - v * damp).clamp_length_max(ARM_FORCE);
-                        r.cross(f).dot(axis)
+                        let damp = 2.0 * (ARM_STIFFNESS * self.mass_at(at)).sqrt();
+                        let f = ((toward - self.point(at)) * ARM_STIFFNESS - self.point_vel(at) * damp).clamp_length_max(ARM_FORCE);
+                        self.drive(at, f)
                     }
                     Pull::Twist { to } => ((to - self.angle) * WRIST_STIFFNESS - self.vel * wrist_damp).clamp(-WRIST_TORQUE, WRIST_TORQUE),
+                    Pull::Press { at, normal, depth } => {
+                        // (Moving away from the hand faster than it presses, it's pushed less: the
+                        // hand never holds it back.)
+                        let damp = 2.0 * (ARM_STIFFNESS * self.mass_at(at)).sqrt();
+                        let f = (depth * ARM_STIFFNESS - self.point_vel(at).dot(normal) * damp).clamp(0.0, ARM_FORCE);
+                        self.drive(at, normal * f)
+                    }
                 };
             }
+            // Its weight, its spring and its damping.
+            if self.weight != Vec3::ZERO {
+                torque += self.drive(self.com, self.weight);
+            }
+            torque -= self.spring * self.angle + self.damping * self.vel;
             // Its clicks: near an end, pulled into it (and held there against up to `detent`).
             if self.limited() && detent > 0.0 {
                 let zone = DETENT_ZONE.min((self.max - self.min) / 3.0);

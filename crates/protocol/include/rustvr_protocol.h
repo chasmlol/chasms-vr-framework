@@ -96,6 +96,11 @@
 
 #define RVR_CTRL_TOUCH_STICK (1 << 9)
 
+/**
+ * The thumb rests on the thumbrest (Touch controllers).
+ */
+#define RVR_CTRL_TOUCH_REST (1 << 10)
+
 #define RVR_HAND_LEFT 0
 
 #define RVR_HAND_RIGHT 1
@@ -694,11 +699,18 @@
 #define RVR_OBJ_DRIVEN 7
 
 /**
- * Anything turned by hand on an axle fixed in the world: a valve's wheel, a switch's knob, a lever.
- * Centre and axis (+Z) its spawn pose, the rim `radius` out, `mass` its weight, `friction` what
- * it takes to turn, the range it turns in and the clicks it holds in (`turn_min`, `turn_max`,
- * `detent`) and how a hand turns it (`joint_flags`) (`rig::valve`). Its state's `slide` is how
- * far it's turned: the game reads that to work its own mechanism.
+ * Anything worked by hand on a hinge or a slide fixed in the world: a valve's wheel, a switch's
+ * knob, a lever, a door's leaf, a lid, a drawer, a button, a pull chain. Centre and axis (+Z) its
+ * spawn pose, the rim `radius` out, `mass` its weight, `friction` what it takes to turn (or slide:
+ * [`JOINT_SLIDE`]), the range it moves in and the clicks it holds in (`turn_min`, `turn_max`,
+ * `detent`), what pulls it back and slows it (`joint_spring`, `joint_damping`) and what kind of
+ * thing it is (`joint_flags`) (`rig::valve`). Its state's `slide` is how far it's turned (or slid):
+ * the game reads that to work its own mechanism. With [`SHAPE_HULL`] its collider is the game's
+ * own shape of the part that moves (in its frame where it arrives), which a hand takes anywhere,
+ * and its inertia about the axle is that shape's.
+ *
+ * The game may change its range, stiffness and spring as it goes (a door's latch, its lock): the
+ * runtime takes them whenever the table changes, keeping where it's turned to.
  */
 #define RVR_OBJ_VALVE 6
 
@@ -707,6 +719,27 @@
  * on its rim). The runtime takes any valve smaller than a hand's grip as one.
  */
 #define RVR_JOINT_TWIST (1 << 0)
+
+/**
+ * Valves: it slides along its +Z instead of turning about it (a drawer, a button, a pull chain, a
+ * sliding door, a portcullis): its range, its state's `slide` and its spring in metres, its
+ * friction in N.
+ */
+#define RVR_JOINT_SLIDE (1 << 1)
+
+/**
+ * Valves: a part that swings or slides through the room (a door's leaf, a lid, a gate). It's solid
+ * to the empty hands (they rest on it as on a wall) and to what they hold, and a hand pressed on
+ * it pushes it (an arm's push where it presses, never a pull); the player's body and the game's
+ * creatures stop it, as a door stops on whoever is in its way.
+ */
+#define RVR_JOINT_PANEL (1 << 2)
+
+/**
+ * Valves: its own weight moves it (a lid falls shut, a trap door hangs down, a drawbridge drops),
+ * from the centre of mass of its collider.
+ */
+#define RVR_JOINT_GRAVITY (1 << 3)
 
 #define RVR_OBJF_GRABBABLE (1 << 0)
 
@@ -803,20 +836,22 @@
 #define RVR_SHAPE_SPHERE 2
 
 /**
- * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
- * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ * The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+ * collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+ * Until its points arrive, the box `half_extents` about `center`.
  */
 #define RVR_SHAPE_HULL 3
 
 /**
  * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
- * whenever the objects offered change (before they're published).
+ * whenever the objects offered change (before they're published). An object with several convex
+ * parts has an entry for each.
  */
 #define RVR_OFF_GAME_HULLS 5046272
 
-#define RVR_MAX_GAME_HULLS 48
+#define RVR_MAX_GAME_HULLS 240
 
-#define RVR_MAX_HULL_POINTS 128
+#define RVR_MAX_HULL_POINTS 32
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 
