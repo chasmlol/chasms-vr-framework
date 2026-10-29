@@ -31,6 +31,9 @@ pub struct BodyInput<'a> {
     pub held: [Option<HeldHand>; 2],
     /// Hands holding something otherwise: what their fingers close on (the rig's grasps).
     pub grasps: [Option<&'a Grasp>; 2],
+    /// How far each finger (thumb .. little) is pushed open from its curl by what the empty hand is
+    /// pressed on (the rig's, 0 or less).
+    pub finger_give: [[f32; 5]; 2],
     /// Stick locomotion velocity in tracking space (m/s), for the legs' gait.
     pub locomotion: Vec3,
     /// Standing head height as measured in tracking space (0: not known yet).
@@ -267,16 +270,14 @@ impl PlayerBody {
                 holding: rig.map(|h| h.holding).unwrap_or(0),
                 _pad: [0; 2],
             };
-            let touch_thumb = c.buttons & (CTRL_TOUCH_A | CTRL_TOUCH_B | CTRL_TOUCH_STICK) != 0;
-            let thumb_press = c.buttons & (CTRL_A | CTRL_B | CTRL_STICK_CLICK) != 0;
-            let fi = FingerInput {
-                trigger: c.trigger,
-                squeeze: c.squeeze,
-                touch_trigger: c.buttons & CTRL_TOUCH_TRIGGER != 0 || c.trigger > 0.02,
-                touch_thumb: touch_thumb || thumb_press,
-                thumb_press,
-            };
+            let fi = FingerInput::from_controller(c);
             body.fingers[i] = self.fingers[i].update(f.dt.clamp(1e-4, 0.1), &fi, inp.holds[i]);
+            // Pressed on something, the fingers are pushed open (and the hand spreads a little).
+            let give = inp.finger_give[i];
+            for (c, g) in body.fingers[i].curl.iter_mut().zip(give) {
+                *c += g;
+            }
+            body.fingers[i].splay = (body.fingers[i].splay - 0.4 * give.iter().sum::<f32>() / 5.0).min(1.0);
             self.ghosts[i] = inp.ghosts[i].map(|g| proto(self.offsets.hand_frame(SIDES[i], ik(g))));
         }
         self.held = [0, 1].map(|i| held[i].filter(|_| grips[i].is_some()));
@@ -476,6 +477,7 @@ mod tests {
                 holds: [HoldShape::None; 2],
                 held: [None; 2],
                 grasps: [None; 2],
+                finger_give: [[0.0; 5]; 2],
                 locomotion: Vec3::ZERO,
                 eye_height: 1.7,
                 floor: 0.0,
@@ -510,6 +512,7 @@ mod tests {
                     holds: [HoldShape::None, HoldShape::PistolGrip],
                     held: [None, Some(held)],
                     grasps: [None; 2],
+                    finger_give: [[0.0; 5]; 2],
                     locomotion: Vec3::ZERO,
                     eye_height: 1.7 + floor,
                     floor,

@@ -416,7 +416,9 @@ impl Rig {
                     }
                     None => {
                         let own = &input.fingers[side];
-                        let mut curls = [own.curl[f].clamp(0.0, 1.0); 3];
+                        // (Pressed flat on something, a finger bends back at its base.)
+                        let c = own.curl[f];
+                        let mut curls = [c.clamp(-LIFT[f], 1.0), c.clamp(0.0, 1.0), c.clamp(0.0, 1.0)];
                         let mut splay = own.splay;
                         // Holding something: the finger closes on it, as far as the grasp has.
                         let grasp = input.grasp[side].filter(|g| g.fingers & (1 << f) != 0 && g.weight > 0.0);

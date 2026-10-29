@@ -300,10 +300,11 @@ fn a_hand_reached_tight_round_a_corner_clipping_it_still_gets_round() {
 #[test]
 fn the_leash_frees_a_hand_snagged_behind_something_the_head_sees_past() {
     let mut s = Sim::new();
-    // A thin post, low beside the player: the hand catches on it, the head sees past it.
-    world_box(&mut s.rig, 3, [0.3, 1.0, 0.4], [0.03, 0.3, 0.03]);
+    // A low panel beside the player, too wide to slide round: the hand catches on it, the head
+    // sees past it.
+    world_box(&mut s.rig, 3, [0.3, 1.0, 0.4], [0.3, 0.3, 0.03]);
     s.move_hand(1, Vec3::new(0.3, 1.0, 0.2), 15);
-    s.move_hand(1, Vec3::new(0.3, 1.0, 1.3), 10); // through the post, past the leash
+    s.move_hand(1, Vec3::new(0.3, 1.0, 1.3), 10); // through the panel, past the leash
     s.step(5);
     let h = v3(s.out.hands[1].pose.pos);
     assert!(h.distance(s.hand_pos(1)) < 0.05, "snapped back to the controller: {h:?}");
@@ -3045,4 +3046,65 @@ fn the_free_hand_rests_on_what_the_other_hand_holds() {
     }
     assert_eq!(s.rig.held(0), Some(BOTTLE));
     assert!(worst < 0.02, "no jump out of it: {worst}");
+}
+
+#[test]
+fn a_hand_held_back_catches_up_eased_not_all_at_once() {
+    let mut s = Sim::new();
+    // Palm down on the table (top at 0.8, its edge at x = 0.6), the controller 15 cm down in it.
+    s.set_rot(1, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+    s.move_hand(1, Vec3::new(0.3, 1.0, 0.6), 20);
+    s.move_hand(1, Vec3::new(0.3, 0.7, 0.6), 30);
+    s.step(10);
+    let c = s.rig.hands.as_ref().unwrap()[1].collider;
+    // Slid off the edge: once clear of it, the hand drops to the controller.
+    let (mut worst, mut deepest) = (0.0f32, 0.0f32);
+    let mut last = (v3(s.out.hands[1].pose.pos), s.hand_pos(1));
+    for k in 1..=90 {
+        s.set_hand(1, Vec3::new(0.3, 0.7, 0.6).lerp(Vec3::new(0.9, 0.7, 0.6), (k as f32 / 30.0).min(1.0)));
+        s.step(1);
+        let now = (v3(s.out.hands[1].pose.pos), s.hand_pos(1));
+        // How much further the hand went than its controller did this frame.
+        worst = worst.max(now.0.distance(last.0) - now.1.distance(last.1));
+        deepest = deepest.max(depth_in_world(&s, c));
+        last = now;
+    }
+    let hand = v3(s.out.hands[1].pose.pos);
+    assert!(worst < 0.025, "no jump: {worst} m further than the controller in a frame at worst");
+    assert!(deepest < 0.003, "never through the table's edge: {deepest}");
+    assert!(hand.distance(s.hand_pos(1)) < 0.01, "caught up with it: {hand:?} vs {:?}", s.hand_pos(1));
+}
+
+#[test]
+fn fingers_give_way_pressed_on_a_wall_and_curl_back_after() {
+    let mut s = Sim::new();
+    world_box(&mut s.rig, 3, [0.2, 1.3, 0.75], [0.4, 0.3, 0.05]);
+    // A relaxed hand, palm towards the wall, pushed 10 cm on into it.
+    s.set_rot(1, Quat::from_rotation_y(std::f32::consts::FRAC_PI_2));
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.45), 20);
+    let relaxed = s.out.finger_give[1];
+    assert!(relaxed.iter().all(|&g| g == 0.0), "nothing pushes them in the air: {relaxed:?}");
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.8), 30);
+    s.step(10);
+    let c = s.rig.hands.as_ref().unwrap()[1].collider;
+    let pressed = s.out.finger_give[1];
+    // (The index, off the trigger, is straight already.)
+    assert!(pressed[2..].iter().all(|&g| g < -0.05), "the fingers are pushed open: {pressed:?}");
+    assert!(depth_in_world(&s, c) < 0.003, "and nothing's in the wall: {}", depth_in_world(&s, c));
+    let palm_gap = s.rig.physics.world.cast_ray(&rapier3d::prelude::Ray::new(rapier3d::prelude::Vector::new(0.2, 1.3, 0.5), rapier3d::prelude::Vector::new(0.0, 0.0, 1.0)), 1.0, true, rapier3d::prelude::QueryFilter::default().groups(physics::groups_world())).map(|(_, t)| t);
+    let hand_z = v3(s.out.hands[1].pose.pos).z;
+    assert!(palm_gap.is_some() && hand_z > 0.66, "the palm comes onto the wall: the hand at z {hand_z}");
+    // Taken off it, they curl back as they were.
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.45), 20);
+    s.step(30);
+    let after = s.out.finger_give[1];
+    assert!(after.iter().all(|&g| g > -0.01), "back as they were: {after:?}");
+    // A clenched fist hardly gives.
+    s.f.hands[1].squeeze = 1.0;
+    s.f.hands[1].trigger = 1.0;
+    s.f.hands[1].buttons |= CTRL_TOUCH_TRIGGER | CTRL_A;
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.8), 30);
+    s.step(10);
+    let fist = s.out.finger_give[1];
+    assert!(fist[1..].iter().all(|&g| g > -0.35), "a fist stays a fist: {fist:?}");
 }

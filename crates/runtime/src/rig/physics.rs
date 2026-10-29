@@ -219,7 +219,7 @@ impl Physics {
     /// A hand's collider as the palm and its fingers (`palm` its box: centre, rotation, half sizes;
     /// `fingers` each one's ends; all in the hand's own space), so the fingers meet what the hand
     /// does: nothing goes through them.
-    pub fn set_hand_shape(&mut self, c: ColliderHandle, palm: (V3, Q, V3), fingers: &[(V3, V3); 5]) {
+    pub fn set_hand_shape(&mut self, c: ColliderHandle, palm: (V3, Q, V3), fingers: &[(V3, V3)]) {
         let Some(col) = self.world.colliders.get_mut(c) else { return };
         col.set_position_wrt_parent(to_pose(V3::ZERO, Q::IDENTITY));
         let (at, q, half) = palm;
@@ -347,6 +347,15 @@ impl Physics {
             left += n * 1e-4;
         }
         pos
+    }
+
+    /// Whether a finger from `a` to `b` (world, `radius` thick) is in anything solid (`solid`, not
+    /// `skip`).
+    pub fn finger_in(&self, a: V3, b: V3, radius: f32, solid: InteractionGroups, skip: Option<ColliderHandle>) -> bool {
+        let shape = rapier3d::parry::shape::Capsule::new(to_v(a), to_v(b), radius);
+        let not_skipped = |h: ColliderHandle, _: &Collider| Some(h) != skip;
+        let filter = QueryFilter { groups: Some(solid), predicate: Some(&not_skipped), ..Default::default() };
+        self.world.intersect_shape(to_pose(V3::ZERO, Q::IDENTITY), &shape, filter).next().is_some()
     }
 
     /// How far apart two colliders are (0 touching or overlapping).

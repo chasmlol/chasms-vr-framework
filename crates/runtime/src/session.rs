@@ -748,6 +748,7 @@ impl Session {
                 holds: if rig_active { self.rig_out.holds } else { [rustvr_ik::HoldShape::None; 2] },
                 held,
                 grasps: if rig_active { [self.rig.grasps()[0].as_ref(), self.rig.grasps()[1].as_ref()] } else { [None; 2] },
+                finger_give: if rig_active { self.rig_out.finger_give } else { [[0.0; 5]; 2] },
                 locomotion,
                 eye_height: if stand > 0.5 { stand } else { 0.0 },
                 floor,

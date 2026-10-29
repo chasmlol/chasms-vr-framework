@@ -24,6 +24,22 @@ pub struct FingerInput {
     pub thumb_press: bool,
 }
 
+impl FingerInput {
+    /// What a controller's trigger, grip and touch sensors say of the fingers.
+    pub fn from_controller(c: &rustvr_protocol::Controller) -> Self {
+        use rustvr_protocol::*;
+        let touch_thumb = c.buttons & (CTRL_TOUCH_A | CTRL_TOUCH_B | CTRL_TOUCH_STICK) != 0;
+        let thumb_press = c.buttons & (CTRL_A | CTRL_B | CTRL_STICK_CLICK) != 0;
+        FingerInput {
+            trigger: c.trigger,
+            squeeze: c.squeeze,
+            touch_trigger: c.buttons & CTRL_TOUCH_TRIGGER != 0 || c.trigger > 0.02,
+            touch_thumb: touch_thumb || thumb_press,
+            thumb_press,
+        }
+    }
+}
+
 /// How the fingers wrap a held object.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum HoldShape {
@@ -105,7 +121,9 @@ impl FingerSolver {
         Fingers { curl: self.curl, splay: self.splay, _pad: [0.0; 2] }
     }
 
-    fn target(input: &FingerInput, hold: HoldShape) -> ([f32; 5], f32) {
+    /// The curls (thumb .. little) and splay the fingers go to for `input` holding `hold`, before
+    /// smoothing.
+    pub fn target(input: &FingerInput, hold: HoldShape) -> ([f32; 5], f32) {
         let squeeze = unit(input.squeeze);
         let thumb = if input.thumb_press {
             0.85

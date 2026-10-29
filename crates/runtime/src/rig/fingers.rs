@@ -5,16 +5,19 @@
 //! (`rustvr_ik`: +Y along the fingers, +Z on the thumb side; the palm faces +X on the right hand,
 //! -X on the left), placed on the hand joint the same offsets put the drawn hand on. A curl turns
 //! the finger in towards the palm and shortens it to the chord a bent finger spans. The sizes are
-//! an adult hand's (the drawn hands' own vary by model; these only decide what the fingers touch).
+//! an adult hand's, the thumb's as the drawn hands' (Metro's): out in front of the palm, folding
+//! across it towards the little finger. The drawn hands' own vary by model; these only decide what
+//! the fingers touch.
 
 use glam::{Quat, Vec3};
 
 /// Capsule radius (a finger's half thickness).
 pub const RADIUS: f32 = 0.009;
 
-/// Thumb, index, middle, ring, pinky: (knuckle in the hand frame, straight direction, length).
+/// Thumb, index, middle, ring, pinky: (knuckle in the right hand's frame, the left's its mirror
+/// image; straight direction; length).
 const FINGERS: [([f32; 3], [f32; 3], f32); 5] = [
-    ([0.0, 0.035, 0.03], [0.0, 0.62, 0.78], 0.06),
+    ([0.004, 0.025, 0.015], [0.28, 0.76, 0.58], 0.10),
     ([0.0, 0.095, 0.026], [0.0, 1.0, 0.0], 0.075),
     ([0.0, 0.098, 0.008], [0.0, 1.0, 0.0], 0.085),
     ([0.0, 0.095, -0.010], [0.0, 1.0, 0.0], 0.08),
@@ -32,24 +35,43 @@ pub fn palm(hand: (Vec3, Quat)) -> (Vec3, Quat, Vec3) {
     (hand.0 + hand.1 * Vec3::from_array(c), hand.1, Vec3::from_array(half))
 }
 
-/// How far a full curl turns a finger (the thumb less), radians.
-const CURL: [f32; 5] = [1.2, 1.9, 1.9, 1.9, 1.9];
+/// How far each finger bends back past straight at most, pressed flat on something (a curl): the
+/// thumb a long way (it lies back beside the hand).
+pub const BACK: [f32; 5] = [1.2, 0.15, 0.15, 0.15, 0.15];
+
+/// How far a finger curled `curl` (0 straight .. 1 a fist's) is pushed open by what it's pressed on,
+/// at most: a relaxed finger all the way (and back past straight), a clenched one only a little.
+pub fn give(curl: f32) -> f32 {
+    let c = curl.clamp(0.0, 1.0);
+    1.2 * (1.0 - 0.75 * c * c)
+}
+
+/// How a full curl turns a finger (the thumb less), radians; and a curl back past straight (the
+/// thumb's at its base, as the drawn hand's).
+const CURL: [f32; 5] = [1.0, 1.9, 1.9, 1.9, 1.9];
+const CURL_BACK: [f32; 5] = [0.45, 1.9, 1.9, 1.9, 1.9];
+/// How much shorter a full curl makes a finger's span (the thumb's hardly).
+const SHORTEN: [f32; 5] = [0.15, 0.35, 0.35, 0.35, 0.35];
 
 /// The five fingers' segments (knuckle, tip) in the world, for a hand joint at `hand` (position,
 /// the canonical frame's rotation) on the `right` hand or the left, with each finger's curl (0
-/// straight .. 1 a fist).
+/// straight .. 1 a fist; down to -[`BACK`] bent back).
 pub fn segments(hand: (Vec3, Quat), right: bool, curls: [f32; 5]) -> [(Vec3, Vec3); 5] {
     let (pos, rot) = hand;
     let palm = if right { Vec3::X } else { Vec3::NEG_X };
+    let side = |v: [f32; 3]| if right { Vec3::from_array(v) } else { Vec3::new(-v[0], v[1], v[2]) };
     std::array::from_fn(|i| {
         let (k, d, len) = FINGERS[i];
-        let c = curls[i].clamp(0.0, 1.0);
-        let straight = Vec3::from_array(d).normalize();
-        // Turned in towards the palm about the axis across the finger.
-        let axis = straight.cross(palm).normalize_or(Vec3::Z);
-        let dir = Quat::from_axis_angle(axis, c * CURL[i]) * straight;
-        let chord = len * (1.0 - 0.35 * c);
-        let a = pos + rot * Vec3::from_array(k);
+        let c = curls[i].clamp(-BACK[i], 1.0);
+        let straight = side(d).normalize();
+        // Turned in towards the palm about the axis across the finger (the thumb across it,
+        // towards the little finger, more than into it).
+        let toward = if i == 0 { (palm * 0.6 - Vec3::Z).normalize() } else { palm };
+        let axis = straight.cross(toward).normalize_or(Vec3::Z);
+        let turn = if c >= 0.0 { c * CURL[i] } else { c * CURL_BACK[i] };
+        let dir = Quat::from_axis_angle(axis, turn) * straight;
+        let chord = len * (1.0 - SHORTEN[i] * c.max(0.0));
+        let a = pos + rot * side(k);
         (a, a + rot * (dir * chord))
     })
 }
