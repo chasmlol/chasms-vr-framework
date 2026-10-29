@@ -40,6 +40,9 @@ pub struct Status {
     /// The headset's per-eye resolution (what it's shown), and the game's (what it draws).
     pub headset_size: (u32, u32),
     pub game_size: Option<(u32, u32)>,
+    /// The overscan the game draws with now (less than the setting's while a game that can't
+    /// change its size waits to be restarted).
+    pub overscan_shown: f32,
 }
 
 pub struct RuntimeMenu {
@@ -485,6 +488,12 @@ fn display(ui: &mut egui::Ui, s: &mut Settings, status: &Status) {
     });
     // (More draws more: for a wider desktop view when recording, in games that can spare it.)
     slider(ui, "Overscan: drawn past the headset's view", &mut s.vr.overscan, 0.0, 30.0, " deg", 0);
+    if s.vr.overscan - status.overscan_shown > 0.5 {
+        ui.label(format!(
+            "The game can't change its size while it runs: {:.0} of the {:.0} degrees show now, all of them when it's restarted",
+            status.overscan_shown, s.vr.overscan
+        ));
+    }
     slider(ui, "HUD distance", &mut s.ui.hud_distance, 0.6, 3.0, " m", 2);
     slider(ui, "HUD size", &mut s.ui.hud_size, 0.6, 3.0, " m", 2);
     ui.checkbox(&mut s.ui.hud_follow_head, "HUD follows your head");

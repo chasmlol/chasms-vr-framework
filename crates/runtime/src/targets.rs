@@ -48,6 +48,37 @@ pub fn render_scale(headset: [Fov; 2], drawn: [Fov; 2]) -> (f32, f32) {
     (r(a.0.max(b.0)), r(a.1.max(b.1)))
 }
 
+/// How much wider and taller (tangent spans) `drawn` is than `headset`, unrounded: both eyes'
+/// most.
+fn widening(headset: [Fov; 2], drawn: [Fov; 2]) -> (f32, f32) {
+    let k = |e: usize| {
+        let (h, d) = (headset[e], drawn[e]);
+        ((d.right - d.left) / (h.right - h.left).max(1e-3), (d.up - d.down) / (h.up - h.down).max(1e-3))
+    };
+    let (a, b) = (k(0), k(1));
+    (a.0.max(b.0), a.1.max(b.1))
+}
+
+/// The overscan a game drawing at a size it can't change (`room`: its eyes' size over the size the
+/// headset's view wants at the supersampling, each way) shows at full sharpness: `wanted`, or as
+/// much of it as its pixels go round (none when they don't go round the headset's own view).
+/// The rest comes when the game starts again at the size [`eye_size`] asks for.
+pub fn fitting_overscan(headset: [Fov; 2], wanted: f32, room: (f32, f32)) -> f32 {
+    let fits = |o: f32| {
+        let (w, h) = widening(headset, render_fov(headset, o));
+        w <= room.0 + 1e-3 && h <= room.1 + 1e-3
+    };
+    if wanted <= 0.0 || fits(wanted) {
+        return wanted.max(0.0);
+    }
+    let (mut lo, mut hi) = (0.0f32, wanted);
+    for _ in 0..20 {
+        let mid = 0.5 * (lo + hi);
+        if fits(mid) { lo = mid } else { hi = mid }
+    }
+    lo
+}
+
 /// The longest side a game's eye can be (pixels): Direct3D 11's largest texture.
 pub const MAX_SIDE: u32 = 16384;
 
@@ -190,5 +221,29 @@ impl SharedTargets {
             slots: SLOT_COUNT as u32,
             _pad: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Quest 3's eyes (Virtual Desktop's field of view), tangents.
+    fn quest() -> [Fov; 2] {
+        let t = |d: f32| d.to_radians().tan();
+        [Fov { left: -t(54.0), right: t(43.0), up: t(46.0), down: -t(52.0) }, Fov { left: -t(43.0), right: t(54.0), up: t(46.0), down: -t(52.0) }]
+    }
+
+    #[test]
+    fn a_game_that_cant_grow_shows_only_the_overscan_its_pixels_keep_sharp() {
+        let h = quest();
+        // Drawn at the headset's own size (no room): none of it.
+        assert!(fitting_overscan(h, 20.0, (1.0, 1.0)) < 0.1);
+        // Drawn at the size 10 degrees asks for: 10 of the 20 now.
+        let room = widening(h, render_fov(h, 10.0));
+        let shown = fitting_overscan(h, 20.0, room);
+        assert!((shown - 10.0).abs() < 0.05, "{shown}");
+        // Drawn big enough for all of it: all of it.
+        assert_eq!(fitting_overscan(h, 8.0, room), 8.0);
     }
 }

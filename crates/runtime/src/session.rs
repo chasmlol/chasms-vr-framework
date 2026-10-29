@@ -105,6 +105,10 @@ pub struct Session {
     /// while the GPU can't make that size.
     target_wanted: Option<Spec>,
     target_shrink: f32,
+    /// The overscan the game draws with now (degrees): the setting's, or as much of it as a game
+    /// at a size of its own keeps sharp (`targets::fitting_overscan`); and the last said of it.
+    overscan_shown: f32,
+    overscan_said: f32,
     spectator_cam: crate::spectator::SteadyCamera,
     /// Tests: where the desktop view's frames are saved, and when one was last.
     spectator_capture: Option<(PathBuf, f64)>,
@@ -243,6 +247,8 @@ impl Session {
             headset_post: None,
             target_wanted: None,
             target_shrink: 1.0,
+            overscan_shown: 0.0,
+            overscan_said: 0.0,
             spectator_capture: capture.map(|d| (d, 0.0)),
             spectator_cam: crate::spectator::SteadyCamera::default(),
             comp: Compositor::new(&gpu)?,
@@ -415,6 +421,27 @@ impl Session {
         if let Some(g) = &self.game {
             // (Drawn wider than the headset shows, and bigger to stay as sharp: `targets::render_fov`.)
             let drawn = crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan);
+            // A game that draws at a size of its own (it can't change it while it runs: Oblivion)
+            // is asked to draw only as wide as its pixels keep the headset's sharpness; all the
+            // overscan once it starts again at the size the eyes ask for (`RtFrame::eye_size`).
+            self.overscan_shown = if g.request.eye_w > 0 && g.request.eye_h > 0 {
+                let rs = self.settings.current.vr.render_scale.clamp(0.25, 3.0);
+                let (rw, rh) = self.backend.recommended_size();
+                let room = (g.request.eye_w as f32 / (rw as f32 * rs).max(1.0), g.request.eye_h as f32 / (rh as f32 * rs).max(1.0));
+                crate::targets::fitting_overscan(frame.fov, self.settings.current.vr.overscan, room)
+            } else {
+                self.settings.current.vr.overscan
+            };
+            if (self.overscan_shown - self.settings.current.vr.overscan).abs() > 0.5 && (self.overscan_shown - self.overscan_said).abs() > 0.5 {
+                tracing::info!(
+                    "runtime: the game draws {}x{} an eye until it's restarted: {:.0} of the {:.0} degrees of overscan show now",
+                    g.request.eye_w,
+                    g.request.eye_h,
+                    self.overscan_shown,
+                    self.settings.current.vr.overscan
+                );
+            }
+            self.overscan_said = self.overscan_shown;
             let wanted = Spec::new(&g.request, self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn), &self.settings.current);
             // (Smaller by `target_shrink` while the GPU couldn't make this size: a supersampled and
             // overscanned eye can be more than it has room for.)
@@ -844,7 +871,7 @@ impl Session {
             eyes: ahead.eyes,
             // Wider than the headset shows (`targets::render_fov`): its turning the picture to the
             // head as it shows it never reaches an edge that wasn't drawn.
-            fov: crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan),
+            fov: crate::targets::render_fov(frame.fov, self.overscan_shown),
             hands: ahead.hands,
             tracking: out.tracking,
             intents: out.intents,
@@ -898,6 +925,7 @@ impl Session {
                 head_height: self.mech.debug.stand_h,
                 countdown: self.calibrate_at.map(|t| (t - now).max(0.0) as f32),
                 headset_size: self.backend.recommended_size(),
+                overscan_shown: self.overscan_shown,
                 game_size: self.targets.as_ref().map(|t| (t.spec.eye_w, t.spec.eye_h)),
             };
             self.menu.update(&self.gpu, &mut self.settings.current, menu_pointer, &status)?;
