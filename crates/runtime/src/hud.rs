@@ -8,7 +8,7 @@
 //!
 //! | Role | Where |
 //! |---|---|
-//! | subtitles | a caption strip 13 degrees under gaze, 1.5 m away, at most ~50 degrees wide |
+//! | subtitles | a caption strip 13 degrees under gaze, 1.5 m away, at most ~50 degrees wide (its text the size the game's text is in menus, when the game says how tall that is) |
 //! | hints | a row just above the subtitles (6 degrees under gaze) |
 //! | prompts | the caption strip's right end |
 //! | ammo | on the held gun's left side, facing you (Half-Life: Alyx); hidden with no gun |
@@ -315,7 +315,14 @@ impl HudPlacer {
             };
             let strip = |yaw_off: f32, pitch_off: f32| {
                 let (y, p) = (ay + yaw_off.to_radians(), ap + pitch_off.to_radians());
-                let (w, h) = sized(strip_full, strip_max);
+                // (Sized from the game's text where the game says how tall it is, as menus are.)
+                let (w, h) = if layout.text_height > 0.0 {
+                    let unit = cd * per_metre * scale;
+                    let w = (du * aspect * unit).min(strip_max);
+                    (w, w * dv / du / aspect)
+                } else {
+                    sized(strip_full, strip_max)
+                };
                 let mut panel = Panel::facing(head_pos + Panel::dir(y, p) * cd, y, p, w, aspect);
                 panel.height = h;
                 panel
