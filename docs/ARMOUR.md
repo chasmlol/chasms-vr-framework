@@ -64,7 +64,8 @@ back, reaching, holding a gun, a squat) and draws each pose with the runtime's o
   bones their skin is on, heaviest first), then the plates its marks make (what each rides, its
   pivot at rest, its layer), what went wrong, and the rules that chose nothing in it.
 
-`--poses`, `--size` and `--plain` (one colour, no textures) narrow it down.
+`--poses`, `--size`, `--plain` (one colour, no textures) and `--visibility hands|arms|full` (what
+of the body the pose pictures show, as the menu's setting does) narrow it down.
 
 ## 3. The file
 

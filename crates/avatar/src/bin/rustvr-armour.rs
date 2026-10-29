@@ -8,7 +8,8 @@
 //!
 //! ```text
 //! rustvr-armour <game> (--set <name> | <model>...) [--out <folder>] [--poses <a,b,..>]
-//!               [--views <a,b,..>] [--skin linear,centres,marked] [--size <pixels>] [--plain] [--list]
+//!               [--views <a,b,..>] [--skin linear,centres,marked] [--size <pixels>] [--plain]
+//!               [--visibility hands|arms|full] [--list]
 //! ```
 //!
 //! Models are named as the game names them (`armor\iron\m\gauntlets.nif`) or by their keys in the
@@ -90,12 +91,14 @@ struct Args {
     skins: Vec<String>,
     size: u32,
     plain: bool,
+    /// `BODYVIS_*`: what of the body the pose pictures show.
+    visibility: u32,
     list: bool,
 }
 
 fn args() -> Result<Args> {
     let mut it = std::env::args().skip(1);
-    let mut a = Args { game: String::new(), set: None, models: Vec::new(), out: None, poses: None, views: None, skins: vec!["linear".into(), "centres".into(), "marked".into()], size: 400, plain: false, list: false };
+    let mut a = Args { game: String::new(), set: None, models: Vec::new(), out: None, poses: None, views: None, skins: vec!["linear".into(), "centres".into(), "marked".into()], size: 400, plain: false, visibility: BODYVIS_FULL, list: false };
     while let Some(x) = it.next() {
         let mut value = || it.next().with_context(|| format!("{x} needs a value"));
         match x.as_str() {
@@ -106,6 +109,14 @@ fn args() -> Result<Args> {
             "--skin" => a.skins = value()?.split(',').map(str::to_owned).collect(),
             "--size" => a.size = value()?.parse()?,
             "--plain" => a.plain = true,
+            "--visibility" => {
+                a.visibility = match value()?.as_str() {
+                    "hands" => BODYVIS_HANDS,
+                    "arms" => BODYVIS_ARMS,
+                    "full" => BODYVIS_FULL,
+                    other => bail!("--visibility {other}: hands, arms or full"),
+                }
+            }
             "--list" => a.list = true,
             _ if x.starts_with("--") => bail!("unknown option {x}"),
             _ if a.game.is_empty() => a.game = x,
@@ -173,7 +184,7 @@ fn main() -> Result<()> {
         };
         let mut avatar = Avatar::new(&gpu, rustvr_avatar::compose(&dir, &skeleton, &parts, &[], skinning)?)?;
         for (p, (_, joints)) in poses.iter().enumerate() {
-            let row: Vec<Vec<u8>> = views.iter().map(|&v| render(&gpu, &mut avatar, size, joints, v, a.plain)).collect::<Result<_>>()?;
+            let row: Vec<Vec<u8>> = views.iter().map(|&v| render(&gpu, &mut avatar, size, joints, v, a.plain, a.visibility)).collect::<Result<_>>()?;
             sheets[p].push(tile_row(&row, size));
         }
     }
@@ -195,7 +206,7 @@ fn main() -> Result<()> {
         let mut rows = Vec::new();
         for joints in &posed {
             // Each label at the middle of its island as posed.
-            let skin = avatar.skin(&frame(joints, false, false));
+            let skin = avatar.skin(&frame(joints, false, false, BODYVIS_FULL));
             let placed: Vec<(&str, Vec3)> = labels
                 .iter()
                 .map(|(text, mesh, vertices)| (text.as_str(), vertices.iter().map(|&v| skin[starts[*mesh] + v as usize].0).sum::<Vec3>() / vertices.len().max(1) as f32))
@@ -203,7 +214,7 @@ fn main() -> Result<()> {
             let row: Vec<Vec<u8>> = [View::Front, View::Side, View::Back, View::Arm]
                 .iter()
                 .map(|&v| {
-                    let mut px = render(&gpu, &mut avatar, size, joints, v, false)?;
+                    let mut px = render(&gpu, &mut avatar, size, joints, v, false, BODYVIS_FULL)?;
                     let (eye, fov) = camera(joints, v, size);
                     for (text, at) in &placed {
                         if let Some(p) = project(&eye, &fov, size, *at) {
@@ -470,7 +481,7 @@ fn project(eye: &Pose, fov: &Fov, (w, h): (u32, u32), p: Vec3) -> Option<(i32, i
 }
 
 /// One view of the avatar posed as `joints`, over a plain backdrop: sRGB RGBA8.
-fn render(gpu: &Gpu, avatar: &mut Avatar, size: (u32, u32), joints: &[Pose; JOINT_COUNT], view: View, plain: bool) -> Result<Vec<u8>> {
+fn render(gpu: &Gpu, avatar: &mut Avatar, size: (u32, u32), joints: &[Pose; JOINT_COUNT], view: View, plain: bool, visibility: u32) -> Result<Vec<u8>> {
     let (w, h) = size;
     let target = Texture::new(gpu, &TexDesc::target(w, h, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB))?;
     let mut bg = Vec::with_capacity((w * h * 4) as usize);
@@ -482,12 +493,12 @@ fn render(gpu: &Gpu, avatar: &mut Avatar, size: (u32, u32), joints: &[Pose; JOIN
     }
     unsafe { gpu.ctx.UpdateSubresource(&target.tex, 0, None, bg.as_ptr().cast(), w * 4, 0) };
     let (eye, fov) = camera(joints, view, size);
-    avatar.draw(gpu, target.rtv.as_ref().context("the target's view")?, w, h, &eye, &fov, &frame(joints, view == View::Eye, plain), None)?;
+    avatar.draw(gpu, target.rtv.as_ref().context("the target's view")?, w, h, &eye, &fov, &frame(joints, view == View::Eye, plain, visibility), None)?;
     target.read_rgba8(gpu)
 }
 
 /// The body posed as `joints`, relaxed hands, in daylight.
-fn frame(joints: &[Pose; JOINT_COUNT], first_person: bool, plain: bool) -> AvatarFrame<'_> {
+fn frame(joints: &[Pose; JOINT_COUNT], first_person: bool, plain: bool, visibility: u32) -> AvatarFrame<'_> {
     let sun = Vec3::new(-0.45, 0.8, 0.5).normalize();
     AvatarFrame {
         joints,
@@ -496,7 +507,7 @@ fn frame(joints: &[Pose; JOINT_COUNT], first_person: bool, plain: bool) -> Avata
         ghosts: [None; 2],
         held: [None; 2],
         grasp: [None; 2],
-        visibility: BODYVIS_FULL,
+        visibility,
         light: LightHint { sun_dir: sun.to_array(), sun_color: [1.0, 0.94, 0.86], ambient: [0.2, 0.22, 0.26], ..Default::default() },
         first_person,
         plain,
