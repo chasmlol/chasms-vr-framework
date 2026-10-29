@@ -99,6 +99,8 @@ pub struct Session {
     spectator: Option<crate::spectator::Window>,
     /// The game's depth, bloom and lens as the desktop view's camera sees them.
     spectator_post: Option<crate::compositor::PostTargets>,
+    /// And as the headset's view of an overscanned picture sees them.
+    headset_post: Option<crate::compositor::PostTargets>,
     spectator_cam: crate::spectator::SteadyCamera,
     /// Tests: where the desktop view's frames are saved, and when one was last.
     spectator_capture: Option<(PathBuf, f64)>,
@@ -234,6 +236,7 @@ impl Session {
         Ok(Session {
             spectator,
             spectator_post: None,
+            headset_post: None,
             spectator_capture: capture.map(|d| (d, 0.0)),
             spectator_cam: crate::spectator::SteadyCamera::default(),
             comp: Compositor::new(&gpu)?,
@@ -406,8 +409,7 @@ impl Session {
         if let Some(g) = &self.game {
             // (Drawn wider than the headset shows, and bigger to stay as sharp: `targets::render_fov`.)
             let drawn = crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan);
-            let recommended = crate::targets::overscanned(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn));
-            let spec = Spec::new(&g.request, recommended, &self.settings.current);
+            let spec = Spec::new(&g.request, self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn), &self.settings.current);
             if self.targets.as_ref().is_none_or(|t| t.spec != spec) {
                 self.generation += 1;
                 match SharedTargets::create(&self.gpu, &self.opts.mapping, self.generation, spec, self.sec.as_ref()) {
@@ -831,8 +833,7 @@ impl Session {
             intents: out.intents,
             eye_size: {
                 let drawn = crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan);
-                let recommended = crate::targets::overscanned(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn));
-                let (w, h) = crate::targets::eye_size(recommended, &self.settings.current);
+                let (w, h) = crate::targets::eye_size(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn), &self.settings.current);
                 [w, h]
             },
         };
@@ -1129,8 +1130,11 @@ impl Session {
         let warped = s.vr.reproject && stereo.is_some() && !framework && (late > 0.002 || head_off > 0.004);
         self.stats.warped_frames += warped as u64;
         let walk = self.locomotion.walk();
+        // (Drawn wider than the headset shows, overscanned, the headset is given its own view of it at
+        // the headset's sharpness, not the whole of it squeezed into the headset's image: the wider
+        // edges are for the desktop view.)
         let (poses, fovs) = match &stereo {
-            Some((_, info)) if !framework && !warped => (info.eye_pose, info.fov),
+            Some((_, info)) if !framework && !warped => (info.eye_pose, frame.fov),
             _ => (frame.eyes, frame.fov),
         };
         // The headset's depth, when it takes it (written below, after each eye).
@@ -1335,7 +1339,9 @@ impl Session {
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
         let warp = &mut self.warp;
+        let headset_post = &mut self.headset_post;
         let map_now = self.map_now;
+        let same_fov = |a: &Fov, b: &Fov| (a.left - b.left).abs() + (a.right - b.right).abs() + (a.up - b.up).abs() + (a.down - b.down).abs() < 1e-4;
         // A picture's mapping carried on by the walk over how late it is: where it's shown.
         let shown_map = |m: &WorldMap| WorldMap { anchor: m.anchor + walk.0 * late, body_yaw: m.body_yaw + walk.1 * late, ..*m };
         for e in 0..2 {
@@ -1389,7 +1395,35 @@ impl Session {
                         }
                     }
                 }
-                if !moved {
+                // Drawn wider than this view (overscanned): the part of it the view shows, and its
+                // depth, bloom and lens for that part.
+                let cropped = !moved && !same_fov(&info.fov[e], fov);
+                if cropped && let Some(srv) = slot.eyes[e].srv.as_ref() {
+                    background = crate::compositor::Background::Reprojected { first: (srv, info.eye_pose[e], info.fov[e]), second: None, second_depth: None, metres: 1.0 / wpm.max(1e-6) };
+                    if info.flags & SLOT_DEPTH != 0
+                        && let Some(d) = slot.depth.as_ref().and_then(|d| d[e].srv.as_ref())
+                    {
+                        let size = (target.width, target.height);
+                        if headset_post.as_ref().is_none_or(|p| p.size() != size) {
+                            *headset_post = crate::compositor::PostTargets::new(&self.gpu, size.0, size.1).inspect_err(|e| tracing::warn!("runtime: the headset's depth targets: {e:#}")).ok();
+                        }
+                        if let Some(p) = headset_post.as_ref() {
+                            let src = crate::compositor::PostSource {
+                                depth: d,
+                                bloom: slot.bloom.as_ref().filter(|_| bloomy).and_then(|b| b[e].srv.as_ref()),
+                                lens: slot.lens.as_ref().filter(|_| bloomy).and_then(|l| l[e].srv.as_ref()),
+                                pose: info.eye_pose[e],
+                                fov: info.fov[e],
+                            };
+                            self.comp.reproject_post(&self.gpu, p, eye, fov, &src, None, 1.0 / wpm.max(1e-6));
+                            depth_srv = p.depth.srv.clone();
+                            if bloomy {
+                                bloom_srv = p.bloom.srv.clone();
+                                lens_srv = p.lens.srv.clone();
+                            }
+                        }
+                    }
+                } else if !moved {
                     if let Some(srv) = slot.eyes[e].srv.as_ref() {
                         background = crate::compositor::Background::Game(srv);
                     }

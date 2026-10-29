@@ -36,7 +36,7 @@ pub fn render_fov(headset: [Fov; 2], overscan: f32) -> [Fov; 2] {
 }
 
 /// How much wider and taller (as tangent spans) the game's eyes are drawn than the headset's view:
-/// the eye size grows with them, so the picture stays as sharp.
+/// the eye size grows with them ([`eye_size`]), so the picture stays as sharp.
 pub fn render_scale(headset: [Fov; 2], drawn: [Fov; 2]) -> (f32, f32) {
     let k = |e: usize| {
         let (h, d) = (headset[e], drawn[e]);
@@ -48,28 +48,37 @@ pub fn render_scale(headset: [Fov; 2], drawn: [Fov; 2]) -> (f32, f32) {
     (r(a.0.max(b.0)), r(a.1.max(b.1)))
 }
 
-/// The headset's recommended per-eye size grown by `scale` (from [`render_scale`]).
-pub fn overscanned(recommended: (u32, u32), scale: (f32, f32)) -> (u32, u32) {
-    ((recommended.0 as f32 * scale.0) as u32, (recommended.1 as f32 * scale.1) as u32)
-}
+/// The longest side an overscanned eye is drawn at (pixels): past it, the overscan's edges are
+/// drawn less sharp rather than the textures growing without end (each side's tangent grows fast
+/// towards 90 degrees).
+pub const OVERSCAN_MAX_SIDE: u32 = 8192;
 
 /// The per-eye resolution games render at: the headset's recommended size times the render scale,
-/// capped by `max_eye_size`.
-pub fn eye_size(recommended: (u32, u32), s: &Settings) -> (u32, u32) {
+/// capped by `max_eye_size` (the headset's own view's sharpness), then grown by `wider` (how much
+/// wider and taller the game draws than the headset shows, [`render_scale`]): overscan adds pixels
+/// round the edges at the same sharpness, it never spreads the same pixels wider.
+pub fn eye_size(recommended: (u32, u32), wider: (f32, f32), s: &Settings) -> (u32, u32) {
     let scale = s.vr.render_scale.clamp(0.25, 3.0);
-    let (mut w, mut h) = ((recommended.0 as f32 * scale) as u32, (recommended.1 as f32 * scale) as u32);
-    let cap = s.vr.max_eye_size;
-    if cap > 0 && w.max(h) > cap {
-        let k = cap as f32 / w.max(h) as f32;
-        (w, h) = ((w as f32 * k) as u32, (h as f32 * k) as u32);
+    let (mut w, mut h) = (recommended.0 as f32 * scale, recommended.1 as f32 * scale);
+    let cap = s.vr.max_eye_size as f32;
+    if cap > 0.0 && w.max(h) > cap {
+        let k = cap / w.max(h);
+        (w, h) = (w * k, h * k);
     }
-    (w.max(16), h.max(16))
+    (w, h) = (w * wider.0.max(1.0), h * wider.1.max(1.0));
+    let most = OVERSCAN_MAX_SIDE.max(s.vr.max_eye_size) as f32;
+    if w.max(h) > most {
+        let k = most / w.max(h);
+        (w, h) = (w * k, h * k);
+    }
+    ((w as u32).max(16), (h as u32).max(16))
 }
 
 impl Spec {
-    /// From the adapter's request, the headset's recommended size and the settings.
-    pub fn new(req: &TargetRequest, recommended: (u32, u32), s: &Settings) -> Spec {
-        let (eye_w, eye_h) = if req.eye_w > 0 && req.eye_h > 0 { (req.eye_w, req.eye_h) } else { eye_size(recommended, s) };
+    /// From the adapter's request, the headset's recommended size, how much wider than the headset
+    /// the eyes are drawn ([`render_scale`]) and the settings.
+    pub fn new(req: &TargetRequest, recommended: (u32, u32), wider: (f32, f32), s: &Settings) -> Spec {
+        let (eye_w, eye_h) = if req.eye_w > 0 && req.eye_h > 0 { (req.eye_w, req.eye_h) } else { eye_size(recommended, wider, s) };
         let fmt = if req.color_format == 0 { DXGI_FORMAT_R8G8B8A8_UNORM } else { DXGI_FORMAT(req.color_format as i32) };
         let (typeless, _, _) = color_family(fmt);
         let (aux_w, aux_h) = if req.aux_size > 0 { (req.aux_size, req.aux_size) } else { (eye_w, eye_h) };
