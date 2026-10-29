@@ -2115,6 +2115,7 @@ impl Rig {
                 h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now, turn0: v.angle, twisted: 0.0, wrist });
                 let c = h.collider;
                 self.physics.set_groups(c, groups_none());
+                tracing::info!("rig: hand {i} takes valve {id:#x} at {at:.3?} (its frame), turned {:.3}", v.angle);
                 self.emit(Cue::Grab, Some(i), Some(id), v.point(at), 0.7);
             }
             Hover::Slot(slot) => {
