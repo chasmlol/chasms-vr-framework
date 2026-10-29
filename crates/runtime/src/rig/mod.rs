@@ -4100,6 +4100,7 @@ impl Rig {
                 }
                 Holder::Holstered(slot) => {
                     let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize]);
+                    let rt = self.slung(*id, rt);
                     let grip = v3(self.objects[id].desc.grip);
                     let (p, q) = (self.map.point(pt), self.map.rot(rt));
                     let o = &self.objects[id];
@@ -4107,6 +4108,7 @@ impl Rig {
                 }
                 Holder::Returning { slot, t0, from } => {
                     let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize]);
+                    let rt = self.slung(*id, rt);
                     let grip = v3(self.objects[id].desc.grip);
                     let q = self.map.rot(rt);
                     let p = self.map.point(pt) - q * grip;
@@ -4429,6 +4431,15 @@ impl Rig {
                 h.reach_from = None;
                 h.give = [0.0; 5];
             }
+        }
+    }
+
+    /// How thing `id` hangs in a holster turned `rot` (tracking space): as it's made to, except a
+    /// bow, which is slung limbs along where a long gun's barrel goes (its length is its limbs').
+    fn slung(&self, id: u32, rot: Quat) -> Quat {
+        match self.objects.get(&id) {
+            Some(o) if o.desc.kind == OBJ_BOW => (rot * Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)).normalize(),
+            _ => rot,
         }
     }
 
