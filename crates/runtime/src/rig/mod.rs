@@ -2517,6 +2517,17 @@ impl Rig {
         }
         let o = &self.objects[&id];
         let (desc, body) = (o.desc, o.body);
+        // An arrow let go of gently at the quiver goes back in it.
+        if desc.kind == OBJ_ARROW
+            && o.spawned
+            && self.hands.as_ref().unwrap()[i].history.recent().length() < HOLSTER_MAX_SPEED
+            && zones::quiver_zones(inp.eye_height, i, inp.settings.archery.quiver).iter().any(|z| self.anchor.contains(z, palm_t))
+        {
+            tracing::info!("rig: an arrow {id:#x} back in the quiver");
+            self.remove(id);
+            self.emit(Cue::HolsterIn, Some(i), None, palm, 0.6);
+            return;
+        }
         let class = o.throw.as_ref().map(|t| t.class()).unwrap_or(ThrowClass::Generic);
         // Never stowed armed (or with the pin out).
         let stowable = o.throw.as_ref().is_none_or(|t| t.stowable());
@@ -3300,7 +3311,7 @@ impl Rig {
                 let string = bp + bq * bow::nock(&d, 0.0);
                 let nock_at = ap + aq * v3(a.desc.mag_well);
                 if (self.now * 2.0).floor() != ((self.now - inp.dt as f64) * 2.0).floor() {
-                    tracing::info!("rig: the arrow's nock {:.3} m from the string ({nock_at:.2?}, {string:.2?}), pointing {:.2} along the bow", nock_at.distance(string), (aq * Vec3::Z).dot(bq * Vec3::Z));
+                    tracing::debug!("rig: the arrow's nock {:.3} m from the string ({nock_at:.2?}, {string:.2?}), pointing {:.2} along the bow", nock_at.distance(string), (aq * Vec3::Z).dot(bq * Vec3::Z));
                 }
                 if nock_at.distance(string) < bow::NOCK_REACH * self.map.world_per_meter && (aq * Vec3::Z).dot(bq * Vec3::Z) > -0.3 {
                     self.nock(bid, aid, sh);
