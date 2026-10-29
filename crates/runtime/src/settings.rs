@@ -361,7 +361,7 @@ pub struct Ui {
 
 impl Default for Vr {
     fn default() -> Self {
-        Vr { render_scale: 1.0, max_eye_size: 2208, world_scale: 1.0, ipd_scale: 1.0, reproject: true, overscan: 5.0 }
+        Vr { render_scale: 1.0, max_eye_size: 2208, world_scale: 1.0, ipd_scale: 1.0, reproject: true, overscan: 0.0 }
     }
 }
 
