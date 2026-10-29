@@ -1236,7 +1236,7 @@ impl Session {
                 (c.connected != 0).then(|| (Vec3::from_array(c.grip.pos), quat(c.grip.rot)))
             }
         };
-        let obs_panel = self.obs.update(&self.gpu, Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot), left, frame.display_time_ns as f64 * 1e-9);
+        let obs_panel = self.obs.update(&self.gpu, s.ui.obs_view, Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot), left, frame.display_time_ns as f64 * 1e-9);
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
         if let (Some(p), Some(srv)) = (obs_panel, self.obs.srv()) {
             layers.private.push(PanelLayer::whole(p, srv));

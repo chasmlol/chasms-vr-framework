@@ -521,4 +521,5 @@ fn display(ui: &mut egui::Ui, s: &mut Settings, status: &Status) {
     slider(ui, "Desktop camera lag at most", &mut s.spectator.max_lag, 0.0, 20.0, " deg", 0);
     ui.checkbox(&mut s.spectator.roll_lock, "Keep the desktop view's horizon level");
     ui.checkbox(&mut s.spectator.fullscreen, "Desktop view opens fullscreen (F11 switches)");
+    ui.checkbox(&mut s.ui.obs_view, "OBS in the headset: look at the back of your left wrist, or F9 to pin it");
 }

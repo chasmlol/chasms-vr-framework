@@ -101,7 +101,16 @@ pub struct ObsView {
 impl ObsView {
     /// This frame: the head (`head`, its rotation `turn`) and the left hand's grip pose (None when
     /// it holds something), tracking space. Returns where the panel is, if it's up.
-    pub fn update(&mut self, gpu: &Gpu, head: Vec3, turn: Quat, left: Option<(Vec3, Quat)>, now: f64) -> Option<Panel> {
+    /// Off (`enabled` false): never shown, and OBS put back where it was if it was.
+    pub fn update(&mut self, gpu: &Gpu, enabled: bool, head: Vec3, turn: Quat, left: Option<(Vec3, Quat)>, now: f64) -> Option<Panel> {
+        if !enabled {
+            self.pinned = None;
+            self.wrist = false;
+            if self.capture.is_some() || self.window.is_some() {
+                self.stop();
+            }
+            return None;
+        }
         // F9: pinned in front of the eyes, or put away.
         let down = unsafe { GetAsyncKeyState(VK_F9.0 as i32) } as u16 & 0x8000 != 0;
         if down && !self.key_was_down {

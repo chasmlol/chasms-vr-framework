@@ -370,6 +370,9 @@ pub struct Ui {
     /// Width of the ammo counter on the gun, and of the status on the wrist (metres).
     pub ammo_width: f32,
     pub status_width: f32,
+    /// OBS's window in the headset: over the left wrist when it's looked at, or pinned with F9
+    /// (`obs_view.rs`).
+    pub obs_view: bool,
 }
 
 
@@ -509,6 +512,7 @@ impl Default for Ui {
             caption_max_deg: 50.0,
             ammo_width: 0.10,
             status_width: 0.09,
+            obs_view: false,
         }
     }
 }
