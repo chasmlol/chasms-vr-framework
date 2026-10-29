@@ -72,6 +72,59 @@ float4 PSReproject(VOut i) : SV_Target {
     return float4(0.004, 0.004, 0.005, 1);
 }
 
+// The game's depth, bloom and lens for another camera at the eye a picture was drawn from (the
+// desktop view's): each pixel's direction looked up in that eye's (`view_proj_src`), else the
+// other's (`eye_b`), the depth turned onto this camera's axis (as far along the ray, measured along
+// its forward). What the runtime draws over the picture hides behind what the game drew, and gets
+// its light and lens, as in the headset. 0 where neither eye shows it (nothing drawn there).
+cbuffer ReprojectPost : register(b2) {
+    float4 fwd_a;
+    float4 fwd_b;
+    float4 fwd_cam;
+};
+Texture2D<float> depth_a : register(t2);
+Texture2D<float> depth_b : register(t3);
+Texture2D bloom_a : register(t4);
+Texture2D bloom_b : register(t5);
+Texture2D lens_a : register(t6);
+Texture2D lens_b : register(t7);
+struct PostOut { float depth : SV_Target0; float4 bloom : SV_Target1; float4 lens : SV_Target2; };
+bool eye_uv(float4x4 m, float3 d, out float2 uv) {
+    float4 c = mul(m, float4(d, 0));
+    float2 n = c.xy / max(c.w, 1e-6);
+    uv = float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
+    return c.w > 0 && abs(n.x) <= 1 && abs(n.y) <= 1;
+}
+float load_depth(Texture2D<float> t, float2 uv) {
+    uint w, h;
+    t.GetDimensions(w, h);
+    return t.Load(int3(min(uint2(uv * float2(w, h)), uint2(w - 1, h - 1)), 0));
+}
+PostOut PSReprojectPost(VOut i) {
+    float2 ndc = float2(i.uv.x * 2 - 1, 1 - i.uv.y * 2);
+    float4 a = mul(inv_view_proj, float4(ndc, 0, 1)); a /= a.w;
+    float4 b = mul(inv_view_proj, float4(ndc, 1, 1)); b /= b.w;
+    float3 d = normalize(b.xyz - a.xyz);
+    PostOut o;
+    o.depth = 0;
+    o.bloom = 0;
+    o.lens = 0;
+    float2 uv;
+    float along = dot(d, fwd_cam.xyz);
+    if (eye_uv(view_proj_src, d, uv)) {
+        float z = load_depth(depth_a, uv);
+        o.depth = z > 0 ? z * along / max(dot(d, fwd_a.xyz), 1e-3) : 0;
+        o.bloom = bloom_a.SampleLevel(samp, uv, 0);
+        o.lens = lens_a.SampleLevel(samp, uv, 0);
+    } else if (eye_uv(eye_b, d, uv)) {
+        float z = load_depth(depth_b, uv);
+        o.depth = z > 0 ? z * along / max(dot(d, fwd_b.xyz), 1e-3) : 0;
+        o.bloom = bloom_b.SampleLevel(samp, uv, 0);
+        o.lens = lens_b.SampleLevel(samp, uv, 0);
+    }
+    return o;
+}
+
 // The runtime's own room: a floor grid at the real floor with a ring around the play-space centre.
 float4 PSVoid(VOut i) : SV_Target {
     float2 ndc = float2(i.uv.x * 2 - 1, 1 - i.uv.y * 2);
@@ -172,6 +225,43 @@ struct ReprojectCb {
     eye_b: [f32; 16],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ReprojectPostCb {
+    fwd_a: [f32; 4],
+    fwd_b: [f32; 4],
+    fwd_cam: [f32; 4],
+}
+
+/// One eye's depth (`R32_FLOAT`, linear along its view axis, game units), its bloom and lens (as
+/// [`rustvr_avatar::DepthInput`] has them), and where its picture was drawn from.
+pub struct PostSource<'a> {
+    pub depth: &'a ID3D11ShaderResourceView,
+    pub bloom: Option<&'a ID3D11ShaderResourceView>,
+    pub lens: Option<&'a ID3D11ShaderResourceView>,
+    pub pose: Pose,
+    pub fov: Fov,
+}
+
+/// Another camera's depth, bloom and lens ([`Compositor::reproject_post`]): the camera's size.
+pub struct PostTargets {
+    pub depth: rustvr_gpu::Texture,
+    pub bloom: rustvr_gpu::Texture,
+    pub lens: rustvr_gpu::Texture,
+}
+
+impl PostTargets {
+    pub fn new(gpu: &Gpu, width: u32, height: u32) -> Result<PostTargets> {
+        use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT};
+        let tex = |f| rustvr_gpu::Texture::new(gpu, &rustvr_gpu::TexDesc::target(width, height, f));
+        Ok(PostTargets { depth: tex(DXGI_FORMAT_R32_FLOAT)?, bloom: tex(DXGI_FORMAT_R16G16B16A16_FLOAT)?, lens: tex(DXGI_FORMAT_R16G16B16A16_FLOAT)? })
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.depth.width, self.depth.height)
+    }
+}
+
 /// What's behind everything in a view.
 pub enum Background<'a> {
     /// The game's picture for this eye, as it was rendered.
@@ -268,6 +358,8 @@ pub struct Compositor {
     full_comfort: Program,
     full_reproject: Program,
     reproject_cb: ConstantBuffer<ReprojectCb>,
+    full_post: Program,
+    post_cb: ConstantBuffer<ReprojectPostCb>,
     quad: Program,
     opaque: ID3D11BlendState,
     premul: ID3D11BlendState,
@@ -288,6 +380,8 @@ impl Compositor {
             full_comfort: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSComfort", &[])?,
             full_reproject: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSReproject", &[])?,
             reproject_cb: ConstantBuffer::new(gpu)?,
+            full_post: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSReprojectPost", &[])?,
+            post_cb: ConstantBuffer::new(gpu)?,
             quad: Program::with_entries(gpu, SHADER, "compositor", "VSQuad", "PSQuad", &[])?,
             opaque: pipeline::blend_state(gpu, Blend::Opaque)?,
             premul: pipeline::blend_state(gpu, Blend::Premultiplied)?,
@@ -328,6 +422,53 @@ impl Compositor {
     ) {
         let background = game.map_or(Background::Void, Background::Game);
         self.draw_view(gpu, target, eye, fov, background, layers, true, between);
+    }
+
+    /// The game's depth, bloom and lens as another camera at the eye `first` was drawn from sees
+    /// them (`eye`, `fov`; the desktop view's), into `out`: what the runtime draws over the
+    /// reprojected picture hides behind what the game drew and gets its light, as in the headset.
+    pub fn reproject_post(&self, gpu: &Gpu, out: &PostTargets, eye: &Pose, fov: &Fov, first: &PostSource, second: Option<&PostSource>) {
+        let ctx = &gpu.ctx;
+        let vp = projection(fov) * view_matrix(eye);
+        let mut cb = DrawCb::zeroed();
+        cb.view_proj = vp.to_cols_array();
+        cb.inv_view_proj = vp.inverse().to_cols_array();
+        cb.view_proj_src = (projection(&first.fov) * view_matrix(&first.pose)).to_cols_array();
+        let eye_b = second.map_or(Mat4::ZERO, |s| projection(&s.fov) * view_matrix(&s.pose));
+        let fwd = |p: &Pose| (quat(p.rot) * Vec3::Z).extend(0.0).to_array();
+        let post = ReprojectPostCb { fwd_a: fwd(&first.pose), fwd_b: second.map_or([0.0; 4], |s| fwd(&s.pose)), fwd_cam: fwd(eye) };
+        let rtvs = [out.depth.rtv.clone(), out.bloom.rtv.clone(), out.lens.rtv.clone()];
+        unsafe {
+            for rtv in rtvs.iter().flatten() {
+                ctx.ClearRenderTargetView(rtv, &[0.0; 4]);
+            }
+            ctx.OMSetRenderTargets(Some(&rtvs), None);
+            ctx.RSSetState(&self.raster);
+            ctx.OMSetDepthStencilState(&self.no_depth, 0);
+            ctx.OMSetBlendState(&self.opaque, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
+            self.cb.update(ctx, &cb);
+            self.reproject_cb.update(ctx, &ReprojectCb { eye_b: eye_b.to_cols_array() });
+            self.post_cb.update(ctx, &post);
+            ctx.VSSetConstantBuffers(0, Some(&[Some(self.cb.buf.clone())]));
+            ctx.PSSetConstantBuffers(0, Some(&[Some(self.cb.buf.clone()), Some(self.reproject_cb.buf.clone()), Some(self.post_cb.buf.clone())]));
+            ctx.IASetInputLayout(None);
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            pipeline::viewport(ctx, out.depth.width, out.depth.height);
+            self.full_post.bind(ctx);
+            let srvs = [
+                Some(first.depth.clone()),
+                second.map(|s| s.depth.clone()),
+                first.bloom.cloned(),
+                second.and_then(|s| s.bloom.cloned()),
+                first.lens.cloned(),
+                second.and_then(|s| s.lens.cloned()),
+            ];
+            ctx.PSSetShaderResources(2, Some(&srvs));
+            ctx.Draw(3, 0);
+            ctx.PSSetShaderResources(2, Some(&[None, None, None, None, None, None]));
+            ctx.OMSetRenderTargets(None, None);
+        }
     }
 
     /// [`Compositor::draw_eye`] for any camera, with any [`Background`], and with or without the

@@ -93,6 +93,8 @@ pub struct Session {
     pacing: crate::pacing::Pacing,
     /// The desktop view's window (`crate::spectator`), while it's open, and its camera.
     spectator: Option<crate::spectator::Window>,
+    /// The game's depth, bloom and lens as the desktop view's camera sees them.
+    spectator_post: Option<crate::compositor::PostTargets>,
     spectator_cam: crate::spectator::SteadyCamera,
     /// Tests: where the desktop view's frames are saved, and when one was last.
     spectator_capture: Option<(PathBuf, f64)>,
@@ -222,6 +224,7 @@ impl Session {
         }
         Ok(Session {
             spectator,
+            spectator_post: None,
             spectator_capture: capture.map(|d| (d, 0.0)),
             spectator_cam: crate::spectator::SteadyCamera::default(),
             comp: Compositor::new(&gpu)?,
@@ -1283,12 +1286,48 @@ impl Session {
         if let Some(target) = self.spectator.as_ref().and_then(|w| w.target()) {
             let sp = &s.spectator;
             let head = quat(frame.hmd.rot);
-            let cam = self.spectator_cam.update(head, crate::spectator::between(&frame.eyes), frame.dt, sp);
-            let fov = crate::spectator::fov(sp.fov, target.width as f32 / target.height.max(1) as f32);
             let first = match sp.eye {
                 crate::settings::Eye::Left => 0,
                 crate::settings::Eye::Right => 1,
             };
+            // At the aiming eye, where its picture was drawn from (turned as steadily as the camera
+            // turns): the picture warps onto it exactly, and what the runtime draws over it lines
+            // up with it, near things (the hands, a gun) too.
+            let at = match (&stereo, framework) {
+                (Some((_, info)), false) => Vec3::from_array(info.eye_pose[first].pos),
+                _ => crate::spectator::between(&frame.eyes),
+            };
+            let cam = self.spectator_cam.update(head, at, frame.dt, sp);
+            let fov = crate::spectator::fov(sp.fov, target.width as f32 / target.height.max(1) as f32);
+            // The game's depth (and its bloom and lens) as this camera sees them: the body hides
+            // behind what the game drew in front of it (a gun in the hand) and gets its light, as in
+            // the headset.
+            let mut post = None;
+            if let (Some((slot, info)), false) = (&stereo, framework)
+                && info.flags & SLOT_DEPTH != 0
+            {
+                let bloomy = info.flags & SLOT_BLOOM != 0;
+                let src = |e: usize| {
+                    Some(crate::compositor::PostSource {
+                        depth: slot.depth.as_ref()?[e].srv.as_ref()?,
+                        bloom: slot.bloom.as_ref().filter(|_| bloomy).and_then(|b| b[e].srv.as_ref()),
+                        lens: slot.lens.as_ref().filter(|_| bloomy).and_then(|l| l[e].srv.as_ref()),
+                        pose: info.eye_pose[e],
+                        fov: info.fov[e],
+                    })
+                };
+                if let Some(a) = src(first) {
+                    let size = (target.width, target.height);
+                    if self.spectator_post.as_ref().is_none_or(|p| p.size() != size) {
+                        self.spectator_post = crate::compositor::PostTargets::new(&self.gpu, size.0, size.1).inspect_err(|e| tracing::warn!("desktop view: depth targets: {e:#}")).ok();
+                    }
+                    if let Some(p) = &self.spectator_post {
+                        self.comp.reproject_post(&self.gpu, p, &cam, &fov, &a, src(first ^ 1).as_ref());
+                        post = Some(p);
+                    }
+                }
+            }
+            let mut depth = post.and_then(|p| Some(rustvr_avatar::DepthInput { srv: p.depth.srv.as_ref()?, units_per_meter: wpm, bloom: p.bloom.srv.as_ref(), lens: p.lens.srv.as_ref() }));
             let background = match (&stereo, framework) {
                 (Some((slot, info)), false) => {
                     let eye = |e: usize| slot.eyes[e].srv.as_ref().map(|srv| (srv, info.eye_pose[e], info.fov[e]));
@@ -1308,7 +1347,7 @@ impl Session {
                     tracing::warn!("framework view: {e:#}");
                 }
                 if draw_body {
-                    body.draw(gpu, target, &cam, &fov, light, None, &held);
+                    body.draw(gpu, target, &cam, &fov, light, depth.take(), &held);
                 }
             });
         }
