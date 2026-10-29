@@ -8,9 +8,9 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 11
+#define RVR_VERSION 12
 
-#define RVR_MAPPING_BYTES 5373952
+#define RVR_MAPPING_BYTES 5439488
 
 #define RVR_OFF_HEADER 0
 
@@ -667,6 +667,138 @@
  */
 #define RVR_HUDL_SETTINGS (1 << 3)
 
+/**
+ * After everything else, in the mapping's own room (`MAPPING_BYTES` grew by 64 KB for it): the
+ * inventory, the slots and the editor's edits.
+ */
+#define RVR_OFF_INVENTORY 5373952
+
+#define RVR_MAX_INV_CATEGORIES 32
+
+#define RVR_MAX_INV_ITEMS 256
+
+#define RVR_MAX_BODY_SLOTS 12
+
+/**
+ * The categories one slot can draw from.
+ */
+#define RVR_MAX_SLOT_CATEGORIES 16
+
+#define RVR_MAX_TAKEN 16
+
+/**
+ * [`SlotDesc::categories`]: no category.
+ */
+#define RVR_SLOT_NO_CATEGORY 255
+
+/**
+ * What the player has on (the equipped arrows, the weapon in hand).
+ */
+#define RVR_INV_EQUIPPED (1 << 0)
+
+#define RVR_INV_STOLEN (1 << 1)
+
+#define RVR_INV_QUEST (1 << 2)
+
+#define RVR_INV_ENCHANTED (1 << 3)
+
+/**
+ * Eaten: held at the mouth (food, an ingredient).
+ */
+#define RVR_INV_EAT (1 << 4)
+
+/**
+ * Drunk: held at the mouth (a potion, a drink).
+ */
+#define RVR_INV_DRINK (1 << 5)
+
+/**
+ * Read: held up in front of the eyes (a scroll).
+ */
+#define RVR_INV_READ (1 << 6)
+
+/**
+ * Put on a weapon: touched to the one the other hand holds (a poison on a blade).
+ */
+#define RVR_INV_COAT (1 << 7)
+
+/**
+ * What restores health most first, then what restores magicka or fatigue most; what restores none
+ * of them isn't given out.
+ */
+#define RVR_RULE_HEALING 0
+
+/**
+ * What restores magicka most first (then health or fatigue); as [`RULE_HEALING`].
+ */
+#define RVR_RULE_MAGICKA 1
+
+/**
+ * What restores fatigue most first (then health or magicka); as [`RULE_HEALING`].
+ */
+#define RVR_RULE_FATIGUE 2
+
+#define RVR_RULE_VALUE 3
+
+#define RVR_RULE_HEAVIEST 4
+
+#define RVR_RULE_LIGHTEST 5
+
+/**
+ * What came last first.
+ */
+#define RVR_RULE_NEWEST 6
+
+/**
+ * By name, A first.
+ */
+#define RVR_RULE_NAME 7
+
+/**
+ * The biggest stack first.
+ */
+#define RVR_RULE_MOST 8
+
+/**
+ * The strongest first ([`InvItem::power`]: a weapon's or an arrow's damage, a soul gem's soul).
+ */
+#define RVR_RULE_STRONGEST 9
+
+/**
+ * The player's own: what they last put back in the slot comes out first, then the newest.
+ */
+#define RVR_RULE_OWN 10
+
+#define RVR_RULE_COUNT 11
+
+/**
+ * A dull double tick: there's nothing in it.
+ */
+#define RVR_EMPTY_TICK 0
+
+/**
+ * Nothing at all.
+ */
+#define RVR_EMPTY_SILENT 1
+
+/**
+ * The first of everything the player has, by the slot's order (the healing slot's last potion
+ * gone: the best food).
+ */
+#define RVR_EMPTY_ANY 2
+
+#define RVR_EMPTY_COUNT 3
+
+/**
+ * What the player has on comes out first (the equipped arrows).
+ */
+#define RVR_SLOTF_EQUIPPED_FIRST (1 << 0)
+
+/**
+ * It counts only with the hand behind the head (over the shoulder).
+ */
+#define RVR_SLOTF_BEHIND (1 << 1)
+
 #define RVR_MAX_ITEM_INFOS 48
 
 #define RVR_MAX_ITEM_STATS 6
@@ -1130,6 +1262,14 @@
  * A thing to take ([`OBJF_LOOT`]) put in a body slot (`slot`): the game takes it.
  */
 #define RVR_OS_STOWED (1 << 17)
+
+/**
+ * Drawn from one of the body's slots: the runtime's copy of a thing in the player's inventory
+ * ([`crate::inventory`]), its [`crate::InvItem::id`] in `parent`. Each use of it (eaten, drunk,
+ * read, put on a weapon) adds one to `shots`; let go and free, it's the game's to drop where it
+ * comes to rest. The game says when it has taken it back ([`crate::Inventory::taken`]).
+ */
+#define RVR_OS_INVENTORY (1 << 18)
 
 #define RVR_SLOT_HIP_RIGHT 0
 

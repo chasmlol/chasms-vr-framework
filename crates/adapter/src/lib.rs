@@ -518,6 +518,38 @@ impl Adapter {
         }
     }
 
+    /// The player's things as the game keeps them, and the game's own slots (see [`Inventory`]):
+    /// when they change, and after every reconnect.
+    pub fn write_inventory(&self, inv: &Inventory) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_inventory(inv);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The body's slots as the runtime has them (see [`BodySlots`]). False until it has written
+    /// them.
+    pub fn read_body_slots(&self, out: &mut BodySlots) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_body_slots_into(out),
+            _ => false,
+        }
+    }
+
+    /// The slots' editor's changes (see [`SlotEdits`]).
+    pub fn write_slot_edits(&self, edits: &SlotEdits) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_slot_edits(edits);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The player's body as the game makes it up (see [`AvatarDesc`]): when it changes.
     pub fn write_avatar(&self, desc: &AvatarDesc) -> bool {
         match &self.link {

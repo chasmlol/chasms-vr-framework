@@ -38,6 +38,7 @@
 //! | [`OFF_EVENTS`] | [`Event`] ring | adapter -> runtime | SPSC ring |
 //! | [`OFF_BODY`] .. [`OFF_KICKS`] | the player rig's regions: see [`world`] | both | seqlock, SPSC ring |
 //! | [`OFF_SOUNDS`] | [`SoundPack`]: the game's own sounds (see [`sound`]) | adapter -> runtime | seqlock |
+//! | [`OFF_INVENTORY`] .. [`OFF_SLOT_EDITS`] | the player's things and the body's slots (see [`inventory`]) | both | seqlock |
 //!
 //! # Frames
 //!
@@ -62,6 +63,7 @@ pub mod link;
 pub mod avatar;
 pub mod combat;
 pub mod hud;
+pub mod inventory;
 pub mod items;
 pub mod sound;
 pub mod world;
@@ -71,6 +73,7 @@ pub mod player;
 pub use avatar::*;
 pub use combat::*;
 pub use hud::*;
+pub use inventory::*;
 pub use items::*;
 pub use sound::*;
 pub use world::*;
@@ -78,9 +81,9 @@ pub use lighting::*;
 pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 11;
+pub const VERSION: u32 = 12;
 pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v11";
-pub const MAPPING_BYTES: usize = 0x0052_0000;
+pub const MAPPING_BYTES: usize = 0x0053_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;

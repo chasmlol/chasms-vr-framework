@@ -335,6 +335,31 @@ impl Link {
     pub fn read_item_infos_into(&self, out: &mut ItemInfos) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_ITEM_INFO), out) }
     }
+    /// Adapter: the player's things and the game's own slots ([`Inventory`]): when they change.
+    pub fn write_inventory(&self, v: &Inventory) {
+        unsafe { seq_write(self.base.add(OFF_INVENTORY), v) }
+    }
+    pub fn read_inventory_into(&self, out: &mut Inventory) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_INVENTORY), out) }
+    }
+    /// Changes whenever the adapter rewrites the inventory (0: never written).
+    pub fn inventory_seq(&self) -> u32 {
+        self.u32_at(OFF_INVENTORY).load(Ordering::Acquire)
+    }
+    /// Runtime: the body's slots as they are ([`BodySlots`]).
+    pub fn write_body_slots(&self, v: &BodySlots) {
+        unsafe { seq_write(self.base.add(OFF_BODY_SLOTS), v) }
+    }
+    pub fn read_body_slots_into(&self, out: &mut BodySlots) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_BODY_SLOTS), out) }
+    }
+    /// Adapter: the slots' editor's changes ([`SlotEdits`]).
+    pub fn write_slot_edits(&self, v: &SlotEdits) {
+        unsafe { seq_write(self.base.add(OFF_SLOT_EDITS), v) }
+    }
+    pub fn read_slot_edits_into(&self, out: &mut SlotEdits) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_SLOT_EDITS), out) }
+    }
     /// Runtime: a melee hit, block or cast for the game.
     pub fn push_combat_event(&self, ev: &CombatEvent) {
         let written = self.u64_at(OFF_COMBAT_EVENTS + offset_of!(CombatEvents, written));
