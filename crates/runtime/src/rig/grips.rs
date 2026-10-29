@@ -109,7 +109,8 @@ pub fn grip(d: &ObjectDesc, rot: Option<Quat>) -> Option<Handle> {
     let handled = d.kind == OBJ_MELEE || knife;
     if let Some(axis) = line(d.grip_line) {
         let rot = rot.unwrap_or_else(|| fist_along(axis.1 - axis.0));
-        return Some(along(at, rot, axis, radius, true));
+        // (A bow only one way up: held the other way round it would shoot back at the archer.)
+        return Some(along(at, rot, axis, radius, d.kind != OBJ_BOW));
     }
     let rot = rot?;
     if handled {

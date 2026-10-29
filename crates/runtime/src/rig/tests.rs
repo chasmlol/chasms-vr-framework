@@ -138,6 +138,7 @@ impl Sim {
                 crouched: self.crouched,
                 paused: false,
                 infinite_ammo: false,
+                arm_length: 0.0,
             };
             self.out = self.rig.update(&inp);
             self.cues.extend(self.rig.feedback.iter().map(|f| f.cue));

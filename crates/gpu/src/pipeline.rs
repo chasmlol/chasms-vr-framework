@@ -180,6 +180,22 @@ impl DynBuffer {
     }
 }
 
+/// A vertex or index buffer the CPU rewrites now and then ([`write_dynamic`]), made with `bytes`.
+pub fn dynamic_buffer(gpu: &Gpu, bytes: &[u8], bind: D3D11_BIND_FLAG) -> Result<ID3D11Buffer> {
+    let desc = D3D11_BUFFER_DESC {
+        ByteWidth: bytes.len() as u32,
+        Usage: D3D11_USAGE_DYNAMIC,
+        BindFlags: bind.0 as u32,
+        CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+        MiscFlags: 0,
+        StructureByteStride: 0,
+    };
+    let init = D3D11_SUBRESOURCE_DATA { pSysMem: bytes.as_ptr().cast(), SysMemPitch: 0, SysMemSlicePitch: 0 };
+    let mut b = None;
+    unsafe { gpu.device.CreateBuffer(&desc, Some(&init), Some(&mut b))? };
+    Ok(b.unwrap())
+}
+
 /// An immutable vertex or index buffer.
 pub fn static_buffer(gpu: &Gpu, bytes: &[u8], bind: D3D11_BIND_FLAG) -> Result<ID3D11Buffer> {
     let desc = D3D11_BUFFER_DESC {

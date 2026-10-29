@@ -8,7 +8,7 @@ use rustvr_gpu::{EguiPainter, Gpu, TexDesc, Texture};
 use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB};
 
-use crate::settings::{BodyVisibility, GrenadeArming, Hand, MoveRelative, ReloadStyle, Settings, TurnMode};
+use crate::settings::{BodyVisibility, GrenadeArming, Hand, MoveRelative, Quiver, ReloadStyle, Settings, TurnMode};
 
 const WIDTH_PX: u32 = 1024;
 const HEIGHT_PX: u32 = 1280;
@@ -369,6 +369,13 @@ fn help(ui: &mut egui::Ui) {
         ("Grip over your shoulder", "next weapon"),
         ("Other wrist up in front of your eyes", "your watch (the light and the filter's time)"),
     ]);
+    section(ui, "Bows", &[
+        ("Grip over the shoulder (or at the hip) with a bow in the other hand", "an arrow from the quiver"),
+        ("Bring its back end to the string", "it goes on the string"),
+        ("Pull back and let go", "loose it: the further drawn, the faster it flies"),
+        ("Let go after a short pull", "the arrow stays on the string"),
+        ("Hands tab", "where the quiver is, and a crosshair where the arrow will land"),
+    ]);
     section(ui, "Holsters", &[
         ("Let go of a gun at a hip", "holster it there"),
         ("Let go of it behind your shoulder", "carry it on your back (both shoulders)"),
@@ -377,7 +384,7 @@ fn help(ui: &mut egui::Ui) {
     section(ui, "Body", &[
         ("Body tab", "your height, arm span, seated mode"),
         ("Measure my arms", "arms straight out to the sides for 3 seconds, then straight out in front for 3"),
-        ("Hands tab", "physics hands, gloves, grip toggle, weight, laser, stock, the game's recoil"),
+        ("Hands tab", "physics hands, gloves, grip toggle, weight, laser, stock, the game's recoil, the quiver and the bow's crosshair"),
     ]);
 }
 
@@ -418,6 +425,17 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
         ui.selectable_value(&mut h.grenade_arming, GrenadeArming::Button, "Trigger arms it");
     });
     ui.checkbox(&mut h.knife_assist, "Forgiving knife throws (they stick more)");
+    ui.separator();
+    let a = &mut s.archery;
+    ui.horizontal(|ui| {
+        ui.label("Quiver");
+        ui.selectable_value(&mut a.quiver, Quiver::Shoulder, "Over the shoulder");
+        ui.selectable_value(&mut a.quiver, Quiver::Hip, "At the hip");
+        ui.selectable_value(&mut a.quiver, Quiver::Both, "Both");
+    });
+    let r = ui.checkbox(&mut a.crosshair, "Bow crosshair (where a nocked arrow will land)");
+    rects.push(("hands:crosshair".into(), r.rect));
+    ui.checkbox(&mut a.fit_draw, "Fit a bow's full draw to my arm");
     ui.separator();
     ui.checkbox(&mut s.sound.enabled, "Interaction sounds");
     if s.sound.enabled {

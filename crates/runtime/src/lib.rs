@@ -9,6 +9,7 @@ pub mod blockout;
 pub mod combat;
 pub mod body;
 pub mod compositor;
+pub mod crosshair;
 pub mod mechanics;
 pub mod menu;
 pub mod obs_view;
