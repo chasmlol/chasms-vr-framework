@@ -37,9 +37,11 @@ pub fn groups_held(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
 }
 
-/// A hand touches the world and free objects (not what either hand is holding).
+/// A hand touches free objects and creatures (not what either hand is holding). Not the world:
+/// it's only ever sent where it's out of it ([`Physics::reach`]), so the solver never has it to
+/// push back out (that fight is what shook a hand pressed on a wall).
 pub fn groups_hand(hand: usize) -> InteractionGroups {
-    InteractionGroups::new(G_HAND[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
+    InteractionGroups::new(G_HAND[hand], G_OBJECT, InteractionTestMode::And)
 }
 
 /// What's solid to an empty `hand` as it's moved ([`Physics::reach`]): the world, and what the other
@@ -788,7 +790,7 @@ mod tests {
         floor(&mut p);
         let wall = ColBox { id: 2, center: [0.0, 1.0, 1.0], half_extents: [2.0, 2.0, 0.05], rot: [0.0, 0.0, 0.0, 1.0], ..Default::default() };
         p.apply_collision(COL_BOX, bytemuck::bytes_of(&wall));
-        let (h, _) = p.add_hand(1, V3::new(0.0, 1.0, 0.0), Q::IDENTITY, test_palm(1));
+        let (h, c) = p.add_hand(1, V3::new(0.0, 1.0, 0.0), Q::IDENTITY, test_palm(1));
         p.set_dt(1.0 / 90.0);
         for _ in 0..5 {
             p.track(h, V3::new(0.0, 1.0, 0.4), Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
@@ -796,7 +798,8 @@ mod tests {
         }
         assert!(p.pose(h).0.distance(V3::new(0.0, 1.0, 0.4)) < 0.01, "free space: on target");
         for _ in 0..30 {
-            p.track(h, V3::new(0.0, 1.0, 1.3), Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
+            let to = p.reach(c, Q::IDENTITY, V3::new(0.0, 1.0, 1.3), solid_for_hand(1), None);
+            p.track(h, to, Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
             p.step();
         }
         let z = p.pose(h).0.z;
@@ -823,11 +826,12 @@ mod tests {
     /// A hand driven the way the rig drives an empty hand, towards a controller held `behind` the
     /// surface, for two seconds: where it ends up.
     fn push_into(p: &mut Physics, start: V3, target: V3) -> Vec<V3> {
-        let (h, _) = p.add_hand(0, start, Q::IDENTITY, test_palm(0));
+        let (h, c) = p.add_hand(0, start, Q::IDENTITY, test_palm(0));
         p.set_dt(1.0 / 90.0);
         let mut path = Vec::new();
         for _ in 0..180 {
-            p.track(h, target, Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
+            let to = p.reach(c, Q::IDENTITY, target, solid_for_hand(0), None);
+            p.track(h, to, Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
             // (Turned as the controller is, whatever it meets.)
             p.set_rotation(h, Q::IDENTITY);
             p.step();

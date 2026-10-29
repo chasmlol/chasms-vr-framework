@@ -37,7 +37,7 @@ pub fn palm(hand: (Vec3, Quat)) -> (Vec3, Quat, Vec3) {
 
 /// How far each finger bends back past straight at most, pressed flat on something (a curl): the
 /// thumb a long way (it lies back beside the hand).
-pub const BACK: [f32; 5] = [1.2, 0.15, 0.15, 0.15, 0.15];
+pub const BACK: [f32; 5] = [1.2, 0.35, 0.35, 0.35, 0.35];
 
 /// How far a finger curled `curl` (0 straight .. 1 a fist's) is pushed open by what it's pressed on,
 /// at most: a relaxed finger all the way (and back past straight), a clenched one only a little.
@@ -46,10 +46,10 @@ pub fn give(curl: f32) -> f32 {
     1.2 * (1.0 - 0.75 * c * c)
 }
 
-/// How a full curl turns a finger (the thumb less), radians; and a curl back past straight (the
-/// thumb's at its base, as the drawn hand's).
+/// How a full curl turns a finger (the thumb less), radians; and a curl back past straight (at
+/// the knuckle, as the drawn hand's).
 const CURL: [f32; 5] = [1.0, 1.9, 1.9, 1.9, 1.9];
-const CURL_BACK: [f32; 5] = [0.45, 1.9, 1.9, 1.9, 1.9];
+const CURL_BACK: [f32; 5] = [0.45, 1.3, 1.3, 1.3, 1.3];
 /// How much shorter a full curl makes a finger's span (the thumb's hardly).
 const SHORTEN: [f32; 5] = [0.15, 0.35, 0.35, 0.35, 0.35];
 

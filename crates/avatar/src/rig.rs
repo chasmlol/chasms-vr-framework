@@ -44,7 +44,7 @@ const CURL: [[f32; 3]; 5] = [
 ];
 /// How far each finger's base bends back from straight at most (a curl: a finger pressed flat on
 /// something, a thumb moved off it).
-const LIFT: [f32; 5] = [1.6, 0.3, 0.3, 0.3, 0.3];
+const LIFT: [f32; 5] = [1.6, 0.35, 0.35, 0.35, 0.35];
 /// Spread at splay 1 (radians towards the thumb side) of each finger's base. Fingers close up as
 /// they curl into a fist.
 const SPREAD: [f32; 5] = [0.35, 0.21, 0.03, -0.14, -0.31];

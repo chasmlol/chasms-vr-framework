@@ -456,22 +456,26 @@ const SPAWN_BASE: u32 = 0x8000_0000;
 /// its own speed into it, and never more than `PUSH_MAX` in all.
 const PUSH_OUT: f32 = 10.0;
 const PUSH_MAX: f32 = 4.0;
-/// Empty hand `i`'s fingers (`h`) for the hand at `at` (position, rotation): each as curled as the
-/// controller has it, or the nearest it gets to that either way without going into what's solid
-/// to the hand (pushed open as far as it gives, or curled in; `passing`: the thing it's coming out
-/// of). Pushed aside at once; going back `relax` of the way (0: not at all).
-fn fit_fingers(physics: &Physics, offsets: &rustvr_ik::HandOffsets, i: usize, h: &mut Hand, at: (Vec3, Quat), passing: Option<ColliderHandle>, relax: f32) {
+/// Empty hand `i`'s fingers (`h`): each eased (`ease` of the way, at most `step` a frame) towards
+/// where it fits with the hand at `aim` (position, rotation): as curled as the controller has it,
+/// or the nearest it gets to that either way without going into what's solid to the hand (pushed
+/// open as far as it gives, or curled in; `passing`: the thing it's coming out of). Never into
+/// anything with the hand where it is (`now`): else the nearest it can get to within the step that
+/// isn't.
+#[allow(clippy::too_many_arguments)]
+fn fit_fingers(physics: &Physics, offsets: &rustvr_ik::HandOffsets, i: usize, h: &mut Hand, aim: (Vec3, Quat), now: (Vec3, Quat), passing: Option<ColliderHandle>, ease: f32, step: f32) {
     let solid = physics::solid_for_hand(i);
     let side = if i == 0 { rustvr_ik::Side::Left } else { rustvr_ik::Side::Right };
     let joint = offsets.hand_frame(side, rustvr_ik::Pose::IDENTITY);
     let (held, open) = (h.held_curls, h.open);
     for f in 0..5 {
-        let fits = |c: f32| {
+        let fits_at = |at: (Vec3, Quat), c: f32| {
             let mut curls = held;
             curls[f] = c;
             let (a, b) = fingers::segments((joint.pos, joint.rot), i == 1, curls)[f];
             !physics.finger_in(at.0 + at.1 * a, at.0 + at.1 * b, fingers::RADIUS, solid, passing)
         };
+        let fits = |c: f32| fits_at(aim, c);
         let curl = if fits(held[f]) {
             held[f]
         } else {
@@ -503,23 +507,41 @@ fn fit_fingers(physics: &Physics, offsets: &rustvr_ik::HandOffsets, i: usize, h:
                 None => open[f],
             }
         };
-        let pushed = curl - held[f];
-        // Pushed aside at once (either way), easing back.
-        h.give[f] = if pushed.abs() > h.give[f].abs() || pushed * h.give[f] < 0.0 { pushed } else { h.give[f] + (pushed - h.give[f]) * relax };
-        h.curls[f] = held[f] + h.give[f];
+        // Eased towards it, at most a step a frame...
+        let mut give = h.give[f] + ((curl - held[f] - h.give[f]) * ease).clamp(-step, step);
+        // ...never into anything where the hand is now: else the nearest within the step that isn't.
+        if !fits_at(now, held[f] + give) {
+            let lo = (h.give[f] - step).max(open[f] - held[f]);
+            let hi = (h.give[f] + step).min(1.0 - held[f]);
+            let mut best: Option<f32> = None;
+            for k in 0..=FIT_STEPS {
+                let g = lo + (hi - lo) * k as f32 / FIT_STEPS as f32;
+                if fits_at(now, held[f] + g) && best.is_none_or(|b| (g - give).abs() < (b - give).abs()) {
+                    best = Some(g);
+                }
+            }
+            if let Some(b) = best {
+                give = b;
+            }
+        }
+        h.give[f] = give;
+        h.curls[f] = held[f] + give;
     }
 }
 
 /// Steps a finger pushed aside takes looking for room, out from its curl either way.
 const FIT_STEPS: usize = 10;
-/// An empty hand held back by its fingers this much further than by its palm alone (m) has them
-/// hooked on something: they bend out of the way.
-const HOOKED: f32 = 0.02;
+/// An empty hand held back this far from its controller (m) is pressed on something.
+const PRESSED: f32 = 0.01;
+/// Pressed on something, a hand turns with its controller this far behind (s).
+const PRESSED_TURN_TIME: f32 = 0.06;
+/// Fingers follow the controller and give way over about this long (s), and move at most this
+/// fast (curl a second: from straight to a fist in a fifth of a second).
+const FINGER_EASE_TIME: f32 = 0.06;
+const FINGER_SPEED: f32 = 5.0;
 /// An empty hand held back catches up with its controller over about this long (s), once what
 /// held it back is out of the way, rather than all at once.
 const CATCH_UP_TIME: f32 = 0.15;
-/// Fingers pushed open by what the hand was pressed on close back over about this long (s).
-const FINGER_RELAX_TIME: f32 = 0.1;
 /// The most a blade stuck in a loose thing gives it at once, dragging it (N s).
 const DRAG_IMPULSE_MAX: f32 = 20.0;
 /// A held thing pressed into a creature asks for this many m/s per metre the hand would have it
@@ -1306,7 +1328,6 @@ impl Rig {
         self.apply_pushes();
         self.physics.set_dt(dt);
         self.physics.step();
-        self.refit_fingers(dt);
         self.after_step(inp);
         self.game_pushes = self.pushes();
         self.output(inp, dom)
@@ -3776,31 +3797,33 @@ impl Rig {
                     h.passing = None;
                 }
                 let solid = physics::solid_for_hand(i);
-                // Its fingers as the controller has them, and as far open as they'd be pushed (a
-                // relaxed hand's back past straight, a clenched fist's hardly): it goes as far as
-                // it gets with them giving way, so a palm pressed on a wall comes flat onto it.
-                let held = rustvr_ik::FingerSolver::target(&rustvr_ik::FingerInput::from_controller(&inp.frame.hands[i]), rustvr_ik::HoldShape::None).0;
-                let open: [f32; 5] = std::array::from_fn(|f| (held[f] - fingers::give(held[f])).max(-fingers::BACK[f]));
                 let side = if i == 0 { rustvr_ik::Side::Left } else { rustvr_ik::Side::Right };
                 let joint = self.offsets.hand_frame(side, rustvr_ik::Pose::IDENTITY);
                 let local = |curls: [f32; 5]| fingers::segments((joint.pos, joint.rot), i == 1, curls);
                 let palm = fingers::palm((joint.pos, joint.rot));
-                // (The thumb isn't in it: it's pushed aside whichever way it goes, never holding
-                // the hand back, nor hooking it on a corner.)
-                self.physics.set_hand_shape(h.collider, palm, &local(open)[1..]);
-                let mut want = self.physics.reach(h.collider, h.target.1, h.target.0, solid, passing);
-                // Held back by its fingers alone (hooked round an edge), the palm goes on and the
-                // fingers bend out of the way.
-                let held_back = want.distance(h.target.0);
-                if held_back > HOOKED {
-                    self.physics.set_hand_shape(h.collider, palm, &[]);
-                    let palm_only = self.physics.reach(h.collider, h.target.1, h.target.0, solid, passing);
-                    if palm_only.distance(h.target.0) + HOOKED < held_back {
-                        want = palm_only;
-                    } else {
-                        self.physics.set_hand_shape(h.collider, palm, &local(open)[1..]);
-                    }
-                }
+                // Pressed on something, it turns with the controller a touch behind, so the
+                // controller's tremor doesn't jolt it about against what it's on; free, exactly
+                // with it.
+                let (_, turned) = self.physics.pose(h.body);
+                let pressed = h.reach_from.is_some() && pos.distance(h.target.0) > PRESSED;
+                let rot = if pressed { turned.slerp(h.target.1, 1.0 - (-dt / PRESSED_TURN_TIME).exp()).normalize() } else { h.target.1 };
+                // Its fingers as the controller has them (eased, as the drawn hand's are), and as
+                // far open as they'd be pushed (a relaxed hand's back past straight, a clenched
+                // fist's hardly).
+                let ease = 1.0 - (-dt / FINGER_EASE_TIME).exp();
+                let raw = rustvr_ik::FingerSolver::target(&rustvr_ik::FingerInput::from_controller(&inp.frame.hands[i]), rustvr_ik::HoldShape::None).0;
+                let held: [f32; 5] = if h.reach_from.is_some() { std::array::from_fn(|f| h.held_curls[f] + (raw[f] - h.held_curls[f]) * ease) } else { raw };
+                h.held_curls = held;
+                h.open = std::array::from_fn(|f| (held[f] - fingers::give(held[f])).max(-fingers::BACK[f]));
+                // Where the palm alone gets to: the fingers bend to make room for it there, eased
+                // and never faster than a finger moves, and never into anything where the hand is.
+                self.physics.set_hand_shape(h.collider, palm, &[]);
+                let intent = self.physics.reach(h.collider, rot, h.target.0, solid, passing);
+                fit_fingers(&self.physics, &self.offsets, i, h, (intent, rot), (pos, rot), passing, ease, FINGER_SPEED * dt);
+                // The hand with its fingers as they are now, as far towards there as it gets: they
+                // hold it back until they've given way, never pushed into what they're pressed on.
+                self.physics.set_hand_shape(h.collider, palm, &local(h.curls));
+                let want = self.physics.reach(h.collider, rot, intent, solid, passing);
                 // Held back, it catches up eased, never all at once (slid off an edge, round a
                 // corner, off something loose it was pressed on): from where it is, as far as its
                 // controller moved and the rest a little at a time (swept again, so it goes round
@@ -3811,17 +3834,13 @@ impl Rig {
                         let (moved, len) = (h.target.0.distance(was), want.distance(pos));
                         let catch = 1.0 - (-dt / CATCH_UP_TIME).exp();
                         let goal = pos + (want - pos) * ((moved + (len - moved) * catch) / len);
-                        self.physics.reach(h.collider, h.target.1, goal, solid, passing)
+                        self.physics.reach(h.collider, rot, goal, solid, passing)
                     }
                     _ => want,
                 };
                 h.reach_from = Some((to, h.target.0));
-                h.open = open;
-                h.held_curls = held;
-                // Its fingers there (pushed open where it's going: they close back after the step).
-                fit_fingers(&self.physics, &self.offsets, i, h, (to, h.target.1), passing, 0.0);
-                self.physics.track(h.body, to, h.target.1, dt, &physics::Drive::FREE);
-                self.physics.set_rotation(h.body, h.target.1);
+                self.physics.track(h.body, to, rot, dt, &physics::Drive::FREE);
+                self.physics.set_rotation(h.body, rot);
             } else {
                 self.physics.set_pose(h.body, h.target.0, h.target.1);
                 self.physics.set_groups(h.collider, groups_none());
@@ -3845,21 +3864,6 @@ impl Rig {
         Some((wp + wr * local, rot))
     }
 
-    /// The empty hands' fingers where the step left them ([`fit_fingers`]), closing back as far as
-    /// they're free to.
-    fn refit_fingers(&mut self, dt: f32) {
-        let relax = 1.0 - (-dt / FINGER_RELAX_TIME).exp();
-        let Some(hands) = self.hands.as_mut() else { return };
-        let holding = [hands[0].holding, hands[1].holding];
-        for (i, h) in hands.iter_mut().enumerate() {
-            if h.reach_from.is_none() {
-                continue;
-            }
-            let passing = h.passing.filter(|id| holding[i ^ 1] == Some(*id)).and_then(|id| self.objects.get(&id)).map(|o| o.collider);
-            let at = self.physics.pose(h.body);
-            fit_fingers(&self.physics, &self.offsets, i, h, at, passing, relax);
-        }
-    }
 
     fn after_step(&mut self, inp: &RigInput) {
         // What's seated in a gun goes where the gun is after the step: put there before it, it
