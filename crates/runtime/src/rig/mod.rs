@@ -26,6 +26,7 @@ pub mod grips;
 pub mod valve;
 pub mod kick;
 pub mod physics;
+pub mod pockets;
 pub mod recoil;
 pub mod throwable;
 pub mod throwing;
@@ -38,7 +39,7 @@ use rustvr_protocol::*;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::backend::HmdFrame;
-use crate::settings::{GrenadeArming, Settings};
+use crate::settings::{BodySlot, GrenadeArming, Settings};
 use actions::{Chamber, Cycle, CycleEvent, HingeEvent};
 use feedback::{Cue, Feedback};
 use filters::OneEuro;
@@ -181,6 +182,9 @@ struct Obj {
     valve_shape: Vec<Vec3>,
     /// Stuck in something it chopped or stabbed into ([`embed`]).
     embed: Option<embed::Embedded>,
+    /// A thing drawn from one of the body's slots ([`pockets`]): the runtime's copy of one of the
+    /// player's things.
+    drawn: Option<pockets::Drawn>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +203,8 @@ enum Hover {
     Chamber(u32, usize),
     /// A valve's rim.
     Valve(u32),
+    /// One of the body's slots that hand out the player's things ([`pockets`]).
+    Pocket(usize),
 }
 
 /// A hand holding a hinged action's barrels: which gun, where on them it took them (weapon space,
@@ -352,6 +358,11 @@ struct Hand {
     /// Laid slowly on something it could take: it rests on it without shoving it (see
     /// [`Rig::rest_on`]).
     yielding: bool,
+    /// The grip closed in a slot that hands out the player's things: which, when, where the hand
+    /// was (tracking space), and what it drew: held there still, it opens the slot's editor.
+    pocket_press: Option<(usize, f64, Vec3, Option<u32>)>,
+    /// The grip as it was last frame, for placing a slot by hand (which works in menus too).
+    place_grip: bool,
 }
 
 impl Hand {
@@ -427,6 +438,11 @@ pub struct RigDebug {
     pub embeds: u32,
     /// Things to take put in a body slot ([`OBJF_LOOT`]).
     pub stowed: u32,
+    /// The player's things drawn from the body's slots, put back, and used (eaten, drunk, read, put
+    /// on a weapon).
+    pub pocket_draws: u32,
+    pub pocket_returns: u32,
+    pub pocket_uses: u32,
     /// Where the last grenade went off, and where the last knife's tip went in (tracking space).
     pub last_detonation: Option<Vec3>,
     pub last_stick: Option<Vec3>,
@@ -695,6 +711,30 @@ pub struct Rig {
     pushes: Vec<Push>,
     /// What each hand's fingers close on this frame (tracking space).
     grasps: [Option<rustvr_avatar::Grasp>; 2],
+    /// The player's things as the game keeps them, and how many of its taken-back list were seen.
+    inventory: Box<Inventory>,
+    taken_seen: Option<u32>,
+    /// The body's slots that hand them out (the player's, or the game's own), and their zones this
+    /// frame.
+    pockets: Vec<BodySlot>,
+    pocket_zones: Vec<pockets::SlotZones>,
+    /// A slot being placed by hand: the next squeeze puts it there.
+    placing: Option<usize>,
+    /// What the player did with the slots this frame, for the runtime to keep.
+    pub pocket_events: Vec<PocketEvent>,
+}
+
+/// Something the player did with the body's slots that the runtime keeps (in its settings) or
+/// passes on (to the game's editor).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PocketEvent {
+    /// A grip held still in slot `0`: open its editor.
+    Edit(usize),
+    /// Slot `0` placed by hand: its new middle (the body anchor's frame, for a player whose eyes
+    /// are 1.7 m up).
+    Placed(usize, Vec3),
+    /// A thing (the game's key for it) put back in slot `0`.
+    PutBack(usize, u32),
 }
 
 impl Default for Rig {
@@ -723,6 +763,12 @@ impl Default for Rig {
             kicks: HashMap::new(),
             pushes: Vec::new(),
             grasps: [None, None],
+            inventory: bytemuck::zeroed_box(),
+            taken_seen: None,
+            pockets: Vec::new(),
+            pocket_zones: Vec::new(),
+            placing: None,
+            pocket_events: Vec::new(),
         }
     }
 }
@@ -1098,6 +1144,7 @@ impl Rig {
                 }),
                 valve_shape: Vec::new(),
                 embed: None,
+                drawn: None,
             },
         );
         // A valve's wheel turns on its axle, never anywhere else.
@@ -1326,6 +1373,7 @@ impl Rig {
         }
         self.frame_index = inp.frame.index;
         self.feedback.clear();
+        self.pocket_events.clear();
         let dt = inp.dt.clamp(1e-4, 0.05);
         let s = inp.settings;
         let dom = s.dominant();
@@ -1357,11 +1405,13 @@ impl Rig {
         let head_t = (v3(inp.frame.hmd.pos), q4(inp.frame.hmd.rot));
         let zones = slot_zones(inp.eye_height, dom);
         let ammo = ammo_zones(inp.eye_height, dom);
+        self.pocket_zones = self.pockets.iter().map(|p| pockets::zones(p, inp.eye_height)).collect();
         let near_zone = (0..2).any(|i| {
             let p = self.hands.as_ref().unwrap()[i].grip_t.0;
-            zones.iter().chain(ammo.iter()).any(|z| p.distance(self.anchor.zone_center(z)) < z.radius + 0.1)
+            zones.iter().chain(ammo.iter()).chain(self.pocket_zones.iter().map(|z| &z.take)).any(|z| p.distance(self.anchor.zone_center(z)) < z.radius + 0.1)
         });
         self.anchor.update(head_t.0, head_t.1, dt, near_zone);
+        self.place_by_hand(inp);
 
         if !inp.paused {
             for i in 0..2 {
@@ -1371,6 +1421,8 @@ impl Rig {
             for i in 0..2 {
                 self.hand_input(i, inp, &zones, dom);
             }
+            self.pocket_holds(inp);
+            self.use_drawn(inp, dt);
             for i in 0..2 {
                 self.gloves(i, inp);
             }
@@ -1653,6 +1705,8 @@ impl Rig {
                 returning: None,
                 grasp: GraspState::default(),
                 yielding: false,
+                pocket_press: None,
+                place_grip: false,
             }
         };
         let l = mk(&mut self.physics, 0);
@@ -1780,6 +1834,13 @@ impl Rig {
                 }
             }
         }
+        // The slots that hand out the player's things (after the holsters: a hip with a sword in it
+        // gives the sword).
+        if hover == Hover::None
+            && let Some(k) = self.pocket_zones.iter().position(|z| self.anchor.contains(&z.take, palm_t))
+        {
+            hover = Hover::Pocket(k);
+        }
         // Magazines (unlimited) from the chest and belt pouches, or any empty slot, whenever the
         // other hand holds a magazine-fed gun.
         if hover == Hover::None {
@@ -1844,6 +1905,11 @@ impl Rig {
         let before = self.hands.as_ref().unwrap()[i].hover;
         if matches!(hover, Hover::Slot(_) | Hover::Ammo(_)) && before != hover {
             self.emit(Cue::ZoneTick, Some(i), None, palm, 1.0);
+        }
+        // (A slot of the player's things ticks fainter when there's nothing in it.)
+        if let (Hover::Pocket(k), true) = (hover, before != hover) {
+            let empty = self.pockets.get(k).is_none_or(|p| pockets::contents(p, &self.inventory, &self.drawn_out()).is_empty());
+            self.emit(Cue::ZoneTick, Some(i), None, palm, if empty { 0.35 } else { 1.0 });
         }
         let hands = self.hands.as_mut().unwrap();
         hands[i].hover = hover;
@@ -1915,9 +1981,16 @@ impl Rig {
 
         if released {
             self.release(i, inp, zones);
+            self.hands.as_mut().unwrap()[i].pocket_press = None;
         }
         if pressed {
+            let hover = self.hands.as_ref().unwrap()[i].hover;
             self.grab(i, inp);
+            if let Hover::Pocket(k) = hover {
+                let now = self.now;
+                let h = &mut self.hands.as_mut().unwrap()[i];
+                h.pocket_press = Some((k, now, h.grip_t.0, h.holding));
+            }
         }
         // A grenade in the hand: the one-handed button arms it, B cooks a held lever.
         if let Some(id) = self.hands.as_ref().unwrap()[i].holding {
@@ -2047,6 +2120,7 @@ impl Rig {
                 self.hands.as_mut().unwrap()[i].pin = Some((gid, palm));
                 self.emit(Cue::Grab, Some(i), Some(gid), palm, 0.4);
             }
+            Hover::Pocket(k) => self.draw_pocket(i, k),
         }
         let _ = inp;
     }
@@ -2358,10 +2432,27 @@ impl Rig {
         let stowable = o.throw.as_ref().is_none_or(|t| t.stowable());
         let holsterable = desc.flags & OBJF_HOLSTERABLE != 0 && stowable;
         let hand_speed = self.hands.as_ref().unwrap()[i].history.recent().length();
+        // A thing drawn from a slot, let go of gently in any slot (one of the player's things', or a
+        // holster): back in the inventory it never left.
+        if let Some(d) = self.objects[&id].drawn
+            && hand_speed < HOLSTER_MAX_SPEED
+        {
+            let pocket = self.pocket_zones.iter().position(|z| self.anchor.contains(&z.put, palm_t));
+            if pocket.is_some() || zones.iter().any(|z| self.anchor.contains(z, palm_t)) {
+                self.remove(id);
+                self.debug.pocket_returns += 1;
+                self.pocket_events.push(PocketEvent::PutBack(pocket.unwrap_or(d.slot), d.key));
+                self.emit(Cue::HolsterIn, Some(i), None, palm, 1.0);
+                return;
+            }
+        }
         // A thing to take, let go of gently in any of the body's slots: stowed, for the game.
         if desc.flags & OBJF_LOOT != 0
             && hand_speed < HOLSTER_MAX_SPEED
-            && let Some(slot) = zones.iter().position(|z| self.anchor.contains(z, palm_t))
+            && let Some(slot) = zones
+                .iter()
+                .position(|z| self.anchor.contains(z, palm_t))
+                .or_else(|| self.pocket_zones.iter().position(|z| self.anchor.contains(&z.put, palm_t)).map(|k| SLOT_COUNT_BODY + k))
         {
             self.stow(id, slot as u32);
             self.emit(Cue::HolsterIn, Some(i), Some(id), palm, 1.0);
@@ -2487,8 +2578,228 @@ impl Rig {
         }
     }
 
+    // ---- the slots that hand out the player's things ([`pockets`]) ------------------------------
+    /// The player's things as the game keeps them, whenever the adapter rewrites them: the copies
+    /// the game has taken back (used, or dropped into the world) go, and so does a copy of a stack
+    /// that's gone (all of it dropped from the game's own menu, say).
+    pub fn set_inventory(&mut self, inv: &Inventory) {
+        *self.inventory = *inv;
+        // (What was taken before this runtime started isn't ours: its numbers may come round again.)
+        let mut seen = self.taken_seen.unwrap_or(inv.taken_count);
+        for id in inv.taken_since(&mut seen) {
+            if self.objects.get(&id).is_some_and(|o| o.drawn.is_some()) {
+                tracing::info!("rig: {id:#x} taken back by the game");
+                self.remove(id);
+            }
+        }
+        self.taken_seen = Some(seen);
+        let gone: Vec<u32> = self.objects.iter().filter(|(_, o)| o.drawn.is_some_and(|d| inv.item(d.item).is_none())).map(|(id, _)| *id).collect();
+        for id in gone {
+            tracing::info!("rig: {id:#x}'s stack is gone from the inventory: it goes too");
+            self.remove(id);
+        }
+    }
+
+    pub fn inventory(&self) -> &Inventory {
+        &self.inventory
+    }
+
+    /// The body's slots in use (the player's, or the game's own).
+    pub fn set_pockets(&mut self, slots: &[BodySlot]) {
+        if self.pockets != slots {
+            self.pockets = slots.to_vec();
+            self.placing = self.placing.filter(|&k| k < slots.len());
+        }
+    }
+
+    /// Slot `slot` is to be placed by hand (None: not any more): the next squeeze puts it there.
+    pub fn place_pocket(&mut self, slot: Option<usize>) {
+        self.placing = slot.filter(|&k| k < self.pockets.len());
+    }
+
+    pub fn placing(&self) -> Option<usize> {
+        self.placing
+    }
+
+    /// How many of each stack are out of the slots (in hands, or let go and not yet taken back).
+    pub fn drawn_out(&self) -> HashMap<u32, u32> {
+        let mut out = HashMap::new();
+        for d in self.objects.values().filter_map(|o| o.drawn) {
+            *out.entry(d.item).or_insert(0) += 1;
+        }
+        out
+    }
+
+    /// What each slot gives now (its first thing, and how many it has to give in all) and where it
+    /// is (tracking space).
+    pub fn pockets_now(&self) -> Vec<SlotNow> {
+        let out = self.drawn_out();
+        self.pockets
+            .iter()
+            .zip(&self.pocket_zones)
+            .map(|(p, z)| {
+                let has = pockets::contents(p, &self.inventory, &out);
+                let count = has.iter().map(|i| i.count - out.get(&i.id).copied().unwrap_or(0).min(i.count)).sum();
+                SlotNow { item: has.first().map_or(0, |i| i.id), count, at: self.anchor.zone_center(&z.take).to_array(), _pad: [0; 3] }
+            })
+            .collect()
+    }
+
+    /// The things drawn from the slots, as the runtime describes them (for drawing: they're in no
+    /// adapter's table).
+    pub fn drawn_descs(&self) -> Vec<ObjectDesc> {
+        self.objects.values().filter(|o| o.drawn.is_some()).map(|o| o.desc).collect()
+    }
+
+    /// Hand `i` reaches into slot `k`: its first thing into the fist (the runtime's copy of it), or,
+    /// empty, what the slot does then.
+    fn draw_pocket(&mut self, i: usize, k: usize) {
+        let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
+        let Some(slot) = self.pockets.get(k) else { return };
+        let out = self.drawn_out();
+        let Some(item) = pockets::contents(slot, &self.inventory, &out).first().map(|i| **i) else {
+            if slot.empty != crate::settings::SlotEmpty::Silent {
+                self.emit(Cue::Fail, Some(i), None, palm, 0.6);
+            }
+            return;
+        };
+        let name = slot.name.clone();
+        let wpm = self.map.world_per_meter;
+        let rot = (grip_rot * pockets::hold_rot(&item)).normalize();
+        // Its middle in the fist; a big thing's side against the palm, the rest of it out past the
+        // fingers.
+        let to_palm = grip_rot * if i == 1 { Vec3::X } else { Vec3::NEG_X };
+        let across = (rot.inverse() * to_palm).abs().dot(v3(item.half_extents));
+        let centre = palm - to_palm * ((across - 0.025) * wpm).max(0.0);
+        let pos = centre - rot * v3(item.center);
+        let id = self.next_spawn;
+        self.next_spawn = self.next_spawn.wrapping_add(1).max(SPAWN_BASE);
+        self.add(pockets::object_desc(&item, id), id, true, pos, rot);
+        if let Some(o) = self.objects.get_mut(&id) {
+            o.drawn = Some(pockets::Drawn::new(&item, k));
+        }
+        // Held just where it came out: the hand stays where it is, the fingers close on it.
+        self.take(id, i, false);
+        self.debug.pocket_draws += 1;
+        self.emit(Cue::HolsterOut, Some(i), Some(id), palm, 1.0);
+        tracing::info!("rig: {} ({} of them) drawn from slot {k} ({name}) into the {} hand as {id:#x}", item.name(), item.count, if i == 0 { "left" } else { "right" });
+    }
+
+    /// A grip held still in a slot (`Holsters::edit_hold`) asks for the slot's editor; what it drew
+    /// goes back.
+    fn pocket_holds(&mut self, inp: &RigInput) {
+        let hold = inp.settings.holsters.edit_hold as f64;
+        for i in 0..2 {
+            let h = &self.hands.as_ref().unwrap()[i];
+            let Some((k, t0, at, drew)) = h.pocket_press else { continue };
+            let (down, now_at, holding) = (h.grip_down, h.grip_t.0, h.holding);
+            if !down || now_at.distance(at) > pockets::EDIT_STILL || hold <= 0.0 {
+                self.hands.as_mut().unwrap()[i].pocket_press = None;
+                continue;
+            }
+            if self.now - t0 < hold {
+                continue;
+            }
+            self.hands.as_mut().unwrap()[i].pocket_press = None;
+            if let Some(id) = drew.filter(|&id| holding == Some(id)) {
+                self.remove(id);
+            }
+            self.pocket_events.push(PocketEvent::Edit(k));
+            let p = self.map.point(now_at);
+            self.emit(Cue::GloveLock, Some(i), None, p, 1.0);
+            tracing::info!("rig: the grip held in slot {k}: its editor");
+        }
+    }
+
+    /// A slot being placed by hand goes where the next squeeze is (in menus too: the editor's Move).
+    fn place_by_hand(&mut self, inp: &RigInput) {
+        let press = inp.settings.interaction.grip_press;
+        let k = (inp.eye_height / 1.70).clamp(0.6, 1.3);
+        for i in 0..2 {
+            let down = inp.frame.hands[i].squeeze > press;
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            let pressed = down && !h.place_grip;
+            h.place_grip = down;
+            let at = h.grip_t.0;
+            if let (true, Some(slot)) = (pressed, self.placing) {
+                self.placing = None;
+                let local = self.anchor.local(at) / k;
+                self.pocket_events.push(PocketEvent::Placed(slot, local));
+                let w = self.map.point(at);
+                self.emit(Cue::HolsterIn, Some(i), None, w, 1.0);
+                tracing::info!("rig: slot {slot} placed by hand at {local:.3?}");
+            }
+        }
+    }
+
+    /// Things drawn from the slots, used where they're used: at the mouth (eaten, drunk), up in
+    /// front of the eyes (read), on the weapon the other hand holds (a poison). Held there a moment
+    /// (`Holsters::mouth_time`, `read_time`, `coat_time`), with bites or gulps felt on the way,
+    /// then used once, for the game to do (its state's `shots`); never while the hand is moving
+    /// fast or held back from its controller. A use the game doesn't take back in time was refused
+    /// (its potion limit, a quest item: it says so itself): the thing has to leave and come back to
+    /// be tried again.
+    fn use_drawn(&mut self, inp: &RigInput, dt: f32) {
+        let h = &inp.settings.holsters;
+        let head = (v3(inp.frame.hmd.pos), q4(inp.frame.hmd.rot));
+        let mouth = self.map.point(pockets::mouth(head));
+        let wpm = self.map.world_per_meter;
+        for i in 0..2 {
+            let hands = self.hands.as_ref().unwrap();
+            let Some(id) = hands[i].holding else { continue };
+            let (speed, blocked) = (hands[i].history.recent().length(), hands[i].blocked);
+            let weapon = hands[i ^ 1].holding.and_then(|o| self.objects.get(&o)).filter(|o| matches!(o.desc.kind, OBJ_MELEE | OBJ_WEAPON)).map(|o| o.collider);
+            let Some(o) = self.objects.get(&id) else { continue };
+            let Some(mut d) = o.drawn else { continue };
+            let (collider, (pos, _)) = (o.collider, self.physics.pose(o.body));
+            if let Some(t) = d.used_at {
+                if self.now - t < pockets::USE_WAIT {
+                    continue;
+                }
+                d.used_at = None;
+                d.armed = false;
+                self.emit(Cue::Fail, Some(i), Some(id), pos, 0.5);
+            }
+            let (time, cue) = if d.flags & (INV_EAT | INV_DRINK) != 0 && self.physics.distance_to(collider, mouth) < pockets::MOUTH_REACH * wpm {
+                (h.mouth_time, if d.flags & INV_EAT != 0 { Cue::Bite } else { Cue::Gulp })
+            } else if d.flags & INV_READ != 0 && pockets::readable(head, self.map.inv_point(pos)) {
+                (h.read_time, Cue::Gulp)
+            } else if d.flags & INV_COAT != 0 && weapon.is_some_and(|w| self.physics.distance_between(collider, w) < pockets::COAT_REACH * wpm) {
+                (h.coat_time, Cue::Gulp)
+            } else {
+                (-1.0, Cue::Gulp)
+            };
+            if time < 0.0 {
+                d.armed = true;
+            }
+            if time < 0.0 || speed > pockets::USE_SPEED || blocked || !d.armed {
+                d.held = 0.0;
+                d.next_bite = 0.0;
+            } else {
+                d.held += dt;
+                if d.held >= d.next_bite {
+                    self.emit(cue, Some(i), Some(id), pos, 1.0);
+                    d.next_bite += pockets::BITE_EVERY;
+                }
+                if d.held >= time.max(0.05) {
+                    d.uses += 1;
+                    d.used_at = Some(self.now);
+                    d.held = 0.0;
+                    d.next_bite = 0.0;
+                    self.debug.pocket_uses += 1;
+                    self.emit(Cue::Use, Some(i), Some(id), pos, 1.0);
+                    tracing::info!("rig: {id:#x} (stack {:#x}) used ({cue:?}), for the game", d.item);
+                }
+            }
+            if let Some(o) = self.objects.get_mut(&id) {
+                o.drawn = Some(d);
+            }
+        }
+    }
+
     /// Into the player's things: out of the world and the hands, until the game takes it.
     fn stow(&mut self, id: u32, slot: u32) {
+
         let Some(o) = self.objects.get_mut(&id) else { return };
         o.holder = Holder::Stowed(slot);
         o.embed = None;
@@ -4414,6 +4725,9 @@ impl Rig {
             if o.spawned {
                 flags |= OS_SPAWNED;
             }
+            if o.drawn.is_some() {
+                flags |= OS_INVENTORY;
+            }
             let (rounds, shots, chambered, slide) = match &o.weapon {
                 Some(w) => {
                     let rounds = w.internal.or_else(|| w.mag.and_then(|m| self.objects.get(&m)).map(|m| m.rounds)).unwrap_or(0);
@@ -4438,10 +4752,13 @@ impl Rig {
                 _ => 0,
             };
             let parent = match o.holder {
+                _ if o.drawn.is_some() => o.drawn.unwrap().item,
                 Holder::InWeapon(w) => w,
                 Holder::Stuck { parent, .. } => parent,
                 _ => 0,
             };
+            let shots = o.drawn.map_or(shots, |d| d.uses);
+
             out.states[out.count as usize] = ObjectState {
                 id: *id,
                 flags,

@@ -195,6 +195,9 @@ pub struct Session {
     pub body: crate::body::PlayerBody,
     /// What the runtime draws of what the player holds (`OBJF_RUNTIME_DRAWS`).
     pub held_objects: crate::held_objects::HeldObjects,
+    /// The body's slots that hand out the player's things, between the rig, the settings and the
+    /// game's editor.
+    holsters: crate::holsters::HolsterLink,
     /// The runtime draws the body this frame.
     pub draws_body: bool,
     /// When to take the arm measurement's next pose (seconds, the frame clock), and the arms out to
@@ -324,6 +327,7 @@ impl Session {
             menu_trigger_was: false,
             body: crate::body::PlayerBody::default(),
             held_objects: Default::default(),
+            holsters: Default::default(),
             draws_body: false,
             calibrate_at: None,
             countdown_tick: -1,
@@ -707,6 +711,8 @@ impl Session {
             }
             let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
             let rig_paused = menu_mode || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
+            let game_name = name_str(&g.name).to_owned();
+            self.holsters.before(&self.link, &mut self.rig, &mut self.settings, &game_name, &self.gpu, &mut self.held_objects);
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
                 map: rig_map,
@@ -718,6 +724,7 @@ impl Session {
                 paused: rig_paused,
                 infinite_ammo: g.flags & GS_INFINITE_AMMO != 0,
             });
+            self.holsters.after(&self.link, &mut self.rig, &mut self.settings, &game_name);
             // One event, one frame: the pulse and the sound together. The same cue for the same
             // object twice in a frame (both hands' pulses for one shot, or for one seat) is one
             // sound, at the louder of the two.
@@ -796,7 +803,8 @@ impl Session {
             }
             self.link.write_game_pushes(&self.game_pushes);
             self.link.write_object_states(&self.states);
-            self.held_objects.update(&self.objects, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
+            let drawn = self.rig.drawn_descs();
+            self.held_objects.update(&self.objects, &drawn, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
             self.held_objects.clear();
             self.card = None;
@@ -1038,7 +1046,11 @@ impl Session {
                 && let Err(e) = self.settings.save() {
                     tracing::warn!("runtime: saving settings: {e:#}");
                 }
+            if std::mem::take(&mut self.menu.open_holsters) {
+                self.holsters.request_editor(0);
+            }
             if std::mem::take(&mut self.menu.measure_arms) {
+
                 self.calibrate_at = Some(now + 3.0);
                 self.countdown_tick = -1;
                 self.calibrate_sides = None;
@@ -1154,6 +1166,7 @@ impl Session {
         self.rig_out = RigOutput::default();
         self.objects_seq = 0;
         self.held_objects.clear();
+        self.holsters.reset();
         self.hand_poses.count = 0;
         self.hand_poses_seq = 0;
         self.kicks.count = 0;
@@ -1835,7 +1848,8 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::KnifeThrow => (E::KnifeThrow, S::GloveFlick),
         C::Explosion => (E::Explosion, S::ShotShotgun),
         C::KnifeStick => (E::KnifeStick, S::Impact),
-        C::ExplosionRumble => return None,
+        // (The game plays its own eating and drinking.)
+        C::ExplosionRumble | C::Bite | C::Gulp | C::Use => return None,
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

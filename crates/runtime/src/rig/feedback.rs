@@ -72,6 +72,12 @@ pub enum Cue {
     /// An air gun's pump stroke (pressure building), and its trigger without the pressure to fire.
     Pump,
     AirHiss,
+    /// A bite felt on the way to eating what's held at the mouth, a gulp on the way to drinking it
+    /// (or reading a scroll, putting a poison on a blade); then the moment it's used. Felt, not
+    /// heard: the game plays its own eating, drinking and casting.
+    Bite,
+    Gulp,
+    Use,
 }
 
 impl Cue {
@@ -123,6 +129,9 @@ impl Cue {
             Cue::PumpForward => "pump_forward",
             Cue::Pump => "pump",
             Cue::AirHiss => "air_hiss",
+            Cue::Bite => "bite",
+            Cue::Gulp => "gulp",
+            Cue::Use => "use",
         }
     }
 }
@@ -196,7 +205,12 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::BoltForward | Cue::PumpForward => (0.045, 140.0, 0.85),
         Cue::Pump => (0.04, 90.0, 0.6),
         Cue::AirHiss => (0.03, 320.0, 0.25),
+        // A bite is short and firm, a gulp low and soft; the use a long low thud.
+        Cue::Bite => (0.03, 120.0, 0.55),
+        Cue::Gulp => (0.05, 70.0, 0.4),
+        Cue::Use => (0.09, 80.0, 0.85),
     })
+
 }
 
 #[cfg(test)]

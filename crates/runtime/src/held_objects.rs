@@ -233,8 +233,13 @@ impl HeldObjects {
     /// Loads the models the adapter's table names for the runtime to draw (each once; a model that
     /// fails is said once and skipped). Call when the table changes.
     pub fn sync(&mut self, gpu: &Gpu, objects: &ObjectTable) {
+        self.sync_descs(gpu, &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)]);
+    }
+
+    /// Loads the models these descriptions name (the runtime's own objects too: the player's things
+    /// drawn from the body's slots), each once.
+    pub fn sync_descs(&mut self, gpu: &Gpu, descs: &[ObjectDesc]) {
         let root = rustvr_asset::default_root();
-        let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
         for d in descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_RUNTIME_DRAWS != 0) {
             let name = name_str(&d.name).to_string();
             if self.models.contains_key(&name) {
@@ -273,8 +278,9 @@ impl HeldObjects {
     /// the rest in the game's world (placed for each picture, [`HeldObjects::place`]). `map`: the
     /// runtime's mapping now, which places them until then. `triggers`: each controller's
     /// trigger (a held gun's trigger follows its hand's). The game's props only while a hand has
-    /// them ([`OS_RUNTIME_DRAWN`], and a moment after); `now` in seconds.
-    pub fn update(&mut self, objects: &ObjectTable, states: &ObjectStates, game: &GamePoses, map: Option<&WorldMap>, triggers: [f32; 2], now: f64) {
+    /// them ([`OS_RUNTIME_DRAWN`], and a moment after); `now` in seconds. `extra`: the runtime's own
+    /// objects' descriptions (the player's things drawn from the slots).
+    pub fn update(&mut self, objects: &ObjectTable, extra: &[ObjectDesc], states: &ObjectStates, game: &GamePoses, map: Option<&WorldMap>, triggers: [f32; 2], now: f64) {
         self.placed.clear();
         self.props_until.retain(|_, until| *until > now);
         let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
@@ -282,7 +288,8 @@ impl HeldObjects {
             if s.id == 0 || s.flags & OS_SPENT != 0 {
                 continue;
             }
-            let Some(d) = descs.iter().find(|d| d.id == s.desc && d.id != 0 && d.flags & OBJF_RUNTIME_DRAWS != 0) else { continue };
+            let Some(d) = descs.iter().chain(extra).find(|d| d.id == s.desc && d.id != 0 && d.flags & OBJF_RUNTIME_DRAWS != 0) else { continue };
+
             let name = name_str(&d.name);
             let Some(Some(l)) = self.models.get(name) else { continue };
             if d.kind == OBJ_PROP {

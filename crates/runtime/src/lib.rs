@@ -13,6 +13,7 @@ pub mod mechanics;
 pub mod menu;
 pub mod obs_view;
 pub mod held_objects;
+pub mod holsters;
 pub mod hud;
 pub mod item_card;
 pub mod panels;

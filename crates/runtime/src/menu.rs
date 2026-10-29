@@ -62,6 +62,8 @@ pub struct RuntimeMenu {
     pub measure_height: bool,
     /// "Measure arms" was pressed (T-pose in 3 seconds).
     pub measure_arms: bool,
+    /// "Holsters" was pressed: the game's editor of the body's slots.
+    pub open_holsters: bool,
 }
 
 impl RuntimeMenu {
@@ -89,6 +91,7 @@ impl RuntimeMenu {
             recenter: false,
             measure_height: false,
             measure_arms: false,
+            open_holsters: false,
         })
     }
 
@@ -143,6 +146,7 @@ impl RuntimeMenu {
         let before = s.clone();
         let mut tab = self.tab;
         let mut recenter = false;
+        let mut holsters = false;
         let mut measure = (false, false);
         let mut save = false;
         let message = self.message.clone();
@@ -193,6 +197,14 @@ impl RuntimeMenu {
                     if r.clicked() {
                         save = true;
                     }
+                    // (The game's own editor of the body's slots, in its own menus.)
+                    if status.game.is_some() {
+                        let r = ui.add_sized([150.0, 40.0], egui::Button::new("Holsters"));
+                        rects.push(("holsters".into(), r.rect));
+                        if r.clicked() {
+                            holsters = true;
+                        }
+                    }
                 });
                 ui.label(egui::RichText::new(message.as_str()).weak());
             });
@@ -210,6 +222,11 @@ impl RuntimeMenu {
             self.recenter = true;
             self.message = "View will recenter when you resume".into();
         }
+        if holsters {
+            self.open_holsters = true;
+            self.message = "The holsters' editor opens in the game".into();
+        }
+
         if *s != before || save {
             self.changed = true;
             self.message = if save { "Saved".into() } else { "Changes apply immediately".into() };
