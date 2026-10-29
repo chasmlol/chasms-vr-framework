@@ -466,6 +466,8 @@ fn display(ui: &mut egui::Ui, s: &mut Settings) {
     slider(ui, "Resolution scale", &mut s.vr.render_scale, 0.5, 2.0, "", 2);
     slider(ui, "World scale", &mut s.vr.world_scale, 0.7, 1.4, "", 2);
     ui.checkbox(&mut s.vr.reproject, "Smooth the game's picture to every headset frame (walking and turning too)");
+    // (More draws more: for a wider desktop view when recording, in games that can spare it.)
+    slider(ui, "Overscan: drawn past the headset's view", &mut s.vr.overscan, 0.0, 30.0, " deg", 0);
     slider(ui, "HUD distance", &mut s.ui.hud_distance, 0.6, 3.0, " m", 2);
     slider(ui, "HUD size", &mut s.ui.hud_size, 0.6, 3.0, " m", 2);
     ui.checkbox(&mut s.ui.hud_follow_head, "HUD follows your head");
@@ -486,7 +488,7 @@ fn display(ui: &mut egui::Ui, s: &mut Settings) {
         ui.radio_value(&mut s.spectator.eye, crate::settings::Eye::Left, "left eye");
         ui.radio_value(&mut s.spectator.eye, crate::settings::Eye::Right, "right eye (your aiming eye)");
     });
-    slider(ui, "Desktop field of view", &mut s.spectator.fov, 60.0, 110.0, " deg", 0);
+    slider(ui, "Desktop field of view", &mut s.spectator.fov, 60.0, 140.0, " deg", 0);
     slider(ui, "Desktop camera smoothing", &mut s.spectator.smoothing, 0.0, 0.4, " s", 2);
     slider(ui, "Desktop camera lag at most", &mut s.spectator.max_lag, 0.0, 20.0, " deg", 0);
     ui.checkbox(&mut s.spectator.roll_lock, "Keep the desktop view's horizon level");

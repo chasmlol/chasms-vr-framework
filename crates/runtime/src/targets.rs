@@ -23,15 +23,13 @@ pub struct Spec {
     pub aux_h: u32,
 }
 
-/// How far past the headset's view the game draws every eye, on every side (degrees). The headset
-/// turns each picture to where the head is when it shows it, a frame or two on (more over a stream,
-/// Virtual Desktop's). A head turning sees round the picture's edge otherwise: undrawn there, the
-/// edges flicker and smear as it turns.
-pub const OVERSCAN_DEG: f32 = 5.0;
 /// The field of view the game draws each eye with, from the headset's (tangents, as [`Fov`] has
-/// them): [`OVERSCAN_DEG`] wider all round.
-pub fn render_fov(headset: [Fov; 2]) -> [Fov; 2] {
-    let m = OVERSCAN_DEG.to_radians();
+/// them): `overscan` degrees wider all round (the setting, `vr.overscan`). The headset turns each
+/// picture to where the head is when it shows it, a frame or two on (more over a stream, Virtual
+/// Desktop's): without some, a turning head sees round the picture's edge, undrawn there, the edges
+/// flickering and smearing as it turns. More lets the desktop view go wider on the aiming eye alone.
+pub fn render_fov(headset: [Fov; 2], overscan: f32) -> [Fov; 2] {
+    let m = overscan.clamp(0.0, 40.0).to_radians();
     // (`sign`: the side's: left and down are negative tangents.)
     let wider = |t: f32, sign: f32| sign * ((sign * t).atan() + m).min(80f32.to_radians()).tan();
     headset.map(|f| Fov { left: wider(f.left, -1.0), right: wider(f.right, 1.0), up: wider(f.up, 1.0), down: wider(f.down, -1.0) })

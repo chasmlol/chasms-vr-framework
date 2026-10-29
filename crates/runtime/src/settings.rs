@@ -78,6 +78,11 @@ pub struct Vr {
     /// Move the game's picture, by its depth, to where the head and the walking player are at each
     /// headset frame (`crate::warp`): a game slower than the headset stays smooth.
     pub reproject: bool,
+    /// How far past the headset's view the game draws every eye, all round (degrees,
+    /// `targets::render_fov`). Some keeps a turning head from seeing an undrawn edge; more lets the
+    /// desktop view go wider on the aiming eye's picture alone (for recording), at the cost of
+    /// drawing more.
+    pub overscan: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -356,7 +361,7 @@ pub struct Ui {
 
 impl Default for Vr {
     fn default() -> Self {
-        Vr { render_scale: 1.0, max_eye_size: 2208, world_scale: 1.0, ipd_scale: 1.0, reproject: true }
+        Vr { render_scale: 1.0, max_eye_size: 2208, world_scale: 1.0, ipd_scale: 1.0, reproject: true, overscan: 5.0 }
     }
 }
 

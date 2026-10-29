@@ -387,7 +387,7 @@ impl Session {
         }
         if let Some(g) = &self.game {
             // (Drawn wider than the headset shows, and bigger to stay as sharp: `targets::render_fov`.)
-            let drawn = crate::targets::render_fov(frame.fov);
+            let drawn = crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan);
             let recommended = crate::targets::overscanned(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn));
             let spec = Spec::new(&g.request, recommended, &self.settings.current);
             if self.targets.as_ref().is_none_or(|t| t.spec != spec) {
@@ -784,12 +784,12 @@ impl Session {
             eyes: frame.eyes,
             // Wider than the headset shows (`targets::render_fov`): its turning the picture to the
             // head as it shows it never reaches an edge that wasn't drawn.
-            fov: crate::targets::render_fov(frame.fov),
+            fov: crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan),
             hands: frame.hands,
             tracking: out.tracking,
             intents: out.intents,
             eye_size: {
-                let drawn = crate::targets::render_fov(frame.fov);
+                let drawn = crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan);
                 let recommended = crate::targets::overscanned(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn));
                 let (w, h) = crate::targets::eye_size(recommended, &self.settings.current);
                 [w, h]
