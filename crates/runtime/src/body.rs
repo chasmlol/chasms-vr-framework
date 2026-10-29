@@ -374,7 +374,15 @@ impl PlayerBody {
         let (tx, rx) = std::sync::mpsc::channel();
         let dir = rustvr_asset::default_root().join(&game);
         std::thread::spawn(move || {
-            let _ = tx.send(rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps));
+            // The armour's plates, as the game's marks say (`rustvr_asset::armour`); without marks
+            // everything is soft, its joints keeping their volume.
+            let marks = rustvr_asset::armour::load(&game, &dir).map_err(|e| tracing::warn!("runtime: the game's armour marks: {e:#}")).ok();
+            match (&marks, rustvr_asset::armour::path(&game)) {
+                (Some(m), Some(p)) => tracing::info!("runtime: armour marks for {} pieces from {}", m.pieces.len(), p.display()),
+                _ => tracing::info!("runtime: no armour marks for {game}: every piece soft"),
+            }
+            let skinning = marks.as_ref().map_or(rustvr_avatar::Skinning::Centres, rustvr_avatar::Skinning::Marked);
+            let _ = tx.send(rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps, skinning));
         });
         self.game_body = Some(rx);
     }

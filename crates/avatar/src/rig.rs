@@ -155,6 +155,11 @@ pub struct Posed {
     pub pos: Vec<Vec3>,
     /// Skinning matrices: bind model space -> tracking space.
     pub skin: Vec<Mat4>,
+    /// Each skinning matrix's linear part as a rotation and what's left of it (symmetric: the
+    /// body's scale, a hand's own size, an arm segment's stretch), `turn · stretch`: what the
+    /// skinning that keeps joints' volume blends (`cor.rs`).
+    pub turn: Vec<Quat>,
+    pub stretch: Vec<Mat3>,
     pub scale: f32,
 }
 
@@ -347,7 +352,7 @@ impl Rig {
 
     pub fn posed(&self) -> Posed {
         let n = self.bones.len();
-        Posed { rot: vec![Quat::IDENTITY; n], pos: vec![Vec3::ZERO; n], skin: vec![Mat4::IDENTITY; n], scale: 1.0 }
+        Posed { rot: vec![Quat::IDENTITY; n], pos: vec![Vec3::ZERO; n], skin: vec![Mat4::IDENTITY; n], turn: vec![Quat::IDENTITY; n], stretch: vec![Mat3::IDENTITY; n], scale: 1.0 }
     }
 
     /// The forearm's share of the arm (shoulder to wrist) in the model's bind pose, both arms'
@@ -559,6 +564,16 @@ impl Rig {
                 }
             }
         }
+
+        // Each matrix as a turn and a stretch, the turn found from the bone's own (which every
+        // matrix but a fitted arm's is) so it takes an iteration or two.
+        for (b, bone) in self.bones.iter().enumerate() {
+            let a = Mat3::from_mat4(out.skin[b]);
+            let turn = rotation_of(&a, (out.rot[b] * bone.bind_rot.inverse()).normalize());
+            let s = Mat3::from_quat(turn).transpose() * a;
+            out.turn[b] = turn;
+            out.stretch[b] = (s + s.transpose()) * 0.5;
+        }
     }
 
     /// Per-bone visibility half-spaces in bind space for `show`: a vertex's visibility is the
@@ -734,6 +749,25 @@ fn segment_fit(start: Vec3, dir: Vec3, end: Vec3, length: f32) -> Option<Mat4> {
     let along = Mat3::from_cols(Vec3::X * t + d * (d.x * (k - t)), Vec3::Y * t + d * (d.y * (k - t)), Vec3::Z * t + d * (d.z * (k - t)));
     let turn = Mat3::from_quat(Quat::from_rotation_arc(dir, d));
     Some(Mat4::from_translation(start) * Mat4::from_mat3(along * turn) * Mat4::from_translation(-start))
+}
+
+/// The rotation nearest the linear map `a`, from a guess `q` (Müller, Bender, Chentanez and
+/// Macklin, "A Robust Method to Extract the Rotational Part of Deformations", 2016): each step turns
+/// the guess by the torque that lines its axes up with `a`'s columns. A map with no size (a head
+/// collapsed for the wearer) keeps the guess.
+pub(crate) fn rotation_of(a: &Mat3, mut q: Quat) -> Quat {
+    for _ in 0..12 {
+        let r = Mat3::from_quat(q);
+        let torque = r.x_axis.cross(a.x_axis) + r.y_axis.cross(a.y_axis) + r.z_axis.cross(a.z_axis);
+        let along = (r.x_axis.dot(a.x_axis) + r.y_axis.dot(a.y_axis) + r.z_axis.dot(a.z_axis)).abs();
+        let w = torque / (along + 1e-9);
+        let angle = w.length();
+        if angle < 1e-7 || !angle.is_finite() {
+            break;
+        }
+        q = (Quat::from_axis_angle(w / angle, angle) * q).normalize();
+    }
+    q
 }
 
 /// The angle of `q`'s twist about the unit `axis` (swing-twist decomposition), in -pi..pi.
