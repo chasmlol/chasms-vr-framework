@@ -265,7 +265,7 @@ struct Hand {
     finger_vel: [Vec3; 5],
     /// The fingers as the controller has them, eased as the drawn hand's are (the same solver on
     /// the same input), this frame's: the capsules are where the drawn fingers are (a lifted thumb
-    /// straight).
+    /// or index straight).
     finger_solver: rustvr_ik::FingerSolver,
     drawn_curls: [f32; 5],
     /// The fingers push things only while the hand has nothing (holding, steering or working
@@ -3813,11 +3813,12 @@ impl Rig {
         let hands = self.hands.as_mut().unwrap();
         let holding = [hands[0].holding, hands[1].holding];
         for (i, h) in hands.iter_mut().enumerate() {
-            // (A thumb lifted off the controls stands up only a little: its capsule stays straight,
-            // which would only catch on what the hand rests against.)
+            // (A thumb or index lifted off the controls stands up only a little: its capsule stays
+            // straight, which would only catch on what the hand rests against.)
             let fingers = rustvr_ik::FingerInput::from_hand(&inp.frame.hands[i], inp.frame.fingers[i]);
             let mut drawn = h.finger_solver.update(dt, &fingers, rustvr_ik::HoldShape::None).curl;
             drawn[0] = drawn[0].max(0.0);
+            drawn[1] = drawn[1].max(0.0);
             h.drawn_curls = drawn;
             let was_on = std::mem::replace(&mut h.was_on, h.holding.or(h.support.as_ref().map(|s| s.id)));
             if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() || h.valve.is_some() {

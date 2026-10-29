@@ -94,6 +94,10 @@ const THUMB_REST: f32 = 0.12;
 const THUMB_FIST: f32 = 0.75;
 const THUMB_PRESS: f32 = 0.1;
 const THUMB_LIFTED: f32 = -0.5;
+/// The index's curl resting on the trigger (a relaxed finger) and lifted off it (below 0: its base
+/// stands it up away from the palm) (est., by eye).
+const INDEX_REST: f32 = 0.05;
+const INDEX_LIFTED: f32 = -0.25;
 
 /// Curl smoothing: a few frames, quick enough to read as 1:1 on the trigger and slow enough that
 /// a touch sensor flipping or a grab starting doesn't snap the fingers (est.).
@@ -164,7 +168,9 @@ impl FingerSolver {
             }
             return (curl, splay);
         }
-        let index = trigger_curl(input, 0.3, 1.0, 0.05);
+        // On the trigger is a relaxed finger, curling in as it's pulled; lifted off, it stands up a
+        // little.
+        let index = trigger_curl(input, INDEX_REST, 1.0, INDEX_LIFTED);
         // The lower fingers close with the grip, the pinky a touch ahead of the middle finger.
         let grip = |lead: f32| (0.15 + 0.85 * squeeze * lead).min(1.0);
         let curl = [thumb, index, grip(1.0), grip(1.03), grip(1.06)];
