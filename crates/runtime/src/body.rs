@@ -78,6 +78,8 @@ pub struct PlayerBody {
     /// and the size last said in the log.
     hand_length: f32,
     hand_said: f32,
+    /// Seconds since the arms were last logged.
+    arms_said: f32,
     unreached: [f32; 2],
     /// Each hand on its way into a held pose or out of one (see [`Grab`]).
     grab: [Grab; 2],
@@ -142,6 +144,7 @@ impl Default for PlayerBody {
             auto_span: None,
             hand_length: 0.0,
             hand_said: 0.0,
+            arms_said: 0.0,
             unreached: [0.0; 2],
             grab: [Grab::default(); 2],
             plain: false,
@@ -271,6 +274,37 @@ impl PlayerBody {
             j.pos += down;
         }
         self.reached = out.reached;
+        // Each arm's elbow and hand as the chest has them (the left's mirrored onto the right's
+        // side), now and then: two arms held alike read alike, so a side solved differently shows.
+        self.arms_said += f.dt.max(0.0);
+        if self.arms_said > 2.0 && grips.iter().all(|g| g.is_some()) {
+            self.arms_said = 0.0;
+            let chest = out.joints[Joint::UpperChest as usize];
+            let local = |v: Vec3, side: usize| {
+                let l = chest.rot.inverse() * v;
+                if side == 0 { Vec3::new(-l.x, l.y, l.z) } else { l }
+            };
+            let arm = |side: usize| {
+                let [upper, lower, hand] = if side == 0 {
+                    [Joint::LeftUpperArm, Joint::LeftLowerArm, Joint::LeftHand]
+                } else {
+                    [Joint::RightUpperArm, Joint::RightLowerArm, Joint::RightHand]
+                };
+                let p = |j: Joint| out.joints[j as usize].pos;
+                let h = out.joints[hand as usize];
+                (
+                    local(p(hand) - p(upper), side),
+                    local((p(lower) - p(upper)).normalize_or_zero(), side),
+                    local(h.rot * Vec3::Z, side),
+                    local(h.rot * Vec3::Y, side),
+                )
+            };
+            let (l, r) = (arm(0), arm(1));
+            tracing::info!(
+                "body: arms (chest space, the left mirrored) hand at {:.2?} / {:.2?}, upper arm {:.2?} / {:.2?}, thumb {:.2?} / {:.2?}, fingers {:.2?} / {:.2?}",
+                l.0, r.0, l.1, r.1, l.2, r.2, l.3, r.3
+            );
+        }
         // Arms that keep falling short of the hands grow (automatic arm span only).
         if inp.settings.body.arm_span <= 1.0 {
             let dt = f.dt.clamp(0.0, 0.1);
