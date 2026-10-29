@@ -317,14 +317,38 @@ describes its HUD (`HudLayout`: rectangles of the HUD texture and their roles) a
 | Ammo | on the held gun's left side, facing the eye; hidden with no gun |
 | Status | on the back of the off-hand wrist, shown while you look at it |
 | Overlay | fixed to the face over the whole view (damage, fades) |
+| Gaze | where the head looks, fixed to it (what looking there does: "Open Door") |
+| Compass | low in front of the body (26 degrees under the horizon), lazily following its turn |
+| Target | over the foe it's about (its health) |
 | Centre and the rest | the flat screen, 1.4 m ahead |
 | Hidden | not drawn (a crosshair: the gun's sights aim) |
 
 Everything that follows the head waits for a 20 degree turn, glides back in front (0.15 s) and
 stops; it never rolls. The game stays the source of truth for *when* a piece shows: its rectangle
 is drawn every frame, so it appears and fades as the game draws it. Without a layout the HUD is one
-flat screen, as before. Menus are a world-locked panel with a laser (§6). Metro's layout is in
-its adapter's `docs/METRO.md` (the chasms-vr-metro repository).
+flat screen, as before. Metro's layout is in its adapter's `docs/METRO.md` (the chasms-vr-metro
+repository).
+
+**Menus in pieces.** A game's menu is never hung in front of the face whole: the adapter describes
+it as groups of pieces (`HudGroup`: the parts that matter, cut out of its UI) and the runtime floats
+each group where it belongs, world-locked once placed:
+
+| Anchor | Where |
+|---|---|
+| a thing in the world (a chest, a merchant, a speaker) | at its distance (0.9 to 1.4 m), 10 degrees under the eyes, beside it only where it would cover it; or over or under it (a speaker's name, their line) |
+| the player (their own menus) | 1.1 m ahead, 8 degrees under the eyes; it comes round after a turn of 65 degrees |
+| a pop-up (a question, a count) | 0.8 m ahead where the eyes look |
+
+A group's pieces keep the game's own arrangement, lie on a cylinder round the eye, and are sized
+from the game's own text (`HudLayout::text_height`) so a line reads at `ui.menu_text_deg` (1.5
+degrees) wherever it floats. With real alpha (`HUDL_ALPHA`) and the game's picture under the menu,
+the world, the body and the hands stay, and the pieces are drawn in the world (before the body, so
+the hands are in front of them), their cut edges soft. The laser picks among the pieces that take it
+(`HUDE_POINT`); where it hits is the game's cursor (`Intents::cursor_uv`), so the game keeps its
+own hover, selection and clicks; the dominant stick scrolls (`Intents::scroll`, the game's mouse
+wheel). The runtime's own settings float beside a game menu only when the layout asks
+(`HUDL_SETTINGS`: a pause menu). A menu with no layout is one world-locked panel with the laser
+(§6).
 
 ## 7. Adapters
 
