@@ -286,6 +286,8 @@ struct Hand {
     /// Empty: where it was sent last frame and where its controller was then (its catching up is
     /// eased from there).
     reach_from: Option<(Vec3, Vec3)>,
+    /// Empty, resting on what the other hand holds (that thing's id): it goes along with it.
+    rests_on: Option<u32>,
     /// How far each finger (thumb .. little) is pushed open by what the empty hand is pressed on
     /// (0 or less), and the fingers' curls with it.
     give: [f32; 5],
@@ -531,8 +533,12 @@ fn fit_fingers(physics: &Physics, offsets: &rustvr_ik::HandOffsets, i: usize, h:
 
 /// Steps a finger pushed aside takes looking for room, out from its curl either way.
 const FIT_STEPS: usize = 10;
-/// An empty hand held back this far from its controller (m) is pressed on something.
+/// An empty hand held back this far from its controller (m) is pressed on something; held back
+/// at all (beyond rounding), it catches up eased. Moving freely it follows its controller exactly.
 const PRESSED: f32 = 0.01;
+const HELD_BACK: f32 = 0.002;
+/// An empty hand this close to what the other hand holds (m) rests on it.
+const RESTING: f32 = 0.006;
 /// Pressed on something, a hand turns with its controller this far behind (s).
 const PRESSED_TURN_TIME: f32 = 0.06;
 /// Fingers follow the controller and give way over about this long (s), and move at most this
@@ -1558,6 +1564,7 @@ impl Rig {
                 was_on: None,
                 passing: None,
                 reach_from: None,
+                rests_on: None,
                 give: [0.0; 5],
                 curls: [0.0; 5],
                 held_curls: [0.0; 5],
@@ -3805,7 +3812,10 @@ impl Rig {
                 // controller's tremor doesn't jolt it about against what it's on; free, exactly
                 // with it.
                 let (_, turned) = self.physics.pose(h.body);
-                let pressed = h.reach_from.is_some() && pos.distance(h.target.0) > PRESSED;
+                // (How far it was held back last frame: from where its controller was then, or short
+                // of where it was sent. Moving freely, nothing: it follows the controller exactly.)
+                let behind = h.reach_from.map_or(0.0, |(sent, was)| sent.distance(was).max(pos.distance(sent)));
+                let pressed = behind > PRESSED;
                 let rot = if pressed { turned.slerp(h.target.1, 1.0 - (-dt / PRESSED_TURN_TIME).exp()).normalize() } else { h.target.1 };
                 // Its fingers as the controller has them (eased, as the drawn hand's are), and as
                 // far open as they'd be pushed (a relaxed hand's back past straight, a clenched
@@ -3830,13 +3840,27 @@ impl Rig {
                 // what's in the way). Pressed on a loose thing that can't go anywhere, it presses
                 // on gently rather than being driven into it.
                 let to = match h.reach_from {
-                    Some((_, was)) if want.distance(pos) > h.target.0.distance(was) + 1e-4 => {
+                    Some((_, was)) if behind > HELD_BACK && want.distance(pos) > h.target.0.distance(was) + 1e-4 => {
                         let (moved, len) = (h.target.0.distance(was), want.distance(pos));
                         let catch = 1.0 - (-dt / CATCH_UP_TIME).exp();
                         let goal = pos + (want - pos) * ((moved + (len - moved) * catch) / len);
                         self.physics.reach(h.collider, rot, goal, solid, passing)
                     }
                     _ => want,
+                };
+                // Resting on what the other hand holds, it goes along with it: where it's put
+                // against it now, carried as that moves this step (else that moving under it would
+                // shove it about every frame).
+                let other = holding[i ^ 1].and_then(|id| self.objects.get(&id).map(|o| (id, o.body, o.collider)));
+                h.rests_on = other.filter(|&(_, _, c)| self.physics.gap_at(h.collider, (to, rot), c) < RESTING).map(|(id, ..)| id);
+                let to = match other.filter(|&(id, ..)| h.rests_on == Some(id)) {
+                    Some((_, body, _)) => {
+                        let (op, oq) = self.physics.pose(body);
+                        let (v, w) = self.physics.velocity(body);
+                        let next = (op + v * dt, (Quat::from_scaled_axis(w * dt) * oq).normalize());
+                        next.0 + next.1 * (oq.inverse() * (to - op))
+                    }
+                    None => to,
                 };
                 h.reach_from = Some((to, h.target.0));
                 self.physics.track(h.body, to, rot, dt, &physics::Drive::FREE);

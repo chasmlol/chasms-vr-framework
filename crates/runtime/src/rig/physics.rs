@@ -360,6 +360,12 @@ impl Physics {
         self.world.intersect_shape(to_pose(V3::ZERO, Q::IDENTITY), &shape, filter).next().is_some()
     }
 
+    /// How far collider `c` would be from collider `other` at `pose` (0 touching or overlapping).
+    pub fn gap_at(&self, c: ColliderHandle, pose: (V3, Q), other: ColliderHandle) -> f32 {
+        let (Some(a), Some(b)) = (self.world.colliders.get(c), self.world.colliders.get(other)) else { return f32::MAX };
+        rapier3d::parry::query::distance(&to_pose(pose.0, pose.1), a.shape(), b.position(), b.shape()).map_or(f32::MAX, |d| d.distance)
+    }
+
     /// How far apart two colliders are (0 touching or overlapping).
     pub fn distance_between(&self, a: ColliderHandle, b: ColliderHandle) -> f32 {
         let (Some(a), Some(b)) = (self.world.colliders.get(a), self.world.colliders.get(b)) else { return f32::MAX };
