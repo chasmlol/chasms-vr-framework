@@ -493,8 +493,10 @@ pub(crate) struct SourceMaterial {
 /// A body put together from a game's parts (see [`rustvr_protocol::AvatarDesc`]): the skeleton
 /// model's bones, and the meshes of every part (each skinned to those bones in their order), from
 /// the asset cache folder `dir`, with the texture swaps applied (a part's texture or bump map
-/// named first is drawn with the second, when the cache has it). A part that doesn't fit the
-/// skeleton is left out.
+/// named first is drawn with the second, when the cache has it). A part made for another skeleton
+/// (a body or an armour made for one race's skeleton, worn by another's) is put on this one by its
+/// bones' names, as the game itself does ([`rebind`]); a part with bones the skeleton hasn't is left
+/// out.
 pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &[(String, String)]) -> Result<AvatarSource> {
     let skel = asset::load_model(dir, skeleton).with_context(|| format!("the skeleton {skeleton}"))?;
     // (A swap to a texture the cache doesn't have keeps the part's own.)
@@ -514,9 +516,12 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
                 continue;
             }
         };
+        let mut part = part;
         if part.bones.len() != model.bones.len() || part.bones.iter().zip(&model.bones).any(|(a, b)| a.name != b.name) {
-            tracing::warn!("avatar: part {key} isn't skinned to the skeleton {skeleton}: left out");
-            continue;
+            if let Err(e) = rebind(&mut part, &model.bones) {
+                tracing::warn!("avatar: part {key} isn't skinned to the skeleton {skeleton}: {e:#}: left out");
+                continue;
+            }
         }
         for k in 0..3 {
             lo[k] = lo[k].min(part.bounds_min[k]);
@@ -545,6 +550,53 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         }
     }
     Ok(AvatarSource::Built { model, textures })
+}
+
+/// Puts a part skinned to another skeleton (`part.bones`) on `bones` by the bones' names: each
+/// vertex goes where its bones take it from the part's bind pose to this skeleton's (the weighted
+/// sum of each bone's move, as the game skins a part to whatever skeleton it's on), and its bone
+/// indices become this skeleton's. An error when a bone the part is weighted to isn't in it.
+pub fn rebind(part: &mut asset::Model, bones: &[asset::Bone]) -> Result<()> {
+    use glam::{Mat4, Vec3};
+    let by_name: HashMap<String, usize> = bones.iter().enumerate().map(|(i, b)| (b.name.to_ascii_lowercase(), i)).collect();
+    let to: Vec<Option<usize>> = part.bones.iter().map(|b| by_name.get(&b.name.to_ascii_lowercase()).copied()).collect();
+    // Each of the part's bones' move: off its bind pose, onto this skeleton's.
+    let moves: Vec<Option<Mat4>> = part
+        .bones
+        .iter()
+        .zip(&to)
+        .map(|(b, t)| t.map(|t| Mat4::from_cols_array(&bones[t].model_matrix) * Mat4::from_cols_array(&b.model_matrix).inverse()))
+        .collect();
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for m in &mut part.meshes {
+        for v in &mut m.vertices {
+            let total: u32 = v.weights.iter().map(|&w| w as u32).sum();
+            if total > 0 {
+                let mut sum = Mat4::ZERO;
+                for k in 0..4 {
+                    if v.weights[k] == 0 {
+                        continue;
+                    }
+                    let b = v.bones[k] as usize;
+                    let (Some(mv), Some(t)) = (moves.get(b).copied().flatten(), to.get(b).copied().flatten()) else {
+                        anyhow::bail!("the skeleton has no {}", part.bones.get(b).map_or("(bone)", |b| b.name.as_str()));
+                    };
+                    sum += mv * (v.weights[k] as f32 / total as f32);
+                    v.bones[k] = u8::try_from(t).context("a bone past the 256th")?;
+                }
+                let p = sum.transform_point3(Vec3::from_array(v.pos));
+                v.pos = p.to_array();
+                v.normal = sum.transform_vector3(Vec3::from_array(v.normal)).normalize_or_zero().to_array();
+            }
+            lo = lo.min(Vec3::from_array(v.pos));
+            hi = hi.max(Vec3::from_array(v.pos));
+        }
+    }
+    part.bones = bones.to_vec();
+    if lo.x <= hi.x {
+        (part.bounds_min, part.bounds_max) = (lo.to_array(), hi.to_array());
+    }
+    Ok(())
 }
 
 /// The skeleton of the built-in mannequin (Unity humanoid names, bound in the reference T-pose),
