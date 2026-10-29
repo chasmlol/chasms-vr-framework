@@ -55,6 +55,14 @@ pub fn weapon_desc(id: u32, w: &Weapon, poses: [u32; 2]) -> ObjectDesc {
     d.center = ((max + min) * 0.5).to_array();
     d.grip = w.rig.grip;
     d.foregrip = w.rig.foregrip;
+    // The pistol grip's thickness, and the handguard (the fingers close round them).
+    if let Some((_, half)) = w.grip_block {
+        d.grip_radius = 0.5 * (half.x + half.y);
+    }
+    if let Some((a, b, r)) = w.handguard {
+        d.foregrip_line = [a.to_array(), b.to_array()];
+        d.foregrip_radius = r;
+    }
     d.mag_well = w.rig.mag_well;
     d.muzzle = w.rig.muzzle;
     if let Some(l) = w.laser {

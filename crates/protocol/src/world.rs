@@ -360,6 +360,22 @@ pub struct ObjectDesc {
     pub _p_drive: u32,
     pub drive_travel: [f32; 3],
     pub _p_travel: f32,
+    /// Its handle (object space): the axis of the part a hand holds it by, end to end (a sword's
+    /// grip from the pommel to the guard, an axe's haft, a staff), and how thick it is there (its
+    /// radius). A hand that takes it near the handle goes on anywhere along it, held as `grip_rot`
+    /// holds it at `grip` (or the other way round it, a knife's reversed grip), slid along; both
+    /// hands may hold it there. All zero: a melee weapon's or knife's handle 6 cm long through
+    /// `grip`, along `grip_rot`'s fist. Guns don't have one: their pistol grip (`grip`) locks the
+    /// hand on. Anywhere else, a hand holds a thing where it took it.
+    pub grip_line: [[f32; 3]; 2],
+    pub grip_radius: f32,
+    /// Two-handed guns: the handguard's axis, end to end, and its radius. The support hand takes
+    /// it anywhere along: held as `support_rot` holds it at `foregrip`, slid along the handguard
+    /// (the game's own support pose slides with it). All zero: 10 cm of the bore through
+    /// `foregrip`.
+    pub foregrip_line: [[f32; 3]; 2],
+    pub foregrip_radius: f32,
+    pub _p_grips: [u32; 2],
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;
@@ -911,7 +927,7 @@ const _: () = {
     assert!(size_of::<HandState>() == 48);
     assert!(size_of::<RtBody>() == 32 + 32 * JOINT_COUNT + 64 + 96);
     assert!(OFF_BODY + size_of::<RtBody>() <= OFF_OBJECTS);
-    assert!(size_of::<ObjectDesc>() == 416);
+    assert!(size_of::<ObjectDesc>() == 480);
     assert!(size_of::<ObjectState>() == 96);
     assert!(size_of::<GamePose>() == 48);
     assert!(OFF_GAME_POSES.is_multiple_of(64));

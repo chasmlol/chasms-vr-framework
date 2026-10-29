@@ -2,8 +2,9 @@
 //!
 //! A [`HandPoseDesc`] is in object space. [`held_hands`] puts the poses of whatever the hands hold
 //! into tracking space the way the runtime's rig holds it: the firing hand's pose on the grip, the
-//! support hand's slid along the foregrip line to where the rig put that hand, and either mirrored
-//! for the other hand. The runtime and the tests both go through it.
+//! support hand's slid along the handguard to where the rig put that hand, and either mirrored for
+//! the other hand. A hand holding the gun anywhere else isn't in the game's pose (its fingers close
+//! on the gun where it has it). The runtime and the tests both go through it.
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::*;
@@ -106,15 +107,15 @@ impl HeldHand {
 
     /// A pose (object space) on an object at `object` (tracking space) for hand `side`: mirrored
     /// through the object's plane `x = mirror_x` when the pose was made for the other hand, and
-    /// slid `slide` metres along the object's +Z.
-    pub fn place(desc: &HandPoseDesc, object: (Vec3, Quat), side: usize, mirror_x: f32, slide: f32, trigger: f32) -> HeldHand {
+    /// slid by `slide` (object space).
+    pub fn place(desc: &HandPoseDesc, object: (Vec3, Quat), side: usize, mirror_x: f32, slide: Vec3, trigger: f32) -> HeldHand {
         let mirror = desc.side as usize != side;
         let m = |q: Quat| if mirror { Quat::from_xyzw(q.x, -q.y, -q.z, q.w) } else { q };
         let mut p = Vec3::from_array(desc.wrist.pos);
         if mirror {
             p.x = 2.0 * mirror_x - p.x;
         }
-        p.z += slide;
+        p += slide;
         let wrist_rot = m(quat(desc.wrist.rot));
         let (op, oq) = object;
         let fingers = desc.fingers.map(|f| m(quat(f)));
@@ -165,20 +166,30 @@ pub fn held_hands(
         }
         let object = (Vec3::from_array(s.pose.pos), quat(s.pose.rot));
         let firing = s.flags & if side == 0 { OS_HELD_LEFT } else { OS_HELD_RIGHT } != 0;
+        let local = object.1.inverse() * (grip - object.0);
         if firing {
+            // On its grip (held anywhere else, the fingers close on the gun where it's held).
             let pose = poses.find(d.grip_pose)?;
-            Some(HeldHand::place(pose, object, side, d.grip[0], 0.0, triggers[side]))
+            (local.distance(Vec3::from_array(d.grip)) < ON_HOLD).then(|| HeldHand::place(pose, object, side, d.grip[0], Vec3::ZERO, triggers[side]))
         } else {
             let pose = poses.find(d.support_pose)?;
-            Some(HeldHand::place(pose, object, side, d.foregrip[0], support_slide(d, object, grip), 0.0))
+            Some(HeldHand::place(pose, object, side, d.foregrip[0], support_slide(d, local)?, 0.0))
         }
     })
 }
 
-/// How far along the barrel from the game's support pose the rig holds a support hand: always
-/// none (the support hand locks to the game's own place on the gun).
-pub fn support_slide(_d: &ObjectDesc, _object: (Vec3, Quat), _grip: Vec3) -> f32 {
-    0.0
+/// How near the place the rig holds a hand at (metres) it must be for the game's pose there.
+const ON_HOLD: f32 = 0.01;
+
+/// How far along the handguard (object space) from the game's support pose the rig holds a support
+/// hand whose grip pose is at `local` (object space): along the handguard's axis
+/// ([`ObjectDesc::foregrip_line`], or the bore). None: it isn't on the handguard.
+pub fn support_slide(d: &ObjectDesc, local: Vec3) -> Option<Vec3> {
+    let at = Vec3::from_array(d.foregrip);
+    let (a, b) = (Vec3::from_array(d.foregrip_line[0]), Vec3::from_array(d.foregrip_line[1]));
+    let dir = if a.distance(b) > 1e-3 { (b - a).normalize() } else { Vec3::Z };
+    let slide = dir * (local - at).dot(dir);
+    (local.distance(at + slide) < ON_HOLD).then_some(slide)
 }
 
 fn quat(a: [f32; 4]) -> Quat {
@@ -224,8 +235,8 @@ mod tests {
     fn mirroring_reflects_the_hand_through_the_grip_plane() {
         let p = pose_desc(1, HAND_RIGHT as u32);
         let at = (Vec3::ZERO, Quat::IDENTITY);
-        let right = HeldHand::place(&p, at, 1, 0.01, 0.0, 0.0);
-        let left = HeldHand::place(&p, at, 0, 0.01, 0.0, 0.0);
+        let right = HeldHand::place(&p, at, 1, 0.01, Vec3::ZERO, 0.0);
+        let left = HeldHand::place(&p, at, 0, 0.01, Vec3::ZERO, 0.0);
         let (r, l) = (Vec3::from_array(right.wrist.pos), Vec3::from_array(left.wrist.pos));
         assert!((r.x + l.x - 0.02).abs() < 1e-6 && (r.y - l.y).abs() < 1e-6 && (r.z - l.z).abs() < 1e-6);
         // The mirrored hand frame: Y and Z reflected, X reflected and flipped (X = Y x Z).
@@ -242,7 +253,7 @@ mod tests {
     #[test]
     fn the_index_follows_the_trigger() {
         let p = pose_desc(1, HAND_RIGHT as u32);
-        let mut h = HeldHand::place(&p, (Vec3::ZERO, Quat::IDENTITY), 1, 0.0, 0.0, 0.0);
+        let mut h = HeldHand::place(&p, (Vec3::ZERO, Quat::IDENTITY), 1, 0.0, Vec3::ZERO, 0.0);
         let rest = h.finger_rotations()[3];
         h.trigger = 1.0;
         let pulled = h.finger_rotations()[3];
@@ -279,21 +290,25 @@ mod tests {
         };
         states.count = 1;
         let holding = HandState { flags: HAND_TRACKED | HAND_HOLDING, holding: 5, ..Default::default() };
-        // The support hand's controller 2 cm back along the foregrip line.
+        // The rig holds the support hand 2 cm back along the handguard, the firing hand on the grip
+        // (at the gun's origin).
         let support_grip = gun.0 + gun.1 * Vec3::new(0.0, -0.01, 0.28);
         let grips = [Some((support_grip, Quat::IDENTITY)), Some((gun.0, gun.1))];
         let held = held_hands(grips, &[holding, holding], &states, &objects, &poses, [0.9, 0.7]);
         let [Some(l), Some(r)] = held else { panic!("both hands posed: {held:?}") };
         assert_eq!(r.trigger, 0.7, "the firing hand's trigger");
         assert_eq!(l.trigger, 0.0);
-        // The support hand stays where the game holds the gun: it doesn't slide with the controller.
-        let want = gun.0 + gun.1 * Vec3::new(0.03, -0.02, -0.05);
-        assert!(Vec3::from_array(l.wrist.pos).distance(want) < 1e-5, "on the game's pose, not slid back: {:?}", l.wrist.pos);
+        // The support hand's pose slides back with it along the handguard.
+        let want = gun.0 + gun.1 * Vec3::new(0.03, -0.02, -0.07);
+        assert!(Vec3::from_array(l.wrist.pos).distance(want) < 1e-5, "slid back 2 cm: {:?}", l.wrist.pos);
         let want = gun.0 + gun.1 * Vec3::new(0.03, -0.02, -0.05);
         assert!(Vec3::from_array(r.wrist.pos).distance(want) < 1e-5);
         // Not holding, or no pose: the curls.
         let none = held_hands(grips, &[HandState::default(), holding], &states, &objects, &poses, [0.0; 2]);
         assert!(none[0].is_none() && none[1].is_some());
+        // Holding it anywhere but on the grip or the handguard: not the game's pose.
+        let elsewhere = [Some((gun.0 + gun.1 * Vec3::new(0.0, 0.05, 0.15), Quat::IDENTITY)), Some((gun.0 + gun.1 * Vec3::new(0.0, 0.0, 0.1), gun.1))];
+        assert_eq!(held_hands(elsewhere, &[holding, holding], &states, &objects, &poses, [0.0; 2]), [None, None]);
         objects.descs[0].grip_pose = 0;
         assert!(held_hands(grips, &[holding, holding], &states, &objects, &poses, [0.0; 2])[1].is_none());
     }

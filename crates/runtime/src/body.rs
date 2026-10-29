@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use glam::{Quat, Vec3};
 use rustvr_avatar::collimator::Collimator;
-use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput, GameShading, HeldHand};
+use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput, GameShading, Grasp, HeldHand};
 use rustvr_gpu::Gpu;
 use rustvr_ik::{BodyParams, BodySolver, Calibration, FingerInput, FingerSolver, HandOffsets, HoldShape, Side, TrackedInput};
 use rustvr_protocol::*;
@@ -29,6 +29,8 @@ pub struct BodyInput<'a> {
     /// Hands holding something in the game's own pose for it (`rustvr_avatar::held_hands`): the
     /// hand goes exactly to that wrist and is drawn in that pose.
     pub held: [Option<HeldHand>; 2],
+    /// Hands holding something otherwise: what their fingers close on (the rig's grasps).
+    pub grasps: [Option<&'a Grasp>; 2],
     /// Stick locomotion velocity in tracking space (m/s), for the legs' gait.
     pub locomotion: Vec3,
     /// Standing head height as measured in tracking space (0: not known yet).
@@ -57,6 +59,8 @@ pub struct PlayerBody {
     pub ghosts: [Option<Pose>; 2],
     /// Hands drawn in the game's own pose this frame.
     pub held: [Option<HeldHand>; 2],
+    /// What the other holding hands' fingers close on this frame.
+    pub grasp: [Option<Grasp>; 2],
     pub reached: [bool; 2],
     seq: u32,
     /// Draws the held meshes the avatar doesn't shade itself (see `rustvr_avatar::SpecialDraw`:
@@ -123,6 +127,7 @@ impl Default for PlayerBody {
             body: bytemuck::Zeroable::zeroed(),
             ghosts: [None; 2],
             held: [None; 2],
+            grasp: [None, None],
             reached: [true; 2],
             seq: 0,
             special: None,
@@ -275,6 +280,7 @@ impl PlayerBody {
             self.ghosts[i] = inp.ghosts[i].map(|g| proto(self.offsets.hand_frame(SIDES[i], ik(g))));
         }
         self.held = [0, 1].map(|i| held[i].filter(|_| grips[i].is_some()));
+        self.grasp = [0, 1].map(|i| inp.grasps[i].filter(|_| grips[i].is_some()).cloned());
         self.body = body;
         &self.body
     }
@@ -394,6 +400,7 @@ impl PlayerBody {
             hands: body.hands,
             ghosts,
             held,
+            grasp: [self.grasp[0].as_ref(), self.grasp[1].as_ref()],
             visibility: body.visibility,
             light,
             first_person: true,
@@ -468,6 +475,7 @@ mod tests {
                 ghosts: [None; 2],
                 holds: [HoldShape::None; 2],
                 held: [None; 2],
+                grasps: [None; 2],
                 locomotion: Vec3::ZERO,
                 eye_height: 1.7,
                 floor: 0.0,
@@ -501,6 +509,7 @@ mod tests {
                     ghosts: [None; 2],
                     holds: [HoldShape::None, HoldShape::PistolGrip],
                     held: [None, Some(held)],
+                    grasps: [None; 2],
                     locomotion: Vec3::ZERO,
                     eye_height: 1.7 + floor,
                     floor,

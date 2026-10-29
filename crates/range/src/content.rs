@@ -207,6 +207,9 @@ pub fn builtin_rifle(name: &str, scoped: bool) -> Weapon {
     m.add_box(Vec3::new(-0.011, 0.025, 0.26), Vec3::new(0.011, 0.047, 0.66), metal); // barrel
     // The handguard: the Kalash's lower handguard's section (3.2 cm wide, its bottom 2.8 cm under
     // the bore), so the Kalash's support hand cradles it as it does its own.
+    // Where the support hand takes it, anywhere along: the handguard runs 0.26..0.46, the palm
+    // stays a hand's half-width inside it.
+    let handguard = (Vec3::new(0.0, 0.034, 0.3), Vec3::new(0.0, 0.034, 0.42), 0.021);
     m.add_rounded_prism(Vec3::new(0.0, 0.034, 0.36), Vec3::new(0.016, 0.026, 0.10), Quat::IDENTITY, wood);
     m.add_box(Vec3::new(-0.02, -0.02, -0.30), Vec3::new(0.02, 0.06, -0.06), wood); // stock
     // Pistol grip under the receiver, the trigger 3.5 cm ahead of its front edge.
@@ -284,7 +287,6 @@ pub fn builtin_rifle(name: &str, scoped: bool) -> Weapon {
         grip_rot: Some(grip_rot),
         // The Kalash's own support hold (its hand is carried over, see `share_game_hands`).
         support_rot: Some(cradle()),
-        // The handguard runs 0.26..0.46: the palm stays a hand's half-width inside it.
         recoil: [6.5, 1.6, 0.022],
         recoil_feel: [0.6, 9.0, 12.0],
         kicks: Vec::new(),
@@ -295,6 +297,7 @@ pub fn builtin_rifle(name: &str, scoped: bool) -> Weapon {
         sights: Some((sight, front)),
         trigger: Some(trigger),
         grip_block: Some((grip_centre, grip_half)),
+        handguard: Some(handguard),
         game_arms: None,
         caliber: "5.56x45".into(),
         // Each built-in gun has a magazine of its own.
@@ -393,6 +396,7 @@ pub fn builtin_pistol() -> Weapon {
         sights: Some((sight, front)),
         trigger: Some(trigger),
         grip_block: Some((grip_centre, grip_half)),
+        handguard: None,
         game_arms: None,
         caliber: "9x19".into(),
         magazine: "builtin_pistol".into(),

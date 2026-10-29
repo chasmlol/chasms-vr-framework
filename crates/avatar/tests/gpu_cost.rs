@@ -104,6 +104,7 @@ fn gpu_cost_per_eye() {
                 hands,
                 ghosts,
                 held: [None; 2],
+                grasp: [None; 2],
                 visibility,
                 light: LightHint::default(),
                 first_person: true,

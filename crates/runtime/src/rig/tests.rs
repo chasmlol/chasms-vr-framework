@@ -158,6 +158,13 @@ impl Sim {
         self.f.hands[i].aim.rot = q.to_array();
     }
 
+    /// Reaches hand `i` for `to` the way a hand reaches to take something: over to 30 cm above it,
+    /// then down onto it slowly.
+    fn reach(&mut self, i: usize, to: Vec3) {
+        self.move_hand(i, to + Vec3::new(0.0, 0.3, 0.0), 30);
+        self.move_hand(i, to, 60);
+    }
+
     /// Moves a hand smoothly to `to` over `frames` frames.
     fn move_hand(&mut self, i: usize, to: Vec3, frames: usize) {
         let from = self.hand_pos(i);
@@ -192,12 +199,19 @@ impl Sim {
         self.rig.object_world_pose(id).unwrap().1
     }
 
-    /// Picks up the rifle from the table with the right hand and lifts it clear.
+    /// Where thing `id`'s grip is (world): the place to take it by.
+    fn grip_at(&self, id: u32) -> Vec3 {
+        let d = self.table.descs.iter().find(|d| d.id == id).copied().or_else(|| self.rig.objects.get(&id).map(|o| o.desc)).unwrap();
+        self.pos(id) + self.rot(id) * v3(d.grip)
+    }
+
+    /// Picks up the rifle from the table with the right hand (by its grip) and lifts it clear.
     fn take_rifle(&mut self) {
-        let top = self.pos(RIFLE) + Vec3::new(0.0, 0.12, 0.0);
-        self.move_hand(1, top, 30);
+        let top = self.grip_at(RIFLE) + Vec3::new(0.0, 0.03, 0.0);
+        self.reach(1, top);
         self.grip(1, 1.0);
         assert_eq!(self.rig.held(1), Some(RIFLE), "picked up the rifle");
+        self.move_hand(1, top + Vec3::new(0.0, 0.2, 0.0), 20);
         self.move_hand(1, Vec3::new(0.2, 1.3, 0.15), 30);
         self.step(20);
     }
@@ -304,11 +318,12 @@ fn pick_up_carry_and_drop() {
     assert!(s.out.hand_targeting[0], "hovering the bottle");
     s.grip(0, 1.0);
     assert_eq!(s.rig.held(0), Some(BOTTLE));
-    let offset = s.pos(BOTTLE) - s.hand_pos(0);
     s.move_hand(0, Vec3::new(-0.3, 1.4, 0.1), 40);
     s.step(10);
+    // Held where the hand found it, its top (10 cm up) brought the 5 cm up onto the palm.
     let carried = s.pos(BOTTLE) - s.hand_pos(0);
-    assert!(carried.distance(offset) < 0.02, "held where it was grabbed: {offset:?} vs {carried:?}");
+    assert!(carried.distance(Vec3::new(0.0, -0.1, 0.0)) < 0.02, "held where it was taken, on the palm: {carried:?}");
+    assert!(s.rot(BOTTLE).angle_between(Quat::IDENTITY) < 0.05, "as it was turned");
     assert!(s.out.hands[0].flags & HAND_HOLDING != 0 && s.out.hands[0].holding == BOTTLE);
     s.grip(0, 0.0);
     assert_eq!(s.rig.held(0), None);
@@ -688,30 +703,6 @@ fn two_handed_aim_pivots_on_the_firing_hand() {
 }
 
 #[test]
-fn the_support_hand_locks_onto_the_foregrip() {
-    let mut s = Sim::new();
-    s.take_rifle();
-    let fore = s.pos(RIFLE) + s.rot(RIFLE) * v3(rifle().foregrip);
-    // Grab a few cm off the foregrip: the drawn hand locks exactly onto it.
-    s.move_hand(0, fore + s.rot(RIFLE) * Vec3::new(-0.04, -0.02, 0.05), 30);
-    s.grip(0, 1.0);
-    s.step(5);
-    let (wp, wr) = s.rig.object_world_pose(RIFLE).unwrap();
-    let local = wr.inverse() * (v3(s.out.hands[0].pose.pos) - wp);
-    assert!(local.distance(v3(rifle().foregrip)) < 0.005, "on the game's foregrip point: {local:?}");
-    // Moving the controller along the barrel doesn't slide it.
-    let fwd = s.rot(RIFLE) * Vec3::Z;
-    s.move_hand(0, s.hand_pos(0) + fwd * 0.06, 20);
-    s.step(5);
-    let (wp, wr) = s.rig.object_world_pose(RIFLE).unwrap();
-    let local = wr.inverse() * (v3(s.out.hands[0].pose.pos) - wp);
-    assert!(local.distance(v3(rifle().foregrip)) < 0.005, "still locked: {local:?}");
-    // Pulled well away, it lets go.
-    s.move_hand(0, s.hand_pos(0) + Vec3::new(-0.5, -0.2, 0.0), 20);
-    assert!(!s.out.primary_weapon.unwrap().two_handed, "let go of the foregrip");
-}
-
-#[test]
 fn a_rigged_grip_puts_the_gun_where_the_hand_points() {
     let mut s = Sim::new();
     // Rigged: the controller's grip pose sits on the gun pitched 20 degrees down (a raked grip).
@@ -734,7 +725,7 @@ fn a_rigged_grip_puts_the_gun_where_the_hand_points() {
 #[test]
 fn letting_go_with_a_swing_throws_instead_of_holstering() {
     let mut s = Sim::new();
-    s.move_hand(1, s.pos(PISTOL) + Vec3::new(0.0, 0.12, 0.0), 40);
+    s.move_hand(1, s.grip_at(PISTOL) + Vec3::new(0.0, 0.05, 0.0), 40);
     s.grip(1, 1.0);
     s.move_hand(1, Vec3::new(0.25, 1.3, 0.3), 20);
     // Swing down past the hip fast and let go there.
@@ -819,7 +810,7 @@ fn holster_draw_and_auto_return() {
     let mut s = Sim::new();
     s.s.interaction.auto_holster = true;
     // Pick up the pistol (left hand of the table) with the right hand.
-    s.move_hand(1, s.pos(PISTOL) + Vec3::new(0.0, 0.12, 0.0), 40);
+    s.move_hand(1, s.grip_at(PISTOL) + Vec3::new(0.0, 0.05, 0.0), 40);
     s.grip(1, 1.0);
     assert_eq!(s.rig.held(1), Some(PISTOL));
     // Into the right hip holster: 0.55 m below the eyes, 0.2 m to the side.
@@ -1379,8 +1370,8 @@ fn molotov() -> ObjectDesc {
 
 impl Sim {
     fn take(&mut self, hand: usize, id: u32) {
-        let at = self.pos(id);
-        self.move_hand(hand, at + Vec3::new(0.0, 0.06, 0.0), 30);
+        let at = self.grip_at(id);
+        self.reach(hand, at + Vec3::new(0.0, 0.04, 0.0));
         self.grip(hand, 1.0);
         assert_eq!(self.rig.held(hand), Some(id), "picked up {id}");
     }
@@ -1724,10 +1715,12 @@ fn air_mag() -> ObjectDesc {
 impl Sim {
     /// Picks gun `id` up off the table in the right hand and holds it out level, pointing ahead.
     fn take_gun(&mut self, id: u32) {
-        let top = self.pos(id) + Vec3::new(0.0, 0.12, 0.0);
-        self.move_hand(1, top, 30);
+        let top = self.grip_at(id) + Vec3::new(0.0, 0.03, 0.0);
+        self.reach(1, top);
         self.grip(1, 1.0);
         assert_eq!(self.rig.held(1), Some(id), "picked up {id}");
+        // Lifted clear of the table before it's turned into the hand.
+        self.move_hand(1, top + Vec3::new(0.0, 0.2, 0.0), 20);
         self.move_hand(1, Vec3::new(0.15, 1.3, 0.25), 30);
         self.step(30);
     }
@@ -2499,7 +2492,7 @@ fn a_thing_to_take_is_stowed_in_any_slot_even_a_full_one() {
     s.rig.sync(&s.table);
     s.step(20);
     // The pistol on the right hip first.
-    s.move_hand(1, s.pos(PISTOL) + Vec3::new(0.0, 0.12, 0.0), 40);
+    s.move_hand(1, s.grip_at(PISTOL) + Vec3::new(0.0, 0.05, 0.0), 40);
     s.grip(1, 1.0);
     s.move_hand(1, Vec3::new(0.2, 1.3, 0.2), 20);
     s.move_hand(1, Vec3::new(0.21, 1.16, 0.04), 30);
@@ -2521,4 +2514,236 @@ fn a_thing_to_take_is_stowed_in_any_slot_even_a_full_one() {
     s.step(60);
     assert!(s.pos(BOTTLE).distance(at) < 1e-3);
     assert_eq!(s.rig.held(1), None);
+}
+
+// ---- taking hold anywhere, on handles, with both hands (`rig::grips`) ------------------------------
+
+const SWORD: u32 = 40;
+const PLANK: u32 = 41;
+
+/// A sword lying flat on the table, its blade towards -X: the handle from the pommel (-11 cm) to the
+/// guard (-1.2 cm) along its +Z, the grip in the middle of it.
+fn sword() -> ObjectDesc {
+    let mut d = obj(SWORD, OBJ_MELEE, Vec3::new(0.05, 0.83, 0.8), [0.06, 0.02, 0.4], 1.2);
+    d.spawn_pose = pose(Vec3::new(0.05, 0.83, 0.8), Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2));
+    d.center = [0.0, 0.0, 0.23];
+    d.grip = [0.0, 0.0, -0.06];
+    d.muzzle = [0.0, 0.0, 0.63];
+    d.grip_rot = rustvr_guns::fist(Vec3::Z, Vec3::Y).to_array();
+    d.grip_line = [[0.0, 0.0, -0.11], [0.0, 0.0, -0.012]];
+    d.grip_radius = 0.014;
+    d
+}
+
+impl Sim {
+    /// Where hand `i` holds thing `id` (its drawn grip pose in the thing's space).
+    fn held_at(&self, i: usize, id: u32) -> (Vec3, Quat) {
+        let (p, q) = self.rig.object_world_pose(id).unwrap();
+        let h = self.out.hands[i].pose;
+        (q.inverse() * (v3(h.pos) - p), (q.inverse() * q4(h.rot)).normalize())
+    }
+
+    /// A point on thing `id` (its space) in the world.
+    fn on(&self, id: u32, local: Vec3) -> Vec3 {
+        self.pos(id) + self.rot(id) * local
+    }
+}
+
+#[test]
+fn the_support_hand_takes_the_handguard_anywhere_along_it() {
+    let mut s = Sim::new();
+    s.take_rifle();
+    // Taken a few cm off the handguard and 3 cm ahead of the game's foregrip: the drawn hand goes
+    // onto the handguard there, as the gun's support hold, slid along.
+    s.move_hand(0, s.on(RIFLE, v3(rifle().foregrip) + Vec3::new(-0.04, -0.02, 0.03)), 30);
+    s.grip(0, 1.0);
+    s.step(5);
+    let want = v3(rifle().foregrip) + Vec3::new(0.0, 0.0, 0.03);
+    assert!(s.held_at(0, RIFLE).0.distance(want) < 0.005, "on the handguard where it took it: {:?}", s.held_at(0, RIFLE).0);
+    assert!(s.out.primary_weapon.unwrap().two_handed);
+    // It stays where it took it: moving the controller along the barrel doesn't slide it.
+    let fwd = s.rot(RIFLE) * Vec3::Z;
+    s.move_hand(0, s.hand_pos(0) + fwd * 0.06, 20);
+    s.step(5);
+    assert!(s.held_at(0, RIFLE).0.distance(want) < 0.005, "still there: {:?}", s.held_at(0, RIFLE).0);
+    // Pulled well away, it lets go.
+    s.move_hand(0, s.hand_pos(0) + Vec3::new(-0.5, -0.2, 0.0), 20);
+    assert!(!s.out.primary_weapon.unwrap().two_handed, "let go of the handguard");
+    s.grip(0, 0.0);
+    s.step(60);
+    // Taken by the receiver instead (well off the handguard): held there, and it still aims the gun.
+    let side = s.on(RIFLE, Vec3::new(-0.06, 0.0, 0.18));
+    s.move_hand(0, side, 30);
+    s.grip(0, 1.0);
+    s.step(5);
+    assert!(s.out.primary_weapon.unwrap().two_handed, "a second hand anywhere on it");
+    let (at, _) = s.held_at(0, RIFLE);
+    // (Its palm on the receiver's side, 3 cm out: the grip pose 2 cm in from the palm.)
+    assert!((at.z - 0.18).abs() < 0.02 && (at.x + 0.01).abs() < 0.01, "held on the receiver's side where it took it: {at:?}");
+}
+
+#[test]
+fn a_gun_taken_anywhere_but_its_grip_is_held_there_and_the_trigger_does_nothing() {
+    let mut s = Sim::new();
+    // By the barrel, well ahead of the grip.
+    let barrel = s.on(RIFLE, Vec3::new(0.0, 0.04, 0.5));
+    s.reach(1, barrel);
+    let before = s.rot(RIFLE);
+    s.grip(1, 1.0);
+    assert_eq!(s.rig.held(1), Some(RIFLE));
+    s.move_hand(1, s.hand_pos(1) + Vec3::new(0.0, 0.3, 0.0), 30);
+    s.step(20);
+    assert!(s.rot(RIFLE).angle_between(before) < 0.1, "held as it lay, not turned into a firing grip");
+    let (at, _) = s.held_at(1, RIFLE);
+    assert!((at.z - 0.5).abs() < 0.03, "by the barrel where it took it: {at:?}");
+    assert!(s.out.primary_weapon.is_none(), "not held to fire");
+    assert_ne!(s.out.holds[1], rustvr_ik::HoldShape::PistolGrip);
+    s.trigger(1, 1.0);
+    s.step(5);
+    s.trigger(1, 0.0);
+    assert_eq!(s.rig.debug.shots, 0, "the finger isn't on the trigger");
+}
+
+#[test]
+fn the_other_hand_takes_the_grip_of_a_gun_held_anywhere_and_fires_it() {
+    let mut s = Sim::new();
+    s.reach(0, s.on(RIFLE, Vec3::new(0.0, 0.04, 0.4)));
+    s.grip(0, 1.0);
+    assert_eq!(s.rig.held(0), Some(RIFLE));
+    s.move_hand(0, Vec3::new(-0.05, 1.3, 0.55), 30);
+    s.step(20);
+    // The right hand onto the pistol grip: it's the gun hand now, the left holds on where it was.
+    let grip = s.grip_at(RIFLE);
+    s.move_hand(1, grip + Vec3::new(0.02, -0.02, -0.02), 40);
+    s.grip(1, 1.0);
+    s.step(20);
+    assert_eq!(s.rig.held(1), Some(RIFLE), "the grip hand holds it");
+    assert_eq!(s.rig.held(0), None);
+    let w = s.out.primary_weapon.expect("held to fire");
+    assert!(w.two_handed, "the left hand supports it where it was");
+    assert!(s.grip_at(RIFLE).distance(s.hand_pos(1)) < 0.03, "the grip in the right hand");
+    s.fire_once();
+    assert_eq!(s.rig.debug.shots, 1);
+    // The gun hand lets go: the left keeps it, where it has it.
+    let left_at = s.held_at(0, RIFLE).0;
+    s.grip(1, 0.0);
+    s.step(10);
+    assert_eq!(s.rig.held(0), Some(RIFLE));
+    assert!(s.held_at(0, RIFLE).0.distance(left_at) < 0.01, "not moved in the hand");
+}
+
+#[test]
+fn anything_goes_from_hand_to_hand() {
+    let mut s = Sim::new();
+    s.reach(0, s.pos(BOTTLE) + Vec3::new(0.0, 0.12, 0.0));
+    s.grip(0, 1.0);
+    s.move_hand(0, Vec3::new(-0.05, 1.3, 0.35), 30);
+    s.step(20);
+    let at = s.pos(BOTTLE);
+    // The right hand takes it round the middle: both hands have it.
+    s.move_hand(1, at + Vec3::new(0.05, 0.0, 0.0), 30);
+    s.grip(1, 1.0);
+    s.step(5);
+    assert_eq!(s.rig.held(0), Some(BOTTLE));
+    assert!(s.out.hands[1].flags & HAND_HOLDING != 0 && s.out.hands[1].holding == BOTTLE, "both hands on it");
+    // The left lets go: the right has it, where it took it; it settles into that palm without a jump.
+    s.grip(0, 0.0);
+    let mut worst = 0.0f32;
+    for _ in 0..30 {
+        let p = s.pos(BOTTLE);
+        s.step(1);
+        worst = worst.max(s.pos(BOTTLE).distance(p));
+    }
+    assert_eq!(s.rig.held(1), Some(BOTTLE), "handed over");
+    assert_eq!(s.rig.held(0), None);
+    assert!(worst < 0.01, "no jump: {worst:.3} m in a step at worst");
+    assert!(s.pos(BOTTLE).distance(at) < 0.06, "where the right hand took it: {:?} vs {at:?}", s.pos(BOTTLE));
+    // And it goes with the right hand.
+    s.move_hand(1, s.hand_pos(1) + Vec3::new(0.2, 0.0, 0.0), 30);
+    s.step(10);
+    assert!(s.pos(BOTTLE).x > at.x + 0.15, "carried by the right hand: {:?}", s.pos(BOTTLE));
+}
+
+#[test]
+fn a_long_thing_in_both_hands_turns_with_both() {
+    let mut plank = obj(PLANK, OBJ_PROP, Vec3::new(-0.2, 0.83, 0.8), [0.35, 0.02, 0.05], 1.0);
+    plank.flags = OBJF_GRABBABLE;
+    let mut s = Sim::with(&[plank]);
+    let (l, r) = (s.on(PLANK, Vec3::new(-0.28, 0.0, 0.0)), s.on(PLANK, Vec3::new(0.28, 0.0, 0.0)));
+    s.reach(0, l + Vec3::new(0.0, 0.04, 0.0));
+    s.grip(0, 1.0);
+    s.move_hand(1, r + Vec3::new(0.0, 0.04, 0.0), 40);
+    s.grip(1, 1.0);
+    // Lift both, then raise the right end 20 cm: it tilts up to the right.
+    s.move_hand(0, s.hand_pos(0) + Vec3::new(0.0, 0.3, 0.0), 30);
+    s.move_hand(1, s.hand_pos(1) + Vec3::new(0.0, 0.5, 0.0), 40);
+    s.step(60);
+    let along = s.rot(PLANK) * Vec3::X;
+    assert!(along.y > 0.25, "tilted up towards the higher hand: {along:?}");
+    let right_end = s.on(PLANK, s.held_at(1, PLANK).0);
+    assert!(right_end.distance(s.hand_pos(1)) < 0.08, "its far end is in the right hand: {right_end:?} vs {:?}", s.hand_pos(1));
+}
+
+#[test]
+fn a_handle_takes_the_hand_anywhere_along_it_and_the_blade_where_it_is() {
+    let mut s = Sim::with(&[sword()]);
+    // Near the pommel end of the handle, 3 cm off it: on the handle there, held as the sword is.
+    s.reach(1, s.on(SWORD, Vec3::new(0.0, 0.03, -0.095)));
+    s.grip(1, 1.0);
+    assert_eq!(s.rig.held(1), Some(SWORD));
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.3), 30);
+    s.step(30);
+    let (at, rot) = s.held_at(1, SWORD);
+    assert!(at.distance(Vec3::new(0.0, 0.0, -0.095)) < 0.005, "on the handle where it took it: {at:?}");
+    let held = q4(sword().grip_rot);
+    assert!((rot * Vec3::Z).dot(held * Vec3::Z) > 0.99, "the fist along the handle, the blade out past the thumb: {rot:?}");
+    s.grip(1, 0.0);
+    s.step(90);
+    // Come at it the other way round (the fist's axis the other way along it): a reversed grip.
+    let lying = s.rot(SWORD) * Vec3::Z;
+    s.set_rot(1, Quat::from_rotation_arc(Vec3::Z, -lying));
+    s.reach(1, s.on(SWORD, Vec3::new(0.0, 0.03, -0.05)));
+    s.grip(1, 1.0);
+    s.step(30);
+    let (_, rot) = s.held_at(1, SWORD);
+    assert!((rot * Vec3::Z).dot(held * Vec3::Z) < -0.99, "reversed: {rot:?}");
+    s.grip(1, 0.0);
+    s.step(90);
+    // By the blade, well off the handle: held there, as it lies.
+    s.set_rot(1, Quat::IDENTITY);
+    let before = s.rot(SWORD);
+    s.reach(1, s.on(SWORD, Vec3::new(0.0, 0.04, 0.35)));
+    s.grip(1, 1.0);
+    s.step(30);
+    let (at, _) = s.held_at(1, SWORD);
+    assert!((at.z - 0.35).abs() < 0.03, "by the blade where it took it: {at:?}");
+    assert!(s.rot(SWORD).angle_between(before) < 0.1, "as it lay");
+}
+
+#[test]
+fn the_fingers_close_on_what_the_hand_holds_and_open_as_it_lets_go() {
+    let mut s = Sim::new();
+    assert!(s.rig.grasps()[1].is_none());
+    // The rifle by its grip: the fingers close round the grip, the index stays on the trigger.
+    s.take_rifle();
+    let g = s.rig.grasps()[1].clone().expect("a grasp on the grip");
+    assert!((g.weight - 1.0).abs() < 1e-4, "closed on it");
+    assert_eq!(g.fingers & (1 << 1), 0, "the index is the trigger's");
+    let grip = s.out.hands[1].pose;
+    assert!(g.distance(v3(grip.pos)) < 0.0, "the grip pose is inside what the fingers close on");
+    // The left hand takes the bottle anywhere: all its fingers close on it, over a moment.
+    s.reach(0, s.pos(BOTTLE) + Vec3::new(0.0, 0.12, 0.0));
+    s.grip(0, 1.0);
+    let g = s.rig.grasps()[0].clone().expect("a grasp on the bottle");
+    assert!(g.weight < 0.5, "only starting to close: {}", g.weight);
+    assert_eq!(g.fingers, rustvr_avatar::grasp::ALL_FINGERS);
+    s.step(20);
+    assert!((s.rig.grasps()[0].as_ref().unwrap().weight - 1.0).abs() < 1e-4);
+    // Let go, it opens off it and is gone.
+    s.grip(0, 0.0);
+    s.step(3);
+    let w = s.rig.grasps()[0].as_ref().map(|g| g.weight).unwrap_or(0.0);
+    assert!(w > 0.3 && w < 1.0, "opening: {w}");
+    s.step(20);
+    assert!(s.rig.grasps()[0].is_none());
 }

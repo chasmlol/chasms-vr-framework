@@ -1968,7 +1968,7 @@ fn pose_input<'a>(frame: &'a AvatarFrame) -> PoseInput<'a> {
         None => Some(frame.hands[i].pose).filter(|p| p.valid != 0),
     });
     let held = frame.held.map(|h| h.map(|h| PosedFingers { rel: h.finger_rotations(), size: h.size, reach: h.reach_points(), weight: h.weight }));
-    PoseInput { joints: frame.joints, hands, fingers: &frame.fingers, held, chop_head: frame.first_person && show_of(frame) == Show::Full }
+    PoseInput { joints: frame.joints, hands, fingers: &frame.fingers, held, grasp: frame.grasp, chop_head: frame.first_person && show_of(frame) == Show::Full }
 }
 
 fn draw_meshes(ctx: &ID3D11DeviceContext, c: &Character, range: usize) {

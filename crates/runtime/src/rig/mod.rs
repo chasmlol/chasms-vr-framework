@@ -22,6 +22,7 @@ pub mod embed;
 pub mod feedback;
 pub mod filters;
 pub mod fingers;
+pub mod grips;
 pub mod valve;
 pub mod kick;
 pub mod physics;
@@ -207,6 +208,40 @@ struct BarrelGrab {
     angle: f32,
 }
 
+/// Where on a thing a hand has it: anywhere (the fingers close on the thing itself), or on one of
+/// its handles ([`grips`]: the fingers close round the handle).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum On {
+    #[default]
+    Free,
+    /// Its own grip: a gun's pistol grip, a sword's handle.
+    Grip,
+    /// The handle a second hand takes: a gun's handguard.
+    Foregrip,
+}
+
+/// A second hand on what the other hand holds: which thing, the hand's hold on it (its controller
+/// grip pose in the thing's space) and where on it that is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Support {
+    id: u32,
+    at: Vec3,
+    rot: Quat,
+    on: On,
+}
+
+/// A hand's fingers on what it holds, for the drawn hand (see [`Rig::grasps`]).
+#[derive(Clone, Debug, Default)]
+struct GraspState {
+    /// What it has hold of (the thing, where on it), and since when.
+    key: Option<(u32, On)>,
+    since: f64,
+    /// The last grasp in the hand's own space (its controller grip pose), and how far closed.
+    last: Option<(rustvr_avatar::Grasp, f32)>,
+    /// Let go: since when, from how far closed, on what (hand space).
+    fading: Option<(f64, f32, rustvr_avatar::Grasp)>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Glove {
     Idle,
@@ -233,7 +268,9 @@ struct Hand {
     prev_buttons: u32,
     trigger: f32,
     holding: Option<u32>,
-    support: Option<u32>,
+    /// Where on what it holds it has it.
+    on: On,
+    support: Option<Support>,
     handle: Option<u32>,
     hover: Hover,
     glove: Glove,
@@ -272,6 +309,14 @@ struct Hand {
     /// Letting go of something that held the hand away from its controller (a valve's rim): it
     /// goes back to the controller from there (position, rotation), since when, over how long.
     returning: Option<(Vec3, Quat, f64, f32)>,
+    grasp: GraspState,
+}
+
+impl Hand {
+    /// What it supports with the other hand's (see [`Support`]).
+    fn supporting(&self) -> Option<u32> {
+        self.support.map(|s| s.id)
+    }
 }
 
 /// What the rest of the runtime needs from the rig this frame.
@@ -402,6 +447,19 @@ const MIN_HELD_ACCEL: f32 = 15.0;
 const MIN_HELD_ANG_ACCEL: f32 = 40.0;
 const BLOCKED: f32 = 0.04;
 const FOREGRIP_REACH: f32 = 0.14;
+/// The palm, from the controller's grip pose: this far towards the back of the hand (metres). A
+/// thing taken anywhere is brought onto it, no further than `PALM_REACH` for a second hand.
+const PALM: f32 = 0.02;
+const PALM_REACH: f32 = 0.1;
+/// A hand this near what the other hand holds (metres, from its grip pose to the surface) has its
+/// palm on it.
+const ON_IT: f32 = 0.035;
+/// A hand slower than this (m/s) near a thing it could take is reaching for it, not swatting it.
+const REACH_SPEED: f32 = 0.8;
+/// Two hands closer than this on a thing (metres) don't aim it.
+const TWO_HANDS_APART: f32 = 0.06;
+/// How long the fingers take to close on what the hand takes, or to open off it (seconds).
+const GRASP_TIME: f64 = 0.12;
 /// The support hand lets go of the foregrip when its controller is this far from the gun's line.
 const FOREGRIP_BREAK: f32 = 0.3;
 /// Letting go of something faster than this throws it rather than holstering it.
@@ -452,6 +510,10 @@ pub struct Rig {
     /// The guns' own recoil (the adapter's kick table), by gun.
     kicks: HashMap<u32, Vec<KickDesc>>,
     pushes: Vec<Push>,
+    /// What each hand's fingers close on this frame (tracking space).
+    grasps: [Option<rustvr_avatar::Grasp>; 2],
+    /// The free things each hand is about to take, which it reaches into ([`Rig::reach_into`]).
+    reached: [Option<u32>; 2],
 }
 
 impl Default for Rig {
@@ -477,6 +539,8 @@ impl Default for Rig {
             frame_index: 0,
             kicks: HashMap::new(),
             pushes: Vec::new(),
+            grasps: [None, None],
+            reached: [None; 2],
         }
     }
 }
@@ -533,9 +597,30 @@ fn mirror_grip(q: Quat) -> Quat {
     Quat::from_xyzw(q.x, -q.y, -q.z, q.w)
 }
 
-/// Where the support hand holds the gun (weapon space): the game's own place for it. It locks there.
-fn foregrip_point(d: &ObjectDesc, _local: Vec3) -> Vec3 {
-    v3(d.foregrip)
+/// A grasp in the world, in tracking space.
+fn grasp_in_tracking(map: &WorldMap, g: rustvr_avatar::Grasp) -> rustvr_avatar::Grasp {
+    use rustvr_avatar::Solid;
+    let k = 1.0 / map.world_per_meter;
+    let solids = g
+        .solids
+        .iter()
+        .map(|s| match *s {
+            Solid::Sphere { centre, radius } => Solid::Sphere { centre: map.inv_point(centre), radius: radius * k },
+            Solid::Capsule { a, b, radius } => Solid::Capsule { a: map.inv_point(a), b: map.inv_point(b), radius: radius * k },
+            Solid::Box { centre, rot, half } => Solid::Box { centre: map.inv_point(centre), rot: map.inv_rot(rot), half: half * k },
+            hull => hull,
+        })
+        .collect();
+    let turn = map.inv_rot(Quat::IDENTITY);
+    let planes = g
+        .planes
+        .iter()
+        .map(|n| {
+            let normal = turn * n.truncate();
+            normal.extend(-normal.dot(map.inv_point(n.truncate() * -n.w)))
+        })
+        .collect();
+    rustvr_avatar::Grasp { solids, planes, ..g }
 }
 
 /// How far a hand (or what it takes) goes in one grab transition: further takes longer in
@@ -888,7 +973,7 @@ impl Rig {
                     if h.holding == Some(id) {
                         h.holding = None;
                     }
-                    if h.support == Some(id) {
+                    if h.supporting() == Some(id) {
                         h.support = None;
                     }
                     if h.handle == Some(id) {
@@ -1091,6 +1176,7 @@ impl Rig {
             for i in 0..2 {
                 self.update_hover(i, s, &zones, &ammo);
             }
+            self.reach_into();
             for i in 0..2 {
                 self.hand_input(i, inp, &zones, dom);
             }
@@ -1267,6 +1353,7 @@ impl Rig {
                 prev_buttons: 0,
                 trigger: 0.0,
                 holding: None,
+                on: On::Free,
                 support: None,
                 handle: None,
                 hover: Hover::None,
@@ -1292,6 +1379,7 @@ impl Rig {
                 ang_t: Vec3::ZERO,
                 leashed_until: 0.0,
                 returning: None,
+                grasp: GraspState::default(),
             }
         };
         let l = mk(&mut self.physics, 0);
@@ -1363,12 +1451,11 @@ impl Rig {
                 }
             }
         }
-        // 1. The other hand's gun: its charging handle, then its foregrip (anywhere along it).
+        // 1. The other hand's gun: its charging handle, then its handguard (anywhere along it).
         if let (Hover::None, Some(wid)) = (hover, self.other_weapon(i)) {
             let o = &self.objects[&wid];
             let (wp, wr) = self.physics.pose(o.body);
             let handle = wp + wr * self.handle_now(wid);
-            let fore = wp + wr * foregrip_point(&o.desc, wr.inverse() * (palm - wp));
             let w = o.weapon.as_ref();
             let needs_rack = w.is_some_and(|w| !w.chambered || w.slide_locked || w.spent);
             let open = w.and_then(|w| w.hinge).filter(|h| !h.latched).map(|h| h.angle);
@@ -1394,8 +1481,21 @@ impl Rig {
                 hover = Hover::Barrels(wid);
             } else if o.desc.handle_travel > 0.0 && palm.distance(handle) < HANDLE_REACH * if needs_rack { 1.3 } else { 1.0 } {
                 hover = Hover::Handle(wid);
-            } else if o.desc.flags & OBJF_TWO_HANDED != 0 && open.is_none() && palm.distance(fore) < FOREGRIP_REACH {
+            } else if open.is_none() && self.handle_hold(i, wid, On::Foregrip).is_some() {
                 hover = Hover::Foregrip(wid);
+            }
+        }
+        // What the other hand holds, at its grip when the other hand isn't on it (taking a gun held
+        // anywhere by its pistol grip), or with the hand on it: both hands hold it (before the
+        // pouches and holsters a gun held at the chest is in front of).
+        if hover == Hover::None
+            && let Some(id) = self.hands.as_ref().unwrap()[i ^ 1].holding
+            && let Some(o) = self.objects.get(&id)
+            && o.desc.flags & OBJF_GRABBABLE != 0
+        {
+            let at_grip = self.hands.as_ref().unwrap()[i ^ 1].on != On::Grip && self.handle_hold(i, id, On::Grip).is_some();
+            if at_grip || self.physics.distance_to(o.collider, palm) < ON_IT * self.map.world_per_meter {
+                hover = Hover::Object(id);
             }
         }
         // 2. Holsters, then the ammo pouch (it beats nearby objects when the other hand has a gun).
@@ -1420,6 +1520,14 @@ impl Rig {
                     hover = Hover::Ammo(wid);
                 }
             }
+        }
+        // What the other hand holds, anywhere on it: both hands hold it (and once the other lets go,
+        // this one does: from hand to hand).
+        if hover == Hover::None
+            && let Some(id) = self.hands.as_ref().unwrap()[i ^ 1].holding
+            && self.objects.get(&id).is_some_and(|o| o.desc.flags & OBJF_GRABBABLE != 0 && self.physics.distance_to(o.collider, palm) < s.interaction.grab_radius)
+        {
+            hover = Hover::Object(id);
         }
         // A valve's rim within reach.
         if hover == Hover::None {
@@ -1463,6 +1571,29 @@ impl Rig {
         }
         let hands = self.hands.as_mut().unwrap();
         hands[i].hover = hover;
+    }
+
+    /// A hand closing in on a free thing to take it reaches into it rather than knocking it away (it
+    /// would push it out of the grab: a gun's grip is inside the gun). Swept through it fast, it
+    /// pushes it as ever.
+    fn reach_into(&mut self) {
+        let Some(hands) = &self.hands else { return };
+        let now: [Option<u32>; 2] = std::array::from_fn(|i| match hands[i].hover {
+            Hover::Object(id) if hands[i].history.recent().length() < REACH_SPEED => Some(id),
+            _ => None,
+        });
+        if now == self.reached {
+            return;
+        }
+        for id in self.reached.iter().chain(now.iter()).flatten().copied().collect::<Vec<_>>() {
+            let Some(o) = self.objects.get(&id) else { continue };
+            let following = o.desc.flags & OBJF_GAME_SIMULATED != 0 && self.now - o.free_since > GAME_HANDBACK as f64;
+            if o.holder != Holder::Free || o.hands_off_until > 0.0 || following {
+                continue;
+            }
+            self.physics.set_groups(o.collider, physics::groups_reached([now[0] == Some(id), now[1] == Some(id)]));
+        }
+        self.reached = now;
     }
 
     // ---- grip, buttons ------------------------------------------------------------------------------
@@ -1569,6 +1700,7 @@ impl Rig {
                     _ => {}
                 }
             }
+            Hover::Object(id) if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1)) => self.second_hand(i, id),
             Hover::Object(id) => {
                 // Gripped as it flies in from the gloves: a catch (it may still be half a metre out).
                 let caught = self.objects.get(&id).is_some_and(|o| matches!(o.holder, Holder::Pulled { .. }));
@@ -1609,12 +1741,7 @@ impl Rig {
                     _ => self.emit(Cue::Fail, Some(i), None, palm, 1.0),
                 }
             }
-            Hover::Foregrip(wid) => {
-                let h = &mut self.hands.as_mut().unwrap()[i];
-                h.support = Some(wid);
-                h.euro.reset();
-                self.emit(Cue::Grab, Some(i), Some(wid), palm, 0.7);
-            }
+            Hover::Foregrip(wid) => self.second_hand(i, wid),
             Hover::Handle(wid) => {
                 // Where the knob is from the hand (weapon space), so the handle follows the hand
                 // wherever the gun goes.
@@ -1683,36 +1810,53 @@ impl Rig {
         if self.hands.as_ref().unwrap()[other].holding == Some(id) {
             self.hands.as_mut().unwrap()[other].holding = None;
         }
-        let Some(o) = self.objects.get_mut(&id) else { return };
+        if self.hands.as_ref().unwrap()[other].supporting() == Some(id) {
+            let h = &mut self.hands.as_mut().unwrap()[other];
+            h.support = None;
+            let c = h.collider;
+            self.physics.set_groups(c, groups_hand(other));
+        }
+        let Some(o) = self.objects.get(&id) else { return };
         let (pos, rot) = self.physics.pose(o.body);
-        let gun = o.desc.kind == OBJ_WEAPON;
-        let hold = authored(o.desc.grip_rot).filter(|_| matches!(o.desc.kind, OBJ_THROWABLE | OBJ_MELEE));
-        o.attach = if gun {
-            Attach::Gun
-        } else if let Some(g) = hold {
-            // A throwable or melee weapon the game rigged sits in the hand the way it's held (a
-            // knife or a sword by its handle, a grenade with its pin to the other hand), whichever
-            // way it was picked up.
-            let g = if i == 0 { mirror_grip(g) } else { g };
-            let rel = inverse((v3(o.desc.grip), g));
-            Attach::Fixed(rel.0, rel.1)
-        } else if snap && is_round(&o.desc) {
+        let d = o.desc;
+        let gun = d.kind == OBJ_WEAPON;
+        // Where the hand is on it (its controller grip pose in the thing's space).
+        let local = (rot.inverse() * (palm - pos), (rot.inverse() * grip_rot).normalize());
+        // Its grip, if the hand took it there: a gun's pistol grip locks on, a handle takes the
+        // hand anywhere along it. Drawn from a holster or caught (`snap`), a gun or a rigged
+        // weapon goes into the hand by its grip whatever.
+        let rigged = gun || (authored(d.grip_rot).is_some() && matches!(d.kind, OBJ_THROWABLE | OBJ_MELEE));
+        let hold = self.handle_of(&d, i, On::Grip).and_then(|h| match h.take(local.0, local.1) {
+            Some(hold) => Some(hold),
+            None if snap && rigged => Some((h.at, h.rot)),
+            None => None,
+        });
+        let (attach, on) = if let Some(hold) = hold {
+            if gun {
+                (Attach::Gun, On::Grip)
+            } else {
+                let rel = inverse(hold);
+                (Attach::Fixed(rel.0, rel.1), On::Grip)
+            }
+        } else if snap && is_round(&d) {
             // A round sits nose first along the fist's axis, its base in the fist.
             let rot = held_round_rot();
-            Attach::Fixed(HELD_ROUND_BASE - rot * v3(o.desc.mag_well), rot)
-        } else if snap && o.desc.kind == OBJ_MAGAZINE {
+            (Attach::Fixed(HELD_ROUND_BASE - rot * v3(d.mag_well), rot), On::Free)
+        } else if snap && d.kind == OBJ_MAGAZINE {
             // A fresh magazine sits in the fist along the grip pose's +Z (the fist's axis, little
             // finger to thumb), its top 6 cm out past the thumb, ready to push into a well.
             let rot = held_mag_rot();
-            let top = v3(o.desc.mag_well);
-            Attach::Fixed(HELD_MAG_TOP - rot * top, rot)
+            let top = v3(d.mag_well);
+            (Attach::Fixed(HELD_MAG_TOP - rot * top, rot), On::Free)
         } else {
-            // Caught or drawn (`snap`): its nearest surface in the palm, as it's turned (it was
-            // caught up to `glove_catch_radius` away). Picked up, it stays where the hand took it.
-            let at = if snap { pos + (palm - self.physics.closest_point(o.collider, palm)) } else { pos };
-            let rel = compose(inverse((palm, grip_rot)), (at, rot));
-            Attach::Fixed(rel.0, rel.1)
+            // Anywhere: as the hand found it, its surface brought onto the palm (caught, it was up
+            // to `glove_catch_radius` away).
+            let shift = self.palm_on(i, o.collider, (palm, grip_rot), !snap) - palm;
+            let rel = compose(inverse((palm, grip_rot)), (pos - shift, rot));
+            (Attach::Fixed(rel.0, rel.1), On::Free)
         };
+        let o = self.objects.get_mut(&id).unwrap();
+        o.attach = attach;
         o.blend = Some((pos, rot, self.now, pos.distance(palm)));
         if let Holder::Holstered(slot) = o.holder {
             o.home_slot = Some(slot);
@@ -1733,10 +1877,115 @@ impl Rig {
         self.physics.set_groups(o.collider, groups_held(i));
         let h = &mut self.hands.as_mut().unwrap()[i];
         h.holding = Some(id);
+        h.on = on;
         h.glove = Glove::Idle;
         self.physics.set_groups(h.collider, groups_none());
         self.debug.grabs += 1;
         self.emit(Cue::Grab, Some(i), Some(id), palm, 1.0);
+    }
+
+    /// Hand `i` takes hold of what the other hand holds: both hands have it. On the thing's own grip
+    /// when the other hand isn't (a gun's pistol grip, a sword's handle), this hand holds it there
+    /// and the other holds on where it is; anywhere else this is the second hand, on the handle a
+    /// second hand takes (a handguard, anywhere along it) or where it took it.
+    fn second_hand(&mut self, i: usize, id: u32) {
+        let other = i ^ 1;
+        if self.hands.as_ref().unwrap()[other].holding != Some(id) {
+            return;
+        }
+        let Some(o) = self.objects.get(&id) else { return };
+        let (op, oq) = self.physics.pose(o.body);
+        let (collider, gun) = (o.collider, o.desc.kind == OBJ_WEAPON);
+        let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
+        let other_on = self.hands.as_ref().unwrap()[other].on;
+        if other_on != On::Grip
+            && let Some(hold) = self.handle_hold(i, id, On::Grip)
+        {
+            let theirs = self.hold_of(id, other);
+            {
+                let h = &mut self.hands.as_mut().unwrap()[other];
+                h.holding = None;
+                h.support = Some(Support { id, at: theirs.0, rot: theirs.1, on: other_on });
+                h.euro.reset();
+            }
+            let now = self.now;
+            let o = self.objects.get_mut(&id).unwrap();
+            let rel = inverse(hold);
+            o.attach = if gun { Attach::Gun } else { Attach::Fixed(rel.0, rel.1) };
+            o.holder = Holder::Held(i);
+            o.blend = Some((op, oq, now, palm.distance(op + oq * hold.0)));
+            self.physics.set_groups(collider, groups_held(i));
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            h.holding = Some(id);
+            h.on = On::Grip;
+            h.glove = Glove::Idle;
+            let c = h.collider;
+            self.physics.set_groups(c, groups_none());
+            self.debug.grabs += 1;
+            self.emit(Cue::Grab, Some(i), Some(id), palm, 1.0);
+            return;
+        }
+        let (at, rot, on) = match self.handle_hold(i, id, On::Foregrip) {
+            Some((at, rot)) => (at, rot, On::Foregrip),
+            None => {
+                // Anywhere: where the hand took it, the hand brought onto its surface.
+                let to = self.palm_on(i, collider, (palm, grip_rot), true);
+                (oq.inverse() * (to - op), (oq.inverse() * grip_rot).normalize(), On::Free)
+            }
+        };
+        let h = &mut self.hands.as_mut().unwrap()[i];
+        h.support = Some(Support { id, at, rot, on });
+        h.glove = Glove::Idle;
+        h.euro.reset();
+        let c = h.collider;
+        self.physics.set_groups(c, groups_none());
+        self.emit(Cue::Grab, Some(i), Some(id), palm, 0.7);
+    }
+
+    /// The handle `which` of a thing (`d`) for hand `i` ([`grips`]).
+    fn handle_of(&self, d: &ObjectDesc, i: usize, which: On) -> Option<grips::Handle> {
+        let grip_rot = authored(d.grip_rot).map(|g| if i == 0 { mirror_grip(g) } else { g });
+        match which {
+            On::Grip => grips::grip(d, grip_rot),
+            On::Foregrip => grips::foregrip(d, self.support_rot(d, i), grip_rot),
+            On::Free => None,
+        }
+    }
+
+    /// The hold hand `i` takes on thing `id`'s handle `which`, if it's near it now (thing space).
+    fn handle_hold(&self, i: usize, id: u32, which: On) -> Option<(Vec3, Quat)> {
+        let o = self.objects.get(&id)?;
+        let (op, oq) = self.physics.pose(o.body);
+        let (palm, rot) = self.hands.as_ref()?[i].target;
+        self.handle_of(&o.desc, i, which)?.take(oq.inverse() * (palm - op), (oq.inverse() * rot).normalize())
+    }
+
+    /// Where hand `i` holds thing `id` that it holds (its controller grip pose in the thing's space).
+    fn hold_of(&self, id: u32, i: usize) -> (Vec3, Quat) {
+        let o = &self.objects[&id];
+        match o.attach {
+            Attach::Gun => {
+                let grip = v3(o.desc.grip);
+                match authored(o.desc.grip_rot) {
+                    Some(g) => (grip, if i == 0 { mirror_grip(g) } else { g }),
+                    None => {
+                        let h = &self.hands.as_ref().unwrap()[i];
+                        (grip, (h.aim_rot.inverse() * h.target.1).normalize())
+                    }
+                }
+            }
+            Attach::Fixed(p, q) => inverse((p, q)),
+        }
+    }
+
+    /// Where hand `i`'s grip pose (`grip`, world) goes for its palm to rest on collider `c`: along
+    /// to the surface nearest the palm (`limit`: no further than [`PALM_REACH`]).
+    fn palm_on(&self, i: usize, c: ColliderHandle, grip: (Vec3, Quat), limit: bool) -> Vec3 {
+        let back = if i == 1 { Vec3::X } else { Vec3::NEG_X };
+        let palm = grip.0 + grip.1 * back * (PALM * self.map.world_per_meter);
+        let shift = self.physics.surface_point(c, palm) - palm;
+        let shift = if limit { shift.clamp_length_max(PALM_REACH * self.map.world_per_meter) } else { shift };
+        grip.0 + shift
     }
 
     fn release(&mut self, i: usize, inp: &RigInput, zones: &[Zone; SLOT_COUNT_BODY]) {
@@ -1784,10 +2033,23 @@ impl Rig {
             self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
             return;
         }
-        // The other hand was supporting it: it takes the gun.
-        if self.hands.as_ref().unwrap()[i ^ 1].support == Some(id) {
-            self.hands.as_mut().unwrap()[i ^ 1].support = None;
-            self.take(id, i ^ 1, true);
+        // The other hand has it too: it holds it now, where it has it (from hand to hand).
+        if let Some(sup) = self.hands.as_ref().unwrap()[i ^ 1].support.filter(|s| s.id == id) {
+            let h = &mut self.hands.as_mut().unwrap()[i ^ 1];
+            h.support = None;
+            h.holding = Some(id);
+            h.on = sup.on;
+            let now = self.now;
+            let o = self.objects.get_mut(&id).unwrap();
+            let rel = inverse((sup.at, sup.rot));
+            o.attach = Attach::Fixed(rel.0, rel.1);
+            o.holder = Holder::Held(i ^ 1);
+            // (Its hand was on its surface, not where the controller is: it settles into the palm.)
+            let (p, q) = self.physics.pose(o.body);
+            o.blend = Some((p, q, now, 0.0));
+            let c = o.collider;
+            self.physics.set_groups(c, groups_held(i ^ 1));
+            self.emit(Cue::Release, Some(i), Some(id), palm, 0.5);
             return;
         }
         let o = &self.objects[&id];
@@ -2024,10 +2286,10 @@ impl Rig {
         self.emit(if d.action == ACTION_SWING { Cue::SwingOpen } else { Cue::BreakOpen }, hand, Some(wid), p, 1.0);
         if Self::foregrip_on_barrels(&d) {
             for i in 0..2 {
-                if self.hands.as_ref().unwrap()[i].support == Some(wid) {
-                    let h = &mut self.hands.as_mut().unwrap()[i];
+                let h = &mut self.hands.as_mut().unwrap()[i];
+                if let Some(sup) = h.support.filter(|s| s.id == wid && s.on == On::Foregrip) {
                     h.support = None;
-                    h.barrels = Some(BarrelGrab { gun: wid, at: v3(d.foregrip), angle: 0.0 });
+                    h.barrels = Some(BarrelGrab { gun: wid, at: sup.at, angle: 0.0 });
                 }
             }
         }
@@ -2073,12 +2335,12 @@ impl Rig {
     /// kicked by recoil.
     fn gun_target(&mut self, id: u32, hand: usize, settings: &Settings, dt: f32) -> (Vec3, Quat) {
         let w = &settings.weapon;
-        let map = self.map;
-        let hands = self.hands.as_mut().unwrap();
+        let hands = self.hands.as_ref().unwrap();
         let (palm, _) = hands[hand].target;
         let aim = hands[hand].aim_rot;
         let o = &self.objects[&id];
         let grip = v3(o.desc.grip);
+        let stocked = o.desc.weapon_flags & WPN_STOCK != 0;
         let offset_rot = Quat::from_euler(EulerRot::YXZ, w.yaw.to_radians(), w.pitch.to_radians(), w.roll.to_radians());
         let (mut pos, mut rot) = match authored(o.desc.grip_rot) {
             // The gun is held the way it was rigged: its grip frame is the controller's grip pose.
@@ -2094,30 +2356,14 @@ impl Rig {
                 (palm + aim * Vec3::from_array(w.offset) - rot * grip, rot)
             }
         };
-        // Two-handed: pivot about the firing hand so the foregrip line runs through the (steadied)
-        // support hand, wherever along it the hand is (twice: the closest point moves as it turns).
-        // Steadied in the player's own space, where only the controller moves: in the world the
-        // walk moves it too, and the filter lagging the walk swung the gun (and the support hand
-        // on it) whenever the walk set off, stopped or turned.
-        let support = if hands[hand ^ 1].support == Some(id) { Some(hand ^ 1) } else { None };
-        if let Some(sh) = support {
-            let raw = hands[sh].grip_t.0;
-            let steady = map.point(hands[sh].euro.filter(raw, dt));
-            let grip_w = pos + rot * grip;
-            for _ in 0..2 {
-                let on_line = pos + rot * foregrip_point(&o.desc, rot.inverse() * (steady - pos));
-                let cur = (on_line - grip_w).normalize_or_zero();
-                let want = (steady - grip_w).normalize_or_zero();
-                if cur.length_squared() > 0.5 && want.length_squared() > 0.5 && (steady - grip_w).length() > 0.08 {
-                    let q = Quat::from_rotation_arc(cur, want);
-                    rot = (q * rot).normalize();
-                    pos = grip_w - rot * grip;
-                }
-            }
+        // Two-handed: pivoting on the firing hand, the support hand aims it.
+        let support = hands[hand ^ 1].supporting().filter(|s| *s == id);
+        if support.is_some() {
+            (pos, rot) = self.two_handed(id, hand, grip, (pos, rot), dt);
         }
         // Virtual stock: shouldered two-handed long guns aim along the line from the shoulder to the
         // support hand, so the gun steadies like a real one braced against you.
-        if settings.interaction.virtual_stock && support.is_some() && o.desc.weapon_flags & WPN_STOCK != 0 {
+        if settings.interaction.virtual_stock && support.is_some() && stocked {
             let shoulder = self.shoulder(hand);
             let grip_w = pos + rot * grip;
             if grip_w.distance(shoulder) < 0.3 {
@@ -2142,6 +2388,30 @@ impl Rig {
             rot = (rot * gr).normalize();
         }
         (pos, rot)
+    }
+
+    /// A thing hand `hand` holds at `pivot` (thing space), put at `pose` by that hand alone, turned
+    /// about the hold so that the other hand's hold on it lies towards the other hand (steadied):
+    /// two hands aim it. Steadied in the player's own space, where only the controller moves: in
+    /// the world the walk moves it too, and the filter lagging the walk swung the gun (and the
+    /// support hand on it) whenever the walk set off, stopped or turned.
+    fn two_handed(&mut self, id: u32, hand: usize, pivot: Vec3, pose: (Vec3, Quat), dt: f32) -> (Vec3, Quat) {
+        let map = self.map;
+        let h = &mut self.hands.as_mut().unwrap()[hand ^ 1];
+        let Some(sup) = h.support.filter(|s| s.id == id) else { return pose };
+        let raw = h.grip_t.0;
+        let steady = map.point(h.euro.filter(raw, dt));
+        let (pos, rot) = pose;
+        let pivot_w = pos + rot * pivot;
+        let cur = (pos + rot * sup.at - pivot_w).normalize_or_zero();
+        let want = (steady - pivot_w).normalize_or_zero();
+        // (Hands too near together don't aim it: their line jitters.)
+        let apart = (sup.at - pivot).length() > TWO_HANDS_APART && (steady - pivot_w).length() > TWO_HANDS_APART;
+        if !apart || cur.length_squared() < 0.5 || want.length_squared() < 0.5 {
+            return pose;
+        }
+        let rot = (Quat::from_rotation_arc(cur, want) * rot).normalize();
+        (pivot_w - rot * pivot, rot)
     }
 
     /// The support hand's controller grip rotation in weapon space: the gun's rigged one (authored
@@ -2216,8 +2486,10 @@ impl Rig {
                 w.game.update(dt, kicks);
             }
             let Holder::Held(hand) = holder else { continue };
-            let pull = self.hands.as_ref().unwrap()[hand].trigger;
-            let two = self.hands.as_ref().unwrap()[hand ^ 1].support == Some(id);
+            // Held anywhere but its grip, the finger isn't on the trigger.
+            let on_grip = matches!(self.objects[&id].attach, Attach::Gun);
+            let pull = if on_grip { self.hands.as_ref().unwrap()[hand].trigger } else { 0.0 };
+            let two = self.hands.as_ref().unwrap()[hand ^ 1].supporting() == Some(id);
             let now = self.now;
             let fired = self.with_rounds(id, |w, d, r| w.trigger(d, pull, now, r)).unwrap_or(Fire::None);
             let (wp, wr) = self.obj_pose(id).unwrap();
@@ -2353,10 +2625,11 @@ impl Rig {
                     // A hand that pushed them home lets go of them, or holds the gun's foregrip
                     // again if that's where it had them.
                     if let Some((i, b)) = grab {
+                        let rot = self.support_rot(&d, i);
                         let h = &mut self.hands.as_mut().unwrap()[i];
                         h.barrels = None;
                         if Self::foregrip_on_barrels(&d) && b.at.distance(v3(d.foregrip)) < FOREGRIP_REACH {
-                            h.support = Some(id);
+                            h.support = Some(Support { id, at: b.at, rot, on: On::Foregrip });
                             h.euro.reset();
                         } else {
                             let c = h.collider;
@@ -3054,7 +3327,10 @@ impl Rig {
                 Holder::Held(hand) => {
                     let target = match self.objects[id].attach {
                         Attach::Gun => self.gun_target(*id, hand, s, dt),
-                        Attach::Fixed(p, q) => compose(self.hands.as_ref().unwrap()[hand].target, (p, q)),
+                        Attach::Fixed(p, q) => {
+                            let alone = compose(self.hands.as_ref().unwrap()[hand].target, (p, q));
+                            self.two_handed(*id, hand, inverse((p, q)).0, alone, dt)
+                        }
                     };
                     let o = &self.objects[id];
                     let target = match o.blend {
@@ -3072,7 +3348,7 @@ impl Rig {
                     let o = &self.objects[id];
                     // Weight: heavy things accelerate less (Godot's 15 -> 300 N idea, scaled by the
                     // weight setting).
-                    let two = self.hands.as_ref().unwrap()[hand ^ 1].support == Some(*id);
+                    let two = self.hands.as_ref().unwrap()[hand ^ 1].supporting() == Some(*id);
                     let mass = o.desc.mass.max(0.05);
                     // How hard you can move it: a 3.5 kg rifle speeds up at about 30 m/s^2 and spins
                     // at about 60 rad/s^2 in one hand (a quarter turn takes a third of a second),
@@ -3311,26 +3587,24 @@ impl Rig {
         for (id, hand, pos, strength) in impacts {
             self.emit(Cue::Impact, hand, Some(id), pos, strength);
         }
-        // A support hand locks onto the gun's foregrip line, where along it the controller is; it
-        // lets go if the controller wanders off.
+        // A second hand stays where it took hold (a handguard, anywhere along it, or anywhere on
+        // the thing); it lets go if the controller wanders off.
         for i in 0..2 {
-            let Some(wid) = self.hands.as_ref().unwrap()[i].support else { continue };
-            let Some(o) = self.objects.get(&wid) else { continue };
+            let Some(sup) = self.hands.as_ref().unwrap()[i].support else { continue };
+            let Some(o) = self.objects.get(&sup.id) else { continue };
             let (wp, wr) = self.physics.pose(o.body);
             let target = self.hands.as_ref().unwrap()[i].target.0;
-            let p = foregrip_point(&o.desc, wr.inverse() * (target - wp));
-            let on_gun = wp + wr * p;
-            if on_gun.distance(target) > FOREGRIP_BREAK {
+            let on_it = wp + wr * sup.at;
+            if on_it.distance(target) > FOREGRIP_BREAK * self.map.world_per_meter {
                 self.hands.as_mut().unwrap()[i].support = None;
                 self.physics.set_groups(self.hands.as_ref().unwrap()[i].collider, groups_hand(i));
-                self.emit(Cue::Release, Some(i), Some(wid), target, 0.6);
+                self.emit(Cue::Release, Some(i), Some(sup.id), target, 0.6);
                 continue;
             }
-            let rot = (wr * self.support_rot(&o.desc, i)).normalize();
             let h = &self.hands.as_ref().unwrap()[i];
             let (body, collider) = (h.body, h.collider);
             self.physics.set_groups(collider, groups_none());
-            self.physics.set_pose(body, on_gun, rot);
+            self.physics.set_pose(body, on_it, (wr * sup.rot).normalize());
             self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
         }
         // A hand holding open barrels sits where it took them, turning with them; pulled 30 cm away
@@ -3401,7 +3675,7 @@ impl Rig {
                 flags: HAND_TRACKED
                     | if h.blocked { HAND_BLOCKED } else { 0 }
                     | if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() { HAND_HOLDING } else { 0 },
-                holding: h.holding.or(h.support).or(h.barrels.map(|b| b.gun)).unwrap_or(0),
+                holding: h.holding.or(h.supporting()).or(h.barrels.map(|b| b.gun)).unwrap_or(0),
                 _pad: [0; 2],
             };
             if h.blocked && inp.settings.interaction.ghost_hands {
@@ -3409,7 +3683,8 @@ impl Rig {
             }
             out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
-                Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::PistolGrip,
+                Some(o) if matches!(o.attach, Attach::Gun) => rustvr_ik::HoldShape::PistolGrip,
+                Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::Foregrip,
                 // A melee weapon's handle in the fist.
                 Some(o) if o.desc.kind == OBJ_MELEE => rustvr_ik::HoldShape::Foregrip,
                 Some(o) if is_round(&o.desc) => rustvr_ik::HoldShape::Small,
@@ -3428,7 +3703,7 @@ impl Rig {
             out.hand_targeting[i] = h.hover != Hover::None || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
         }
         // Primary gun: the firing hand's, else any held gun.
-        let gun_in = |hand: usize| hands[hand].holding.filter(|id| self.objects.get(id).is_some_and(|o| o.desc.kind == OBJ_WEAPON));
+        let gun_in = |hand: usize| hands[hand].holding.filter(|id| self.objects.get(id).is_some_and(|o| matches!(o.attach, Attach::Gun)));
         if let Some(id) = gun_in(dom).or_else(|| gun_in(dom ^ 1)) {
             let o = &self.objects[&id];
             let (p, q) = self.physics.pose(o.body);
@@ -3439,13 +3714,88 @@ impl Rig {
                 weapon_to_tracking: m,
                 sight: v3(o.desc.sight),
                 muzzle: v3(o.desc.muzzle),
-                two_handed: hands[held_by ^ 1].support == Some(id),
+                two_handed: hands[held_by ^ 1].supporting() == Some(id),
                 scoped: o.desc.flags & OBJF_SCOPED != 0,
                 laser: (o.desc.weapon_flags & WPN_LASER != 0).then(|| v3(o.desc.laser)),
             });
         }
         let _ = inp;
+        self.update_grasps(&out);
         out
+    }
+
+    /// What each hand's fingers close on: the handle it's on, or the whole thing where it has it
+    /// anywhere (tracking space), closing over [`GRASP_TIME`] as it takes hold and opening as it
+    /// lets go.
+    fn update_grasps(&mut self, out: &RigOutput) {
+        let now_g: [Option<((u32, On), rustvr_avatar::Grasp)>; 2] = [0, 1].map(|i| self.grasp_now(i));
+        let (map, now) = (self.map, self.now);
+        let Some(hands) = self.hands.as_mut() else { return };
+        for (i, g) in now_g.into_iter().enumerate() {
+            let hp = out.hands[i].pose;
+            let hand = (v3(hp.pos), q4(hp.rot));
+            let st = &mut hands[i].grasp;
+            self.grasps[i] = match g {
+                Some((key, g)) => {
+                    // Something new (not the same thing in the other hand's place, or elsewhere on it).
+                    if st.key.map(|k| k.0) != Some(key.0) {
+                        st.since = now;
+                        st.fading = None;
+                    }
+                    st.key = Some(key);
+                    let mut g = grasp_in_tracking(&map, g);
+                    g.weight = smooth((now - st.since) / GRASP_TIME);
+                    st.last = Some((g.moved(inverse(hand)), g.weight));
+                    Some(g)
+                }
+                None => {
+                    st.key = None;
+                    if let Some((last, w)) = st.last.take() {
+                        st.fading = Some((now, w, last));
+                    }
+                    match &st.fading {
+                        Some((t0, w0, local)) if now - t0 < GRASP_TIME => {
+                            let mut g = local.moved(hand);
+                            g.weight = w0 * (1.0 - smooth((now - t0) / GRASP_TIME));
+                            Some(g)
+                        }
+                        _ => {
+                            st.fading = None;
+                            None
+                        }
+                    }
+                }
+            };
+        }
+    }
+
+    /// What hand `i`'s fingers close on now (world space), and which of them: the handle it's on,
+    /// or the whole thing where it has it anywhere. A gun held by its grip keeps the index on the
+    /// trigger.
+    fn grasp_now(&self, i: usize) -> Option<((u32, On), rustvr_avatar::Grasp)> {
+        let h = &self.hands.as_ref()?[i];
+        let (id, on) = match (h.holding, h.support) {
+            (Some(id), _) => (id, h.on),
+            (None, Some(sup)) => (sup.id, sup.on),
+            _ => return None,
+        };
+        let o = self.objects.get(&id)?;
+        let firing = h.holding == Some(id) && matches!(o.attach, Attach::Gun);
+        let mut g = rustvr_avatar::Grasp { fingers: if firing { rustvr_avatar::grasp::ALL_FINGERS & !(1 << 1) } else { rustvr_avatar::grasp::ALL_FINGERS }, ..Default::default() };
+        match on {
+            On::Free => self.physics.grasp_solids(o.collider, &mut g),
+            on => {
+                let handle = self.handle_of(&o.desc, i, on)?;
+                let (op, oq) = self.physics.pose(o.body);
+                g.solids.push(rustvr_avatar::Solid::Capsule { a: op + oq * handle.axis.0, b: op + oq * handle.axis.1, radius: handle.radius * self.map.world_per_meter });
+            }
+        }
+        Some(((id, on), g))
+    }
+
+    /// What each hand's fingers close on this frame (tracking space), if anything.
+    pub fn grasps(&self) -> &[Option<rustvr_avatar::Grasp>; 2] {
+        &self.grasps
     }
 
     /// Fills the adapter's object state table.

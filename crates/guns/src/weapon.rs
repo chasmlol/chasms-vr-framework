@@ -94,6 +94,9 @@ pub struct Weapon {
     /// of the hand's way), front to back and along its axis (the firing hand's grip frame).
     #[allow(dead_code)]
     pub grip_block: Option<(Vec3, Vec3)>,
+    /// ...and the handguard the support hand takes anywhere along: its axis, end to end (weapon
+    /// space), and its radius. None: the runtime's default along the bore through `foregrip`.
+    pub handguard: Option<(Vec3, Vec3, f32)>,
     /// ...and the trigger blade's surface (weapon-space triangles).
     #[allow(dead_code)]
     pub trigger_blade: Vec<[Vec3; 3]>,

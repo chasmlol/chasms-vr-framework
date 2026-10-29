@@ -61,6 +61,7 @@ impl Scene {
             hands: self.hands,
             ghosts: self.ghosts,
             held: [None; 2],
+            grasp: [None; 2],
             visibility: self.visibility,
             light: self.light,
             first_person: self.first_person,

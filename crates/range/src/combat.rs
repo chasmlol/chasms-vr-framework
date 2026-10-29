@@ -83,6 +83,9 @@ pub fn sword() -> Throwable {
     // The fist round the handle (little finger to thumb along the blade), the back of the hand to
     // the blade's flat.
     d.grip_rot = rustvr_guns::fist(Vec3::Z, Vec3::Y).to_array();
+    // The handle, from the pommel to the guard: a hand goes on anywhere along it.
+    d.grip_line = [[0.0, 0.0, -0.11], [0.0, 0.0, -0.012]];
+    d.grip_radius = 0.014;
     set_name(&mut d.name, "Arming sword");
     Throwable {
         key: "builtin_sword".into(),

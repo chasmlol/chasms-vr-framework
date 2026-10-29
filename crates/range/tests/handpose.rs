@@ -175,6 +175,7 @@ fn frame<'a>(held: &'a Held, visibility: u32, first_person: bool) -> AvatarFrame
         hands: held.hands,
         ghosts: [None; 2],
         held: held.held,
+        grasp: [None; 2],
         visibility,
         light: daylight(),
         first_person,

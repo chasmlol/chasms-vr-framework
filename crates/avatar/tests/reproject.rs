@@ -19,6 +19,7 @@ fn frame(joints: &[Pose; JOINT_COUNT]) -> AvatarFrame<'_> {
         hands: pose::hands_at_joints(joints),
         ghosts: [None; 2],
         held: [None; 2],
+        grasp: [None; 2],
         visibility: BODYVIS_FULL,
         light: LightHint::default(),
         first_person: false,

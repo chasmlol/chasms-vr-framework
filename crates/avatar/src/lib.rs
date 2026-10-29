@@ -44,6 +44,7 @@
 pub mod collimator;
 pub mod fit;
 pub mod gamebryo;
+pub mod grasp;
 pub mod held;
 pub mod metro;
 mod names;
@@ -64,6 +65,7 @@ use rustvr_protocol::{Fingers, Fov, GameLighting, HandState, JOINT_COUNT, LightH
 use glam::Mat4;
 use windows::Win32::Graphics::Direct3D11::{ID3D11RenderTargetView, ID3D11ShaderResourceView};
 
+pub use grasp::{Grasp, Solid};
 pub use held::{HeldHand, held_hands};
 pub use render::HeldModel;
 pub use rig::{GameHand, bind_joints, finger_reach, game_hand};
@@ -81,6 +83,8 @@ pub struct AvatarFrame<'a> {
     /// Hands holding something in the game's own pose for it: drawn exactly so (winning over
     /// `hands` and `fingers`); None keeps the curls.
     pub held: [Option<HeldHand>; 2],
+    /// Hands holding something not in a game's pose: their fingers close on it.
+    pub grasp: [Option<&'a Grasp>; 2],
     /// `BODYVIS_HANDS`, `BODYVIS_ARMS` or `BODYVIS_FULL`.
     pub visibility: u32,
     /// The game's light near the player, with `sun_dir` already in tracking space. All zero

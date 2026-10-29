@@ -26,6 +26,18 @@ pub fn groups_free() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
 }
 
+/// A free object the hands marked `by` are about to take: as [`groups_free`], but those hands reach
+/// into it rather than knocking it out of the grab.
+pub fn groups_reached(by: [bool; 2]) -> InteractionGroups {
+    let mut hands = Group::NONE;
+    for (i, &reaching) in by.iter().enumerate() {
+        if !reaching {
+            hands |= G_HAND[i];
+        }
+    }
+    InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | hands | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
+}
+
 /// An object held by `hand` touches the world and free objects, never the hands.
 pub fn groups_held(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
@@ -422,6 +434,18 @@ impl Physics {
         from_v(col.shape().project_point(col.position(), to_v(p), true).point)
     }
 
+    /// The point of collider `c`'s surface nearest `p`, from inside it too.
+    pub fn surface_point(&self, c: ColliderHandle, p: V3) -> V3 {
+        let Some(col) = self.world.colliders.get(c) else { return p };
+        from_v(col.shape().project_point(col.position(), to_v(p), false).point)
+    }
+
+    /// Collider `c` as solids a hand's fingers close on (world space).
+    pub fn grasp_solids(&self, c: ColliderHandle, g: &mut rustvr_avatar::Grasp) {
+        let Some(col) = self.world.colliders.get(c) else { return };
+        add_solids(col.shape(), from_pose(col.position()), g);
+    }
+
     /// Nothing of the static world lies between `from` and `to` (the player could reach `to`).
     pub fn reachable(&self, from: V3, to: V3) -> bool {
         let d = to - from;
@@ -480,6 +504,37 @@ impl Physics {
                 }
             }
             None => 0.0,
+        }
+    }
+}
+
+/// A shape at `at` (world) as solids for the fingers ([`Physics::grasp_solids`]). A cylinder (a
+/// valve's wheel) is taken as its box.
+fn add_solids(shape: &dyn Shape, at: (V3, Q), g: &mut rustvr_avatar::Grasp) {
+    use rustvr_avatar::Solid;
+    let (p, q) = at;
+    if let Some(b) = shape.as_ball() {
+        g.solids.push(Solid::Sphere { centre: p, radius: b.radius });
+    } else if let Some(c) = shape.as_cuboid() {
+        g.solids.push(Solid::Box { centre: p, rot: q, half: from_v(c.half_extents) });
+    } else if let Some(c) = shape.as_capsule() {
+        g.solids.push(Solid::Capsule { a: p + q * from_v(c.segment.a), b: p + q * from_v(c.segment.b), radius: c.radius });
+    } else if let Some(c) = shape.as_cylinder() {
+        g.solids.push(Solid::Box { centre: p, rot: q, half: V3::new(c.radius, c.half_height, c.radius) });
+    } else if let Some(h) = shape.as_convex_polyhedron() {
+        let first = g.planes.len() as u32;
+        let (points, adj) = (h.points(), h.vertices_adj_to_face());
+        for f in h.faces() {
+            let Some(&v) = adj.get(f.first_vertex_or_edge as usize) else { continue };
+            let Some(&on) = points.get(v as usize) else { continue };
+            let n = q * from_v(f.normal);
+            g.planes.push(n.extend(-n.dot(p + q * from_v(on))));
+        }
+        g.solids.push(Solid::Hull { first, count: g.planes.len() as u32 - first });
+    } else if let Some(c) = shape.as_compound() {
+        for (pose, part) in c.shapes() {
+            let (pp, pq) = from_pose(pose);
+            add_solids(part.as_ref(), (p + q * pp, (q * pq).normalize()), g);
         }
     }
 }

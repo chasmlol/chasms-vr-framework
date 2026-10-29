@@ -27,6 +27,7 @@ use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use rustvr_asset as asset;
 use rustvr_protocol::{Fingers, JOINT_COUNT, Joint, Pose};
 
+use crate::grasp::{self, Grasp};
 use crate::names::{self, Class, Limb};
 
 /// Most bones a model may have: vertex bone indices are bytes.
@@ -119,6 +120,8 @@ pub struct PoseInput<'a> {
     pub fingers: &'a [Fingers; 2],
     /// Hands in a game's own pose: their fingers come from it instead of the curls.
     pub held: [Option<PosedFingers>; 2],
+    /// Hands holding something (not in a game's pose): their fingers close on it.
+    pub grasp: [Option<&'a Grasp>; 2],
     /// Collapse the head for the wearer's own eyes.
     pub chop_head: bool,
 }
@@ -408,7 +411,32 @@ impl Rig {
                             finger_pos[side][f][k] = pivots[k];
                         }
                     }
-                    None => chain.curl(f, &input.fingers[side], &mut finger_rot[side][f], &mut finger_pos[side][f]),
+                    None => {
+                        let own = &input.fingers[side];
+                        let mut curls = [own.curl[f].clamp(0.0, 1.0); 3];
+                        let mut splay = own.splay;
+                        // Holding something: the finger closes on it, as far as the grasp has.
+                        let grasp = input.grasp[side].filter(|g| g.fingers & (1 << f) != 0 && g.weight > 0.0);
+                        if let (Some(g), Some((hand_pos, hand_rot)), Some(hb)) = (grasp, joint(HAND[side]), self.joint_bone[HAND[side] as usize]) {
+                            let posed = PosedChain {
+                                finger: chain,
+                                index: f,
+                                splay: WRAP_SPLAY,
+                                origin: hand_pos,
+                                turn: hand_rot * self.inv_canonical[HAND[side] as usize],
+                                bind_hand: self.bones[hb].bind_pos,
+                                scale: hand_scale[side],
+                            };
+                            let radius = FINGER_THICKNESS * self.hand_size[side] * hand_scale[side];
+                            let wrapped = grasp::wrap(&posed, g, radius);
+                            let w = g.weight.min(1.0);
+                            for (c, t) in curls.iter_mut().zip(wrapped) {
+                                *c += (t - *c) * w;
+                            }
+                            splay += (WRAP_SPLAY - splay) * w;
+                        }
+                        chain.bend(f, curls, splay, &mut finger_rot[side][f], &mut finger_pos[side][f]);
+                    }
                 }
             }
         }
@@ -514,13 +542,56 @@ impl Rig {
     }
 }
 
+/// How far apart the fingers spread while they close on something (as [`Fingers::splay`]).
+const WRAP_SPLAY: f32 = 0.1;
+/// A finger's half thickness as a share of the hand's size (wrist to the middle finger's base):
+/// 9 mm on a 9.5 cm hand.
+const FINGER_THICKNESS: f32 = 0.095;
+
+/// A finger of the posed hand, for [`grasp::wrap`]: its segments in tracking space for a set of
+/// per-joint curls, as [`Rig::pose`] will put them.
+struct PosedChain<'a> {
+    finger: &'a Finger,
+    index: usize,
+    splay: f32,
+    /// The hand bone: bind space `x` goes to `origin + turn * ((x - bind_hand) * scale)`.
+    origin: Vec3,
+    turn: Quat,
+    bind_hand: Vec3,
+    scale: f32,
+}
+
+impl grasp::Chain for PosedChain<'_> {
+    fn segments(&self) -> usize {
+        self.finger.count
+    }
+
+    fn place(&self, curls: [f32; 3]) -> [(Vec3, Vec3); 3] {
+        let c = self.finger;
+        let (mut rot, mut pos) = ([Quat::IDENTITY; 3], [Vec3::ZERO; 3]);
+        c.bend(self.index, curls, self.splay, &mut rot, &mut pos);
+        let at = |x: Vec3| self.origin + self.turn * ((x - self.bind_hand) * self.scale);
+        let mut out = [(Vec3::ZERO, Vec3::ZERO); 3];
+        for k in 0..c.count {
+            let a = at(pos[k]);
+            let b = if k + 1 < c.count { at(pos[k + 1]) } else { a + self.turn * (rot[k] * (c.canon[k] * Vec3::Y)) * (c.tip_len * self.scale) };
+            out[k] = (a, b);
+        }
+        for k in c.count..3 {
+            out[k] = (out[c.count - 1].1, out[c.count - 1].1);
+        }
+        out
+    }
+}
+
 impl Finger {
-    /// Bind-space rotation and pivot of each segment for these curls.
-    fn curl(&self, finger: usize, input: &Fingers, rot: &mut [Quat; 3], pos: &mut [Vec3; 3]) {
-        let curl = input.curl[finger].clamp(0.0, 1.0);
-        let splay = input.splay.clamp(0.0, 1.0) * (1.0 - curl);
+    /// Bind-space rotation and pivot of each segment, every joint curled `curls[k]` (0 straight .. 1
+    /// a fist's), the finger spread by `splay` (less as its base curls).
+    fn bend(&self, finger: usize, curls: [f32; 3], splay: f32, rot: &mut [Quat; 3], pos: &mut [Vec3; 3]) {
+        let splay = splay.clamp(0.0, 1.0) * (1.0 - curls[0].clamp(0.0, 1.0));
         let mut q = Quat::IDENTITY;
         for k in 0..self.count {
+            let curl = curls[k].clamp(0.0, 1.0);
             let flex = if k == 0 && finger == 0 {
                 curl * CURL[0][0]
             } else {
@@ -1243,7 +1314,7 @@ mod tests {
                 let joints = bind_joints(&rig, k, t);
                 // Finger bones are left out: curl 0 straightens them whatever the bind hand did.
                 let fingers = [Fingers::default(); 2];
-                rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], chop_head: false }, &mut posed);
+                rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], grasp: [None, None], chop_head: false }, &mut posed);
                 assert!((posed.scale - k).abs() < 1e-4, "scale {}", posed.scale);
                 let want = t * Mat4::from_scale(Vec3::splat(k));
                 for (b, bone) in rig.bones.iter().enumerate() {
@@ -1263,7 +1334,7 @@ mod tests {
         let mut posed = rig.posed();
         let joints = bind_joints(&rig, 1.0, Mat4::IDENTITY);
         let fingers = [Fingers { splay: 0.0, ..Default::default() }; 2];
-        rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], chop_head: false }, &mut posed);
+        rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], grasp: [None, None], chop_head: false }, &mut posed);
         assert_skin_is(&rig, &posed, Mat4::IDENTITY);
     }
 
@@ -1275,7 +1346,7 @@ mod tests {
         let mut posed = rig.posed();
         let joints = pose::t_pose(1.75);
         let fingers = [Fingers::default(); 2];
-        rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], chop_head: false }, &mut posed);
+        rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], grasp: [None, None], chop_head: false }, &mut posed);
         assert_skin_is(&rig, &posed, Mat4::IDENTITY);
     }
 
@@ -1287,7 +1358,7 @@ mod tests {
         let fingers = [Fingers::default(); 2];
         let pose_with = |held: [Option<PosedFingers>; 2]| {
             let mut posed = rig.posed();
-            rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held, chop_head: false }, &mut posed);
+            rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held, grasp: [None, None], chop_head: false }, &mut posed);
             posed
         };
         // A fist the game holds the right hand in.
@@ -1322,7 +1393,7 @@ mod tests {
                 let mut at = |curl: f32| {
                     let mut fingers = [Fingers::default(); 2];
                     fingers[side].curl[f] = curl;
-                    rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], chop_head: false }, &mut posed);
+                    rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], grasp: [None, None], chop_head: false }, &mut posed);
                     posed.pos[tip] - posed.pos[hand]
                 };
                 let (open, closed) = (at(0.0), at(1.0));
@@ -1330,6 +1401,49 @@ mod tests {
                 assert!(closed.length() < open.length(), "side {side} finger {f}: tip comes back towards the wrist");
             }
         }
+    }
+
+    #[test]
+    fn fingers_close_round_a_held_handle_and_rest_on_it() {
+        use crate::grasp::{ALL_FINGERS, Solid};
+        let source = crate::procedural::mannequin();
+        let rig = Rig::new(&source.bones, &[]).unwrap();
+        let joints = pose::t_pose(1.75);
+        let fingers = [Fingers::default(); 2];
+        let side = 1;
+        let bone = |f: usize, k: usize| {
+            (0..rig.bones.len()).find(|&b| matches!(rig.bones[b].drive, Drive::Finger { side: s, finger, segment } if s == side && finger == f && segment == k)).unwrap()
+        };
+        let pose_with = |grasp: Option<&Grasp>| {
+            let mut posed = rig.posed();
+            rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], grasp: [None, grasp], chop_head: false }, &mut posed);
+            posed
+        };
+        let open = pose_with(None);
+        // A 3 cm handle across the hand, under the middle of the middle finger's first segment, its
+        // axis 2.5 cm below it (palms face down in the reference pose).
+        let palm = -Vec3::Y;
+        let (base, mid) = (open.pos[bone(2, 0)], open.pos[bone(2, 1)]);
+        let across = (mid - base).normalize().cross(palm).normalize();
+        let c = base.lerp(mid, 0.5) + palm * 0.025;
+        let g = Grasp { solids: vec![Solid::Capsule { a: c - across * 0.12, b: c + across * 0.12, radius: 0.015 }], fingers: ALL_FINGERS, weight: 1.0, ..Default::default() };
+        let held = pose_with(Some(&g));
+        for f in 1..5 {
+            let count = rig.fingers[side][f].as_ref().unwrap().count;
+            let last = bone(f, count - 1);
+            // The longer fingers reach past it and close round it (the little finger's middle
+            // segment is on it already: only its tip comes round).
+            if f < 4 {
+                assert!(held.pos[last].dot(palm) > open.pos[last].dot(palm) + 0.015, "finger {f} closes round it");
+            }
+            // Every joint on it, none in it.
+            let d: Vec<f32> = (1..count).map(|k| g.distance(held.pos[bone(f, k)])).collect();
+            assert!(d.iter().all(|&d| d > 0.004) && d.iter().any(|&d| d < 0.02), "finger {f}'s joints rest on the handle: {d:?}");
+        }
+        // Half way in: half way between.
+        let half = pose_with(Some(&Grasp { weight: 0.5, ..g.clone() }));
+        let tip = |p: &Posed| p.pos[bone(2, 2)].dot(palm);
+        assert!(tip(&half) > tip(&open) + 0.005 && tip(&half) < tip(&held) - 0.005);
     }
 
     /// `rest` with an extra rotation (in each bone's own frame, from `delta` by name) on some
@@ -1380,7 +1494,7 @@ mod tests {
                 let mut held = [None, None];
                 held[side] = Some(PosedFingers { rel: g.fingers, size: g.size, reach: [None; 5], weight: 1.0 });
                 let fingers = [Fingers::default(); 2];
-                rig.pose(&PoseInput { joints: &joints, hands, fingers: &fingers, held, chop_head: false }, &mut posed);
+                rig.pose(&PoseInput { joints: &joints, hands, fingers: &fingers, held, grasp: [None, None], chop_head: false }, &mut posed);
                 // Every bone of that hand lands exactly where the posed model has it (carried
                 // through the rest pose, the fingers' roll too).
                 for b in (0..rig.bones.len()).filter(|&b| rig.bones[b].part == Part::Hand(side)) {
@@ -1414,7 +1528,7 @@ mod tests {
         let tip = |k: f32, posed: &mut Posed| {
             let held = [None, Some(PosedFingers { rel: g.fingers, size: g.size * k, reach: [None; 5], weight: 1.0 })];
             let hands = [None, Some(Pose { pos: g.wrist.0.to_array(), valid: 1, rot: g.wrist.1.to_array() })];
-            rig.pose(&PoseInput { joints: &joints, hands, fingers: &fingers, held, chop_head: false }, posed);
+            rig.pose(&PoseInput { joints: &joints, hands, fingers: &fingers, held, grasp: [None, None], chop_head: false }, posed);
             let index = rig.fingers[1][1].as_ref().unwrap().count - 1;
             let b = (0..rig.bones.len()).find(|&b| matches!(rig.bones[b].drive, Drive::Finger { side: 1, finger: 1, segment } if segment == index)).unwrap();
             (posed.pos[b] - posed.pos[hand], posed.skin[b].transform_vector3(Vec3::X).length())
@@ -1436,7 +1550,7 @@ mod tests {
         let mut posed = rig.posed();
         let joints = bind_joints(&rig, 1.0, Mat4::IDENTITY);
         let fingers = [Fingers::default(); 2];
-        rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], chop_head: true }, &mut posed);
+        rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], grasp: [None, None], chop_head: true }, &mut posed);
         let head = rig.joint_bone[Joint::Head as usize].unwrap();
         let neck = rig.joint_bone[Joint::Neck as usize].unwrap();
         let p = posed.skin[head].transform_point3(Vec3::new(0.0, 1.8, 0.1));

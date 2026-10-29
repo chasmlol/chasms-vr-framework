@@ -78,7 +78,7 @@ pub use lighting::*;
 pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v11";
 pub const MAPPING_BYTES: usize = 0x0052_0000;
 

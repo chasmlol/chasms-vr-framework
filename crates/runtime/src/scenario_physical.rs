@@ -38,6 +38,16 @@ fn qkeys(t: f64, k: &[(f64, Quat)]) -> Quat {
     k[k.len() - 1].1
 }
 
+/// The head leaning in to look at `at` from `eye` between `t0` and `t1`, back from `t2` to `t3`
+/// (for a close look at the hands).
+fn lean_in(b: &mut Body, t: f64, [t0, t1, t2, t3]: [f64; 4], eye: Vec3, at: Vec3) {
+    let k = ramp(t, t0, t1) * (1.0 - ramp(t, t2, t3));
+    if k > 0.0 {
+        b.head_pos = b.head_pos.lerp(eye, k);
+        b.head_rot = b.head_rot.slerp(look_rot(at - eye), k);
+    }
+}
+
 fn on(t: f64, spans: &[(f64, f64)]) -> f32 {
     if spans.iter().any(|(a, b)| between(t, *a, *b)) { 1.0 } else { 0.0 }
 }
@@ -1600,6 +1610,160 @@ pub fn all() -> Vec<Scenario> {
                 check(8.1, "it fires from the fresh loader", |c| ensure(c.rig.shots == 7, || format!("shots {}", c.rig.shots))),
             ],
             captures: vec![(1.82, "rev_fire"), (4.35, "rev_open"), (4.75, "rev_cases_out"), (6.3, "rev_loading"), (6.75, "rev_loaded"), (7.5, "rev_shut")],
+        },
+        Scenario {
+            name: "grip_handle",
+            about: "physical: the sword taken by the pommel end of its handle (the hand goes on there, as the sword is held) and raised; then the left hand takes its blade: both hands on it, the fingers closed round handle and blade",
+            duration: 3.4,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(s) = table_sword(objs) else { return b };
+                    b.head_rot = Quat::from_rotation_x(0.35);
+                    // Down onto the handle by the pommel, then up in front of the eyes, the blade up
+                    // and forward.
+                    let above = s.at(Vec3::new(0.0, 0.0, -0.095)) + Vec3::Y * 0.05;
+                    let raised = Vec3::new(0.1, 1.42, 0.36);
+                    let rest = Body::rest().hands[1].pos;
+                    b.hands[1].pos = keys(t, &[(0.0, rest), (0.4, above + Vec3::Y * 0.2), (0.7, above), (0.85, above), (1.3, raised)]);
+                    b.hands[1].rot = qkeys(t, &[(0.85, Quat::IDENTITY), (1.3, Quat::from_rotation_x(-45f32.to_radians()))]);
+                    b.hands[1].squeeze = on(t, &[(0.75, 3.4)]);
+                    // The left hand to the blade's flat, 25 cm up it, from its side.
+                    let rest = Body::rest().hands[0].pos;
+                    let blade = live(see, s.id).filter(|_| t > 1.6).map(|now| now.at(Vec3::new(0.0, -0.04, 0.14)));
+                    if let Some(p) = blade {
+                        b.hands[0].pos = rest.lerp(p, ramp(t, 1.6, 2.2));
+                        b.hands[0].rot = Quat::from_rotation_x(-45f32.to_radians());
+                    } else {
+                        b.hands[0].pos = rest;
+                    }
+                    b.hands[0].squeeze = on(t, &[(2.3, 3.4)]);
+                    // A close look at the hand on the handle, then at both hands.
+                    lean_in(&mut b, t, [1.2, 1.45, 1.6, 1.75], raised + Vec3::new(-0.24, 0.06, 0.14), raised);
+                    if let Some(p) = blade {
+                        let mid = p.lerp(raised, 0.5);
+                        lean_in(&mut b, t, [2.6, 2.9, 3.3, 3.4], mid + Vec3::new(-0.3, 0.02, 0.12), mid);
+                    }
+                    b
+                })
+            },
+            checks: vec![
+                check(1.4, "the sword is in the right hand", |c| ensure(c.objects.iter().any(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0), || "not held".into())),
+                check(3.0, "both hands on it", |c| {
+                    let sword = c.objects.iter().find(|o| o.kind == OBJ_MELEE).map(|o| o.id).ok_or("no sword")?;
+                    let on = |i: usize| c.body.hands[i].flags & HAND_HOLDING != 0 && c.body.hands[i].holding == sword;
+                    ensure(on(0) && on(1), || format!("hands {:?}", c.body.hands.map(|h| (h.flags, h.holding))))
+                }),
+            ],
+            captures: vec![(1.5, "grip_handle_pommel"), (3.0, "grip_handle_and_blade")],
+        },
+        Scenario {
+            name: "grip_handguard",
+            about: "physical: the rifle taken by its pistol grip and held in front; the left hand takes the handguard at its back end, lets go and takes it again further forward: on the handguard where it took it each time",
+            duration: 4.4,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(rifle) = near_rifle(objs) else { return b };
+                    b.head_rot = Quat::from_rotation_x(0.3);
+                    let level = hand_rot_for(&rifle, Quat::IDENTITY);
+                    let held = (Vec3::new(0.12, 1.36, 0.22), level);
+                    let (p, q) = take_rifle(t.min(1.0), &rifle);
+                    b.hands[1].pos = if t < 1.0 { p } else { p.lerp(held.0, ramp(t, 1.0, 1.4)) };
+                    b.hands[1].rot = if t < 1.0 { q } else { q.slerp(held.1, ramp(t, 1.0, 1.4)) };
+                    b.hands[1].squeeze = on(t, &[(0.65, 4.4)]);
+                    // The handguard from under it: 4 cm back of the game's support hold, then 6 cm
+                    // ahead of it.
+                    let gun = gun_rot_in(&rifle, held.1);
+                    let under = |along: f32| on_held(&rifle, held, rifle.foregrip + Vec3::Z * along) - gun * Vec3::Y * 0.02;
+                    let rest = Body::rest().hands[0].pos;
+                    let (back, front) = (under(-0.04), under(0.06));
+                    b.hands[0].pos = keys(t, &[(1.4, rest), (1.9, back), (2.6, back), (2.9, back - Vec3::Y * 0.06), (3.2, front), (4.4, front)]);
+                    b.hands[0].rot = rifle.support_rot.map(|s| (gun * s).normalize()).unwrap_or(Quat::IDENTITY);
+                    b.hands[0].squeeze = on(t, &[(2.0, 2.65), (3.3, 4.4)]);
+                    // Close looks at the support hand from the left, a little below.
+                    lean_in(&mut b, t, [2.1, 2.4, 2.55, 2.7], back + Vec3::new(-0.26, -0.04, 0.06), back);
+                    lean_in(&mut b, t, [3.7, 4.0, 4.3, 4.4], front + Vec3::new(-0.26, -0.04, 0.06), front);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.2, "the rifle is in the right hand", |c| ensure(gun_held_right(c), || "not held".into())),
+                check(2.5, "the left hand on the handguard", |c| {
+                    let gun = c.objects.iter().find(|o| o.kind == OBJ_WEAPON && o.flags & OS_HELD_RIGHT != 0).map(|o| o.id).ok_or("no rifle")?;
+                    ensure(c.body.hands[0].flags & HAND_HOLDING != 0 && c.body.hands[0].holding == gun, || format!("left {:?}", (c.body.hands[0].flags, c.body.hands[0].holding)))
+                }),
+                check(4.2, "and again further forward", |c| {
+                    let gun = c.objects.iter().find(|o| o.kind == OBJ_WEAPON && o.flags & OS_HELD_RIGHT != 0).ok_or("no rifle")?;
+                    let h = &c.body.hands[0];
+                    ensure(h.flags & HAND_HOLDING != 0 && h.holding == gun.id, || "not holding".into())
+                }),
+            ],
+            captures: vec![(2.45, "grip_handguard_back"), (4.1, "grip_handguard_front"), (1.35, "grip_handguard_firing")],
+        },
+        Scenario {
+            name: "grip_hand_to_hand",
+            about: "physical: the bottle taken from its side and lifted in front, the other hand takes it too, then the first lets go: it's in the other hand, where that hand took it",
+            duration: 4.2,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, see| {
+                    let mut b = Body::rest();
+                    let Some(bottle) = prop_near(objs, Vec3::new(-0.55, 0.97, 0.36)) else { return b };
+                    b.head_rot = Quat::from_rotation_x(0.35);
+                    // The fist's axis up the bottle, the palm against its side.
+                    let upright = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+                    let side = bottle.pos - Vec3::X * (bottle.half_extents.x + 0.03);
+                    let lifted = Vec3::new(-0.08, 1.4, 0.36);
+                    let rest = Body::rest().hands[0].pos;
+                    b.hands[0].pos = keys(t, &[(0.0, rest), (0.4, side + Vec3::Y * 0.25 - Vec3::X * 0.1), (0.8, side), (0.95, side), (1.4, lifted), (3.0, lifted), (3.4, rest)]);
+                    b.hands[0].rot = upright;
+                    b.hands[0].squeeze = on(t, &[(0.85, 3.0)]);
+                    // The right hand to its other side once it's up.
+                    let rest = Body::rest().hands[1].pos;
+                    let other = live(see, bottle.id).filter(|_| t > 1.5).map(|now| now.pos + Vec3::X * (bottle.half_extents.x + 0.03));
+                    b.hands[1].pos = match other {
+                        Some(p) => rest.lerp(p, ramp(t, 1.5, 2.1)),
+                        None => rest,
+                    };
+                    b.hands[1].rot = upright;
+                    b.hands[1].squeeze = on(t, &[(2.2, 4.2)]);
+                    lean_in(&mut b, t, [1.2, 1.5, 1.65, 1.8], lifted + Vec3::new(0.05, 0.08, 0.3), lifted);
+                    lean_in(&mut b, t, [2.4, 2.65, 2.8, 2.95], lifted + Vec3::new(0.05, 0.08, 0.3), lifted);
+                    let right = b.hands[1].pos;
+                    lean_in(&mut b, t, [3.7, 3.95, 4.1, 4.2], right + Vec3::new(-0.05, 0.08, 0.3), right);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.4, "the bottle is in the left hand", |c| ensure(c.body.hands[0].flags & HAND_HOLDING != 0 && c.body.hands[0].holding != 0, || "not held".into())),
+                check(2.6, "both hands have it", |c| {
+                    let [l, r] = c.body.hands;
+                    ensure(l.flags & r.flags & HAND_HOLDING != 0 && l.holding == r.holding && l.holding != 0, || format!("left {:?} right {:?}", (l.flags, l.holding), (r.flags, r.holding)))
+                }),
+                check(4.0, "handed over: the right hand has it", |c| {
+                    let [l, r] = c.body.hands;
+                    ensure(r.flags & HAND_HOLDING != 0 && r.holding != 0 && l.flags & HAND_HOLDING == 0, || format!("left {:?} right {:?}", (l.flags, l.holding), (r.flags, r.holding)))
+                }),
+            ],
+            captures: vec![(1.55, "grip_bottle_left"), (2.7, "grip_bottle_both"), (4.0, "grip_bottle_right")],
         },
     ]
 }

@@ -253,6 +253,7 @@ impl Scene<'_> {
             hands: held.hands,
             ghosts: [None; 2],
             held: [None; 2],
+            grasp: [None; 2],
             visibility: view.visibility,
             light: daylight(),
             first_person: view.first_person,
