@@ -334,7 +334,8 @@ pub struct ObjectDesc {
     /// Weapons with [`WPN_LASER`]: where their laser's beam starts (object space); it shines along
     /// +Z. The game's own laser attachment, mounted where the game mounts it.
     pub laser: [f32; 3],
-    pub _p_laser: f32,
+    /// Things that cast ([`OBJF_CASTS`]): how long its trigger charges it (seconds).
+    pub cast_time: f32,
     /// Props with [`OBJF_RUNTIME_DRAWS`]: where their model sits in object space (the game draws
     /// the model at the object's pose composed with this one; all zero: at the object's pose).
     pub model_pos: [f32; 3],
@@ -357,7 +358,9 @@ pub struct ObjectDesc {
     /// `drive_travel` (object space, metres), in step with the valve.
     pub driven_by: u32,
     pub drive_turn: f32,
-    pub _p_drive: u32,
+    /// Things that cast ([`OBJF_CASTS`]): what it casts (the game's id for it, passed back in the
+    /// cast's [`crate::CombatEvent::what`]).
+    pub casts: u32,
     pub drive_travel: [f32; 3],
     pub _p_travel: f32,
     /// Its handle (object space): the axis of the part a hand holds it by, end to end (a sword's
@@ -441,6 +444,10 @@ pub const OBJF_GAME_MOVED: u32 = 1 << 10;
 /// (whatever's there, however big it is), it's stowed: [`OS_STOWED`], out of the hands and not
 /// drawn, for the game to take into the player's inventory (and drop from the table).
 pub const OBJF_LOOT: u32 = 1 << 11;
+/// It casts its own magic (a staff): the hand holding it charges it with the trigger over its
+/// `cast_time` and casts `casts` from its `muzzle` along its +Z when it's let go
+/// ([`crate::CE_CAST`] with `object` set; see [`crate::Casters`]).
+pub const OBJF_CASTS: u32 = 1 << 12;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 

@@ -321,6 +321,20 @@ impl Link {
     pub fn read_spells_into(&self, out: &mut Spells) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_SPELLS), out) }
     }
+    /// Runtime: each hand's casting, every frame (see [`crate::Casters`]).
+    pub fn write_casters(&self, v: &Casters) {
+        unsafe { seq_write(self.base.add(OFF_CASTERS), v) }
+    }
+    pub fn read_casters_into(&self, out: &mut Casters) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_CASTERS), out) }
+    }
+    /// Adapter: the game's effect shaders on what the runtime draws (see [`crate::Overlays`]).
+    pub fn write_overlays(&self, v: &Overlays) {
+        unsafe { seq_write(self.base.add(OFF_OVERLAYS), v) }
+    }
+    pub fn read_overlays_into(&self, out: &mut Overlays) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_OVERLAYS), out) }
+    }
     /// Adapter: the player's body as the game makes it up.
     pub fn write_avatar(&self, v: &AvatarDesc) {
         unsafe { seq_write(self.base.add(OFF_AVATAR), v) }

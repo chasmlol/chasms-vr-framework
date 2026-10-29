@@ -706,6 +706,7 @@ impl Session {
                 out: &self.rig_out,
                 map: &rig_map,
                 frame: &frame,
+                objects: &self.objects,
                 dominant: self.settings.current.dominant(),
                 now,
                 dt: frame.dt,
@@ -714,6 +715,11 @@ impl Session {
             for ev in &combat {
                 self.link.push_combat_event(ev);
             }
+            // Each hand's casting, for the game's own casting art.
+            let mut casters: Casters = bytemuck::Zeroable::zeroed();
+            casters.frame = frame.index;
+            casters.hands = self.combat.casting;
+            self.link.write_casters(&casters);
             // Blades that went in and stay in.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);

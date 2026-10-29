@@ -8,7 +8,7 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 11
+#define RVR_VERSION 12
 
 #define RVR_MAPPING_BYTES 5373952
 
@@ -95,6 +95,11 @@
 #define RVR_CTRL_TOUCH_B (1 << 8)
 
 #define RVR_CTRL_TOUCH_STICK (1 << 9)
+
+/**
+ * The thumb rests on the thumbrest (Touch controllers).
+ */
+#define RVR_CTRL_TOUCH_REST (1 << 10)
 
 #define RVR_HAND_LEFT 0
 
@@ -466,6 +471,12 @@
  */
 #define RVR_SPELL_FAVOURITE (1 << 3)
 
+/**
+ * The game draws its own casting art where the runtime's casting is ([`crate::Casters`]): the
+ * runtime draws none of its own (no glow in the palm).
+ */
+#define RVR_SPELLS_GAME_ART (1 << 0)
+
 #define RVR_COMBAT_EVENT_SLOTS 128
 
 /**
@@ -483,7 +494,9 @@
 
 /**
  * A spell cast: `spell` from `hand` (0 left, 1 right), from `point` along `dir`; `actor` the one a
- * touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1).
+ * touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1). `object`:
+ * the held thing it was cast from ([`crate::OBJF_CASTS`], a staff: `what` is then what it casts,
+ * [`crate::ObjectDesc::casts`]), else 0.
  */
 #define RVR_CE_CAST 3
 
@@ -780,6 +793,13 @@
 #define RVR_OBJF_LOOT (1 << 11)
 
 /**
+ * It casts its own magic (a staff): the hand holding it charges it with the trigger over its
+ * `cast_time` and casts `casts` from its `muzzle` along its +Z when it's let go
+ * ([`crate::CE_CAST`] with `object` set; see [`crate::Casters`]).
+ */
+#define RVR_OBJF_CASTS (1 << 12)
+
+/**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
  */
 #define RVR_GAME_HANDBACK 0.15
@@ -803,20 +823,22 @@
 #define RVR_SHAPE_SPHERE 2
 
 /**
- * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
- * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ * The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+ * collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+ * Until its points arrive, the box `half_extents` about `center`.
  */
 #define RVR_SHAPE_HULL 3
 
 /**
  * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
- * whenever the objects offered change (before they're published).
+ * whenever the objects offered change (before they're published). An object with several convex
+ * parts has an entry for each.
  */
 #define RVR_OFF_GAME_HULLS 5046272
 
-#define RVR_MAX_GAME_HULLS 48
+#define RVR_MAX_GAME_HULLS 240
 
-#define RVR_MAX_HULL_POINTS 128
+#define RVR_MAX_HULL_POINTS 32
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 
@@ -1270,6 +1292,50 @@
  */
 #define RVR_GLF_TILE (1 << 1)
 
+/**
+ * Nothing in the hand.
+ */
+#define RVR_CAST_NONE 0
+
+/**
+ * The spell is readied (the finger rests on the trigger, or pulls it a little): its art in the palm,
+ * small.
+ */
+#define RVR_CAST_READIED 1
+
+/**
+ * The trigger is pulled: the spell is charging (`charge` grows to 1 over the game's casting time).
+ */
+#define RVR_CAST_CHARGING 2
+
+/**
+ * Charged: let go (or touch, for a touch spell) and it's cast.
+ */
+#define RVR_CAST_READY 3
+
+/**
+ * It casts from the thing the hand holds (`object`), not from the palm.
+ */
+#define RVR_CASTF_OBJECT (1 << 0)
+
+/**
+ * It was just cast (this frame's event): the art goes, the game's own cast takes over.
+ */
+#define RVR_CASTF_CAST (1 << 1)
+
+#define RVR_MAX_OVERLAYS 16
+
+/**
+ * The edge (where the surface turns away from the eye) shows: `edge` coloured, `edge_falloff`
+ * sharp.
+ */
+#define RVR_OVL_EDGE (1 << 0)
+
+/**
+ * The fill texture is added over the model (else nothing but the edge).
+ */
+#define RVR_OVL_FILL (1 << 1)
+
 #define RVR_OFF_PLAYER_DRAW 4980736
 
 /**
@@ -1498,5 +1564,7 @@ typedef uint32_t RVR_Joint;
 
 
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
+
+
 
 #endif  /* RUSTVR_PROTOCOL_H */
