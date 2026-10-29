@@ -145,14 +145,7 @@ pub fn two_bone(
     let reach = |f: f32| (a * a + b * b + 2.0 * a * b * f.cos()).sqrt();
     let (d_max, d_min) = (reach(flex[0]), reach(flex[1]));
     let soft = soft.clamp(0.0, 0.25 * d_max);
-    // Where the chain bends as if the end were: `d` until the soft zone, then easing (with the same
-    // slope at its start, none at its end) onto full reach.
-    let bend_at = if soft > 0.0 && d > d_max - soft {
-        let u = (d - (d_max - soft)).min(2.0 * soft);
-        d_max - soft + u - u * u / (4.0 * soft)
-    } else {
-        d
-    };
+    let bend_at = soft_reach(d, d_max, soft);
     let (k, d_eff) = if bend_at < d {
         let k = (d / bend_at).min(max_stretch);
         (k, bend_at * k)
@@ -175,6 +168,18 @@ pub fn two_bone(
         forearm: (wrist - elbow).normalize_or(axis),
         fold: (axis * sin_shoulder - side * cos_shoulder).normalize_or(-side),
         reached: d <= (lengths[0] + lengths[1] + soft) * 1.001,
+    }
+}
+
+/// Where a chain reaching `d` bends as if its end were: `d` until the soft zone (`soft` short of
+/// full reach `d_max`), then easing (with the same slope at its start, none at its end) onto full
+/// reach `soft` past it.
+fn soft_reach(d: f32, d_max: f32, soft: f32) -> f32 {
+    if soft > 0.0 && d > d_max - soft {
+        let u = (d - (d_max - soft)).min(2.0 * soft);
+        d_max - soft + u - u * u / (4.0 * soft)
+    } else {
+        d
     }
 }
 
@@ -216,10 +221,13 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     let axis = (wrist - shoulder).normalize_or(-UP);
     let frame = SwivelFrame::new(axis, up, forward, outward);
     let previous = state.pole.map(|local| q * local);
-    // How straight the arm must be to reach: 1 near full extension, 0 once bent past 60°.
-    let (a, b, d) = (lengths[0], lengths[1], shoulder.distance(wrist));
+    // How straight the arm is drawn (its bend in the soft zone, `two_bone`): 1 with the elbow all
+    // but straight, 0 once it's bent past 30°. Only there does the hand's twist turn the elbow:
+    // bent more, where the elbow points shows, and the position model has it.
+    let (a, b) = (lengths[0], lengths[1]);
+    let d = soft_reach(shoulder.distance(wrist), a + b, (p.arm_soft * arm).clamp(0.0, 0.25 * (a + b))).min(a + b);
     let flexion = ((d * d - a * a - b * b) / (2.0 * a * b)).clamp(-1.0, 1.0).acos();
-    let straight = smoothstep(60f32.to_radians(), 15f32.to_radians(), flexion);
+    let straight = smoothstep(30f32.to_radians(), 8f32.to_radians(), flexion);
     let target_dir = swivel_target(skel, &frame, sign, rest_shoulder, previous, straight, input, |e| {
         two_bone(shoulder, wrist, lengths, e, flex, p.arm_stretch, p.arm_soft * arm)
     });
