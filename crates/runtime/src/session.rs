@@ -104,6 +104,8 @@ pub struct Session {
     menu: RuntimeMenu,
     /// The card beside a thing in the hand, and this frame's place for it (and how strongly).
     item_card: crate::item_card::ItemCard,
+    /// OBS's window in the headset (over the left wrist, or pinned with F9): only the headset.
+    obs: crate::obs_view::ObsView,
     card: Option<(panels::Panel, f32)>,
     layout: panels::Layout,
     targets: Option<SharedTargets>,
@@ -234,6 +236,7 @@ impl Session {
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
             item_card: crate::item_card::ItemCard::new(&gpu)?,
+            obs: crate::obs_view::ObsView::default(),
             card: None,
             gpu,
             link,
@@ -1059,7 +1062,21 @@ impl Session {
             _ => (frame.eyes, frame.fov),
         };
 
+        // OBS's window: over the left wrist when it's looked at (the hand empty), or pinned (F9).
+        let left = {
+            let h = &self.rig_out.hands[0];
+            let c = &frame.hands[0];
+            if h.flags & HAND_TRACKED != 0 {
+                (h.flags & HAND_HOLDING == 0).then(|| (Vec3::from_array(h.pose.pos), quat(h.pose.rot)))
+            } else {
+                (c.connected != 0).then(|| (Vec3::from_array(c.grip.pos), quat(c.grip.rot)))
+            }
+        };
+        let obs_panel = self.obs.update(&self.gpu, Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot), left, frame.display_time_ns as f64 * 1e-9);
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
+        if let (Some(p), Some(srv)) = (obs_panel, self.obs.srv()) {
+            layers.private.push(PanelLayer::whole(p, srv));
+        }
         if let (Some((slot, info)), Some(w)) = (&stereo, &out.weapon)
             && let (Some(scope), Some(aux)) = (&w.scope, &slot.aux)
                 && info.flags & SLOT_AUX != 0 {

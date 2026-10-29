@@ -331,6 +331,8 @@ pub struct Laser {
 pub struct Layers<'a> {
     pub lens: Option<LensLayer<'a>>,
     pub panels: Vec<PanelLayer<'a>>,
+    /// Panels only the headset shows: never the desktop view, never a recording (OBS's window).
+    pub private: Vec<PanelLayer<'a>>,
     pub laser: Option<Laser>,
     /// Controller grip poses to mark (when the game isn't drawing hands).
     pub markers: Vec<(Vec3, Quat)>,
@@ -549,7 +551,8 @@ impl Compositor {
             c.params = [MODE_LENS, l.reticle as f32, 1.0, 0.0];
             self.draw_quad(gpu, &c, Some(l.srv));
         }
-        for p in &layers.panels {
+        // (The headset's own, `private`, only in the headset: `comfort` is only for it.)
+        for p in layers.panels.iter().chain(layers.private.iter().filter(|_| comfort)) {
             let mut c = cb;
             c.center = p.panel.center.extend(1.0).to_array();
             c.axis_x = (p.panel.right * p.panel.width * 0.5).extend(0.0).to_array();
