@@ -1346,6 +1346,7 @@ impl Session {
             rustvr_avatar::LaserBeam { from: origin, to: origin + w.aim_dir * hit.unwrap_or(30.0), hit: hit.is_some() }
         });
         self.body.set_laser(&self.gpu, laser);
+        self.body.set_body_overlays(if menu_mode { Vec::new() } else { self.held_objects.body_overlays() });
         if layout.game_menu.is_some() || layout.runtime_menu.is_some() {
             let hand = &frame.hands[dom];
             if hand.connected != 0 {

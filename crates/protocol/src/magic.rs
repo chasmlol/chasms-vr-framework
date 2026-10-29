@@ -8,8 +8,9 @@
 //!   which way it would go. A game with its own casting art draws it there and says so
 //!   ([`crate::SPELLS_GAME_ART`]): the runtime then draws none of its own.
 //! * [`Overlays`] (game -> runtime, when they change): the game's effect shader on something the
-//!   runtime draws (an enchanted weapon's shimmer): a texture scrolled over the model's surface,
-//!   coloured and pulsing, brighter at its edges, added over the model as the game adds its own.
+//!   runtime draws (an enchanted weapon's shimmer, a spell's shader on the player's own body): a
+//!   texture scrolled over the model's surface, coloured and pulsing, brighter at its edges, over
+//!   the model as the game draws its own.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -85,10 +86,14 @@ pub const OVL_ADDITIVE: u32 = 1 << 3;
 /// [`OVL_EDGE_INVERSE`]), each by its alpha (pulsing `alpha · (1 + pulse[0] · sin(2π · pulse[1] ·
 /// t))`, at most 1), blended over it or added ([`OVL_ADDITIVE`]). Colours in the display's range,
 /// as the game blends them. Without a texture the fill is its colour.
+/// [`Overlay::object`]: the player's own body and hands (a spell's shader on the player: healing's
+/// glow, a shield's flames, being burned).
+pub const OVERLAY_BODY: u32 = u32::MAX;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Overlay {
-    /// What it's on: an [`crate::ObjectDesc::id`].
+    /// What it's on: an [`crate::ObjectDesc::id`], or the player's body ([`OVERLAY_BODY`]).
     pub object: u32,
     pub flags: u32, // OVL_*
     pub _p0: [u32; 2],

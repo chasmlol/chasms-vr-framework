@@ -467,6 +467,14 @@ impl PlayerBody {
         }
     }
 
+    /// The game's effect shaders over the body and hands from now on (a spell's shader on the
+    /// player).
+    pub fn set_body_overlays(&mut self, overlays: Vec<rustvr_avatar::OverlayDraw>) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.set_body_overlays(overlays);
+        }
+    }
+
     /// Draws the body into one eye, with what the runtime draws of what the player holds (`holding`,
     /// see `crate::held_objects`). `light.sun_dir` must already be in tracking space.
     pub fn draw(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw]) {

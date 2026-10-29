@@ -62,6 +62,7 @@ pub struct HeldObjects {
     /// once), and the time they run on (seconds).
     overlays: Vec<Overlay>,
     overlay_textures: HashMap<String, Option<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView>>,
+    overlays_said: Vec<(u32, u32)>,
     now: f64,
 }
 
@@ -358,7 +359,12 @@ impl HeldObjects {
                 .ok();
             self.overlay_textures.insert(name, loaded);
         }
-        tracing::info!("runtime: {} overlays: {:?}", self.overlays.len(), self.overlays.iter().map(|o| (o.object, o.flags, o.edge, o.edge_falloff)).collect::<Vec<_>>());
+        // (Said as what's overlaid changes: a body's overlay fades every frame.)
+        let what: Vec<(u32, u32)> = self.overlays.iter().map(|o| (o.object, o.flags)).collect();
+        if what != self.overlays_said {
+            tracing::info!("runtime: {} overlays: {:?}", self.overlays.len(), self.overlays.iter().map(|o| (o.object, o.flags, o.fill, o.edge, o.edge_falloff)).collect::<Vec<_>>());
+            self.overlays_said = what;
+        }
     }
 
     /// Places the objects lying in the game's world into tracking space by `map`: the mapping of the
@@ -438,6 +444,15 @@ impl HeldObjects {
     /// loose).
     pub fn drawn_hands(&self) -> Vec<Option<usize>> {
         self.placed.iter().take(DRAWN_OBJECTS_MAX).map(|p| p.hand).collect()
+    }
+
+    /// The game's effect shaders over the player's own body ([`OVERLAY_BODY`]) now.
+    pub fn body_overlays(&self) -> Vec<OverlayDraw> {
+        self.overlays
+            .iter()
+            .filter(|o| o.object == OVERLAY_BODY)
+            .map(|o| OverlayDraw { overlay: *o, texture: self.overlay_textures.get(o.texture()).cloned().flatten(), time: (self.now % 3600.0) as f32 })
+            .collect()
     }
 
     /// This frame's draws, as last placed ([`HeldObjects::update`], [`HeldObjects::place`]).

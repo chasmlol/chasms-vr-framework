@@ -251,6 +251,12 @@ impl Avatar {
         self.renderer.set_laser(gpu, laser);
     }
 
+    /// The game's effect shaders over the body and hands from now on (a spell's shader on the
+    /// player), each drawn over them as it draws over what's held.
+    pub fn set_body_overlays(&mut self, overlays: Vec<OverlayDraw>) {
+        self.renderer.set_body_overlays(overlays);
+    }
+
     /// Draws the body into `target` (an sRGB view of one eye's image, `width` x `height`) as seen
     /// from `eye` with `fov`. With `depth`, the body is hidden behind the game's geometry;
     /// without, it's drawn on top.

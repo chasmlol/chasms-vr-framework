@@ -1332,9 +1332,10 @@ pub struct Renderer {
     laser_program: Program,
     laser_cb: ConstantBuffer<LaserCb>,
     additive: ID3D11BlendState,
-    /// The game's effect shaders over what's held ([`crate::OverlayDraw`]).
+    /// The game's effect shaders over what's held and over the body ([`crate::OverlayDraw`]).
     overlay: Program,
     overlay_cb: ConstantBuffer<OverlayCb>,
+    body_overlays: Vec<crate::OverlayDraw>,
     /// The player drawn on its own, laid over the picture through the game's lens
     /// ([`Renderer::draw`]): the layer (kept until the size or format changes), and the pass.
     layer: Option<Texture>,
@@ -1389,11 +1390,17 @@ impl Renderer {
             additive: additive_blend(gpu)?,
             overlay: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSOverlay", &layout)?,
             overlay_cb: ConstantBuffer::new(gpu)?,
+            body_overlays: Vec::new(),
             layer: None,
             through_lens: Program::new(gpu, THROUGH_LENS, "avatar_lens", &[])?,
             lens_cb: ConstantBuffer::new(gpu)?,
             premultiplied: pipeline::blend_state(gpu, Blend::Premultiplied)?,
         })
+    }
+
+    /// The game's effect shaders over the body from now on ([`crate::Avatar::set_body_overlays`]).
+    pub fn set_body_overlays(&mut self, overlays: Vec<crate::OverlayDraw>) {
+        self.body_overlays = overlays;
     }
 
     /// The held gun's laser from now on (None: none): drawn with the player.
@@ -1602,6 +1609,7 @@ impl Renderer {
         };
         if draw_body {
             self.draw_body(ctx, main, range);
+            self.draw_body_overlays(ctx, main, range);
         }
 
         // What the hands hold, in the same depth (fingers round a grip hide behind it and it behind
@@ -1871,6 +1879,35 @@ impl Renderer {
             for (m, _) in h.model.meshes.iter().zip(&h.model.info).filter(|(_, i)| !i.special) {
                 draw_mesh(ctx, m, ALL);
             }
+        }
+        unsafe {
+            ctx.PSSetShaderResources(15, Some(&[None]));
+            ctx.OMSetBlendState(&self.opaque_blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(&self.depth_write, 0);
+            ctx.RSSetState(&self.two_sided);
+        }
+    }
+
+    /// The game's effect shaders over the body ([`Renderer::set_body_overlays`]), as over what's
+    /// held.
+    fn draw_body_overlays(&self, ctx: &ID3D11DeviceContext, c: &Character, range: usize) {
+        if self.body_overlays.is_empty() {
+            return;
+        }
+        self.overlay.bind(ctx);
+        unsafe {
+            ctx.OMSetDepthStencilState(&self.depth_test, 0);
+            ctx.RSSetState(&self.cull_back);
+            ctx.PSSetConstantBuffers(6, Some(&[Some(self.overlay_cb.buf.clone())]));
+        }
+        for o in &self.body_overlays {
+            self.overlay_cb.update(ctx, &OverlayCb::of(o));
+            let blend = if o.overlay.flags & rustvr_protocol::OVL_ADDITIVE != 0 { &self.additive } else { &self.alpha_blend };
+            unsafe {
+                ctx.OMSetBlendState(blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
+                ctx.PSSetShaderResources(15, Some(&[o.texture.clone()]));
+            }
+            draw_meshes(ctx, c, range);
         }
         unsafe {
             ctx.PSSetShaderResources(15, Some(&[None]));

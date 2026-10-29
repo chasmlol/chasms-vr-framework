@@ -1338,9 +1338,30 @@
 #define RVR_OVL_EDGE (1 << 0)
 
 /**
- * The fill texture is added over the model (else nothing but the edge).
+ * The fill shows (a colour, times `texture` when it has one).
  */
 #define RVR_OVL_FILL (1 << 1)
+
+/**
+ * The edge is where the surface faces the eye, not where it turns away.
+ */
+#define RVR_OVL_EDGE_INVERSE (1 << 2)
+
+/**
+ * Added to what's there (else blended over it by its alpha).
+ */
+#define RVR_OVL_ADDITIVE (1 << 3)
+
+/**
+ * The game's effect shader on something the runtime draws: over its model's surface, each point
+ * `fill · texture(uv + scroll · t)` and `edge · (1 − |n·v|)^edge_falloff` (`|n·v|` with
+ * [`OVL_EDGE_INVERSE`]), each by its alpha (pulsing `alpha · (1 + pulse[0] · sin(2π · pulse[1] ·
+ * t))`, at most 1), blended over it or added ([`OVL_ADDITIVE`]). Colours in the display's range,
+ * as the game blends them. Without a texture the fill is its colour.
+ * [`Overlay::object`]: the player's own body and hands (a spell's shader on the player: healing's
+ * glow, a shield's flames, being burned).
+ */
+#define RVR_OVERLAY_BODY UINT32_MAX
 
 #define RVR_OFF_PLAYER_DRAW 4980736
 
