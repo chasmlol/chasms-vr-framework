@@ -908,7 +908,11 @@ impl Session {
             hands: ahead.hands,
             tracking: out.tracking,
             intents: out.intents,
-            eye_size: {
+            // (None until the headset has said its eyes' views: without them the overscan's widening
+            // is unknown, and a game that takes the first size it's given keeps it.)
+            eye_size: if frame.fov.iter().any(|f| f.right - f.left < 1e-3 || f.up - f.down < 1e-3) {
+                [0, 0]
+            } else {
                 let drawn = crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan);
                 let (w, h) = crate::targets::eye_size(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn), &self.settings.current);
                 [w, h]
