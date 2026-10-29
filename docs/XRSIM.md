@@ -53,6 +53,15 @@ The DLL implements the core OpenXR 1.0 API and `XR_KHR_D3D11_enable`:
 - **Swapchains.** Textures are made on the app's own D3D11 device, three per swapchain.
 - **Frames.** `xrWaitFrame` paces to the headset's refresh rate (90 Hz by default).
   `xrEndFrame` records the projection layer for captures.
+- **What a Quest 3's runtime adds.**
+  - Poses at any moment: `xrLocateViews` and `xrLocateSpace` play the script on to the time asked
+    for, as a real runtime predicts (the runtime gives a game the poses for when its picture shows).
+  - The Touch controllers' touch sensors: the trigger once pulled at all, A/B/X/Y and the stick
+    while used, the thumbrest otherwise.
+  - Each eye's depth with its picture (`XR_KHR_composition_layer_depth`): captures save it as
+    `<name>_depth.png` and its centre's distance in the `.toml`.
+  - Refresh rates of 72, 90 and 120 Hz (`XR_FB_display_refresh_rate`); asking for one changes the
+    pacing and sends the change event.
 
 ## Building and running
 
