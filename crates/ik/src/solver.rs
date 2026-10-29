@@ -54,6 +54,15 @@ impl BodySolver {
         self.calibration
     }
 
+    /// The drawn model's arm proportions (its forearm's share of the arm): the arm's length stays
+    /// the player's, shared out as the model's.
+    pub fn set_forearm_share(&mut self, share: f32) {
+        if (self.params.forearm_share - share).abs() > 1e-4 {
+            self.params.forearm_share = share;
+            self.skel = Skeleton::new(&self.params, self.calibration);
+        }
+    }
+
     pub fn set_calibration(&mut self, c: Calibration) {
         self.calibration = sanitize_calibration(c, self.calibration);
         self.skel = Skeleton::new(&self.params, self.calibration);

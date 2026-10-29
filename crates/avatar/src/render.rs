@@ -809,7 +809,7 @@ pub(crate) struct GpuTex {
 
 /// One drawable model: its rig, GPU meshes and palettes.
 pub struct Character {
-    rig: Rig,
+    pub(crate) rig: Rig,
     posed: Posed,
     meshes: Vec<GpuMesh>,
     /// Visibility planes for each [`Show`]: full, arms, hands, left hand, right hand.

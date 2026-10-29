@@ -319,6 +319,8 @@ pub struct Body {
     /// The elbows where the headset's body tracking has them (a Quest 3 or Pro's, when its
     /// runtime gives it), not only where the arm's model puts them.
     pub tracked_elbows: bool,
+    /// The hands' size against a real hand for your height (1: as yours are).
+    pub hand_size: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -444,7 +446,7 @@ impl Default for Interaction {
 
 impl Default for Body {
     fn default() -> Self {
-        Body { visibility: BodyVisibility::Full, height: 0.0, arm_span: 0.0, hide_head: true, game_lighting: true, tracked_elbows: true }
+        Body { visibility: BodyVisibility::Full, height: 0.0, arm_span: 0.0, hide_head: true, game_lighting: true, tracked_elbows: true, hand_size: 1.0 }
     }
 }
 

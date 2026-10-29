@@ -295,6 +295,7 @@ fn body(ui: &mut egui::Ui, s: &mut Settings, status: &Status, rects: &mut Vec<(S
     });
     ui.checkbox(&mut s.body.game_lighting, "Light the body with the game's lighting");
     ui.checkbox(&mut s.body.tracked_elbows, "Elbows from the headset's body tracking (Quest 3 / Pro)");
+    slider(ui, "Hand size (1 = a real hand for your height)", &mut s.body.hand_size, 0.8, 1.3, "x", 2);
     out
 }
 

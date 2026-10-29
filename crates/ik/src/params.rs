@@ -79,8 +79,11 @@ pub struct BodyParams {
     /// Elbow swivel smoothing (FRIK 0.75 per 90 Hz frame ≈ 39 ms; VRArmIK 80 ms). Only the swivel
     /// is smoothed, never the hand.
     pub swivel_tau: f32,
-    /// Out of reach the bones stretch up to this factor; beyond it the hand stays on the
-    /// controller anyway and the arm reports `reached = false` (est.).
+    /// Out of reach the bones stretch up to this factor, both alike, the elbow kept bent its least
+    /// (FRIK's way); beyond it the hand stays on the controller anyway and the arm reports
+    /// `reached = false`. Generous: the drawn arm lengthens evenly along both bones (the skin fitted
+    /// to them), so an arm a little short of the player's real one reaches without the forearm
+    /// alone making up the difference.
     pub arm_stretch: f32,
     /// A hand further than this many arm lengths from the shoulder is tracking loss: the arm hangs
     /// (FRIK 2.25 L).
@@ -132,6 +135,9 @@ pub struct BodyParams {
 
     // ---- hands ----
     pub hand_offsets: HandOffsets,
+    /// The forearm's share of the arm, shoulder to wrist (the drawn model's proportions: its skin
+    /// then fits the arm without one segment stretching more than the other).
+    pub forearm_share: f32,
 
     // ---- filters ----
     /// Nominal frame time; filters clamp dt to `max_dt_frames` of these (FRIK clamps to 3).
@@ -172,7 +178,7 @@ impl Default for BodyParams {
             clavicle_start: 0.5,
             clavicle_down: 0.4,
             swivel_tau: 0.06,
-            arm_stretch: 1.05,
+            arm_stretch: 1.3,
             arm_tracking_loss: 2.25,
 
             foot_spacing: 0.3,
@@ -197,6 +203,7 @@ impl Default for BodyParams {
             seat_height: 0.45,
 
             hand_offsets: HandOffsets::default(),
+            forearm_share: 0.5,
 
             nominal_dt: 1.0 / 90.0,
             max_dt_frames: 3.0,

@@ -404,9 +404,11 @@ fn out_of_reach_hands_stay_on_the_controllers() {
         assert!(!o.reached[1], "{distance} m away is out of reach");
         assert!(o.reached[0]);
         assert_hands_pinned(&o, &i, "far");
-        // The arm stretches a little at most; the hand is left floating beyond that.
+        // The arm stretches as far as it may at most, both bones alike; the hand is left floating
+        // beyond that.
+        let most = BodyParams::default().arm_stretch;
         let bone = pos(&o, Joint::RightUpperArm).distance(pos(&o, Joint::RightLowerArm));
-        assert!(bone <= upper * 1.05 + 1e-4, "upper arm {bone} vs {upper}");
+        assert!(bone <= upper * most + 1e-4, "upper arm {bone} vs {upper}");
     }
 }
 

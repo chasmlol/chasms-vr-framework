@@ -74,6 +74,10 @@ pub struct PlayerBody {
     collimator: Option<Rc<RefCell<Collimator>>>,
     /// Automatic arm span: grows while a hand keeps reaching beyond the arms.
     auto_span: Option<f32>,
+    /// The hands' size the player's are drawn at (wrist to the middle finger's knuckle, metres),
+    /// and the size last said in the log.
+    hand_length: f32,
+    hand_said: f32,
     unreached: [f32; 2],
     /// Each hand on its way into a held pose or out of one (see [`Grab`]).
     grab: [Grab; 2],
@@ -136,6 +140,8 @@ impl Default for PlayerBody {
             special: None,
             collimator: None,
             auto_span: None,
+            hand_length: 0.0,
+            hand_said: 0.0,
             unreached: [0.0; 2],
             grab: [Grab::default(); 2],
             plain: false,
@@ -162,6 +168,9 @@ fn grip_of(c: &Controller) -> (Vec3, Quat) {
 }
 
 const SIDES: [Side; 2] = [Side::Left, Side::Right];
+/// Wrist to the middle finger's knuckle against a person's height (palm length: about 10.3 cm in
+/// a 1.75 m adult).
+const HAND_PER_HEIGHT: f32 = 0.059;
 
 /// Grip-to-grip distance with the arms out, estimated from the eye height: the arm span about
 /// equals the height (eyes 11 cm below the top of the head), less most of the hands beyond the
@@ -199,6 +208,10 @@ impl PlayerBody {
     }
 
     pub fn update(&mut self, inp: &BodyInput) -> &RtBody {
+        // The hands a real hand's size for the player's height (wrist to the middle finger's
+        // knuckle is about 5.9% of a person's height), times the setting.
+        let height = self.solver.calibration().eye_height + 0.11;
+        self.hand_length = HAND_PER_HEIGHT * height * inp.settings.body.hand_size.clamp(0.5, 2.0);
         let f = inp.frame;
         if let Some(c) = self.calibration(inp) {
             let cur = self.solver.calibration();
@@ -322,6 +335,7 @@ impl PlayerBody {
                 Ok(a) => {
                     tracing::info!("runtime: drawing the game's body");
                     self.avatar = Some(a);
+                    self.take_proportions();
                 }
                 Err(e) => tracing::error!("runtime: the game's body: {e:#}"),
             }
@@ -335,11 +349,22 @@ impl PlayerBody {
                 AvatarSource::Procedural
             };
             match Avatar::new(gpu, source) {
-                Ok(a) => self.avatar = Some(a),
+                Ok(a) => {
+                    self.avatar = Some(a);
+                    self.take_proportions();
+                }
                 Err(e) => tracing::error!("runtime: no avatar: {e:#}"),
             }
         }
         self.avatar.as_mut()
+    }
+
+    /// The body solver's arms as long as the player's, shared out as the drawn model's are.
+    fn take_proportions(&mut self) {
+        if let Some(share) = self.avatar.as_ref().and_then(|a| a.forearm_share()) {
+            tracing::info!("runtime: the arms keep the model's proportions (forearm {:.0}% of the arm)", share * 100.0);
+            self.solver.set_forearm_share(share);
+        }
     }
 
     /// Shades the body with the game's lighting from now on (None: the runtime's own look). Once a
@@ -396,7 +421,15 @@ impl PlayerBody {
         let held = self.held;
         // (The avatar's loaded first: `special` is borrowed beside it.)
         self.avatar(gpu);
+        let hand = (self.hand_length > 0.02).then_some(self.hand_length);
         let Some(avatar) = self.avatar.as_mut() else { return };
+        avatar.set_hand_length(hand);
+        if let Some(l) = hand
+            && (l - self.hand_said).abs() > 0.002
+        {
+            self.hand_said = l;
+            tracing::info!("runtime: hands drawn {:.1} cm wrist to knuckle (the model's {:.1} cm)", l * 100.0, avatar.model_hand_length() * 100.0);
+        }
         let frame = AvatarFrame {
             joints: &body.joints,
             fingers: body.fingers,

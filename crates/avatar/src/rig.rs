@@ -172,6 +172,9 @@ pub struct Rig {
     head: Option<usize>,
     /// Joint pairs (child, parent) that are both mapped: their lengths give the scale.
     scale_pairs: Vec<(Joint, Joint)>,
+    /// The player's hands' size (wrist to the middle finger's knuckle, metres): the hands are drawn
+    /// that size rather than the model's at the body's scale. None: the model's.
+    hand_length: Option<f32>,
 }
 
 impl Rig {
@@ -255,6 +258,7 @@ impl Rig {
             // A twist bone under another one already turns with it.
             let inherited = tree.ancestors(b).find_map(|a| shares[a].filter(|s| s.0 == segment)).map_or(0.0, |s| s.2);
             drive[b] = Drive::Twist { segment, driver, share: share - inherited };
+            tracing::debug!("rig: twist bone '{}' takes {:.0}% of the {driver:?}'s roll", bones[b].name, share * 100.0);
         }
 
         // Parts, for showing only the arms or hands.
@@ -295,11 +299,17 @@ impl Rig {
         }
         tips_from_skin(&mut fingers, &map, meshes);
 
-        let scale_pairs = Joint::ALL
+        // The body's size from its trunk and legs: the arms' segments are fitted one by one (the
+        // player's arms aren't the model's proportions), so they don't make the whole model
+        // bigger or smaller. (A model of the arms alone is sized by them.)
+        let pairs: Vec<(Joint, Joint)> = Joint::ALL
             .into_iter()
             .filter_map(|j| Some((j, j.parent()?)))
             .filter(|&(j, p)| map.joints[j as usize].is_some() && map.joints[p as usize].is_some())
             .collect();
+        let fitted = |j: Joint| LOWER_ARM.contains(&j) || HAND.contains(&j);
+        let trunk: Vec<(Joint, Joint)> = pairs.iter().copied().filter(|&(j, _)| !fitted(j)).collect();
+        let scale_pairs = if trunk.is_empty() { pairs } else { trunk };
 
         Ok(Rig {
             bones: out_bones,
@@ -311,18 +321,47 @@ impl Rig {
             hand_size,
             head,
             scale_pairs,
+            hand_length: None,
         })
     }
 
     /// Each hand's size in the bind pose (wrist to the middle finger's base, metres).
-    #[cfg(test)]
     pub fn hand_size(&self) -> [f32; 2] {
         self.hand_size
+    }
+
+    /// Draws the hands this size (wrist to the middle finger's knuckle, metres; None: the model's
+    /// at the body's scale).
+    pub fn set_hand_length(&mut self, length: Option<f32>) {
+        self.hand_length = length.filter(|l| *l > 0.02 && l.is_finite());
+    }
+
+    /// A hand's own scale, holding nothing in a game's pose: the player's hand's size, or the
+    /// body's scale `s`.
+    fn own_hand_scale(&self, side: usize, s: f32) -> f32 {
+        match self.hand_length {
+            Some(l) if self.hand_size[side] > 1e-3 => l / self.hand_size[side],
+            _ => s,
+        }
     }
 
     pub fn posed(&self) -> Posed {
         let n = self.bones.len();
         Posed { rot: vec![Quat::IDENTITY; n], pos: vec![Vec3::ZERO; n], skin: vec![Mat4::IDENTITY; n], scale: 1.0 }
+    }
+
+    /// The forearm's share of the arm (shoulder to wrist) in the model's bind pose, both arms'
+    /// average: the arm's proportions, for a solver to keep (so the arm lengthens evenly, not one
+    /// segment more than the other).
+    pub fn forearm_share(&self) -> Option<f32> {
+        let len = |a: Joint, b: Joint| Some(self.bones[self.joint_bone[a as usize]?].bind_pos.distance(self.bones[self.joint_bone[b as usize]?].bind_pos));
+        let shares: Vec<f32> = (0..2)
+            .filter_map(|side| {
+                let (upper, fore) = (len(UPPER_ARM[side], LOWER_ARM[side])?, len(LOWER_ARM[side], HAND[side])?);
+                (upper + fore > 1e-4).then(|| fore / (upper + fore))
+            })
+            .collect();
+        (!shares.is_empty()).then(|| shares.iter().sum::<f32>() / shares.len() as f32)
     }
 
     /// The canonical frame of `joint` in the bind pose (model space), if the model has it.
@@ -371,7 +410,7 @@ impl Rig {
         // A hand in a game's pose is drawn at that hand's size (the hand and everything on it).
         let hand_scale: [f32; 2] = [0, 1].map(|side| match &input.held[side] {
             Some(h) if h.size > 1e-3 && self.hand_size[side] > 1e-3 => h.size / self.hand_size[side],
-            _ => s,
+            _ => self.own_hand_scale(side, s),
         });
         let scale_of = |b: usize| match self.bones[b].part {
             Part::Hand(side) => hand_scale[side],
@@ -496,11 +535,28 @@ impl Rig {
             held[side] = None;
             let mut own = self.posed();
             self.pose(&PoseInput { held, ..*input }, &mut own);
-            let k = hand_scale[side] * w + own.scale * (1.0 - w);
+            let k = hand_scale[side] * w + self.own_hand_scale(side, own.scale) * (1.0 - w);
             for b in (0..self.bones.len()).filter(|&b| self.bones[b].part == Part::Hand(side)) {
                 out.rot[b] = own.rot[b].slerp(out.rot[b], w).normalize();
                 out.pos[b] = own.pos[b].lerp(out.pos[b], w);
                 out.skin[b] = Mat4::from_scale_rotation_translation(Vec3::splat(k), out.rot[b], out.pos[b]) * self.bones[b].inv_bind;
+            }
+        }
+
+        // Each arm segment's skin spans its two joints exactly: turned onto the line from one to
+        // the next and scaled evenly along it. The arm is the player's, not the model's (and a hand
+        // can be where the arm doesn't quite reach): the difference is spread along the whole bone
+        // rather than tearing the skin open at the elbow or the wrist.
+        for side in 0..2 {
+            for (part, from, to) in [(Part::UpperArm(side), UPPER_ARM[side], LOWER_ARM[side]), (Part::LowerArm(side), LOWER_ARM[side], HAND[side])] {
+                let (Some(a), Some(b), Some((_, r))) = (self.joint_bone[from as usize], self.joint_bone[to as usize], joint(from)) else { continue };
+                let length = self.bones[a].bind_pos.distance(self.bones[b].bind_pos) * s;
+                let Some(fit) = segment_fit(out.pos[a], r * Vec3::Y, out.pos[b], length) else { continue };
+                for (k, bone) in self.bones.iter().enumerate() {
+                    if bone.part == part {
+                        out.skin[k] = fit * out.skin[k];
+                    }
+                }
             }
         }
     }
@@ -658,6 +714,26 @@ const UPPER_ARM: [Joint; 2] = [Joint::LeftUpperArm, Joint::RightUpperArm];
 fn quat(a: [f32; 4]) -> Quat {
     let q = Quat::from_array(a);
     if q.length_squared() < 1e-12 { Quat::IDENTITY } else { q.normalize() }
+}
+
+/// What takes a limb segment's skin, drawn from `start` along `dir` for `length`, onto the line
+/// from `start` to `end`: turned onto it, then scaled along it to its length, and its thickness by
+/// the square root of that (a longer arm a little stronger, not lanky; nor as thick as it is long).
+/// None when there's no line.
+fn segment_fit(start: Vec3, dir: Vec3, end: Vec3, length: f32) -> Option<Mat4> {
+    let to = end - start;
+    let distance = to.length();
+    let dir = dir.try_normalize()?;
+    if distance < 1e-4 || length < 1e-4 || !distance.is_finite() {
+        return None;
+    }
+    let d = to / distance;
+    let k = (distance / length).clamp(0.5, 2.0);
+    let t = k.sqrt().clamp(0.9, 1.2);
+    // t across the bone, k along it.
+    let along = Mat3::from_cols(Vec3::X * t + d * (d.x * (k - t)), Vec3::Y * t + d * (d.y * (k - t)), Vec3::Z * t + d * (d.z * (k - t)));
+    let turn = Mat3::from_quat(Quat::from_rotation_arc(dir, d));
+    Some(Mat4::from_translation(start) * Mat4::from_mat3(along * turn) * Mat4::from_translation(-start))
 }
 
 /// The angle of `q`'s twist about the unit `axis` (swing-twist decomposition), in -pi..pi.
@@ -1362,6 +1438,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_arm_longer_than_the_models_stretches_evenly_never_at_the_joints() {
+        // The mannequin in its bind pose, then its right hand moved 12 cm further out along the arm
+        // (the player's arm is longer, or the hand's past where the arm reaches): the forearm's
+        // skin spans elbow to hand, its wrist end on the hand and its elbow end on the elbow, and
+        // a point half way along it half way between.
+        let source = crate::procedural::mannequin();
+        let rig = Rig::new(&source.bones, &[]).unwrap();
+        let mut joints = bind_joints(&rig, 1.0, Mat4::IDENTITY);
+        let (elbow, wrist) = (Vec3::from_array(joints[Joint::RightLowerArm as usize].pos), Vec3::from_array(joints[Joint::RightHand as usize].pos));
+        let out = (wrist - elbow).normalize();
+        let hand = wrist + out * 0.12;
+        joints[Joint::RightHand as usize].pos = hand.to_array();
+        let fingers = [Fingers::default(); 2];
+        let mut posed = rig.posed();
+        rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], grasp: [None, None], chop_head: false }, &mut posed);
+        let fore = rig.joint_bone[Joint::RightLowerArm as usize].unwrap();
+        let skin = |p: Vec3| posed.skin[fore].transform_point3(p);
+        assert!(skin(elbow).distance(elbow) < 1e-4, "the elbow end stays on the elbow: {:?}", skin(elbow));
+        assert!(skin(wrist).distance(hand) < 1e-4, "the wrist end is on the hand: {:?} for {hand:?}", skin(wrist));
+        let mid = skin((elbow + wrist) * 0.5);
+        assert!(mid.distance((elbow + hand) * 0.5) < 1e-4, "stretched evenly: {mid:?}");
+        // A little stronger, as the square root of how much longer (at most a fifth).
+        let side = out.any_orthonormal_vector() * 0.03;
+        let across = skin(elbow + side).distance(elbow) / 0.03;
+        let k = elbow.distance(hand) / elbow.distance(wrist);
+        assert!((across - k.sqrt().clamp(0.9, 1.2)).abs() < 1e-3, "{across} for {k}");
+        // The body's size is its trunk's, and the upper arm, its joints where they were, is as it
+        // was.
+        assert!((posed.scale - 1.0).abs() < 1e-4, "scale {}", posed.scale);
+        let upper = rig.joint_bone[Joint::RightUpperArm as usize].unwrap();
+        assert!(posed.skin[upper].abs_diff_eq(Mat4::IDENTITY, 1e-4));
     }
 
     #[test]

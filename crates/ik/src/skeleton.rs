@@ -78,8 +78,9 @@ impl Skeleton {
             shoulder_up: 0.08 * s,
             clavicle_root: 0.025 * s,
             shoulder_half: shoulder_width * 0.5,
-            upper_arm: segment,
-            lower_arm: segment,
+            // (The arm's length from the span, shared out as the drawn model's arm is.)
+            upper_arm: 2.0 * segment * (1.0 - params.forearm_share.clamp(0.3, 0.7)),
+            lower_arm: 2.0 * segment * params.forearm_share.clamp(0.3, 0.7),
             hip_half: 0.09 * s,
             hip_down,
             thigh: 0.49 * leg,

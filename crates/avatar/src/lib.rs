@@ -205,6 +205,27 @@ impl Avatar {
         Ok(Avatar { renderer, body, arms })
     }
 
+    /// Draws the hands this size: wrist to the middle finger's knuckle, metres (None: the model's
+    /// at the body's scale).
+    pub fn set_hand_length(&mut self, length: Option<f32>) {
+        self.body.rig.set_hand_length(length);
+        if let Some(a) = &mut self.arms {
+            a.rig.set_hand_length(length);
+        }
+    }
+
+    /// The model's hands' size (wrist to the middle finger's knuckle, metres, its bind pose).
+    pub fn model_hand_length(&self) -> f32 {
+        let [l, r] = self.body.rig.hand_size();
+        l.max(r)
+    }
+
+    /// The forearm's share of the arm (shoulder to wrist) in the model drawn: its proportions, for
+    /// the body solver to keep.
+    pub fn forearm_share(&self) -> Option<f32> {
+        self.body.rig.forearm_share()
+    }
+
     /// Draw into the game's own HDR picture before its post chain (an adapter drawing the player
     /// inside the game's frame, SkyCraft's way): the game's shading writes HDR colour, and view depth
     /// in alpha as the game's combine does; the game's post chain tone maps and grades it. Takes
