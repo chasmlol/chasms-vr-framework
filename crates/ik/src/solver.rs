@@ -68,12 +68,13 @@ impl BodySolver {
         self.skel = Skeleton::new(&self.params, self.calibration);
     }
 
-    /// The arm span (as [`Calibration::arm_span`] takes it) at which the arms are just straight in
-    /// every pose given, with `slack` (a share of the arm) to spare: the arm as this solver lays
-    /// it out, its shoulders where it puts them and the clavicle reaching towards the hand, so a
-    /// player's straight arm is drawn straight (a little stretched rather than bent). None when
-    /// no span in range does it.
-    pub fn straight_arm_span(&self, poses: &[StraightArms], slack: f32) -> Option<f32> {
+    /// The arm span (as [`Calibration::arm_span`] takes it) at which the arms just come straight in
+    /// every pose given: as this solver lays the arm out (its shoulders where it puts them, the
+    /// clavicle reaching towards the hand), each arm reaching its full length plus the soft zone
+    /// (`BodyParams::arm_soft`), where a drawn arm comes straight, so it does just as the player's
+    /// does. None when no span in range does it.
+    pub fn straight_arm_span(&self, poses: &[StraightArms]) -> Option<f32> {
+        let slack = self.params.arm_soft;
         if poses.is_empty() {
             return None;
         }

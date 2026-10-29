@@ -198,17 +198,12 @@ pub fn arms_in_front(head: (Vec3, Quat), left: Vec3, right: Vec3) -> bool {
     out(left) && out(right) && left.distance(right) < 0.9
 }
 
-/// How far past their length the arms reach when the player holds them straight, as the
-/// measurement sets them (a share of the arm): straight arms are drawn straight, a little
-/// stretched, however straight the player held them then.
-const STRAIGHT_SLACK: f32 = 0.02;
-
 impl PlayerBody {
     /// The arm span at which the body's arms are just straight in every pose given (the arms out
     /// to the sides and in front): as the body solver lays the arm out, so a player's straight
     /// arm is drawn straight.
     pub fn straight_arm_span(&self, poses: &[StraightArms]) -> Option<f32> {
-        self.solver.straight_arm_span(poses, STRAIGHT_SLACK)
+        self.solver.straight_arm_span(poses)
     }
 
     /// The body's calibration: the player's height from the settings, else the measured standing
