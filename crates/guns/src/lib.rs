@@ -17,6 +17,7 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod desc;
+pub mod hulls;
 mod mesh;
 pub mod metro;
 mod weapon;

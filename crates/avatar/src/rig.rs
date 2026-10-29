@@ -417,18 +417,8 @@ impl Rig {
                         let mut splay = own.splay;
                         // Holding something: the finger closes on it, as far as the grasp has.
                         let grasp = input.grasp[side].filter(|g| g.fingers & (1 << f) != 0 && g.weight > 0.0);
-                        if let (Some(g), Some((hand_pos, hand_rot)), Some(hb)) = (grasp, joint(HAND[side]), self.joint_bone[HAND[side] as usize]) {
-                            let posed = PosedChain {
-                                finger: chain,
-                                index: f,
-                                splay: WRAP_SPLAY,
-                                origin: hand_pos,
-                                turn: hand_rot * self.inv_canonical[HAND[side] as usize],
-                                bind_hand: self.bones[hb].bind_pos,
-                                scale: hand_scale[side],
-                            };
-                            let radius = FINGER_THICKNESS * self.hand_size[side] * hand_scale[side];
-                            let wrapped = grasp::wrap(&posed, g, radius);
+                        if let (Some(g), Some(hand)) = (grasp, joint(HAND[side])) {
+                            let wrapped = self.wrap(side, f, hand, hand_scale[side], g);
                             let w = g.weight.min(1.0);
                             for (c, t) in curls.iter_mut().zip(wrapped) {
                                 *c += (t - *c) * w;
@@ -559,6 +549,31 @@ struct PosedChain<'a> {
     turn: Quat,
     bind_hand: Vec3,
     scale: f32,
+}
+
+impl Rig {
+    /// Finger `f` of hand `side` closed on `g`, the hand joint at `hand` (tracking space) drawn at
+    /// `scale`: each joint's curl.
+    fn wrap(&self, side: usize, f: usize, hand: (Vec3, Quat), scale: f32, g: &Grasp) -> [f32; 3] {
+        let (Some(chain), Some(hb)) = (&self.fingers[side][f], self.joint_bone[HAND[side] as usize]) else { return [0.0; 3] };
+        let posed = PosedChain {
+            finger: chain,
+            index: f,
+            splay: WRAP_SPLAY,
+            origin: hand.0,
+            turn: hand.1 * self.inv_canonical[HAND[side] as usize],
+            bind_hand: self.bones[hb].bind_pos,
+            scale,
+        };
+        grasp::wrap(&posed, g, FINGER_THICKNESS * self.hand_size[side] * scale)
+    }
+
+    /// Each finger's joint curls (thumb .. little) hand `side` closes to on `g`, its hand joint at
+    /// `hand` (the canonical frame, tracking space) and the body at `joints`: for tests.
+    pub fn grasp_curls(&self, joints: &[Pose; JOINT_COUNT], side: usize, hand: Pose, g: &Grasp) -> [[f32; 3]; 5] {
+        let scale = self.scale(joints);
+        std::array::from_fn(|f| self.wrap(side, f, (Vec3::from_array(hand.pos), quat(hand.rot)), scale, g))
+    }
 }
 
 impl grasp::Chain for PosedChain<'_> {

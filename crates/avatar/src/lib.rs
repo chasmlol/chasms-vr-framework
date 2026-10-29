@@ -70,6 +70,21 @@ pub use held::{HeldHand, held_hands};
 pub use render::HeldModel;
 pub use rig::{GameHand, bind_joints, finger_reach, game_hand};
 
+/// Each finger's joint curls (thumb .. little; 0 straight .. 1 a fist's) the hand `side` of a model
+/// with `bones` (None: the built-in mannequin) closes to on `grasp`, its hand joint at `hand` (the
+/// canonical frame, tracking space), the body at `joints`. For checking grasps without drawing.
+pub fn grasp_curls(bones: Option<&[asset::Bone]>, joints: &[Pose; JOINT_COUNT], side: usize, hand: Pose, grasp: &Grasp) -> Result<[[f32; 3]; 5]> {
+    let mannequin;
+    let bones = match bones {
+        Some(b) => b,
+        None => {
+            mannequin = procedural::mannequin().bones;
+            &mannequin
+        }
+    };
+    Ok(rig::Rig::new(bones, &[])?.grasp_curls(joints, side, hand, grasp))
+}
+
 /// Everything about the player's body for one frame (tracking space).
 pub struct AvatarFrame<'a> {
     pub joints: &'a [Pose; JOINT_COUNT],

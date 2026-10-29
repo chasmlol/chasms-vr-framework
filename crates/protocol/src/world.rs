@@ -497,15 +497,17 @@ pub struct GamePoses {
 pub const SHAPE_BOX: u32 = 0;
 pub const SHAPE_CAPSULE: u32 = 1;
 pub const SHAPE_SPHERE: u32 = 2;
-/// The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
-/// convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+/// The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+/// collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+/// Until its points arrive, the box `half_extents` about `center`.
 pub const SHAPE_HULL: u32 = 3;
 
 /// The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
-/// whenever the objects offered change (before they're published).
+/// whenever the objects offered change (before they're published). An object with several convex
+/// parts has an entry for each.
 pub const OFF_GAME_HULLS: usize = 0x004D_0000;
-pub const MAX_GAME_HULLS: usize = 48;
-pub const MAX_HULL_POINTS: usize = 128;
+pub const MAX_GAME_HULLS: usize = 240;
+pub const MAX_HULL_POINTS: usize = 32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

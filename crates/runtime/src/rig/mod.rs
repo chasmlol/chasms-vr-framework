@@ -310,6 +310,9 @@ struct Hand {
     /// goes back to the controller from there (position, rotation), since when, over how long.
     returning: Option<(Vec3, Quat, f64, f32)>,
     grasp: GraspState,
+    /// Laid slowly on something it could take: it rests on it without shoving it (see
+    /// [`Rig::rest_on`]).
+    yielding: bool,
 }
 
 impl Hand {
@@ -493,7 +496,7 @@ pub struct Rig {
     /// Where the hands push the game's own free objects after this step (see [`GamePush`]).
     pub game_pushes: Vec<GamePush>,
     /// The game's convex collision for its objects ([`SHAPE_HULL`]), object space.
-    game_hulls: HashMap<u32, Vec<Vec3>>,
+    game_hulls: HashMap<u32, Vec<Vec<Vec3>>>,
     hands: Option<[Hand; 2]>,
     anchor: BodyAnchor,
     slots: [Option<u32>; SLOT_COUNT_BODY],
@@ -512,8 +515,6 @@ pub struct Rig {
     pushes: Vec<Push>,
     /// What each hand's fingers close on this frame (tracking space).
     grasps: [Option<rustvr_avatar::Grasp>; 2],
-    /// The free things each hand is about to take, which it reaches into ([`Rig::reach_into`]).
-    reached: [Option<u32>; 2],
 }
 
 impl Default for Rig {
@@ -540,7 +541,6 @@ impl Default for Rig {
             kicks: HashMap::new(),
             pushes: Vec::new(),
             grasps: [None, None],
-            reached: [None; 2],
         }
     }
 }
@@ -803,18 +803,25 @@ impl Rig {
     /// The game's convex collision for its objects: kept for the ones still to come, and given to
     /// the ones already here whose hull is new.
     pub fn set_game_hulls(&mut self, hulls: &GameHulls) {
+        // Each object's convex parts (an entry each), in order.
+        let mut parts: BTreeMap<u32, Vec<Vec<Vec3>>> = BTreeMap::new();
         for h in &hulls.hulls[..(hulls.count as usize).min(MAX_GAME_HULLS)] {
             let points: Vec<Vec3> = h.points[..(h.count as usize).min(MAX_HULL_POINTS)].iter().map(|p| Vec3::new(p[0], p[1], p[2])).filter(|p| p.is_finite()).collect();
-            if h.id == 0 || points.len() < 4 || self.game_hulls.get(&h.id) == Some(&points) {
+            if h.id != 0 && points.len() >= 4 {
+                parts.entry(h.id).or_default().push(points);
+            }
+        }
+        for (id, parts) in parts {
+            if self.game_hulls.get(&id) == Some(&parts) {
                 continue;
             }
-            if let Some(o) = self.objects.get(&h.id)
+            if let Some(o) = self.objects.get(&id)
                 && o.desc.shape == SHAPE_HULL
             {
                 let (c, mass) = (o.collider, o.desc.mass);
-                self.physics.set_hull(c, &points, mass);
+                self.physics.set_hulls(c, &parts, mass);
             }
-            self.game_hulls.insert(h.id, points);
+            self.game_hulls.insert(id, parts);
         }
     }
 
@@ -866,7 +873,7 @@ impl Rig {
     }
 
     fn add(&mut self, d: ObjectDesc, draw_desc: u32, spawned: bool, pos: Vec3, rot: Quat) {
-        let (body, collider) = self.physics.add_object(&d, pos, rot, self.game_hulls.get(&d.id).map(Vec::as_slice));
+        let (body, collider) = self.physics.add_object(&d, pos, rot, self.game_hulls.get(&d.id).map(Vec::as_slice).unwrap_or(&[]));
         let weapon = (d.kind == OBJ_WEAPON).then(|| {
             let mut w = WeaponState::for_desc(&d);
             w.recoil = recoil::Recoil::new(d.id.wrapping_mul(2654435761));
@@ -1176,7 +1183,7 @@ impl Rig {
             for i in 0..2 {
                 self.update_hover(i, s, &zones, &ammo);
             }
-            self.reach_into();
+            self.rest_on();
             for i in 0..2 {
                 self.hand_input(i, inp, &zones, dom);
             }
@@ -1380,6 +1387,7 @@ impl Rig {
                 leashed_until: 0.0,
                 returning: None,
                 grasp: GraspState::default(),
+                yielding: false,
             }
         };
         let l = mk(&mut self.physics, 0);
@@ -1573,27 +1581,18 @@ impl Rig {
         hands[i].hover = hover;
     }
 
-    /// A hand closing in on a free thing to take it reaches into it rather than knocking it away (it
-    /// would push it out of the grab: a gun's grip is inside the gun). Swept through it fast, it
-    /// pushes it as ever.
-    fn reach_into(&mut self) {
-        let Some(hands) = &self.hands else { return };
-        let now: [Option<u32>; 2] = std::array::from_fn(|i| match hands[i].hover {
-            Hover::Object(id) if hands[i].history.recent().length() < REACH_SPEED => Some(id),
-            _ => None,
-        });
-        if now == self.reached {
-            return;
-        }
-        for id in self.reached.iter().chain(now.iter()).flatten().copied().collect::<Vec<_>>() {
-            let Some(o) = self.objects.get(&id) else { continue };
-            let following = o.desc.flags & OBJF_GAME_SIMULATED != 0 && self.now - o.free_since > GAME_HANDBACK as f64;
-            if o.holder != Holder::Free || o.hands_off_until > 0.0 || following {
-                continue;
+    /// A hand closing in slowly on a thing it could take rests on it rather than shoving it: it stops
+    /// at its surface (the thing lying on a table would squirt out from under it; a gun's grip is
+    /// inside the gun, and the controller goes on in to it). Swept fast, a hand pushes as ever.
+    fn rest_on(&mut self) {
+        let Some(hands) = self.hands.as_mut() else { return };
+        for h in hands.iter_mut() {
+            let reaching = matches!(h.hover, Hover::Object(_)) && h.history.recent().length() < REACH_SPEED;
+            if reaching != h.yielding {
+                h.yielding = reaching;
+                self.physics.set_yielding(h.body, reaching);
             }
-            self.physics.set_groups(o.collider, physics::groups_reached([now[0] == Some(id), now[1] == Some(id)]));
         }
-        self.reached = now;
     }
 
     // ---- grip, buttons ------------------------------------------------------------------------------
@@ -3782,13 +3781,13 @@ impl Rig {
         let o = self.objects.get(&id)?;
         let firing = h.holding == Some(id) && matches!(o.attach, Attach::Gun);
         let mut g = rustvr_avatar::Grasp { fingers: if firing { rustvr_avatar::grasp::ALL_FINGERS & !(1 << 1) } else { rustvr_avatar::grasp::ALL_FINGERS }, ..Default::default() };
-        match on {
-            On::Free => self.physics.grasp_solids(o.collider, &mut g),
-            on => {
-                let handle = self.handle_of(&o.desc, i, on)?;
+        match self.handle_of(&o.desc, i, on).filter(|h| h.grasped) {
+            Some(handle) => {
                 let (op, oq) = self.physics.pose(o.body);
                 g.solids.push(rustvr_avatar::Solid::Capsule { a: op + oq * handle.axis.0, b: op + oq * handle.axis.1, radius: handle.radius * self.map.world_per_meter });
             }
+            // Anywhere (or held its way, with no handle): round the thing itself.
+            None => self.physics.grasp_solids(o.collider, &mut g),
         }
         Some(((id, on), g))
     }

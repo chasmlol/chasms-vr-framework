@@ -201,6 +201,12 @@ impl Game {
         if let Some(a) = &mut armory {
             let placed = throwables::layout(&throw_list);
             a.add_objects(&placed.iter().map(|(i, d)| (*d, physical::Kind::Throwable(*i))).collect::<Vec<_>>());
+            // Their collision, cut from their models (a sword's blade, guard and handle).
+            for (i, d) in &placed {
+                let t = &throw_list[*i];
+                let tris = rustvr_guns::hulls::triangles(&t.parts, 0..t.parts.len(), t.fix);
+                a.add_hulls(d.id, &rustvr_guns::hulls::convex_parts(&tris, 4, MAX_HULL_POINTS));
+            }
             a.add_sound_sets(&placed.iter().map(|(i, d)| (d.id, throwables::sound_set(&throw_list[*i]))).collect::<Vec<_>>());
             let table = throwables::furniture();
             a.add_collision(&table.iter().map(|(lo, hi, _)| (*lo, *hi)).collect::<Vec<_>>());

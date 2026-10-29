@@ -81,10 +81,15 @@ pub struct Armory {
     collision: Vec<ColBox>,
     /// How many of `collision` the runtime has (the ring can fill up mid-way).
     sent: usize,
+    /// The objects' convex parts (guns, blades, grenades: cut from their models), their collision.
+    pub hulls: Box<GameHulls>,
     pub registered: bool,
     /// The table changed (an object respawned): send it again.
     dirty: bool,
 }
+
+/// The most convex parts a gun's collision is cut into.
+const GUN_PARTS: usize = 8;
 
 /// What a draw list needs: (mesh id, model, tint, emissive, two-sided).
 pub type DrawItem = (usize, Mat4, [f32; 4], f32, bool);
@@ -475,6 +480,12 @@ impl Armory {
             id += 1;
         }
         let sounds = Box::new(sound_pack(&rustvr_asset::default_root(), &guns));
+        // The guns' convex parts, cut from their models (each on its own thread).
+        let laid: Vec<(u32, &Weapon)> = guns.iter().map(|(id, w)| (*id, *w)).collect();
+        let parts: Vec<(u32, Vec<Vec<Vec3>>)> = std::thread::scope(|s| {
+            let jobs: Vec<_> = laid.iter().map(|&(id, w)| s.spawn(move || (id, rustvr_guns::hulls::weapon_parts(w, GUN_PARTS)))).collect();
+            jobs.into_iter().filter_map(|j| j.join().ok()).collect()
+        });
         Armory {
             table,
             kicks,
@@ -487,8 +498,39 @@ impl Armory {
             chambers_seen: HashMap::new(),
             collision,
             sent: 0,
+            hulls: bytemuck::zeroed_box(),
             registered: false,
             dirty: false,
+        }
+        .with_hulls(&parts)
+    }
+
+    fn with_hulls(mut self, parts: &[(u32, Vec<Vec<Vec3>>)]) -> Armory {
+        for (id, p) in parts {
+            self.add_hulls(*id, p);
+        }
+        self
+    }
+
+    /// Object `id`'s convex parts (object space): its collision from now on (before registering).
+    pub fn add_hulls(&mut self, id: u32, parts: &[Vec<Vec3>]) {
+        let entries = rustvr_guns::hulls::hull_entries(id, parts);
+        let n = self.hulls.count as usize;
+        if entries.is_empty() || n + entries.len() > MAX_GAME_HULLS {
+            if !entries.is_empty() {
+                tracing::warn!("range: the hull table is full: object {id} keeps its box");
+            }
+            return;
+        }
+        for (k, h) in entries.iter().enumerate() {
+            self.hulls.hulls[n + k] = *h;
+        }
+        self.hulls.count = (n + entries.len()) as u32;
+        for d in self.table.descs[..self.table.count as usize].iter_mut().filter(|d| d.id == id) {
+            d.shape = SHAPE_HULL;
+        }
+        if let Some(d) = self.descs.get_mut(&id) {
+            d.shape = SHAPE_HULL;
         }
     }
 
@@ -568,7 +610,9 @@ impl Armory {
             // The poses first: when the runtime sees the objects, their poses are there.
             self.poses.seq = self.poses.seq.wrapping_add(1).max(1);
             self.kicks.seq = self.kicks.seq.wrapping_add(1).max(1);
-            let written = adapter.write_hand_poses(&self.poses) && adapter.write_kicks(&self.kicks) && adapter.write_objects(&self.table);
+            // The hulls before the objects: their colliders are made with them.
+            self.hulls.seq = self.hulls.seq.wrapping_add(1).max(1);
+            let written = adapter.write_game_hulls(&self.hulls) && adapter.write_hand_poses(&self.poses) && adapter.write_kicks(&self.kicks) && adapter.write_objects(&self.table);
             if written && adapter.set_sound_pack(&self.sounds) {
                 self.registered = true;
                 self.shots_seen.clear();

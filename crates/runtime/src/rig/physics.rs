@@ -26,18 +26,6 @@ pub fn groups_free() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
 }
 
-/// A free object the hands marked `by` are about to take: as [`groups_free`], but those hands reach
-/// into it rather than knocking it out of the grab.
-pub fn groups_reached(by: [bool; 2]) -> InteractionGroups {
-    let mut hands = Group::NONE;
-    for (i, &reaching) in by.iter().enumerate() {
-        if !reaching {
-            hands |= G_HAND[i];
-        }
-    }
-    InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | hands | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
-}
-
 /// An object held by `hand` touches the world and free objects, never the hands.
 pub fn groups_held(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
@@ -180,22 +168,22 @@ impl Physics {
     }
 
     // ---- bodies ---------------------------------------------------------------------------------
-    /// A dynamic body with the object's collider (`hull`: its points, for [`SHAPE_HULL`]).
-    pub fn add_object(&mut self, d: &ObjectDesc, pos: V3, rot: Q, hull: Option<&[V3]>) -> (RigidBodyHandle, ColliderHandle) {
+    /// A dynamic body with the object's collider (`hulls`: its convex parts' points, for
+    /// [`SHAPE_HULL`]).
+    pub fn add_object(&mut self, d: &ObjectDesc, pos: V3, rot: Q, hulls: &[Vec<V3>]) -> (RigidBodyHandle, ColliderHandle) {
         let body = RigidBodyBuilder::dynamic()
             .pose(to_pose(pos, rot))
             .ccd_enabled(true)
             .linear_damping(0.05)
             .angular_damping(0.2);
-        let c = object_collider(d, hull).collision_groups(groups_free());
+        let c = object_collider(d, hulls).collision_groups(groups_free());
         self.world.insert(body, c)
     }
 
-    /// Gives an object's collider the convex hull of `points` (object space) and `mass`. False if
-    /// they make no hull.
-    pub fn set_hull(&mut self, c: ColliderHandle, points: &[V3], mass: f32) -> bool {
-        let pts: Vec<Vector> = points.iter().map(|p| to_v(*p)).collect();
-        let (Some(shape), Some(col)) = (SharedShape::convex_hull(&pts), self.world.colliders.get_mut(c)) else { return false };
+    /// Gives an object's collider its convex parts (each part's points, object space) and `mass`.
+    /// False if they make no hull.
+    pub fn set_hulls(&mut self, c: ColliderHandle, parts: &[Vec<V3>], mass: f32) -> bool {
+        let (Some(shape), Some(col)) = (hulls_shape(parts), self.world.colliders.get_mut(c)) else { return false };
         col.set_shape(shape);
         col.set_translation_wrt_parent(Vector::ZERO);
         col.set_mass(mass.max(0.02));
@@ -325,6 +313,12 @@ impl Physics {
 
     pub fn set_gravity(&mut self, b: RigidBodyHandle, scale: f32) {
         self.world.bodies[b].set_gravity_scale(scale, true);
+    }
+
+    /// A body that yields (`true`) stops at what it meets without pushing it (Rapier's dominance:
+    /// every other body treats it as weightless).
+    pub fn set_yielding(&mut self, b: RigidBodyHandle, yielding: bool) {
+        self.world.bodies[b].set_dominance_group(if yielding { -1 } else { 0 });
     }
 
     pub fn set_angular_damping(&mut self, b: RigidBodyHandle, d: f32) {
@@ -539,11 +533,24 @@ fn add_solids(shape: &dyn Shape, at: (V3, Q), g: &mut rustvr_avatar::Grasp) {
     }
 }
 
-pub fn object_collider(d: &ObjectDesc, hull: Option<&[V3]>) -> ColliderBuilder {
+/// One convex hull, or a compound of them, for an object's convex parts.
+fn hulls_shape(parts: &[Vec<V3>]) -> Option<SharedShape> {
+    let hull = |p: &Vec<V3>| SharedShape::convex_hull(&p.iter().map(|q| to_v(*q)).collect::<Vec<_>>());
+    match parts {
+        [] => None,
+        [one] => hull(one),
+        many => {
+            let shapes: Vec<_> = many.iter().filter_map(hull).map(|s| (to_pose(V3::ZERO, Q::IDENTITY), s)).collect();
+            (!shapes.is_empty()).then(|| SharedShape::compound(shapes))
+        }
+    }
+}
+
+pub fn object_collider(d: &ObjectDesc, hulls: &[Vec<V3>]) -> ColliderBuilder {
     let he = d.half_extents;
-    let hull = hull.filter(|_| d.shape == SHAPE_HULL).and_then(|h| ColliderBuilder::convex_hull(&h.iter().map(|p| to_v(*p)).collect::<Vec<_>>()));
-    if let Some(b) = hull {
-        return b.mass(d.mass.max(0.02)).friction(0.7).restitution(0.15);
+    let hull = if d.shape == SHAPE_HULL { hulls_shape(hulls) } else { None };
+    if let Some(shape) = hull {
+        return ColliderBuilder::new(shape).mass(d.mass.max(0.02)).friction(0.7).restitution(0.15);
     }
     if d.kind == OBJ_VALVE {
         // The wheel: a disc about its +Z.
@@ -648,7 +655,7 @@ mod tests {
     fn objects_fall_and_rest_on_the_floor() {
         let mut p = Physics::default();
         floor(&mut p);
-        let (b, _) = p.add_object(&crate_desc(), V3::new(0.0, 1.0, 0.0), Q::IDENTITY, None);
+        let (b, _) = p.add_object(&crate_desc(), V3::new(0.0, 1.0, 0.0), Q::IDENTITY, &[]);
         p.set_dt(1.0 / 90.0);
         for _ in 0..180 {
             p.step();

@@ -18,3 +18,5 @@ anyhow.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 tracing.workspace = true
+# Convex decomposition of a gun's model, for its collision (the same parry Rapier uses).
+parry3d = "0.31"

@@ -2711,8 +2711,10 @@ fn a_handle_takes_the_hand_anywhere_along_it_and_the_blade_where_it_is() {
     s.step(90);
     // By the blade, well off the handle: held there, as it lies.
     s.set_rot(1, Quat::IDENTITY);
+    s.move_hand(1, Vec3::new(0.3, 1.3, 0.2), 30);
+    s.step(60);
     let before = s.rot(SWORD);
-    s.reach(1, s.on(SWORD, Vec3::new(0.0, 0.04, 0.35)));
+    s.reach(1, s.on(SWORD, Vec3::new(0.0, 0.0, 0.35)) + Vec3::Y * 0.04);
     s.grip(1, 1.0);
     s.step(30);
     let (at, _) = s.held_at(1, SWORD);
@@ -2746,4 +2748,71 @@ fn the_fingers_close_on_what_the_hand_holds_and_open_as_it_lets_go() {
     assert!(w > 0.3 && w < 1.0, "opening: {w}");
     s.step(20);
     assert!(s.rig.grasps()[0].is_none());
+}
+
+#[test]
+fn a_hand_laid_slowly_on_a_thing_rests_on_it_and_a_swipe_knocks_it() {
+    let mut s = Sim::new();
+    let at = s.pos(BOTTLE);
+    // Down onto the bottle slowly, the controller on into it: the hand stops on its top (10 cm up),
+    // and the bottle stays put.
+    s.reach(0, at + Vec3::new(0.0, 0.05, 0.0));
+    s.step(20);
+    let hand = v3(s.out.hands[0].pose.pos);
+    assert!(hand.y > at.y + 0.1, "the hand rests on its top: {hand:?}");
+    assert!(s.out.hands[0].flags & HAND_BLOCKED != 0, "held back, a ghost at the controller");
+    assert!(s.pos(BOTTLE).distance(at) < 0.01, "not shoved: {:?}", s.pos(BOTTLE));
+    // Swept through it fast, the hand knocks it.
+    s.move_hand(0, at + Vec3::new(-0.3, 0.0, 0.0), 40);
+    s.step(30);
+    let before = s.pos(BOTTLE);
+    let mut p = s.hand_pos(0);
+    for _ in 0..25 {
+        p.x += 2.0 * DT;
+        s.set_hand(0, p);
+        s.step(1);
+    }
+    s.step(30);
+    assert!(s.pos(BOTTLE).distance(before) > 0.05, "knocked: {:?} from {before:?}", s.pos(BOTTLE));
+}
+
+#[test]
+fn a_thing_made_of_convex_parts_is_held_on_the_part_the_hand_took() {
+    // An L (a pistol side on): a bar 30 cm long, a grip hanging 10 cm under its back end. Its box
+    // would fill the corner under the bar's front; its parts don't.
+    const ELL: u32 = 43;
+    // Lying flat on the table (its thickness up), the bar along the table's depth.
+    let at = Vec3::new(-0.45, 0.82, 0.35);
+    let mut d = obj(ELL, OBJ_PROP, at, [0.015, 0.065, 0.15], 0.8);
+    d.spawn_pose = pose(at, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
+    d.center = [0.0, -0.035, 0.15];
+    d.shape = SHAPE_HULL;
+    let block = |lo: Vec3, hi: Vec3| (0..8).map(|k| [[lo.x, hi.x][k & 1], [lo.y, hi.y][(k >> 1) & 1], [lo.z, hi.z][k >> 2], 0.0]).collect::<Vec<[f32; 4]>>();
+    let mut hulls: Box<GameHulls> = bytemuck::zeroed_box();
+    for (k, (lo, hi)) in [(Vec3::new(-0.015, 0.0, 0.0), Vec3::new(0.015, 0.03, 0.3)), (Vec3::new(-0.015, -0.1, 0.0), Vec3::new(0.015, 0.0, 0.04))].into_iter().enumerate() {
+        let c = block(lo, hi);
+        hulls.hulls[k].id = ELL;
+        hulls.hulls[k].count = c.len() as u32;
+        hulls.hulls[k].points[..c.len()].copy_from_slice(&c);
+    }
+    hulls.count = 2;
+    let mut s = Sim::new();
+    s.rig.set_game_hulls(&hulls);
+    s.table.descs[s.table.count as usize] = d;
+    s.table.count += 1;
+    s.table.seq += 1;
+    s.rig.sync(&s.table);
+    s.step(60);
+    // Taken from above the bar's front end (wherever it lies): held on the bar, not on its box.
+    let front = s.on(ELL, Vec3::new(0.0, 0.015, 0.25));
+    s.reach(1, front + Vec3::Y * 0.04);
+    s.grip(1, 1.0);
+    s.step(30);
+    assert_eq!(s.rig.held(1), Some(ELL));
+    let (held, _) = s.held_at(1, ELL);
+    let off_bar = (held - held.clamp(Vec3::new(-0.015, 0.0, 0.0), Vec3::new(0.015, 0.03, 0.3))).length();
+    assert!(off_bar < 0.03 && held.z > 0.2, "the hand on the bar's front end: {held:?}");
+    // The fingers close on its parts.
+    let g = s.rig.grasps()[1].clone().unwrap();
+    assert_eq!(g.solids.len(), 2, "both parts: {:?}", g.solids);
 }

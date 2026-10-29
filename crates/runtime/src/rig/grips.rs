@@ -48,6 +48,9 @@ pub struct Handle {
     pub radius: f32,
     /// Held the other way round it too (the fist's axis reversed along it).
     pub reversible: bool,
+    /// The fingers close round the handle (false: there's no handle, round the thing itself: a
+    /// grenade held its way).
+    pub grasped: bool,
     /// How near the hand must take it.
     pub reach: f32,
 }
@@ -83,7 +86,7 @@ fn line(a: [[f32; 3]; 2]) -> Option<(Vec3, Vec3)> {
 fn along(at: Vec3, rot: Quat, axis: (Vec3, Vec3), radius: f32, reversible: bool) -> Handle {
     let dir = (axis.1 - axis.0).normalize();
     let (a, b) = ((axis.0 - at).dot(dir), (axis.1 - at).dot(dir));
-    Handle { at, rot, dir, min: a.min(b), max: a.max(b), axis, radius, reversible, reach: HANDLE_REACH }
+    Handle { at, rot, dir, min: a.min(b), max: a.max(b), axis, radius, reversible, grasped: true, reach: HANDLE_REACH }
 }
 
 fn radius_or(r: f32, default: f32) -> f32 {
@@ -100,7 +103,7 @@ pub fn grip(d: &ObjectDesc, rot: Option<Quat>) -> Option<Handle> {
         // The pistol grip: locked on. (Unrigged, the fist's axis is taken as up the gun.)
         let rot = rot.unwrap_or(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
         let z = rot * Vec3::Z * (0.5 * GRIP_LENGTH);
-        return Some(Handle { at, rot, dir: Vec3::Z, min: 0.0, max: 0.0, axis: (at - z, at + z), radius, reversible: false, reach: LOCK_REACH });
+        return Some(Handle { at, rot, dir: Vec3::Z, min: 0.0, max: 0.0, axis: (at - z, at + z), radius, reversible: false, grasped: true, reach: LOCK_REACH });
     }
     let knife = d.kind == OBJ_THROWABLE && d.throw_flags & THROW_KNIFE != 0;
     let handled = d.kind == OBJ_MELEE || knife;
@@ -114,7 +117,7 @@ pub fn grip(d: &ObjectDesc, rot: Option<Quat>) -> Option<Handle> {
         return Some(along(at, rot, (at - z, at + z), radius, true));
     }
     // A grenade (or anything else rigged): always held that way, wherever it was taken.
-    Some(Handle { at, rot, dir: Vec3::Z, min: 0.0, max: 0.0, axis: (at, at), radius, reversible: false, reach: f32::INFINITY })
+    Some(Handle { at, rot, dir: Vec3::Z, min: 0.0, max: 0.0, axis: (at, at), radius, reversible: false, grasped: false, reach: f32::INFINITY })
 }
 
 /// The handle a second hand takes it by while the other holds it: a two-handed gun's handguard

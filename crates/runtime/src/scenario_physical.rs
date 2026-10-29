@@ -1714,6 +1714,38 @@ pub fn all() -> Vec<Scenario> {
             captures: vec![(2.45, "grip_handguard_back"), (4.1, "grip_handguard_front"), (1.35, "grip_handguard_firing")],
         },
         Scenario {
+            name: "grip_gun_barrel",
+            about: "physical: the rifle taken by its barrel, well ahead of its grip, and lifted: held there, the fingers closed round the barrel itself (its convex parts, not a box round the gun); the trigger does nothing",
+            duration: 2.6,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(rifle) = near_rifle(objs) else { return b };
+                    b.head_rot = Quat::from_rotation_x(0.35);
+                    // Over the barrel 15 cm behind the muzzle, then down onto it slowly.
+                    let barrel = rifle.at(rifle.muzzle - Vec3::Z * 0.15);
+                    let rest = Body::rest().hands[1].pos;
+                    let lifted = Vec3::new(0.12, 1.4, 0.38);
+                    b.hands[1].pos = keys(t, &[(0.0, rest), (0.4, barrel + Vec3::Y * 0.25), (0.9, barrel + Vec3::Y * 0.02), (1.0, barrel + Vec3::Y * 0.02), (1.5, lifted)]);
+                    b.hands[1].squeeze = on(t, &[(0.95, 2.6)]);
+                    b.hands[1].trigger = on(t, &[(1.9, 2.1)]);
+                    lean_in(&mut b, t, [1.5, 1.75, 2.4, 2.6], lifted + Vec3::new(-0.22, 0.05, 0.16), lifted);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.6, "the rifle is in the right hand", |c| ensure(gun_held_right(c), || "not held".into())),
+                check(2.4, "the trigger fired nothing", |c| ensure(c.rig.shots == 0, || format!("{} shots", c.rig.shots))),
+            ],
+            captures: vec![(1.85, "grip_gun_barrel")],
+        },
+        Scenario {
             name: "grip_hand_to_hand",
             about: "physical: the bottle taken from its side and lifted in front, the other hand takes it too, then the first lets go: it's in the other hand, where that hand took it",
             duration: 4.2,
