@@ -448,8 +448,9 @@ pub const OBJF_LOOT: u32 = 1 << 11;
 /// `cast_time` and casts `casts` from its `muzzle` along its +Z when it's let go
 /// ([`crate::CE_CAST`] with `object` set; see [`crate::Casters`]).
 pub const OBJF_CASTS: u32 = 1 << 12;
-/// It hangs upright in a body slot (a torch's flame up, a lantern by its handle), not the slot's
-/// usual way (a gun's barrel down at the hip).
+/// It's upright: it hangs so in a body slot (a torch's flame up, a lantern by its handle), not the
+/// slot's usual way (a gun's barrel down at the hip), and a hand holds it only that way up (its
+/// handle never taken the other way round).
 pub const OBJF_UPRIGHT: u32 = 1 << 13;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;

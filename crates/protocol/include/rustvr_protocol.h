@@ -800,8 +800,9 @@
 #define RVR_OBJF_CASTS (1 << 12)
 
 /**
- * It hangs upright in a body slot (a torch's flame up, a lantern by its handle), not the slot's
- * usual way (a gun's barrel down at the hip).
+ * It's upright: it hangs so in a body slot (a torch's flame up, a lantern by its handle), not the
+ * slot's usual way (a gun's barrel down at the hip), and a hand holds it only that way up (its
+ * handle never taken the other way round).
  */
 #define RVR_OBJF_UPRIGHT (1 << 13)
 
