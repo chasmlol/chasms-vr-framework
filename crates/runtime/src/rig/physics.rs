@@ -42,6 +42,17 @@ pub fn groups_hand(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HAND[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
 }
 
+/// What's solid to an empty `hand` as it's moved ([`Physics::reach`]): the world, and what the other
+/// hand holds (the hand rests on it rather than going through it or knocking it).
+pub fn solid_for_hand(hand: usize) -> InteractionGroups {
+    InteractionGroups::new(Group::ALL, G_WORLD | G_HELD[hand ^ 1], InteractionTestMode::And)
+}
+
+/// The gap a hand keeps from what's solid to it.
+const SKIN: f32 = 0.002;
+/// How many times a hand's move goes round: put out of what it's in, swept, slid on along it.
+const REACH_PASSES: usize = 4;
+
 /// A finger of `hand`: it pushes free objects and nothing else.
 pub fn groups_finger(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HAND[hand], G_OBJECT, InteractionTestMode::And)
@@ -284,6 +295,58 @@ impl Physics {
         let body = RigidBodyBuilder::kinematic_position_based().pose(to_pose(pos, rot));
         let c = ColliderBuilder::capsule_y(half.max(0.001), radius.max(0.005)).friction(0.6).collision_groups(groups_actor());
         self.world.insert(body, c)
+    }
+
+    /// Where collider `c` (a hand), turned `rot`, gets to from where it is on its way to `to`: put
+    /// out of anything solid it's in (turned into a wall, or something moved into it), then swept
+    /// towards `to`, stopping at what's solid (`solid`) and sliding on along it. A controller pushed
+    /// on through a wall leaves the hand on its face, going where the controller goes along it,
+    /// never into it. `inside`: something solid it may be in (it just let go of it): it isn't put
+    /// out of that, but it only ever moves out of it, never on in or through.
+    pub fn reach(&self, c: ColliderHandle, rot: Q, to: V3, solid: InteractionGroups, inside: Option<ColliderHandle>) -> V3 {
+        let Some(col) = self.world.colliders.get(c) else { return to };
+        let shape = col.shape();
+        let filter = QueryFilter { groups: Some(solid), exclude_collider: Some(c), ..Default::default() };
+        let not_inside = |h: ColliderHandle, _: &Collider| Some(h) != inside;
+        let pushed_out_of = QueryFilter { predicate: Some(&not_inside), ..filter };
+        let mut pos = from_v(col.position().translation);
+        // Out of what it's in, deepest first.
+        for _ in 0..REACH_PASSES {
+            let pose = to_pose(pos, rot);
+            let deepest = self
+                .world
+                .intersect_shape(pose, shape, pushed_out_of)
+                .filter_map(|(_, o)| rapier3d::parry::query::contact(&pose, shape, o.position(), o.shape(), 0.0).ok().flatten())
+                .min_by(|a, b| a.dist.total_cmp(&b.dist));
+            match deepest {
+                Some(ct) if ct.dist < 0.0 => pos += from_v(ct.normal1) * (ct.dist - SKIN),
+                _ => break,
+            }
+        }
+        // Then on towards `to`, along whatever it meets.
+        let options = rapier3d::parry::query::ShapeCastOptions { max_time_of_impact: 1.0, target_distance: SKIN, stop_at_penetration: false, compute_impact_geometry_on_penetration: true };
+        let mut left = to - pos;
+        for _ in 0..REACH_PASSES {
+            if left.length_squared() < 1e-10 {
+                break;
+            }
+            let Some((_, hit)) = self.world.cast_shape(&to_pose(pos, rot), to_v(left), shape, options, filter) else {
+                pos += left;
+                break;
+            };
+            let toi = hit.time_of_impact.clamp(0.0, 1.0);
+            pos += left * toi;
+            left *= 1.0 - toi;
+            // What's left of the way, less what goes into the surface (a hair off it, so the next
+            // sweep slides rather than catching on it).
+            let n = from_v(hit.normal1).normalize_or_zero();
+            let into = left.dot(n);
+            if into < 0.0 {
+                left -= n * into;
+            }
+            left += n * 1e-4;
+        }
+        pos
     }
 
     /// How far apart two colliders are (0 touching or overlapping).

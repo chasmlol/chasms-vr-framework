@@ -2676,6 +2676,9 @@ fn a_long_thing_in_both_hands_turns_with_both() {
     plank.flags = OBJF_GRABBABLE;
     let mut s = Sim::with(&[plank]);
     let (l, r) = (s.on(PLANK, Vec3::new(-0.28, 0.0, 0.0)), s.on(PLANK, Vec3::new(0.28, 0.0, 0.0)));
+    // Both palms down on its ends (the right hand rests on it once the left has it).
+    s.set_rot(0, Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2));
+    s.set_rot(1, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
     s.reach(0, l + Vec3::new(0.0, 0.04, 0.0));
     s.grip(0, 1.0);
     s.move_hand(1, r + Vec3::new(0.0, 0.04, 0.0), 40);
@@ -2687,7 +2690,9 @@ fn a_long_thing_in_both_hands_turns_with_both() {
     let along = s.rot(PLANK) * Vec3::X;
     assert!(along.y > 0.25, "tilted up towards the higher hand: {along:?}");
     let right_end = s.on(PLANK, s.held_at(1, PLANK).0);
-    assert!(right_end.distance(s.hand_pos(1)) < 0.08, "its far end is in the right hand: {right_end:?} vs {:?}", s.hand_pos(1));
+    let hand = v3(s.out.hands[1].pose.pos);
+    assert!(right_end.distance(hand) < 0.03, "its far end is in the right hand: {right_end:?} vs {hand:?}");
+    assert!(hand.distance(s.hand_pos(1)) < 0.08, "the right hand is where its controller is: {hand:?} vs {:?}", s.hand_pos(1));
 }
 
 #[test]
@@ -2934,4 +2939,110 @@ fn a_blade_stuck_in_a_loose_thing_stays_in_and_drags_it() {
     let _ = stuck;
     let inside = s.rot(CRATE).inverse() * (bottom(&s) - s.pos(CRATE));
     assert!(inside.abs().max_element() < 0.12, "its bottom still in the crate: {inside:?}");
+}
+
+/// A hand pressed on into a wall (the controller 30 cm behind its face) and moved about there, as a
+/// real hand on a real controller would: (the controller's path, the hand's path, how far the hand
+/// went into the wall at worst).
+fn press_into_wall() -> (Vec<Vec3>, Vec<Vec3>, f32) {
+    let mut s = Sim::new();
+    // A wall above the table, its face at z = 0.70.
+    world_box(&mut s.rig, 3, [0.2, 1.3, 0.75], [0.4, 0.3, 0.05]);
+    // The palm towards it.
+    let palm_on = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    s.set_rot(1, palm_on);
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.45), 20);
+    s.move_hand(1, Vec3::new(0.2, 1.3, 1.0), 40);
+    let (mut ctrl, mut hand, mut deepest) = (Vec::new(), Vec::new(), f32::MIN);
+    let c = s.rig.hands.as_ref().unwrap()[1].collider;
+    for k in 0..150 {
+        let t = k as f32 * DT;
+        let p = Vec3::new(0.2 + 0.04 * (t * 3.0).sin(), 1.3 + 0.03 * (t * 4.1).cos(), 1.0 + 0.06 * (t * 2.3).sin());
+        s.set_hand(1, p);
+        s.set_rot(1, palm_on * Quat::from_rotation_x(0.2 * (t * 2.7).sin()) * Quat::from_rotation_z(0.15 * (t * 3.3).cos()));
+        s.step(1);
+        ctrl.push(p);
+        hand.push(v3(s.out.hands[1].pose.pos));
+        deepest = deepest.max(depth_in_world(&s, c));
+    }
+    (ctrl, hand, deepest)
+}
+
+/// How far collider `c` is into the world at its deepest (0 out of it).
+fn depth_in_world(s: &Sim, c: rapier3d::prelude::ColliderHandle) -> f32 {
+    let w = &s.rig.physics.world;
+    let me = &w.colliders[c];
+    let world = physics::groups_world().memberships;
+    w.colliders
+        .iter()
+        .filter(|(h, o)| *h != c && o.collision_groups().memberships == world)
+        .filter_map(|(_, o)| rapier3d::parry::query::contact(me.position(), me.shape(), o.position(), o.shape(), 0.0).ok().flatten())
+        .map(|ct| -ct.dist)
+        .fold(0.0, f32::max)
+}
+
+#[test]
+fn a_hand_pushed_on_through_a_wall_rests_on_it_calmly() {
+    let (ctrl, hand, deepest) = press_into_wall();
+    // How far each moved along the wall frame to frame, and how much that changed (shaking).
+    let across = |v: &[Vec3]| v.windows(2).map(|w| (w[1] - w[0]) * Vec3::new(1.0, 1.0, 0.0)).collect::<Vec<_>>();
+    let (c, h) = (across(&ctrl), across(&hand));
+    let path = |v: &[Vec3]| v.iter().map(|d| d.length()).sum::<f32>();
+    let shake = |v: &[Vec3]| v.windows(2).map(|w| (w[1] - w[0]).length()).sum::<f32>();
+    let depth_moves = hand.windows(2).map(|w| (w[1].z - w[0].z).abs()).fold(0.0f32, f32::max);
+    eprintln!("deepest {deepest:.4}, path ctrl {:.3} hand {:.3}, shake ctrl {:.4} hand {:.4}, biggest move into/out of the wall {depth_moves:.4}", path(&c), path(&h), shake(&c), shake(&h));
+    assert!(deepest < 0.004, "the hand stays out of the wall: {deepest}");
+    assert!(path(&h) < path(&c) * 1.3, "it slides along the wall with the controller, no more: {} vs {}", path(&h), path(&c));
+    assert!(shake(&h) < shake(&c) * 2.0 + 0.01, "calmly, without shaking: {} vs {}", shake(&h), shake(&c));
+    assert!(depth_moves < 0.01, "it doesn't bounce off the wall: {depth_moves}");
+}
+
+/// How far collider `a` is into collider `b` (0 apart or touching).
+fn depth_in(s: &Sim, a: rapier3d::prelude::ColliderHandle, b: rapier3d::prelude::ColliderHandle) -> f32 {
+    let w = &s.rig.physics.world;
+    let (a, b) = (&w.colliders[a], &w.colliders[b]);
+    rapier3d::parry::query::contact(a.position(), a.shape(), b.position(), b.shape(), 0.0).ok().flatten().map_or(0.0, |ct| (-ct.dist).max(0.0))
+}
+
+#[test]
+fn the_free_hand_rests_on_what_the_other_hand_holds() {
+    let mut s = Sim::new();
+    s.reach(0, s.pos(BOTTLE) + Vec3::new(0.0, 0.12, 0.0));
+    s.grip(0, 1.0);
+    s.move_hand(0, Vec3::new(-0.05, 1.3, 0.35), 30);
+    s.step(20);
+    let at = s.pos(BOTTLE);
+    let (hand, bottle) = (s.rig.hands.as_ref().unwrap()[1].collider, s.rig.objects[&BOTTLE].collider);
+    // The right hand, palm towards it, pushed on 10 cm past its middle: it stops on it, and the
+    // bottle doesn't get knocked about in the left hand.
+    s.move_hand(1, at + Vec3::new(0.2, 0.0, 0.0), 20);
+    let mut deepest = 0.0f32;
+    for k in 1..=40 {
+        s.set_hand(1, (at + Vec3::new(0.2, 0.0, 0.0)).lerp(at - Vec3::new(0.1, 0.0, 0.0), k as f32 / 40.0));
+        s.step(1);
+        deepest = deepest.max(depth_in(&s, hand, bottle));
+    }
+    s.step(20);
+    let on = v3(s.out.hands[1].pose.pos);
+    assert!(deepest < 0.003, "the hand stays out of it: {deepest}");
+    assert!(s.pos(BOTTLE).distance(at) < 0.01, "the bottle stays where the left hand has it: {:?} vs {at:?}", s.pos(BOTTLE));
+    assert!(on.x > at.x + 0.02, "the hand rests on its side: {on:?} vs {at:?}");
+    // It takes it there: both hands have it.
+    s.grip(1, 1.0);
+    s.step(5);
+    assert!(s.out.hands[1].flags & HAND_HOLDING != 0 && s.out.hands[1].holding == BOTTLE, "both hands on it");
+    // Let go again, the controller still in it: the hand comes out of it smoothly, no jump.
+    let mut last = v3(s.out.hands[1].pose.pos);
+    s.grip(1, 0.0);
+    let mut worst = 0.0f32;
+    let from = s.hand_pos(1);
+    for k in 1..=40 {
+        s.set_hand(1, from.lerp(at + Vec3::new(0.25, 0.0, 0.0), (k as f32 / 30.0).min(1.0)));
+        s.step(1);
+        let now = v3(s.out.hands[1].pose.pos);
+        worst = worst.max(now.distance(last));
+        last = now;
+    }
+    assert_eq!(s.rig.held(0), Some(BOTTLE));
+    assert!(worst < 0.02, "no jump out of it: {worst}");
 }

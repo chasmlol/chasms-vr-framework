@@ -278,6 +278,11 @@ struct Hand {
     /// hand was when it took it (the thing is held from the controller as it was then; neither
     /// moves). None: on its grip, as the attach has it.
     hold: Option<(Vec3, Quat)>,
+    /// What it held or had hold of last frame.
+    was_on: Option<u32>,
+    /// Just let go of this, which the other hand still holds: it comes out of it rather than being
+    /// put out of it (else what the other hand holds is solid to it), until it's clear of it.
+    passing: Option<u32>,
     support: Option<Support>,
     handle: Option<u32>,
     hover: Hover,
@@ -1447,6 +1452,8 @@ impl Rig {
                 holding: None,
                 on: On::Free,
                 hold: None,
+                was_on: None,
+                passing: None,
                 support: None,
                 handle: None,
                 hover: Hover::None,
@@ -3632,9 +3639,15 @@ impl Rig {
         // controller is through the world (a wall, the floor): then the hand stays against it.
         let now = self.now;
         let hands = self.hands.as_mut().unwrap();
+        let holding = [hands[0].holding, hands[1].holding];
         for (i, h) in hands.iter_mut().enumerate() {
+            let was_on = std::mem::replace(&mut h.was_on, h.holding.or(h.support.as_ref().map(|s| s.id)));
             if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() || h.valve.is_some() {
                 continue;
+            }
+            // Just let go of what the other hand still holds: it comes out of it, not knocked off.
+            if was_on.is_some() && was_on == holding[i ^ 1] {
+                h.passing = was_on;
             }
             // Gliding back to the controller after letting go of a valve.
             if let Some((p0, q0, t0, time)) = h.returning {
@@ -3658,9 +3671,16 @@ impl Rig {
                 self.physics.set_groups(h.collider, groups_hand(i));
             }
             if s.interaction.physics_hands {
-                // Stopped where the world stops it, but always turned as the controller is (a touch
-                // never tips it: a thing taken is held as the hand is turned).
-                self.physics.track(h.body, h.target.0, h.target.1, dt, &physics::Drive::FREE);
+                // Always turned as the controller is (a touch never tips it: a thing taken is held as
+                // the hand is turned), and sent as far towards it as it gets: stopped on the world
+                // and on what the other hand holds, sliding on along them. Never driven into them,
+                // so a controller pushed on through a wall leaves the hand resting on it, calm.
+                let passing = h.passing.filter(|id| holding[i ^ 1] == Some(*id)).and_then(|id| self.objects.get(&id)).map(|o| o.collider);
+                if passing.is_none_or(|c| self.physics.distance_between(h.collider, c) > 0.0) {
+                    h.passing = None;
+                }
+                let to = self.physics.reach(h.collider, h.target.1, h.target.0, physics::solid_for_hand(i), passing);
+                self.physics.track(h.body, to, h.target.1, dt, &physics::Drive::FREE);
                 self.physics.set_rotation(h.body, h.target.1);
             } else {
                 self.physics.set_pose(h.body, h.target.0, h.target.1);
