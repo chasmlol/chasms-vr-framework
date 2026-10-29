@@ -71,12 +71,10 @@ pub struct BodyParams {
     /// Near the shoulder the elbow bends at most this much and the arm shortens instead of
     /// flipping (FRIK 145°).
     pub elbow_max_flexion_deg: f32,
-    /// The shoulder moves towards the hand by up to this fraction of the arm length (FRIK 0.15,
-    /// Skyrim VRIK 0.225) once the hand is further than `clavicle_start` arm lengths away, with
-    /// downward motion scaled by `clavicle_down` (0.4).
-    pub clavicle_reach: f32,
-    pub clavicle_start: f32,
-    pub clavicle_down: f32,
+    /// How far the shoulder goes towards a hand past the arm's full reach (metres at reference
+    /// size): forward or across the chest, back, up, down, out. A shoulder blade slides forward
+    /// round the ribs some 8-10 cm reaching (est.), shrugs up less, and hardly moves outward.
+    pub shoulder_reach: [f32; 5],
     /// Elbow swivel smoothing (FRIK 0.75 per 90 Hz frame ≈ 39 ms; VRArmIK 80 ms). Only the swivel
     /// is smoothed, never the hand.
     pub swivel_tau: f32,
@@ -175,9 +173,7 @@ impl Default for BodyParams {
 
             elbow_min_flexion_deg: 0.0,
             elbow_max_flexion_deg: 145.0,
-            clavicle_reach: 0.15,
-            clavicle_start: 0.5,
-            clavicle_down: 0.4,
+            shoulder_reach: [0.10, 0.04, 0.07, 0.03, 0.02],
             swivel_tau: 0.06,
             arm_stretch: 1.3,
             arm_tracking_loss: 2.25,

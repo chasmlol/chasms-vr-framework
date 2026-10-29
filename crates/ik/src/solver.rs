@@ -84,7 +84,9 @@ impl BodySolver {
                 // Standing straight: the head at the eye height (the arms only care where the
                 // hands are from it).
                 let lift = Vec3::new(0.0, eye - pose.head.pos.y, 0.0);
-                let mut s = BodySolver::new(self.params, Calibration { eye_height: eye, arm_span: span });
+                // (The shoulders at rest: the arm as long as reaches the hand from there.)
+                let params = BodyParams { shoulder_reach: [0.0; 5], ..self.params };
+                let mut s = BodySolver::new(params, Calibration { eye_height: eye, arm_span: span });
                 let input = TrackedInput {
                     dt: self.params.nominal_dt,
                     head: Pose { pos: pose.head.pos + lift, rot: pose.head.rot },

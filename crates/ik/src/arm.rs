@@ -165,19 +165,42 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     let wrist = input.target.pos;
     let arm = skel.arm_length();
 
-    // Clavicle (FRIK): past half the arm length the shoulder moves towards the hand, by at most
-    // `clavicle_reach` arm lengths, less when moving down. The clavicle is aimed at that point.
+    // The shoulder: where it rests while the hand is within the arm's reach of it. Past that it
+    // goes the hand's way as a shoulder blade does (forward or across the chest most, up in a shrug,
+    // back and down less, out least), as far as the straight arm needs to reach, up to its own
+    // reach that way (`BodyParams::shoulder_reach`); only then does the arm stretch. The clavicle
+    // turns about its root to put it there.
     let clavicle_root = input.chest_pos + q * Vec3::new(sign * skel.clavicle_root, skel.shoulder_up, 0.0);
     let rest_shoulder = input.chest_pos + q * Vec3::new(sign * skel.shoulder_half, skel.shoulder_up, 0.0);
-    let to_hand = wrist - rest_shoulder;
-    let span = 0.85 * arm;
-    let adjust = (to_hand.length() - p.clavicle_start * arm).clamp(0.0, span) / span;
-    let mut offset = to_hand.normalize_or_zero() * adjust * arm * p.clavicle_reach;
-    if offset.y < 0.0 {
-        offset.y *= p.clavicle_down;
-    }
     let clavicle_len = skel.shoulder_half - skel.clavicle_root;
-    let clavicle_dir = (rest_shoulder + offset - clavicle_root).normalize_or(outward);
+    let rest_dir = (rest_shoulder - clavicle_root).normalize_or(outward);
+    let to_hand = wrist - rest_shoulder;
+    let clavicle_dir = if to_hand.length() > arm {
+        // (Chest space, outward +X on either side.)
+        let l = q.inverse() * to_hand.normalize_or_zero();
+        let (x, y, z) = (l.x * sign, l.y, l.z);
+        let [fwd, back, rise, drop, out] = p.shoulder_reach;
+        let sq = |v: f32| v * v;
+        let reach = skel.scale
+            * (sq(z.max(0.0)) * fwd + sq(x.min(0.0)) * fwd + sq(z.min(0.0)) * back + sq(y.max(0.0)) * rise + sq(y.min(0.0)) * drop + sq(x.max(0.0)) * out);
+        let furthest = (rest_shoulder + to_hand.normalize_or_zero() * reach - clavicle_root).normalize_or(rest_dir);
+        let turn = Quat::from_rotation_arc(rest_dir, furthest);
+        let at = |t: f32| Quat::IDENTITY.slerp(turn, t) * rest_dir;
+        let short = |t: f32| (clavicle_root + at(t) * clavicle_len).distance(wrist) - arm;
+        // The least turn that brings the hand within reach (all of it when even that doesn't).
+        if short(1.0) > 0.0 {
+            furthest
+        } else {
+            let (mut lo, mut hi) = (0.0f32, 1.0f32);
+            for _ in 0..14 {
+                let mid = 0.5 * (lo + hi);
+                if short(mid) > 0.0 { lo = mid } else { hi = mid }
+            }
+            at(hi)
+        }
+    } else {
+        rest_dir
+    };
     let shoulder = clavicle_root + clavicle_dir * clavicle_len;
     let clavicle_rot = frame_yz(clavicle_dir, forward, up);
     let hand_rot = input.target.rot;
