@@ -101,6 +101,10 @@ pub struct Session {
     spectator_post: Option<crate::compositor::PostTargets>,
     /// And as the headset's view of an overscanned picture sees them.
     headset_post: Option<crate::compositor::PostTargets>,
+    /// The game's eye textures as the settings ask for them, and how much smaller they're made
+    /// while the GPU can't make that size.
+    target_wanted: Option<Spec>,
+    target_shrink: f32,
     spectator_cam: crate::spectator::SteadyCamera,
     /// Tests: where the desktop view's frames are saved, and when one was last.
     spectator_capture: Option<(PathBuf, f64)>,
@@ -237,6 +241,8 @@ impl Session {
             spectator,
             spectator_post: None,
             headset_post: None,
+            target_wanted: None,
+            target_shrink: 1.0,
             spectator_capture: capture.map(|d| (d, 0.0)),
             spectator_cam: crate::spectator::SteadyCamera::default(),
             comp: Compositor::new(&gpu)?,
@@ -409,7 +415,15 @@ impl Session {
         if let Some(g) = &self.game {
             // (Drawn wider than the headset shows, and bigger to stay as sharp: `targets::render_fov`.)
             let drawn = crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan);
-            let spec = Spec::new(&g.request, self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn), &self.settings.current);
+            let wanted = Spec::new(&g.request, self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn), &self.settings.current);
+            // (Smaller by `target_shrink` while the GPU couldn't make this size: a supersampled and
+            // overscanned eye can be more than it has room for.)
+            if self.target_wanted != Some(wanted) {
+                self.target_wanted = Some(wanted);
+                self.target_shrink = 1.0;
+            }
+            let k = self.target_shrink;
+            let spec = Spec { eye_w: ((wanted.eye_w as f32 * k) as u32).max(16), eye_h: ((wanted.eye_h as f32 * k) as u32).max(16), ..wanted };
             if self.targets.as_ref().is_none_or(|t| t.spec != spec) {
                 self.generation += 1;
                 match SharedTargets::create(&self.gpu, &self.opts.mapping, self.generation, spec, self.sec.as_ref()) {
@@ -419,7 +433,10 @@ impl Session {
                         self.targets = Some(t);
                         self.shown = None;
                     }
-                    Err(e) => tracing::error!("runtime: creating targets: {e:#}"),
+                    Err(e) => {
+                        tracing::error!("runtime: creating targets {}x{}: {e:#}; trying smaller", spec.eye_w, spec.eye_h);
+                        self.target_shrink = (self.target_shrink * 0.8).max(0.1);
+                    }
                 }
             }
         }
@@ -880,6 +897,8 @@ impl Session {
                 arm_span: self.body.arm_span(),
                 head_height: self.mech.debug.stand_h,
                 countdown: self.calibrate_at.map(|t| (t - now).max(0.0) as f32),
+                headset_size: self.backend.recommended_size(),
+                game_size: self.targets.as_ref().map(|t| (t.spec.eye_w, t.spec.eye_h)),
             };
             self.menu.update(&self.gpu, &mut self.settings.current, menu_pointer, &status)?;
             if std::mem::take(&mut self.menu.changed)

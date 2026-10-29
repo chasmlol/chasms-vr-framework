@@ -48,27 +48,18 @@ pub fn render_scale(headset: [Fov; 2], drawn: [Fov; 2]) -> (f32, f32) {
     (r(a.0.max(b.0)), r(a.1.max(b.1)))
 }
 
-/// The longest side an overscanned eye is drawn at (pixels): past it, the overscan's edges are
-/// drawn less sharp rather than the textures growing without end (each side's tangent grows fast
-/// towards 90 degrees).
-pub const OVERSCAN_MAX_SIDE: u32 = 8192;
+/// The longest side a game's eye can be (pixels): Direct3D 11's largest texture.
+pub const MAX_SIDE: u32 = 16384;
 
-/// The per-eye resolution games render at: the headset's recommended size times the render scale,
-/// capped by `max_eye_size` (the headset's own view's sharpness), then grown by `wider` (how much
-/// wider and taller the game draws than the headset shows, [`render_scale`]): overscan adds pixels
-/// round the edges at the same sharpness, it never spreads the same pixels wider.
+/// The per-eye resolution games render at: the headset's own (its recommended size) times the
+/// supersampling (`vr.render_scale`, each way), grown by `wider` (how much wider and taller the
+/// game draws than the headset shows, overscanned: [`render_scale`]) so the overscan adds pixels
+/// round the edges at the same sharpness. Nothing else caps it but the largest texture there is.
 pub fn eye_size(recommended: (u32, u32), wider: (f32, f32), s: &Settings) -> (u32, u32) {
     let scale = s.vr.render_scale.clamp(0.25, 3.0);
-    let (mut w, mut h) = (recommended.0 as f32 * scale, recommended.1 as f32 * scale);
-    let cap = s.vr.max_eye_size as f32;
-    if cap > 0.0 && w.max(h) > cap {
-        let k = cap / w.max(h);
-        (w, h) = (w * k, h * k);
-    }
-    (w, h) = (w * wider.0.max(1.0), h * wider.1.max(1.0));
-    let most = OVERSCAN_MAX_SIDE.max(s.vr.max_eye_size) as f32;
-    if w.max(h) > most {
-        let k = most / w.max(h);
+    let (mut w, mut h) = (recommended.0 as f32 * scale * wider.0.max(1.0), recommended.1 as f32 * scale * wider.1.max(1.0));
+    if w.max(h) > MAX_SIDE as f32 {
+        let k = MAX_SIDE as f32 / w.max(h);
         (w, h) = (w * k, h * k);
     }
     ((w as u32).max(16), (h as u32).max(16))

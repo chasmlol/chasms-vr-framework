@@ -68,10 +68,9 @@ impl Default for Spectator {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Vr {
-    /// Multiplies the headset's recommended per-eye resolution.
+    /// Supersampling: the game draws at this times the headset's resolution, each way (2: twice as
+    /// wide and as tall, four times the pixels). The headset is always shown at its own.
     pub render_scale: f32,
-    /// Cap on the per-eye size's long side, pixels (0 = none).
-    pub max_eye_size: u32,
     /// >1 makes the world feel bigger.
     pub world_scale: f32,
     pub ipd_scale: f32,
@@ -376,7 +375,6 @@ impl Default for Vr {
     fn default() -> Self {
         Vr {
             render_scale: 1.0,
-            max_eye_size: 2208,
             world_scale: 1.0,
             ipd_scale: 1.0,
             reproject: true,

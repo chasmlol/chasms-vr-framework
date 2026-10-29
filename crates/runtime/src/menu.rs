@@ -37,6 +37,9 @@ pub struct Status {
     pub head_height: f32,
     /// Seconds left before the arms are measured.
     pub countdown: Option<f32>,
+    /// The headset's per-eye resolution (what it's shown), and the game's (what it draws).
+    pub headset_size: (u32, u32),
+    pub game_size: Option<(u32, u32)>,
 }
 
 pub struct RuntimeMenu {
@@ -172,7 +175,7 @@ impl RuntimeMenu {
                     Tab::Help => help(ui),
                     Tab::Controls => controls(ui, s),
                     Tab::Weapon => weapon(ui, s),
-                    Tab::Display => display(ui, s),
+                    Tab::Display => display(ui, s, status),
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -463,8 +466,13 @@ fn weapon(ui: &mut egui::Ui, s: &mut Settings) {
     }
 }
 
-fn display(ui: &mut egui::Ui, s: &mut Settings) {
-    slider(ui, "Resolution scale", &mut s.vr.render_scale, 0.5, 2.0, "", 2);
+fn display(ui: &mut egui::Ui, s: &mut Settings, status: &Status) {
+    slider(ui, "Supersampling (the game's resolution, each way)", &mut s.vr.render_scale, 0.5, 2.0, "x", 2);
+    let (hw, hh) = status.headset_size;
+    ui.label(match status.game_size {
+        Some((w, h)) => format!("The headset is shown {hw} x {hh} an eye; the game draws {w} x {h}"),
+        None => format!("The headset is shown {hw} x {hh} an eye"),
+    });
     slider(ui, "World scale", &mut s.vr.world_scale, 0.7, 1.4, "", 2);
     ui.checkbox(&mut s.vr.reproject, "Smooth the game's picture to every headset frame (walking and turning too)");
     ui.checkbox(&mut s.vr.predict, "Draw the game for when its picture is shown (head and hands a frame ahead)");
