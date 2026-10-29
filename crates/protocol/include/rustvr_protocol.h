@@ -800,6 +800,12 @@
 #define RVR_OBJF_CASTS (1 << 12)
 
 /**
+ * It hangs upright in a body slot (a torch's flame up, a lantern by its handle), not the slot's
+ * usual way (a gun's barrel down at the hip).
+ */
+#define RVR_OBJF_UPRIGHT (1 << 13)
+
+/**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
  */
 #define RVR_GAME_HANDBACK 0.15
