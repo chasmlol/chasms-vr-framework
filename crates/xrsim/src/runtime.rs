@@ -1122,7 +1122,7 @@ unsafe extern "system" fn wait_frame(_s: xr::Session, _info: *const xr::FrameWai
             r.fps_at = Instant::now();
         }
         let render = matches!(r.session_state, xr::SessionState::VISIBLE | xr::SessionState::FOCUSED);
-        r.frame_time_ns = r.now_ns() + period.as_nanos() as i64;
+        r.frame_time_ns = r.now_ns() + (period.as_nanos() as i64).max((r.script.latency_ms as f64 * 1e6) as i64);
         r.frame_script_t = r.script_time();
         unsafe {
             (*state).predicted_display_time = xr::Time::from_nanos(r.frame_time_ns);

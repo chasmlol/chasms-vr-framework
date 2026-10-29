@@ -974,6 +974,7 @@ fn diff(a: &Stats, b: &Stats) -> Stats {
     Stats {
         frames: a.frames - b.frames,
         game_frames: a.game_frames - b.game_frames,
+        warped_frames: a.warped_frames - b.warped_frames,
         slots: a.slots - b.slots,
         lockstep_timeouts: a.lockstep_timeouts - b.lockstep_timeouts,
         last_slot_frame: a.last_slot_frame,

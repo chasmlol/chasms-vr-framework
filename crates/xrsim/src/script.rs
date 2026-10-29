@@ -114,6 +114,9 @@ pub struct Script {
     pub fov: [f32; 4],
     pub ipd: f32,
     pub refresh: f32,
+    /// How far ahead each frame's predicted display time is (milliseconds; at least a frame): a
+    /// streamed headset's (Virtual Desktop's, some 30 to 50) is far more than a frame.
+    pub latency_ms: f32,
     /// Width of each eye in the saved captures (pixels).
     pub capture_width: u32,
     /// How much the aim pose points above the grip pose (degrees; a Touch controller's ray).
@@ -136,6 +139,7 @@ impl Default for Script {
             fov: [-54.0, 43.0, 46.0, -52.0],
             ipd: 0.064,
             refresh: 90.0,
+            latency_ms: 0.0,
             capture_width: 960,
             aim_pitch: 0.0,
             keys: Vec::new(),

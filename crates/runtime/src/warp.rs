@@ -120,6 +120,8 @@ float depth_at(float2 uv) {
 // than what's behind it over a slow game's frame or two).
 #define SEARCH 16
 #define STEP 1.5
+// 1 / the nearest a line of sight is followed from (5 cm).
+#define WMAX 20.0
 
 // A cell stretched across a jump in the picture's depth (a near thing's edge over what's far behind
 // it, pulled apart by the move) is not a surface; and a pixel whose own depth isn't the cell's (the
@@ -155,16 +157,25 @@ PDOut PSMain(WOut i) {
         float3 C = mul(from_target, float4(0, 0, 0, 1)).xyz;
         float3 D = mul(from_target, float4(ray, 0)).xyz;
         // Stepped by a source pixel at a time (in 1 / t, which moves along the line evenly), from
-        // near to far round where the grid put it.
-        float w0 = 1 / max(i.vz / src_info.z, 0.02);
+        // near to far round where the grid put it: no nearer than 5 cm (`WMAX`), out to the far
+        // distance (w = 0).
+        float w0 = 1 / max(i.vz / src_info.z, 1 / WMAX);
         float2 s0 = src_uv(C + D / w0);
         float2 s1 = src_uv(C + D / (w0 * 1.01));
-        float step_w = STEP * w0 * 0.01 / max(length((s1 - s0) * src_info.xy), 1e-3);
-        float prev_w = 0, prev_r = 0;
-        bool have_prev = false, found = false, past = false;
+        float px_per_w = length((s1 - s0) * src_info.xy) / (w0 * 0.01);
+        float prev_w = 0, prev_r = 0, prev_z = 0;
+        bool have_prev = false, found = false, past = false, still = false, have_far = false;
+        float2 far_uv = i.uv;
         float hit_w = 0;
-        [loop] for (int k = SEARCH; k >= -SEARCH; k--) {
-            float w = w0 + k * step_w;
+        if (px_per_w * WMAX < 1) {
+            // The line of sight hardly crosses the picture (the eye has hardly moved since it was
+            // drawn): what it sees is what's at the one place it crosses, whatever its depth.
+            still = true;
+        }
+        float step_w = min(STEP / max(px_per_w, 1e-6), WMAX / (2 * SEARCH));
+        float w_hi = min(w0 + SEARCH * step_w, WMAX);
+        [loop] for (int k = 0; k <= 2 * SEARCH && !still; k++) {
+            float w = w_hi - k * step_w;
             if (w <= 1e-4) {
                 past = true;
                 break;
@@ -174,26 +185,52 @@ PDOut PSMain(WOut i) {
             float2 s = src_uv(p);
             float r = p.z - depth_at(s);
             // (In front of what the picture shows there, then behind it: the surface is between,
-            // unless the line only passed behind a nearer thing's edge, which it goes on past.)
+            // unless what the picture shows jumped nearer from one step to the next: the line only
+            // passed behind a nearer thing's edge, and goes on past it. A surface seen edge-on
+            // changes depth fast but smoothly, and is met.)
+            float z = p.z - r;
             if (have_prev && prev_r < 0 && r >= 0) {
-                float lo = w, hi = prev_w;
-                [unroll] for (int b = 0; b < 5; b++) {
-                    float mid = 0.5 * (lo + hi);
-                    float3 q = C + D / mid;
-                    if (q.z - depth_at(src_uv(q)) >= 0) lo = mid; else hi = mid;
-                }
-                float3 q = C + D / lo;
-                if (abs(q.z - depth_at(src_uv(q))) < 0.05 * q.z + 0.02) {
+                float z_prev = prev_z;
+                if (z < 0.85 * z_prev - 0.02) {
+                    // Behind a nearer thing's edge here: what it hides is most likely what the line
+                    // saw just before, carried on behind it (the far side, not the near thing).
+                    // (A pixel and a half back from the edge, clear of its blend.)
+                    if (!have_far) {
+                        float2 before = src_uv(C + D / prev_w);
+                        float2 back = before - s;
+                        far_uv = before + back / max(length(back * src_info.xy), 1e-3) * 1.5;
+                    }
+                    have_far = true;
+                } else {
+                    float lo = w, hi = prev_w;
+                    [unroll] for (int b = 0; b < 5; b++) {
+                        float mid = 0.5 * (lo + hi);
+                        float3 q = C + D / mid;
+                        if (q.z - depth_at(src_uv(q)) >= 0) lo = mid; else hi = mid;
+                    }
                     hit_w = hi;
                     found = true;
                     break;
                 }
             }
+            prev_z = z;
             prev_w = w;
             prev_r = r;
             have_prev = true;
         }
-        if (found) {
+        if (still) {
+            uv = s0;
+            float z = depth_at(s0);
+            if (z >= 1e6) {
+                o.depth = 0.99999;
+                o.z = 0;
+            } else {
+                float t = max((z - C.z) / max(D.z, 1e-4), 0.01);
+                float4 c = mul(proj, float4(ray * t * src_info.z, 1));
+                o.depth = c.z / c.w;
+                o.z = t * src_info.z;
+            }
+        } else if (found) {
             float t = 1 / hit_w;
             uv = src_uv(C + D * t);
             float4 c = mul(proj, float4(ray * t * src_info.z, 1));
@@ -206,8 +243,10 @@ PDOut PSMain(WOut i) {
             o.depth = 0.99999;
             o.z = 0;
         } else {
-            // Nothing found: behind everything real, so the other eye's picture shows here where it
-            // saw the far side, and this only where nothing does.
+            // Nothing found (hidden from this eye when it was drawn): behind everything real, so the
+            // other eye's picture shows here where it saw the far side, and this only where nothing
+            // does, as the far side carried on behind the near thing.
+            if (have_far) uv = far_uv;
             o.depth = 0.999998;
         }
     }

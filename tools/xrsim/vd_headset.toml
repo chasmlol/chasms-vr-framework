@@ -1,0 +1,65 @@
+# The user's headset as Virtual Desktop presents it (tools/xrsim): a Quest 3 at 3072x3264 an eye,
+# 120 Hz, each frame's display time ~45 ms ahead (the stream's latency), and captures at full size.
+# Leans round the near dummy, then walks on the stick past things: what the picture does when the
+# head moves behind things, and whether it keeps the game's sharpness.
+duration = 24
+refresh = 120
+latency_ms = 45
+eye_size = [3072, 3264]
+capture_width = 3072
+
+[[key]]
+t = 0
+head = { pos = [0, 1.7, 0], yaw = 0, pitch = -5 }
+left = { pos = [-0.2, -0.35, 0.3], yaw = 0, pitch = 0, squeeze = 0, stick = [0, 0] }
+right = { pos = [0.2, -0.35, 0.3], yaw = 0, pitch = 0, squeeze = 0 }
+
+[[key]]
+t = 6
+head = { pos = [0, 1.7, 0], yaw = 0 }
+
+[[key]]
+t = 6.6
+head = { pos = [0.3, 1.6, 0.1], yaw = -15 }
+
+[[key]]
+t = 7.4
+head = { pos = [-0.3, 1.6, 0.1], yaw = 15 }
+
+[[key]]
+t = 8.2
+head = { pos = [0, 1.7, 0], yaw = 0 }
+
+[[key]]
+t = 12
+left = { stick = [0, 0] }
+
+[[key]]
+t = 12.3
+left = { stick = [0.4, 1] }
+
+[[key]]
+t = 17
+left = { stick = [0.4, 1] }
+
+[[key]]
+t = 17.3
+left = { stick = [0, 0] }
+
+[[capture]]
+t = 5
+name = "still"
+
+[[capture]]
+t = 7.0
+name = "leaning"
+
+[[capture]]
+t = 15
+name = "walking"
+
+[[film]]
+t = 6.4
+frames = 40
+name = "lean"
+crop = [900, 1000, 900, 900]

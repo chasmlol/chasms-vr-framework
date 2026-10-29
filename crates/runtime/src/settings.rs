@@ -82,7 +82,8 @@ pub struct Vr {
     /// comes a frame or more after it's asked for), not where they were when it was asked for.
     pub predict: bool,
     /// Give the headset each frame's depth with its picture, for its own reprojection (when its
-    /// runtime takes it).
+    /// runtime takes it). Off by default: Virtual Desktop takes it, but nothing it does is known
+    /// to use it, and it's more for the stream to carry.
     pub headset_depth: bool,
     /// The refresh rate to ask the headset for (Hz; 0: its highest). Some runtimes (Virtual
     /// Desktop) keep the rate their own settings have.
@@ -380,7 +381,7 @@ impl Default for Vr {
             ipd_scale: 1.0,
             reproject: true,
             predict: true,
-            headset_depth: true,
+            headset_depth: false,
             refresh_hz: 0.0,
             overscan: 0.0,
         }

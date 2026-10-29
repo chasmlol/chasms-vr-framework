@@ -45,6 +45,8 @@ pub struct Stats {
     pub frames: u64,
     /// Frames shown with a game picture.
     pub game_frames: u64,
+    /// Frames whose game picture was moved to the headset frame's eyes (`crate::warp`).
+    pub warped_frames: u64,
     /// Slots taken from the adapter.
     pub slots: u64,
     pub lockstep_timeouts: u64,
@@ -129,6 +131,9 @@ pub struct Session {
     states: Box<ObjectStates>,
     /// How long after the runtime's frame the game's picture of it is shown, seconds (smoothed).
     game_lag: f32,
+    /// The last frames' indices, display times and how far ahead the game was given poses for
+    /// them (seconds): when each game picture was meant to be shown.
+    frame_log: [(u64, i64, f32); 32],
     /// The player's walk and turn in the game, from its stamped steps (`crate::locomotion`), and
     /// the mapping (tracking -> world) for when this frame is shown: where the world is drawn and
     /// where the hands reach into it.
@@ -264,6 +269,7 @@ impl Session {
             objects: bytemuck::zeroed_box(),
             states: bytemuck::zeroed_box(),
             game_lag: 0.0,
+            frame_log: [(0, 0, 0.0); 32],
             locomotion: crate::locomotion::Locomotion::new(),
             map_now: None,
             test_taken: false,
@@ -363,13 +369,21 @@ impl Session {
             self.was_alive = alive;
         }
         self.game = if alive { self.link.read_game_state() } else { None };
-        // Where the game has the player when this frame is shown: its last step, walked and turned
-        // on from when its clock stood there (the game steps at its own, uneven pace).
+        // Where the game has the player now: its last step, walked and turned on from when its
+        // clock stood there to now (the game steps at its own, uneven pace). Now, not when this
+        // frame is shown: a game's world is where its own clock has it, the head alone is drawn
+        // for when it's seen. (Carried on to the showing, a streamed headset's 40 ms or more ahead,
+        // the world would run that far ahead of the game's own picture of it when walking: every
+        // frame's picture moved centimetres, torn open behind everything near.)
         match self.game.as_ref() {
             Some(g) => {
                 let m = WorldMap::from_state(&g.tracking);
                 self.locomotion.see(g.time_qpc, m);
-                self.map_now = Some(self.locomotion.at(frame.display_qpc, m));
+                let mut now = 0i64;
+                unsafe {
+                    let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut now);
+                }
+                self.map_now = Some(self.locomotion.at(now, m));
             }
             None => {
                 self.locomotion.reset();
@@ -776,10 +790,13 @@ impl Session {
         // draws is where things are when it's seen. (What the runtime draws itself is drawn for
         // this frame, with this frame's poses.)
         let mut ahead = frame;
-        let lead = if self.settings.current.vr.predict && !self.opts.lockstep { self.game_lag.clamp(0.0, 0.05) } else { 0.0 };
-        if lead > 0.0005
-            && let Some(at) = self.backend.locate_at(frame.display_time_ns + (lead as f64 * 1e9) as i64)
-        {
+        let mut lead = if self.settings.current.vr.predict && !self.opts.lockstep { self.game_lag.clamp(0.0, 0.05) } else { 0.0 };
+        let located = if lead > 0.0005 { self.backend.locate_at(frame.display_time_ns + (lead as f64 * 1e9) as i64) } else { None };
+        if located.is_none() {
+            lead = 0.0;
+        }
+        self.frame_log[(frame.index % 32) as usize] = (frame.index, frame.display_time_ns, lead);
+        if let Some(at) = located {
             ahead.hmd = at.hmd;
             ahead.eyes = at.eyes;
             for h in 0..2 {
@@ -843,7 +860,12 @@ impl Session {
                 let lag = ((frame.index - info.frame_index) as f32 / self.backend.refresh_hz().max(30.0)).min(0.1);
                 self.game_lag += (lag - self.game_lag) * 0.05;
                 if frame.index % 900 == 0 {
-                    tracing::info!("runtime: the game's picture is shown {:.0} ms after its frame", self.game_lag * 1000.0);
+                    tracing::info!(
+                        "runtime: the game's picture is shown {:.0} ms after its frame; {} of {} frames moved to the head",
+                        self.game_lag * 1000.0,
+                        self.stats.warped_frames,
+                        self.stats.frames
+                    );
                 }
             }
         }
@@ -1090,7 +1112,23 @@ impl Session {
         // however late the picture. Not moved, everything over the game's picture is drawn from
         // the eyes the game drew it from, and submitted with them: the headset turns the whole
         // frame for where the head is when it shows. (The runtime's own view: this frame's eyes.)
-        let warped = s.vr.reproject && stereo.is_some() && !framework;
+        // Moved only when it needs it: a picture the game drew for this frame's moment (it keeps up)
+        // goes as it is, as sharp as the game drew it, the headset turning it for the head as it
+        // does a native game's. A picture shown later than it was drawn for (a game slower than
+        // the headset, the same picture again), or drawn with the head somewhere else, is moved:
+        // the head where it is, and the walk carried on over how late it is.
+        let late = stereo.as_ref().map_or(0.0, |(_, info)| {
+            self.frame_log
+                .iter()
+                .find(|l| l.0 == info.frame_index && l.0 != 0)
+                .map_or(0.0, |&(_, t, lead)| ((frame.display_time_ns - t) as f64 * 1e-9 - lead as f64).max(0.0) as f32)
+        });
+        let head_off = stereo.as_ref().map_or(0.0, |(_, info)| {
+            (0..2).map(|e| Vec3::from_array(info.eye_pose[e].pos).distance(Vec3::from_array(frame.eyes[e].pos))).fold(0.0, f32::max)
+        });
+        let warped = s.vr.reproject && stereo.is_some() && !framework && (late > 0.002 || head_off > 0.004);
+        self.stats.warped_frames += warped as u64;
+        let walk = self.locomotion.walk();
         let (poses, fovs) = match &stereo {
             Some((_, info)) if !framework && !warped => (info.eye_pose, info.fov),
             _ => (frame.eyes, frame.fov),
@@ -1298,6 +1336,8 @@ impl Session {
         let held_objects = &mut self.held_objects;
         let warp = &mut self.warp;
         let map_now = self.map_now;
+        // A picture's mapping carried on by the walk over how late it is: where it's shown.
+        let shown_map = |m: &WorldMap| WorldMap { anchor: m.anchor + walk.0 * late, body_yaw: m.body_yaw + walk.1 * late, ..*m };
         for e in 0..2 {
             let target = &eyes[e];
             let (eye, fov) = (&poses[e], &fovs[e]);
@@ -1318,10 +1358,7 @@ impl Session {
                         let then = info.eye_map[k];
                         let given = then.world_per_meter > 0.0;
                         let then = WorldMap::from_slot(&then);
-                        let to_target = match map_now {
-                            Some(now) if given => now.matrix().inverse() * then.matrix(),
-                            _ => glam::Mat4::IDENTITY,
-                        };
+                        let to_target = if given { shown_map(&then).matrix().inverse() * then.matrix() } else { glam::Mat4::IDENTITY };
                         Some(crate::warp::WarpSource {
                             color: tex.srv.as_ref()?,
                             depth: (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[k].srv.as_ref())).flatten(),
@@ -1367,7 +1404,10 @@ impl Session {
             let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: depth_units, bloom: bloom_srv.as_ref(), lens: lens_srv.as_ref() });
             // What the hands hold, and what lies in the game's world placed where this eye's picture
             // shows it (the mapping the game drew it with; the mapping now, the picture moved to it).
-            let eye_map = stereo.as_ref().filter(|_| !framework && !moved).map(|(_, info)| WorldMap::from_slot(&info.eye_map[e]));
+            let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| {
+                let m = WorldMap::from_slot(&info.eye_map[e]);
+                if moved && info.eye_map[e].world_per_meter > 0.0 { shown_map(&m) } else { m }
+            });
             held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
             let held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
