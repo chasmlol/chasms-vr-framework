@@ -80,7 +80,7 @@ const TRIGGER_ON: f32 = 0.6;
 const TRIGGER_OFF: f32 = 0.3;
 const TRIGGER_READY: f32 = 0.05;
 /// A spell's art sits this far off the palm (m).
-const PALM_OUT: f32 = 0.045;
+const PALM_OUT: f32 = 0.06;
 /// The charge's haptics (after ISPVR): a pulse every `CHARGE_GAP_SLOW` seconds at the start down to
 /// every `CHARGE_GAP_FAST` when it's full, as strong as `CHARGE_FAINT + CHARGE_STRONG * charge^4`;
 /// held ready, a soft tick every `READY_TICK` seconds.
