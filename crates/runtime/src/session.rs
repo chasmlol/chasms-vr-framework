@@ -139,6 +139,10 @@ pub struct Session {
     /// Hands whose trigger casts a spell this frame (`crate::combat`).
     spell_hands: [bool; 2],
     objects: Box<ObjectTable>,
+    /// The game's effect shaders over what the runtime draws ([`Overlays`]), and its sequence last
+    /// read.
+    overlays: Box<Overlays>,
+    overlays_seq: u32,
     states: Box<ObjectStates>,
     /// How long after the runtime's frame the game's picture of it is shown, seconds (smoothed).
     game_lag: f32,
@@ -285,6 +289,8 @@ impl Session {
             combat: crate::combat::Combat::default(),
             spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
+            overlays: bytemuck::zeroed_box(),
+            overlays_seq: 0,
             states: bytemuck::zeroed_box(),
             game_lag: 0.0,
             frame_log: [(0, 0, 0.0); 32],
@@ -700,6 +706,11 @@ impl Session {
             self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
             self.combat.read(&self.link);
+            // The game's effect shaders over what the runtime draws, when they change.
+            if self.link.read_overlays_into(&mut self.overlays) && self.overlays.seq != self.overlays_seq {
+                self.overlays_seq = self.overlays.seq;
+                self.held_objects.set_overlays(&self.gpu, &self.overlays);
+            }
             self.rig.set_actor_parts(self.combat.actor_parts());
             let combat = self.combat.update(&crate::combat::CombatInput {
                 rig: &self.rig,

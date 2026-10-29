@@ -103,7 +103,7 @@ fn a_hand_pressed_flat_on_a_wall() {
             let (cam, rot) = look_at(eye, at + Vec3::new(0.0, 0.0, 0.06));
             let fov = Fov { left: -0.6, right: 0.6, up: 0.48, down: -0.48 };
             let light = LightHint { sun_dir: Vec3::new(-0.4, 0.8, -0.45).normalize().to_array(), sun_color: [1.0, 0.95, 0.9], ambient: [0.3, 0.32, 0.36], ..Default::default() };
-            body.draw(&gpu, &target, &pose(cam, rot), &fov, light, None, &[HeldDraw { model: &wall, parts: &wall_at, key: "" }]);
+            body.draw(&gpu, &target, &pose(cam, rot), &fov, light, None, &[HeldDraw { model: &wall, parts: &wall_at, key: "", overlay: None }]);
             rustvr_gpu::save_png(&out_dir.join(format!("{case}_{view}.png")), width, height, &tex.read_rgba8(&gpu).unwrap()).unwrap();
         }
     }

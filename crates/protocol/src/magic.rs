@@ -73,12 +73,18 @@ pub const MAX_OVERLAYS: usize = 16;
 /// The edge (where the surface turns away from the eye) shows: `edge` coloured, `edge_falloff`
 /// sharp.
 pub const OVL_EDGE: u32 = 1 << 0;
-/// The fill texture is added over the model (else nothing but the edge).
+/// The fill shows (a colour, times `texture` when it has one).
 pub const OVL_FILL: u32 = 1 << 1;
+/// The edge is where the surface faces the eye, not where it turns away.
+pub const OVL_EDGE_INVERSE: u32 = 1 << 2;
+/// Added to what's there (else blended over it by its alpha).
+pub const OVL_ADDITIVE: u32 = 1 << 3;
 
-/// The game's effect shader on something the runtime draws: added over its model's surface, each
-/// point `fill · texture(uv + scroll · t)` plus `edge · (1 − |n·v|)^edge_falloff`, each scaled by
-/// its alpha (pulsing `alpha · (1 + pulse[0] · sin(2π · pulse[1] · t))`, at most 1).
+/// The game's effect shader on something the runtime draws: over its model's surface, each point
+/// `fill · texture(uv + scroll · t)` and `edge · (1 − |n·v|)^edge_falloff` (`|n·v|` with
+/// [`OVL_EDGE_INVERSE`]), each by its alpha (pulsing `alpha · (1 + pulse[0] · sin(2π · pulse[1] ·
+/// t))`, at most 1), blended over it or added ([`OVL_ADDITIVE`]). Colours in the display's range,
+/// as the game blends them. Without a texture the fill is its colour.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Overlay {

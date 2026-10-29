@@ -490,6 +490,40 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     return float4(m_display_to_linear(col), 1);
 }
 
+// The game's effect shader over something held (Oblivion's EFSH membrane: an enchanted weapon's
+// shimmer): its fill (a colour, times its texture scrolled over the surface when it has one) and
+// its edge (brightest where the surface turns away from the eye, or facing it if inverse), each
+// with its alpha pulsing; in the display's range as the game blends it.
+cbuffer Overlay : register(b6) {
+    float4 ovl_fill;     // rgb, alpha
+    float4 ovl_edge;     // rgb, alpha
+    float4 ovl_params;   // x: the edge's falloff, y: 1 for an inverse edge, z: 1 textured, w: seconds
+    float4 ovl_scroll;   // xy: the texture's scroll (uv a second), z: the fill's pulse amplitude, w: its frequency
+    float4 ovl_pulse;    // x: the edge's pulse amplitude, y: its frequency, z: 1 with the fill
+};
+Texture2D ovl_tex : register(t15);
+float4 PSOverlay(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
+    if (i.vis < 0) discard;
+    if (behind_game(i.pos, i.view_z)) discard;
+    float3 n = normalize(i.normal);
+    float3 v = normalize(eye_pos.xyz - i.world);
+    float facing = saturate(abs(dot(n, v)));
+    float t = ovl_params.w;
+    float fill_a = ovl_pulse.z > 0 ? ovl_fill.a * saturate(1 + ovl_scroll.z * sin(6.2831853 * ovl_scroll.w * t)) : 0;
+    float3 fill = ovl_fill.rgb;
+    if (ovl_params.z > 0) {
+        float4 tx = ovl_tex.Sample(samp, i.uv + ovl_scroll.xy * t);
+        fill *= tx.rgb;
+        fill_a *= tx.a;
+    }
+    float e = ovl_params.y > 0 ? facing : 1 - facing;
+    float edge_a = ovl_edge.a * pow(max(e, 1e-4), max(ovl_params.x, 0.01)) * saturate(1 + ovl_pulse.x * sin(6.2831853 * ovl_pulse.y * t));
+    float a = saturate(fill_a + edge_a);
+    if (a <= 0.002) discard;
+    float3 c = (fill * fill_a + ovl_edge.rgb * edge_a) / max(fill_a + edge_a, 1e-4);
+    return float4(m_display_to_linear(saturate(c)), a);
+}
+
 float4 PSGhost(VSOut i) : SV_Target {
     if (i.vis < 0) discard;
     float3 n = normalize(i.normal);
@@ -756,6 +790,31 @@ const SOURCE_BIAS: f32 = 0.006;
 const SOURCE_BIAS_PER_METER: f32 = 0.005;
 
 /// The game's lighting, as the shader's `Lighting` buffer holds it.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct OverlayCb {
+    fill: [f32; 4],
+    edge: [f32; 4],
+    params: [f32; 4],
+    scroll: [f32; 4],
+    pulse: [f32; 4],
+}
+
+impl OverlayCb {
+    fn of(o: &crate::OverlayDraw) -> OverlayCb {
+        let v = &o.overlay;
+        let edge = v.flags & rustvr_protocol::OVL_EDGE != 0;
+        let fill = v.flags & rustvr_protocol::OVL_FILL != 0;
+        OverlayCb {
+            fill: v.fill,
+            edge: [v.edge[0], v.edge[1], v.edge[2], if edge { v.edge[3] } else { 0.0 }],
+            params: [v.edge_falloff, (v.flags & rustvr_protocol::OVL_EDGE_INVERSE != 0) as u32 as f32, o.texture.is_some() as u32 as f32, o.time],
+            scroll: [v.scroll[0], v.scroll[1], v.fill_pulse[0], v.fill_pulse[1]],
+            pulse: [v.edge_pulse[0], v.edge_pulse[1], fill as u32 as f32, 0.0],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct LightingCb {
@@ -1273,6 +1332,9 @@ pub struct Renderer {
     laser_program: Program,
     laser_cb: ConstantBuffer<LaserCb>,
     additive: ID3D11BlendState,
+    /// The game's effect shaders over what's held ([`crate::OverlayDraw`]).
+    overlay: Program,
+    overlay_cb: ConstantBuffer<OverlayCb>,
     /// The player drawn on its own, laid over the picture through the game's lens
     /// ([`Renderer::draw`]): the layer (kept until the size or format changes), and the pass.
     layer: Option<Texture>,
@@ -1325,6 +1387,8 @@ impl Renderer {
             laser_program: Program::with_entries(gpu, &source, "avatar", "VSLaser", "PSLaser", &[])?,
             laser_cb: ConstantBuffer::new(gpu)?,
             additive: additive_blend(gpu)?,
+            overlay: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSOverlay", &layout)?,
+            overlay_cb: ConstantBuffer::new(gpu)?,
             layer: None,
             through_lens: Program::new(gpu, THROUGH_LENS, "avatar_lens", &[])?,
             lens_cb: ConstantBuffer::new(gpu)?,
@@ -1553,6 +1617,7 @@ impl Renderer {
                 let meshes: Vec<&GpuMesh> = h.model.meshes.iter().zip(&h.model.info).filter(|(_, i)| !i.special).map(|(m, _)| m).collect();
                 self.draw_shaded(ctx, &meshes, ALL);
             }
+            self.draw_overlays(ctx, held);
             if let Some(special) = special.as_mut() {
                 self.specials(gpu, held, &mut **special, eye, fov, width, height, depth.as_ref().map(|d| (d.srv, d.units_per_meter)));
                 // (It may have changed any state.)
@@ -1778,6 +1843,41 @@ impl Renderer {
             ctx.RSSetState(&self.two_sided);
         }
         pipeline::viewport(ctx, width, height);
+    }
+
+    /// The game's effect shaders over what's held ([`crate::OverlayDraw`]): each model drawn
+    /// again over itself, blended as the game blends the shader (added, or over), in the depth
+    /// without writing it.
+    fn draw_overlays(&self, ctx: &ID3D11DeviceContext, held: &[crate::HeldDraw]) {
+        if held.iter().all(|h| h.overlay.is_none()) {
+            return;
+        }
+        self.overlay.bind(ctx);
+        unsafe {
+            ctx.OMSetDepthStencilState(&self.depth_test, 0);
+            ctx.RSSetState(&self.cull_back);
+            ctx.PSSetConstantBuffers(6, Some(&[Some(self.overlay_cb.buf.clone())]));
+        }
+        for h in held {
+            let Some(o) = &h.overlay else { continue };
+            self.overlay_cb.update(ctx, &OverlayCb::of(o));
+            let blend = if o.overlay.flags & rustvr_protocol::OVL_ADDITIVE != 0 { &self.additive } else { &self.alpha_blend };
+            h.model.upload(ctx, h.parts);
+            unsafe {
+                ctx.OMSetBlendState(blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
+                ctx.VSSetConstantBuffers(1, Some(&[Some(h.model.cb.buf.clone())]));
+                ctx.PSSetShaderResources(15, Some(&[o.texture.clone()]));
+            }
+            for (m, _) in h.model.meshes.iter().zip(&h.model.info).filter(|(_, i)| !i.special) {
+                draw_mesh(ctx, m, ALL);
+            }
+        }
+        unsafe {
+            ctx.PSSetShaderResources(15, Some(&[None]));
+            ctx.OMSetBlendState(&self.opaque_blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(&self.depth_write, 0);
+            ctx.RSSetState(&self.two_sided);
+        }
     }
 
     /// The body's meshes (see [`Renderer::draw_shaded`]).
@@ -2123,7 +2223,7 @@ mod tests {
     #[test]
     fn the_shader_compiles() {
         let source = format!("{}{}{}", super::metro::HLSL, crate::gamebryo::HLSL, super::SHADER);
-        for (vs, ps) in [("VSMain", "PSMain"), ("VSMain", "PSMetro"), ("VSMain", "PSMetroGlass"), ("VSMain", "PSGamebryo"), ("VSMain", "PSGhost")] {
+        for (vs, ps) in [("VSMain", "PSMain"), ("VSMain", "PSMetro"), ("VSMain", "PSMetroGlass"), ("VSMain", "PSGamebryo"), ("VSMain", "PSGhost"), ("VSMain", "PSOverlay")] {
             rustvr_gpu::shader::compile(&source, "avatar", vs, "vs_5_0").unwrap_or_else(|e| panic!("{vs}: {e:#}"));
             rustvr_gpu::shader::compile(&source, "avatar", ps, "ps_5_0").unwrap_or_else(|e| panic!("{ps}: {e:#}"));
         }
