@@ -75,6 +75,8 @@ impl HolsterLink {
         let seq = link.inventory_seq();
         if seq != self.inventory_seq && link.read_inventory_into(&mut self.inventory) {
             self.inventory_seq = seq;
+            let first = rig.inventory().count == 0 && self.inventory.count > 0;
+            let changed = rig.inventory().count != self.inventory.count;
             rig.set_inventory(&self.inventory);
             let out = rig.drawn_out();
             let mut descs = Vec::new();
@@ -84,12 +86,14 @@ impl HolsterLink {
                 }
             }
             held.sync_descs(gpu, &descs);
-            tracing::info!(
+            if first || changed {
+                tracing::info!(
                 "holsters: the game's inventory: {} things in {} categories, {} slots of its own",
                 self.inventory.count,
                 self.inventory.category_count,
                 self.inventory.default_count
-            );
+                );
+            }
         }
         if link.read_slot_edits_into(&mut self.edits) {
             if self.edits.revision != 0 && self.edits.revision != self.edits_revision {

@@ -2441,6 +2441,7 @@ impl Rig {
             if pocket.is_some() || zones.iter().any(|z| self.anchor.contains(z, palm_t)) {
                 self.remove(id);
                 self.debug.pocket_returns += 1;
+                tracing::info!("rig: {id:#x} put back (in slot {pocket:?})");
                 self.pocket_events.push(PocketEvent::PutBack(pocket.unwrap_or(d.slot), d.key));
                 self.emit(Cue::HolsterIn, Some(i), None, palm, 1.0);
                 return;
@@ -2657,7 +2658,13 @@ impl Rig {
         let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
         let Some(slot) = self.pockets.get(k) else { return };
         let out = self.drawn_out();
-        let Some(item) = pockets::contents(slot, &self.inventory, &out).first().map(|i| **i) else {
+        let has = pockets::contents(slot, &self.inventory, &out);
+        tracing::info!(
+            "rig: slot {k} ({}) has {}",
+            slot.name,
+            has.iter().take(4).map(|i| format!("{} x{} (restores {:?}, value {}, power {})", i.name(), i.count, i.restores, i.value, i.power)).collect::<Vec<_>>().join(", ")
+        );
+        let Some(item) = has.first().map(|i| **i) else {
             if slot.empty != crate::settings::SlotEmpty::Silent {
                 self.emit(Cue::Fail, Some(i), None, palm, 0.6);
             }
