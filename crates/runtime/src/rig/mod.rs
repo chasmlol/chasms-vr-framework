@@ -263,6 +263,11 @@ struct Hand {
     fingers: [RigidBodyHandle; 5],
     finger_at: [Vec3; 5],
     finger_vel: [Vec3; 5],
+    /// The fingers as the controller has them, eased as the drawn hand's are (the same solver on
+    /// the same input), this frame's: the capsules are where the drawn fingers are (a lifted thumb
+    /// straight).
+    finger_solver: rustvr_ik::FingerSolver,
+    drawn_curls: [f32; 5],
     /// The fingers push things only while the hand has nothing (holding, steering or working
     /// something, they're on it); and they knock loose things about only while it isn't about to
     /// take one (they'd nudge it out of the grab).
@@ -1401,11 +1406,7 @@ impl Rig {
             let hand = self.offsets.hand_frame(side, rustvr_ik::Pose::IDENTITY);
             // As the drawn hand's are, from the controller; an empty hand's as what it's pressed
             // on pushes them open.
-            let curls = if h.reach_from.is_some() {
-                h.curls
-            } else {
-                rustvr_ik::FingerSolver::target(&rustvr_ik::FingerInput::from_hand(&inp.frame.hands[i], inp.frame.fingers[i]), rustvr_ik::HoldShape::None).0
-            };
+            let curls = if h.reach_from.is_some() { h.curls } else { h.drawn_curls };
             h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none() && h.valve.is_none();
             // The fingers are the hand's own collider (curled as the controller has them): what
             // the hand meets, they meet too, and nothing goes through them.
@@ -1603,6 +1604,8 @@ impl Rig {
                 fingers,
                 finger_at: [v3(g.pos); 5],
                 finger_vel: [Vec3::ZERO; 5],
+                finger_solver: rustvr_ik::FingerSolver::new(),
+                drawn_curls: [0.0; 5],
                 fingers_on: false,
                 grip_down: false,
                 grip_toggled: false,
@@ -3810,6 +3813,12 @@ impl Rig {
         let hands = self.hands.as_mut().unwrap();
         let holding = [hands[0].holding, hands[1].holding];
         for (i, h) in hands.iter_mut().enumerate() {
+            // (A thumb lifted off the controls stands up only a little: its capsule stays straight,
+            // which would only catch on what the hand rests against.)
+            let fingers = rustvr_ik::FingerInput::from_hand(&inp.frame.hands[i], inp.frame.fingers[i]);
+            let mut drawn = h.finger_solver.update(dt, &fingers, rustvr_ik::HoldShape::None).curl;
+            drawn[0] = drawn[0].max(0.0);
+            h.drawn_curls = drawn;
             let was_on = std::mem::replace(&mut h.was_on, h.holding.or(h.support.as_ref().map(|s| s.id)));
             if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() || h.valve.is_some() {
                 h.reach_from = None;
@@ -3898,8 +3907,8 @@ impl Rig {
                 // far open as they'd be pushed (a relaxed hand's back past straight, a clenched
                 // fist's hardly).
                 let ease = 1.0 - (-dt / FINGER_EASE_TIME).exp();
-                let raw = rustvr_ik::FingerSolver::target(&rustvr_ik::FingerInput::from_hand(&inp.frame.hands[i], inp.frame.fingers[i]), rustvr_ik::HoldShape::None).0;
-                let held: [f32; 5] = if h.reach_from.is_some() { std::array::from_fn(|f| h.held_curls[f] + (raw[f] - h.held_curls[f]) * ease) } else { raw };
+                let drawn = h.drawn_curls;
+                let held: [f32; 5] = if h.reach_from.is_some() { std::array::from_fn(|f| h.held_curls[f] + (drawn[f] - h.held_curls[f]) * ease) } else { drawn };
                 h.held_curls = held;
                 h.open = std::array::from_fn(|f| (held[f] - fingers::give(held[f])).max(-fingers::BACK[f]));
                 // Where the palm alone gets to: the fingers bend to make room for it there, eased

@@ -113,6 +113,14 @@ impl Default for Calibration {
     }
 }
 
+/// A pose held to measure the arms: the head and both grips (tracking space), both arms straight
+/// (out to the sides, or out in front).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StraightArms {
+    pub head: Pose,
+    pub grips: [Pose; 2],
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodyOutput {
     /// Canonical joint frames in tracking space, indexed by `rustvr_protocol::Joint as usize`.

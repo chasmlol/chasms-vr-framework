@@ -10,7 +10,7 @@ use crate::math::{clamp_dt, flat, frame_yz, sanitize_pos, sanitize_rot, smoothin
 use crate::skeleton::Skeleton;
 use crate::spine::{self, ChainInput, MAX_PITCH};
 use crate::torso::{RootYaw, TorsoYaw};
-use crate::{BodyOutput, BodyParams, Calibration, Pose, Side, TrackedInput};
+use crate::{BodyOutput, BodyParams, Calibration, Pose, Side, StraightArms, TrackedInput};
 
 /// Smoothing of the centre-of-mass and head velocities the stepping logic reads (est.).
 const VELOCITY_TAU: f32 = 0.1;
@@ -66,6 +66,55 @@ impl BodySolver {
     pub fn set_calibration(&mut self, c: Calibration) {
         self.calibration = sanitize_calibration(c, self.calibration);
         self.skel = Skeleton::new(&self.params, self.calibration);
+    }
+
+    /// The arm span (as [`Calibration::arm_span`] takes it) at which the arms are just straight in
+    /// every pose given, with `slack` (a share of the arm) to spare: the arm as this solver lays
+    /// it out, its shoulders where it puts them and the clavicle reaching towards the hand, so a
+    /// player's straight arm is drawn straight (a little stretched rather than bent). None when
+    /// no span in range does it.
+    pub fn straight_arm_span(&self, poses: &[StraightArms], slack: f32) -> Option<f32> {
+        if poses.is_empty() {
+            return None;
+        }
+        let eye = self.calibration.eye_height;
+        // How far the least stretched arm reaches past its length (a share of it), at a span.
+        let reach = |span: f32| {
+            let mut least = f32::INFINITY;
+            for pose in poses {
+                // Standing straight: the head at the eye height (the arms only care where the
+                // hands are from it).
+                let lift = Vec3::new(0.0, eye - pose.head.pos.y, 0.0);
+                let mut s = BodySolver::new(self.params, Calibration { eye_height: eye, arm_span: span });
+                let input = TrackedInput {
+                    dt: self.params.nominal_dt,
+                    head: Pose { pos: pose.head.pos + lift, rot: pose.head.rot },
+                    grips: pose.grips.map(|g| Some(Pose { pos: g.pos + lift, rot: g.rot })),
+                    locomotion: Vec3::ZERO,
+                    seated: false,
+                    elbows: [None; 2],
+                };
+                let mut out = s.solve(&input);
+                for _ in 0..30 {
+                    out = s.solve(&input);
+                }
+                for (shoulder, hand) in [(Joint::LeftUpperArm, Joint::LeftHand), (Joint::RightUpperArm, Joint::RightHand)] {
+                    let d = out.joints[shoulder as usize].pos.distance(out.joints[hand as usize].pos);
+                    least = least.min(d / out.arm_length - 1.0);
+                }
+            }
+            least
+        };
+        // A longer arm reaches less far past its length.
+        let [mut lo, mut hi] = ARM_SPAN_RANGE;
+        if reach(lo) < slack || reach(hi) > slack {
+            return None;
+        }
+        for _ in 0..20 {
+            let mid = 0.5 * (lo + hi);
+            if reach(mid) > slack { lo = mid } else { hi = mid }
+        }
+        Some(lo)
     }
 
     /// "Stand straight and look ahead": the eye height.

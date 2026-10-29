@@ -114,6 +114,9 @@ pub struct TwoBone {
     /// Unit direction of the forearm (towards the wrist end of the bone, which is the target
     /// unless the hand was left floating).
     pub forearm: Vec3,
+    /// The way the forearm folds, square to the upper arm: from the pole, so a straight arm has
+    /// one too (its roll doesn't spin).
+    pub fold: Vec3,
     pub reached: bool,
 }
 
@@ -144,11 +147,13 @@ pub fn two_bone(
     let (a, b) = (a * k, b * k);
     let cos_shoulder = ((a * a + d_eff * d_eff - b * b) / (2.0 * a * d_eff)).clamp(-1.0, 1.0);
     let side = pole.reject_from(axis).try_normalize().unwrap_or_else(|| axis.any_orthonormal_vector());
-    let elbow = shoulder + (axis * cos_shoulder + side * (1.0 - cos_shoulder * cos_shoulder).sqrt()) * a;
+    let sin_shoulder = (1.0 - cos_shoulder * cos_shoulder).sqrt();
+    let elbow = shoulder + (axis * cos_shoulder + side * sin_shoulder) * a;
     let wrist = shoulder + axis * d_eff;
     TwoBone {
         elbow,
         forearm: (wrist - elbow).normalize_or(axis),
+        fold: (axis * sin_shoulder - side * cos_shoulder).normalize_or(-side),
         reached: d <= (lengths[0] + lengths[1]) * 1.001,
     }
 }
@@ -221,8 +226,8 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
 
     let solved = two_bone(shoulder, wrist, lengths, pole, flex, p.arm_stretch);
     let upper_dir = (solved.elbow - shoulder).normalize_or(-UP);
-    // The upper arm's +Z faces the way the forearm folds (forward in the T-pose).
-    let upper = frame_yz(upper_dir, solved.forearm, forward);
+    // The upper arm's +Z faces the way the forearm folds (forward in the T-pose), straight or not.
+    let upper = frame_yz(upper_dir, solved.fold, forward);
     // The forearm joint without twist is the upper arm frame turned through the elbow hinge;
     // it then takes part of the hand's twist about the forearm.
     let hinge = Quat::from_rotation_arc(upper_dir, solved.forearm);

@@ -9,7 +9,7 @@ use glam::{Quat, Vec3};
 use rustvr_avatar::collimator::Collimator;
 use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput, GameShading, Grasp, HeldHand};
 use rustvr_gpu::Gpu;
-use rustvr_ik::{BodyParams, BodySolver, Calibration, FingerInput, FingerSolver, HandOffsets, HoldShape, Side, TrackedInput};
+use rustvr_ik::{BodyParams, BodySolver, Calibration, FingerInput, FingerSolver, HandOffsets, HoldShape, Side, StraightArms, TrackedInput};
 use rustvr_protocol::*;
 
 use crate::backend::{EyeTarget, HmdFrame};
@@ -189,7 +189,28 @@ pub fn measure_tpose(head: Vec3, left: Vec3, right: Vec3) -> Option<(f32, f32)> 
     (level && (0.9..2.6).contains(&span) && (1.0..2.4).contains(&head.y)).then_some((head.y + 0.11, span))
 }
 
+/// Both arms held straight out in front: both grips well ahead of the head (the way it faces),
+/// about shoulder height, about shoulder width apart.
+pub fn arms_in_front(head: (Vec3, Quat), left: Vec3, right: Vec3) -> bool {
+    let fwd = head.1 * Vec3::Z;
+    let Some(fwd) = Vec3::new(fwd.x, 0.0, fwd.z).try_normalize() else { return false };
+    let out = |g: Vec3| (g - head.0).dot(fwd) > 0.3 && (g.y - (head.0.y - 0.25)).abs() < 0.3;
+    out(left) && out(right) && left.distance(right) < 0.9
+}
+
+/// How far past their length the arms reach when the player holds them straight, as the
+/// measurement sets them (a share of the arm): straight arms are drawn straight, a little
+/// stretched, however straight the player held them then.
+const STRAIGHT_SLACK: f32 = 0.02;
+
 impl PlayerBody {
+    /// The arm span at which the body's arms are just straight in every pose given (the arms out
+    /// to the sides and in front): as the body solver lays the arm out, so a player's straight
+    /// arm is drawn straight.
+    pub fn straight_arm_span(&self, poses: &[StraightArms]) -> Option<f32> {
+        self.solver.straight_arm_span(poses, STRAIGHT_SLACK)
+    }
+
     /// The body's calibration: the player's height from the settings, else the measured standing
     /// eye height; the arm span from the settings, else about the height.
     fn calibration(&self, inp: &BodyInput) -> Option<Calibration> {

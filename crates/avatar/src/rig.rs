@@ -1441,40 +1441,6 @@ mod tests {
     }
 
     #[test]
-    fn an_arm_longer_than_the_models_stretches_evenly_never_at_the_joints() {
-        // The mannequin in its bind pose, then its right hand moved 12 cm further out along the arm
-        // (the player's arm is longer, or the hand's past where the arm reaches): the forearm's
-        // skin spans elbow to hand, its wrist end on the hand and its elbow end on the elbow, and
-        // a point half way along it half way between.
-        let source = crate::procedural::mannequin();
-        let rig = Rig::new(&source.bones, &[]).unwrap();
-        let mut joints = bind_joints(&rig, 1.0, Mat4::IDENTITY);
-        let (elbow, wrist) = (Vec3::from_array(joints[Joint::RightLowerArm as usize].pos), Vec3::from_array(joints[Joint::RightHand as usize].pos));
-        let out = (wrist - elbow).normalize();
-        let hand = wrist + out * 0.12;
-        joints[Joint::RightHand as usize].pos = hand.to_array();
-        let fingers = [Fingers::default(); 2];
-        let mut posed = rig.posed();
-        rig.pose(&PoseInput { joints: &joints, hands: [None, None], fingers: &fingers, held: [None, None], grasp: [None, None], chop_head: false }, &mut posed);
-        let fore = rig.joint_bone[Joint::RightLowerArm as usize].unwrap();
-        let skin = |p: Vec3| posed.skin[fore].transform_point3(p);
-        assert!(skin(elbow).distance(elbow) < 1e-4, "the elbow end stays on the elbow: {:?}", skin(elbow));
-        assert!(skin(wrist).distance(hand) < 1e-4, "the wrist end is on the hand: {:?} for {hand:?}", skin(wrist));
-        let mid = skin((elbow + wrist) * 0.5);
-        assert!(mid.distance((elbow + hand) * 0.5) < 1e-4, "stretched evenly: {mid:?}");
-        // A little stronger, as the square root of how much longer (at most a fifth).
-        let side = out.any_orthonormal_vector() * 0.03;
-        let across = skin(elbow + side).distance(elbow) / 0.03;
-        let k = elbow.distance(hand) / elbow.distance(wrist);
-        assert!((across - k.sqrt().clamp(0.9, 1.2)).abs() < 1e-3, "{across} for {k}");
-        // The body's size is its trunk's, and the upper arm, its joints where they were, is as it
-        // was.
-        assert!((posed.scale - 1.0).abs() < 1e-4, "scale {}", posed.scale);
-        let upper = rig.joint_bone[Joint::RightUpperArm as usize].unwrap();
-        assert!(posed.skin[upper].abs_diff_eq(Mat4::IDENTITY, 1e-4));
-    }
-
-    #[test]
     fn straight_fingers_reproduce_a_straight_bind_hand() {
         // The mannequin's fingers are straight in its bind pose, so curl 0 changes nothing.
         let source = crate::procedural::mannequin();

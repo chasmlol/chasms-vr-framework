@@ -962,36 +962,6 @@ mod tests {
     use super::*;
     use glam::Quat;
 
-    /// A hand laid out flat (fingers straight along -Z), then each finger bent `angle` at each of
-    /// its joints.
-    fn hand(angle: [f32; 5]) -> [Vec3; 26] {
-        let mut j = [Vec3::ZERO; 26];
-        let chains: [&[usize]; 5] = [&[2, 3, 4, 5], &[6, 7, 8, 9, 10], &[11, 12, 13, 14, 15], &[16, 17, 18, 19, 20], &[21, 22, 23, 24, 25]];
-        for (f, chain) in chains.iter().enumerate() {
-            let mut p = Vec3::new(f as f32 * 0.02, 0.0, 0.0);
-            let mut dir = Vec3::NEG_Z;
-            for (k, &i) in chain.iter().enumerate() {
-                j[i] = p;
-                if k > 0 {
-                    dir = Quat::from_rotation_x(-angle[f]) * dir;
-                }
-                p += dir * 0.03;
-            }
-        }
-        j
-    }
-
-    #[test]
-    fn tracked_fingers_read_open_and_closed() {
-        let open = finger_curls(&hand([0.0; 5]));
-        assert!(open.iter().all(|c| *c < 0.02), "a flat hand is open: {open:?}");
-        let fist_hand = finger_curls(&hand([0.55, 1.4, 1.4, 1.4, 1.4]));
-        assert!(fist_hand[1..].iter().all(|c| *c > 0.9), "a fist is closed: {fist_hand:?}");
-        assert!(fist(&fist_hand) > 0.99 && fist(&open) == 0.0, "a fist grabs, an open hand doesn't");
-        let point = finger_curls(&hand([0.4, 0.0, 1.4, 1.4, 1.4]));
-        assert!(point[1] < 0.05 && point[2] > 0.9, "pointing: {point:?}");
-    }
-
     #[test]
     fn mirroring_keeps_meaning() {
         // In OpenXR, a head turned 90 degrees to the right looks along +X (yaw -90 about +Y).

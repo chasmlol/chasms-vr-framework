@@ -35,8 +35,9 @@ pub struct Status {
     pub arm_span: f32,
     /// Your standing head height as measured (tracking space, 0 = not yet).
     pub head_height: f32,
-    /// Seconds left before the arms are measured.
+    /// Seconds left before the arms are measured, and the pose they're measured in.
     pub countdown: Option<f32>,
+    pub countdown_pose: &'static str,
     /// The headset's per-eye resolution (what it's shown), and the game's (what it draws).
     pub headset_size: (u32, u32),
     pub game_size: Option<(u32, u32)>,
@@ -276,14 +277,14 @@ fn body(ui: &mut egui::Ui, s: &mut Settings, status: &Status, rects: &mut Vec<(S
     slider(ui, "Height offset", &mut s.comfort.height_offset, -0.5, 0.5, " m", 2);
     ui.separator();
     ui.heading("Arms");
-    slider(ui, "Arm span, hand to hand (0 = automatic)", &mut s.body.arm_span, 0.0, 2.4, " m", 2);
+    slider(ui, "Arm span the body is built for (0 = automatic)", &mut s.body.arm_span, 0.0, 2.4, " m", 2);
     ui.label(format!("Using {:.2} m{}", status.arm_span, if s.body.arm_span <= 1.0 { " (grows when your real arms reach further)" } else { "" }));
     ui.horizontal(|ui| {
-        let r = ui.add_enabled(status.countdown.is_none(), egui::Button::new("Measure my arms (T-pose)"));
+        let r = ui.add_enabled(status.countdown.is_none(), egui::Button::new("Measure my arms"));
         rects.push(("body:measure_arms".into(), r.rect));
         out.1 = r.clicked();
         if let Some(t) = status.countdown {
-            ui.label(egui::RichText::new(format!("Arms straight out... {:.0}", t.ceil())).strong());
+            ui.label(egui::RichText::new(format!("{}... {:.0}", status.countdown_pose, t.ceil())).strong());
         }
     });
     ui.separator();
@@ -375,7 +376,7 @@ fn help(ui: &mut egui::Ui) {
     ]);
     section(ui, "Body", &[
         ("Body tab", "your height, arm span, seated mode"),
-        ("Measure my arms", "stand in a T-pose for 3 seconds"),
+        ("Measure my arms", "arms straight out to the sides for 3 seconds, then straight out in front for 3"),
         ("Hands tab", "physics hands, gloves, grip toggle, weight, laser, stock, the game's recoil"),
     ]);
 }

@@ -64,8 +64,9 @@ pub struct BodyParams {
     pub spine_tau: f32,
 
     // ---- arms ----
-    /// The elbow keeps at least this bend at full reach (the bones stretch instead), which stops
-    /// it spinning when the arm is straight; FRIK 10° (try 6–14°).
+    /// The elbow keeps at least this bend at full reach (the bones stretch instead). FRIK keeps 10°
+    /// so a straight arm's roll doesn't spin; here the roll comes from the elbow's swivel
+    /// (`TwoBone::fold`), so a player's straight arm is drawn straight.
     pub elbow_min_flexion_deg: f32,
     /// Near the shoulder the elbow bends at most this much and the arm shortens instead of
     /// flipping (FRIK 145°).
@@ -172,7 +173,7 @@ impl Default for BodyParams {
             min_head_height: 0.8,
             spine_tau: 0.05,
 
-            elbow_min_flexion_deg: 10.0,
+            elbow_min_flexion_deg: 0.0,
             elbow_max_flexion_deg: 145.0,
             clavicle_reach: 0.15,
             clavicle_start: 0.5,

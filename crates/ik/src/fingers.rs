@@ -87,6 +87,14 @@ fn trigger_curl(input: &FingerInput, rest: f32, pulled: f32, off: f32) -> f32 {
     if input.touch_trigger || pull > 0.05 { rest + (pulled - rest) * pull } else { off }
 }
 
+/// The thumb's curl resting on a button, the stick or the thumbrest (a relaxed thumb), with the
+/// fingers closed in a fist, the more for pressing, and lifted off (below 0: its base stands it up
+/// away from the palm) (est., by eye).
+const THUMB_REST: f32 = 0.12;
+const THUMB_FIST: f32 = 0.75;
+const THUMB_PRESS: f32 = 0.1;
+const THUMB_LIFTED: f32 = -0.5;
+
 /// Curl smoothing: a few frames, quick enough to read as 1:1 on the trigger and slow enough that
 /// a touch sensor flipping or a grab starting doesn't snap the fingers (est.).
 const CURL_TAU: f32 = 0.05;
@@ -140,12 +148,13 @@ impl FingerSolver {
             let open = 1.0 - (curl[1] + curl[2] + curl[3] + curl[4]) / 4.0;
             return (curl, 0.5 * open);
         }
-        let thumb = if input.thumb_press {
-            0.85
-        } else if input.touch_thumb {
-            0.55
+        // A thumb resting on the controls is a relaxed thumb, closing with the fingers into a fist
+        // and pressing a little further; lifted off, it stands up a little (all the way up in a
+        // thumbs up).
+        let thumb = if input.touch_thumb {
+            THUMB_REST + (THUMB_FIST - THUMB_REST) * squeeze + if input.thumb_press { THUMB_PRESS } else { 0.0 }
         } else {
-            0.1
+            THUMB_LIFTED
         };
         if let Some((mut curl, splay)) = hold_pose(hold) {
             if hold == HoldShape::PistolGrip {
@@ -222,6 +231,7 @@ mod tests {
         assert_eq!(same.curl, after_one.curl);
         let big = f.update(1e9, &FingerInput { squeeze: 1.0, ..Default::default() }, HoldShape::None);
         let nan = f.update(f32::NAN, &FingerInput { squeeze: f32::NAN, ..Default::default() }, HoldShape::Large);
-        assert!(big.curl.iter().chain(nan.curl.iter()).all(|c| c.is_finite() && (0.0..=1.0).contains(c)));
+        // (A lifted thumb curls back, below 0.)
+        assert!(big.curl.iter().chain(nan.curl.iter()).all(|c| c.is_finite() && (-1.0..=1.0).contains(c)));
     }
 }

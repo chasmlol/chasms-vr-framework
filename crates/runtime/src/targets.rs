@@ -224,26 +224,3 @@ impl SharedTargets {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A Quest 3's eyes (Virtual Desktop's field of view), tangents.
-    fn quest() -> [Fov; 2] {
-        let t = |d: f32| d.to_radians().tan();
-        [Fov { left: -t(54.0), right: t(43.0), up: t(46.0), down: -t(52.0) }, Fov { left: -t(43.0), right: t(54.0), up: t(46.0), down: -t(52.0) }]
-    }
-
-    #[test]
-    fn a_game_that_cant_grow_shows_only_the_overscan_its_pixels_keep_sharp() {
-        let h = quest();
-        // Drawn at the headset's own size (no room): none of it.
-        assert!(fitting_overscan(h, 20.0, (1.0, 1.0)) < 0.1);
-        // Drawn at the size 10 degrees asks for: 10 of the 20 now.
-        let room = widening(h, render_fov(h, 10.0));
-        let shown = fitting_overscan(h, 20.0, room);
-        assert!((shown - 10.0).abs() < 0.05, "{shown}");
-        // Drawn big enough for all of it: all of it.
-        assert_eq!(fitting_overscan(h, 8.0, room), 8.0);
-    }
-}

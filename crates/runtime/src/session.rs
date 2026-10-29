@@ -194,9 +194,11 @@ pub struct Session {
     pub held_objects: crate::held_objects::HeldObjects,
     /// The runtime draws the body this frame.
     pub draws_body: bool,
-    /// When to take the T-pose calibration (seconds, the frame clock).
+    /// When to take the arm measurement's next pose (seconds, the frame clock), and the arms out to
+    /// the sides once they're taken (the arms out in front come next).
     calibrate_at: Option<f64>,
     countdown_tick: i64,
+    calibrate_sides: Option<rustvr_ik::StraightArms>,
     /// The game's floor height in tracking space this frame.
     pub floor: f32,
     _heartbeat: Heartbeat,
@@ -321,6 +323,7 @@ impl Session {
             draws_body: false,
             calibrate_at: None,
             countdown_tick: -1,
+            calibrate_sides: None,
             floor: 0.0,
             _heartbeat: Heartbeat::start(&opts.mapping),
             glove_loops: [None; 2],
@@ -758,7 +761,8 @@ impl Session {
             self.backend.haptic(h.hand, h.seconds, h.frequency, h.amplitude);
         }
 
-        // Arm measurement: a tick each second of the countdown, then the T-pose is measured.
+        // Arm measurement: a tick each second of each countdown; the arms straight out to the sides,
+        // then straight out in front; then the arms as long as keeps both straight.
         if let Some(t) = self.calibrate_at {
             let left = t - now;
             let tick = (left.ceil() as i64).max(0);
@@ -771,21 +775,48 @@ impl Session {
             if left <= 0.0 {
                 self.calibrate_at = None;
                 let p = |pose: &Pose| Vec3::from_array(pose.pos);
-                match crate::body::measure_tpose(p(&frame.hmd), p(&frame.hands[0].grip), p(&frame.hands[1].grip)) {
-                    Some((_, span)) => {
-                        tracing::info!("runtime: arm span measured: {span:.2} m grip to grip");
-                        self.settings.current.body.arm_span = span;
-                        self.save_settings();
-                        self.menu.set_message(format!("Arm span set to {span:.2} m"));
-                        for h in 0..2 {
-                            self.backend.haptic(h, 0.12, 160.0, 0.9);
+                let ik = |pose: &Pose| rustvr_ik::Pose { pos: p(pose), rot: quat(pose.rot) };
+                let held = rustvr_ik::StraightArms { head: ik(&frame.hmd), grips: [ik(&frame.hands[0].grip), ik(&frame.hands[1].grip)] };
+                let tracked = frame.hands.iter().all(|h| h.connected != 0 && h.grip.valid != 0);
+                let failed = match self.calibrate_sides.take() {
+                    None => match crate::body::measure_tpose(p(&frame.hmd), p(&frame.hands[0].grip), p(&frame.hands[1].grip)) {
+                        Some((_, span)) if tracked => {
+                            tracing::info!("runtime: arms out to the sides: {span:.2} m grip to grip");
+                            self.calibrate_sides = Some(held);
+                            self.calibrate_at = Some(now + 3.0);
+                            self.countdown_tick = -1;
+                            self.menu.set_message("Now both arms straight out in front");
+                            for h in 0..2 {
+                                self.backend.haptic(h, 0.08, 160.0, 0.7);
+                            }
+                            None
+                        }
+                        _ => Some("That didn't look like a T-pose: arms straight out at shoulder height, then try again"),
+                    },
+                    Some(sides) => {
+                        let front = tracked && crate::body::arms_in_front((held.head.pos, held.head.rot), held.grips[0].pos, held.grips[1].pos);
+                        match front.then(|| self.body.straight_arm_span(&[sides, held])).flatten() {
+                            Some(span) => {
+                                tracing::info!(
+                                    "runtime: arms measured: straight out to the sides and in front at an arm span of {span:.2} m (in front {:.2} m apart)",
+                                    held.grips[0].pos.distance(held.grips[1].pos)
+                                );
+                                self.settings.current.body.arm_span = span;
+                                self.save_settings();
+                                self.menu.set_message(format!("Arms measured: an arm span of {span:.2} m keeps them straight"));
+                                for h in 0..2 {
+                                    self.backend.haptic(h, 0.12, 160.0, 0.9);
+                                }
+                                None
+                            }
+                            None => Some("That didn't look like both arms straight out in front at shoulder height, then try again"),
                         }
                     }
-                    None => {
-                        self.menu.set_message("That didn't look like a T-pose: arms straight out at shoulder height, then try again");
-                        for h in 0..2 {
-                            self.backend.haptic(h, 0.1, 60.0, 0.6);
-                        }
+                };
+                if let Some(why) = failed {
+                    self.menu.set_message(why);
+                    for h in 0..2 {
+                        self.backend.haptic(h, 0.1, 60.0, 0.6);
                     }
                 }
             }
@@ -926,6 +957,7 @@ impl Session {
                 arm_span: self.body.arm_span(),
                 head_height: self.mech.debug.stand_h,
                 countdown: self.calibrate_at.map(|t| (t - now).max(0.0) as f32),
+                countdown_pose: if self.calibrate_sides.is_some() { "Both arms straight out in front" } else { "Arms straight out to the sides" },
                 headset_size: self.backend.recommended_size(),
                 overscan_shown: self.overscan_shown,
                 game_size: self.targets.as_ref().map(|t| (t.spec.eye_w, t.spec.eye_h)),
@@ -938,6 +970,7 @@ impl Session {
             if std::mem::take(&mut self.menu.measure_arms) {
                 self.calibrate_at = Some(now + 3.0);
                 self.countdown_tick = -1;
+                self.calibrate_sides = None;
             }
             if std::mem::take(&mut self.menu.measure_height) {
                 let eye = frame.hmd.pos[1];
