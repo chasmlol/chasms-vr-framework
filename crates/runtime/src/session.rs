@@ -606,13 +606,14 @@ impl Session {
             a.set_volume(if snd.enabled { snd.volume } else { 0.0 });
             a.set_listener(rustvr_audio::Listener { pos: head_pos, rot: head_rot });
         }
-        // A click on either panel: a soft UI click where the laser hits, and a tick in the hand.
-        if let Some((_, t, _)) = pick
+        // A click on either panel: a tick in the hand, and on the runtime's own menu a soft UI click
+        // where the laser hits (a game's menus click with the game's own sounds).
+        if let Some((id, t, _)) = pick
             && trigger_down
             && !self.menu_trigger_was
         {
             self.backend.haptic(dom, 0.015, 180.0, 0.35);
-            if let (Some(a), true) = (&self.audio, snd.enabled) {
+            if let (Some(a), true, PanelId::RuntimeMenu) = (&self.audio, snd.enabled, id) {
                 let at = laser_origin + laser_dir * t;
                 a.play_event(rustvr_audio::Event::UiClick, rustvr_audio::SetKey::NONE, Some(rustvr_audio::Sound::UiClick), at, 1.0);
             }
