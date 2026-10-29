@@ -503,15 +503,19 @@ impl Session {
         // ---- panels and pointing
         if alive {
             let seq = self.link.hud_layout_seq();
+            let (count, groups) = (self.hud_layout.count, self.hud_layout.group_count);
             if seq != self.hud_layout_seq && self.link.read_hud_layout_into(&mut self.hud_layout) {
                 self.hud_layout_seq = seq;
-                tracing::info!(
+                // (A layout that moves with what it's beside comes every frame: said when it's new.)
+                if (count, groups) != (self.hud_layout.count, self.hud_layout.group_count) {
+                    tracing::info!(
                     "runtime: the game's HUD has {} pieces in {} groups (layout {}, flags {:#x})",
                     self.hud_layout.count,
                     self.hud_layout.group_count,
                     seq,
                     self.hud_layout.flags
-                );
+                    );
+                }
             }
         }
         let gflags = self.game.as_ref().map(|g| g.flags).unwrap_or(0);
@@ -533,10 +537,16 @@ impl Session {
         let hud_panel = if !menu_mode && shown_info.is_some_and(|i| i.flags & SLOT_HUD != 0) { hud_aspect } else { None };
         let head_pos = Vec3::from_array(frame.hmd.pos);
         let head_rot = quat(frame.hmd.rot);
+        let pieces_were = self.menu_pieces.len();
         self.menu_pieces = match (grouped, hud_aspect) {
             (true, Some(aspect)) => self.hud.place_groups(&self.settings.current, head_pos, head_rot, frame.dt, aspect, &self.hud_layout, self.map_now.as_ref()),
             _ => Vec::new(),
         };
+        if self.menu_pieces.len() != pieces_were {
+            for (i, p) in self.menu_pieces.iter().enumerate() {
+                tracing::info!("runtime: the game's menu, piece {i}: at {:.3?}, {:.2} x {:.2} m, of {:.3?}", p.panel.center, p.panel.width, p.panel.height, p.uv);
+            }
+        }
         let layout = self.layout.update(
             &self.settings.current,
             head_pos,

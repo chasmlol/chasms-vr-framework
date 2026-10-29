@@ -83,6 +83,8 @@ pub const SIDE_LEFT: u32 = 1;
 pub const SIDE_BELOW: u32 = 2;
 /// In front of it, between it and the eyes.
 pub const SIDE_FRONT: u32 = 3;
+/// Over it (a speaker's name over their head).
+pub const SIDE_ABOVE: u32 = 4;
 
 // ---- layout flags -------------------------------------------------------------------------------
 /// Don't draw what no element covers.

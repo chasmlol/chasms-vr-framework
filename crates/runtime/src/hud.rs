@@ -397,7 +397,8 @@ fn place_group(g: &HudGroup, fp: [f32; 4], thing: Option<Vec3>, eye: Vec3, head_
             let (top, bottom) = ((eye.y - (t.y + tall)).atan2(flat), (eye.y - (t.y - tall)).atan2(flat));
             let alpha = (g.radius / flat).atan().min(deg(60.0));
             match g.side {
-                SIDE_BELOW => (yaw_t, top + bh + deg(1.0), distance),
+                SIDE_BELOW => (yaw_t, bottom + bh + deg(1.0), distance),
+                SIDE_ABOVE => (yaw_t, top - bh - deg(1.0), distance),
                 SIDE_FRONT => (yaw_t, (eye.y - t.y).atan2(flat), (flat - g.radius - 0.1).clamp(0.8, 1.4)),
                 side => {
                     let pitch = deg(10.0);
