@@ -2816,3 +2816,51 @@ fn a_thing_made_of_convex_parts_is_held_on_the_part_the_hand_took() {
     let g = s.rig.grasps()[1].clone().unwrap();
     assert_eq!(g.solids.len(), 2, "both parts: {:?}", g.solids);
 }
+
+#[test]
+fn a_creatures_body_stops_the_hand_and_the_hand_pushes_it() {
+    let mut s = Sim::new();
+    // A creature's chest standing over the table's far side: 15 cm thick, its front at z 0.75.
+    s.rig.set_actor_parts([((9, 1), (Vec3::new(0.2, 1.0, 0.9), Vec3::new(0.2, 1.4, 0.9), 0.15))]);
+    s.step(2);
+    s.move_hand(1, Vec3::new(0.2, 1.2, 0.5), 30);
+    // Pressed on into it, the controller 10 cm inside.
+    s.move_hand(1, Vec3::new(0.2, 1.2, 0.85), 30);
+    let hand = v3(s.out.hands[1].pose.pos);
+    assert!(hand.z < 0.75, "stopped at its front: {hand:?}");
+    assert!(s.out.hands[1].flags & HAND_BLOCKED != 0);
+    let p = s.rig.game_pushes.iter().find(|p| p.id == 9 && p.part == 2).copied().expect("the game asked to push part 1");
+    assert!(p.normal[2] > 0.5 && p.normal[3] > 0.1, "into it, the way the hand presses: {p:?}");
+}
+
+#[test]
+fn a_blade_stuck_in_a_creature_drags_it_and_comes_out_backwards() {
+    let mut s = Sim::new();
+    // A bottle in the hand, held out; its front (3 cm ahead of its middle) stabbed 5 cm into a
+    // chest just in front of it (as the combat would have a blade).
+    s.reach(1, s.pos(BOTTLE) + Vec3::new(0.0, 0.12, 0.0));
+    s.grip(1, 1.0);
+    s.move_hand(1, Vec3::new(0.2, 1.3, 0.45), 40);
+    s.step(20);
+    let (p, q) = s.rig.object_world_pose(BOTTLE).unwrap();
+    let front = p + q * Vec3::new(0.0, 0.0, 0.03);
+    let axis = Vec3::new(front.x, 0.0, front.z + 0.15);
+    s.rig.set_actor_parts([((9, 1), (axis + Vec3::Y * (front.y - 0.2), axis + Vec3::Y * (front.y + 0.2), 0.15))]);
+    let r = embed::Request { object: BOTTLE, into: embed::Into::Actor { id: 9, part: 1 }, point: front, dir: Vec3::Z, sample: Vec3::new(0.0, 0.0, 0.03), depth: 0.05, max_depth: 0.12 };
+    s.rig.embed(&r);
+    // The hand goes on in with the stab.
+    s.set_hand(1, s.hand_pos(1) + Vec3::Z * 0.05);
+    s.step(5);
+    let stuck = s.pos(BOTTLE);
+    // The hand pulled sideways 15 cm: the bottle stays in, and the chest is dragged that way.
+    s.move_hand(1, s.hand_pos(1) + Vec3::new(0.15, 0.0, 0.0), 15);
+    assert!(s.pos(BOTTLE).distance(stuck) < 0.01, "still in, where it went in: {:?}", s.pos(BOTTLE));
+    let drag = s.rig.game_pushes.iter().find(|p| p.id == 9 && p.part == 2).copied().expect("dragged");
+    assert!(drag.normal[0] > 0.8 && drag.normal[3] > 0.5, "the way the hand pulls: {drag:?}");
+    // Pulled back out the way it went in: out.
+    s.move_hand(1, s.hand_pos(1) - Vec3::new(0.15, 0.0, 0.0), 10);
+    s.move_hand(1, s.hand_pos(1) - Vec3::new(0.0, 0.0, 0.2), 20);
+    s.step(5);
+    assert!(s.rig.objects[&BOTTLE].embed.is_none(), "pulled out");
+    assert_eq!(s.rig.held(1), Some(BOTTLE));
+}

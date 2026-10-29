@@ -900,7 +900,7 @@ pub fn all() -> Vec<Scenario> {
                     let up = Vec3::new(0.2, 1.75, 0.42);
                     let down = Vec3::new(0.2, 0.95, 0.42);
                     let rest = Body::rest().hands[1].pos;
-                    b.hands[1].pos = keys(t, &[(0.0, rest), (0.4, above), (0.6, above), (1.0, up), (1.2, up), (1.36, down), (1.8, down), (2.2, Vec3::new(0.2, 1.38, 0.42)), (2.8, Vec3::new(0.2, 1.22, 0.42))]);
+                    b.hands[1].pos = keys(t, &[(0.0, rest), (0.25, above + Vec3::Y * 0.25), (0.45, above), (0.6, above), (1.0, up), (1.2, up), (1.36, down), (1.8, down), (2.2, Vec3::new(0.2, 1.38, 0.42)), (2.8, Vec3::new(0.2, 1.22, 0.42))]);
                     b.hands[1].rot = qkeys(t, &[(0.6, Quat::IDENTITY), (1.0, look_rot(Vec3::Z))]);
                     b.hands[1].squeeze = on(t, &[(0.5, 3.2)]);
                     b
@@ -914,6 +914,45 @@ pub fn all() -> Vec<Scenario> {
                 check(3.1, "laying it on slowly isn't another hit", |c| ensure(c.stat_f(rs::F_MELEE_HITS) == 1.0, || format!("hits {}", c.stat_f(rs::F_MELEE_HITS)))),
             ],
             captures: vec![(1.2, "sword_raised"), (1.4, "sword_chop")],
+        },
+        Scenario {
+            name: "stab",
+            about: "physical: the sword taken by its handle, thrust point first into the dummy's chest: it goes in and stays; pulled sideways it drags the dummy (the blade stays in); pulled back the way it went in, it comes out",
+            duration: 4.6,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(s) = table_sword(objs) else { return b };
+                    let above = s.at(s.grip) + Vec3::Y * 0.05;
+                    let rest = Body::rest().hands[1].pos;
+                    // Level, the point ahead, at the dummy's chest height: back, then thrust in
+                    // (0.35 m in 0.12 s: about 3 m/s), held, dragged 15 cm right, held, pulled out.
+                    let back = Vec3::new(0.15, 1.25, -0.12);
+                    let into = back + Vec3::Z * 0.36;
+                    let dragged = into + Vec3::X * 0.15;
+                    b.hands[1].pos = keys(
+                        t,
+                        &[(0.0, rest), (0.25, above + Vec3::Y * 0.25), (0.6, above), (0.75, above), (1.3, back), (1.6, back), (1.72, into), (2.2, into), (2.7, dragged), (3.1, dragged), (3.3, into), (4.0, back - Vec3::Z * 0.1)],
+                    );
+                    b.hands[1].rot = qkeys(t, &[(0.75, Quat::IDENTITY), (1.3, look_rot(Vec3::Z))]);
+                    b.hands[1].squeeze = on(t, &[(0.65, 4.6)]);
+                    b.head_rot = Quat::from_rotation_x(0.2);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.5, "the sword is in the right hand", |c| ensure(c.objects.iter().any(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0), || "not held".into())),
+                check(2.1, "the thrust went in and stayed", |c| ensure(c.rig.embeds >= 1, || format!("{} embeds", c.rig.embeds))),
+                check(2.1, "it was a hit", |c| ensure(c.stat_f(rs::F_MELEE_HITS) >= 1.0, || format!("hits {}", c.stat_f(rs::F_MELEE_HITS)))),
+                check(4.5, "still in the hand once out", |c| ensure(c.objects.iter().any(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0), || "dropped".into())),
+            ],
+            captures: vec![(2.15, "stab_in"), (3.0, "stab_dragged"), (4.4, "stab_out")],
         },
         Scenario {
             name: "spell",

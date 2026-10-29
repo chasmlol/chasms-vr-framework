@@ -36,6 +36,8 @@ pub struct Request {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Embedded {
     pub into: Into,
+    /// Where it went in, in what it's in's frame.
+    pub at: Vec3,
     /// The object as it was at the surface (no way in), in what it's in's frame.
     pub rel: (Vec3, Quat),
     /// The way in, in that frame.
@@ -46,8 +48,11 @@ pub struct Embedded {
 
 /// Pulled back this far out past the surface (metres): it's out.
 pub const EXIT: f32 = 0.012;
-/// The hand this far across the way it went in (metres): yanked out.
-pub const TEAR: f32 = 0.3;
+/// The hand this far across the way it went in (metres): yanked out. (Short of that, a creature
+/// it's in is dragged along: the blade is jointed to the body, not torn out.)
+pub const TEAR: f32 = 0.5;
+/// What it's in is dragged at this many m/s per metre the hand pulls it off its way in.
+pub const DRAG_RATE: f32 = 12.0;
 /// It slides along the way in at most this fast (m/s): the hold of what it's in.
 pub const SLIDE_SPEED: f32 = 0.9;
 
@@ -97,7 +102,9 @@ mod tests {
         // Pulled back past the surface: out.
         assert_eq!(step(-0.01, 0.05, -0.2, 0.0, 0.01), Step::Out);
         // Yanked across: out.
-        assert_eq!(step(0.03, 0.05, 0.0, 0.4, 0.01), Step::Out);
+        assert_eq!(step(0.03, 0.05, 0.0, 0.6, 0.01), Step::Out);
+        // Pulled across short of that, it stays in (what it's in is dragged instead).
+        assert_eq!(step(0.03, 0.05, 0.0, 0.3, 0.01), Step::Stay(0.03));
     }
 
     #[test]

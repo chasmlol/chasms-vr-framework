@@ -164,6 +164,10 @@ struct Obj {
     carried: (Vec3, Vec3),
     /// Held: going through the world for now (`SLIP`).
     through: bool,
+    /// Held: where the hand would have it (its drive's target, as the hand swings it), and how far
+    /// its hold is behind that (world).
+    aim: Option<(Vec3, Quat)>,
+    lag: Vec3,
     /// Velocity after the last step, for impact sounds.
     prev_vel: Vec3,
     /// A magazine just taken out of a gun can't seat again until it has left the well.
@@ -430,6 +434,9 @@ const SPAWN_BASE: u32 = 0x8000_0000;
 /// its own speed into it, and never more than `PUSH_MAX` in all.
 const PUSH_OUT: f32 = 10.0;
 const PUSH_MAX: f32 = 4.0;
+/// A held thing pressed into a creature asks for this many m/s per metre the hand would have it
+/// go further.
+const PUSH_LAG: f32 = 8.0;
 /// Where the shoulder is from the eyes (for the gloves' reach): this far down, and out to the side.
 const SHOULDER_DROP: f32 = 0.25;
 const SHOULDER_OUT: f32 = 0.18;
@@ -490,7 +497,12 @@ pub struct Rig {
     pub physics: Physics,
     objects: BTreeMap<u32, Obj>,
     /// The creatures' body parts this frame (world), what a blade stuck in one rides with.
-    actor_parts: HashMap<(u32, usize), (Vec3, Vec3)>,
+    actor_parts: HashMap<(u32, usize), (Vec3, Vec3, f32)>,
+    /// Those parts in the physics: kinematic capsules following them (half length, radius), that
+    /// the hands and what they hold meet ([`Rig::follow_actors`]).
+    proxies: HashMap<(u32, usize), (RigidBodyHandle, ColliderHandle, f32, f32)>,
+    /// What blades stuck in creatures drag them by this frame (pushes for the game).
+    drags: Vec<GamePush>,
     /// Where the game says its own simulated objects are (`OBJF_GAME_SIMULATED`, world space).
     game_poses: HashMap<u32, (Vec3, Quat)>,
     /// Where the hands push the game's own free objects after this step (see [`GamePush`]).
@@ -528,6 +540,8 @@ impl Default for Rig {
             next_spawn: SPAWN_BASE,
             game_poses: HashMap::new(),
             actor_parts: HashMap::new(),
+            proxies: HashMap::new(),
+            drags: Vec::new(),
             game_pushes: Vec::new(),
             game_hulls: HashMap::new(),
             templates: Vec::new(),
@@ -904,6 +918,8 @@ impl Rig {
                 carry: None,
                 carried: (Vec3::ZERO, Vec3::ZERO),
                 through: false,
+                aim: None,
+                lag: Vec3::ZERO,
                 prev_vel: Vec3::ZERO,
                 next_impact: 0.0,
                 seat_armed: true,
@@ -1148,6 +1164,8 @@ impl Rig {
         let s = inp.settings;
         let dom = s.dominant();
         self.ensure_hands(inp.frame);
+        self.follow_actors();
+        self.drags.clear();
 
         // Controllers -> world targets.
         {
@@ -1304,7 +1322,7 @@ impl Rig {
     /// hand moves (plus enough to undo the overlap within a few frames).
     fn pushes(&self) -> Vec<GamePush> {
         let Some(hands) = &self.hands else { return Vec::new() };
-        let mut out = Vec::new();
+        let mut out = self.actor_pushes();
         for (id, o) in &self.objects {
             let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && self.now - o.free_since > GAME_HANDBACK as f64;
             if !game_free {
@@ -1337,6 +1355,72 @@ impl Rig {
             }
         }
         out
+    }
+
+    /// The game's creatures' parts as kinematic capsules where the game has them now (made as they
+    /// appear, gone when they go): what the hands and what they hold meet.
+    fn follow_actors(&mut self) {
+        let gone: Vec<(u32, usize)> = self.proxies.keys().filter(|k| !self.actor_parts.contains_key(k)).copied().collect();
+        for k in gone {
+            if let Some((b, ..)) = self.proxies.remove(&k) {
+                self.physics.remove(b);
+            }
+        }
+        for (&k, &(a, b, radius)) in &self.actor_parts {
+            let half = 0.5 * a.distance(b);
+            let (mid, rot) = ((a + b) * 0.5, Quat::from_rotation_arc(Vec3::Y, (b - a).normalize_or(Vec3::Y)));
+            match self.proxies.get(&k) {
+                Some(&(body, _, h, r)) if (h - half).abs() < 0.005 && (r - radius).abs() < 0.002 => self.physics.move_kinematic(body, mid, rot),
+                old => {
+                    if let Some(&(body, ..)) = old {
+                        self.physics.remove(body);
+                    }
+                    let (body, c) = self.physics.add_actor_part(mid, rot, half, radius);
+                    self.proxies.insert(k, (body, c, half, radius));
+                }
+            }
+        }
+    }
+
+    /// What the hands, what they hold and loose things push the game's creatures by: each part
+    /// something is pressed into, at the contact, the way it presses (its own speed into the part,
+    /// and what the hand would have it go further), and the blades stuck in them, dragged. The
+    /// hardest for each part.
+    fn actor_pushes(&self) -> Vec<GamePush> {
+        let Some(hands) = &self.hands else { return Vec::new() };
+        let mut best: HashMap<(u32, u32), GamePush> = HashMap::new();
+        let mut keep = |g: GamePush| {
+            let e = best.entry((g.id, g.part)).or_insert(g);
+            if g.normal[3] > e.normal[3] {
+                *e = g;
+            }
+        };
+        for (&(actor, part), &(_, proxy, ..)) in &self.proxies {
+            for c in self.physics.touching(proxy) {
+                // Who's pressing, and how far behind where it's driven it is (what it presses with).
+                let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0)).or_else(|| {
+                    self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }))
+                });
+                let Some((body, lag)) = pusher else { continue };
+                let Some((point, normal, depth)) = self.physics.overlap(c, proxy).or_else(|| {
+                    // Resting against it: the nearest points.
+                    let p = self.physics.closest_point(proxy, self.physics.pose(body).0);
+                    let n = (p - self.physics.pose(body).0).normalize_or_zero();
+                    (n != Vec3::ZERO).then_some((p, n, 0.0))
+                }) else {
+                    continue;
+                };
+                let vel = self.physics.velocity(body).0;
+                let speed = (vel.dot(normal).max(0.0) + lag.dot(normal).max(0.0) * PUSH_LAG + depth * PUSH_OUT).min(PUSH_MAX);
+                if speed > 0.05 {
+                    keep(GamePush { id: actor, part: part as u32 + 1, point: point.extend(1.0).to_array(), normal: normal.extend(speed).to_array(), ..Default::default() });
+                }
+            }
+        }
+        for g in &self.drags {
+            keep(*g);
+        }
+        best.into_values().collect()
     }
 
     fn ensure_hands(&mut self, f: &HmdFrame) {
@@ -3198,7 +3282,7 @@ impl Rig {
 
     // ---- blades stuck in things (embed.rs) -----------------------------------------------------------
     /// The creatures' body parts this frame (world), for what's stuck in them.
-    pub fn set_actor_parts(&mut self, parts: impl IntoIterator<Item = ((u32, usize), (Vec3, Vec3))>) {
+    pub fn set_actor_parts(&mut self, parts: impl IntoIterator<Item = ((u32, usize), (Vec3, Vec3, f32))>) {
         self.actor_parts.clear();
         self.actor_parts.extend(parts);
     }
@@ -3211,7 +3295,7 @@ impl Rig {
     fn embed_parent(&self, into: embed::Into) -> Option<(Vec3, Quat)> {
         match into {
             embed::Into::World => Some((Vec3::ZERO, Quat::IDENTITY)),
-            embed::Into::Actor { id, part } => self.actor_parts.get(&(id, part)).map(|&(a, b)| embed::part_frame(a, b)),
+            embed::Into::Actor { id, part } => self.actor_parts.get(&(id, part)).map(|&(a, b, _)| embed::part_frame(a, b)),
         }
     }
 
@@ -3230,7 +3314,8 @@ impl Rig {
         let axis = parent.1.inverse() * r.dir;
         let pos = surface.0 + r.dir * r.depth;
         let (body, collider) = (o.body, o.collider);
-        self.objects.get_mut(&r.object).unwrap().embed = Some(embed::Embedded { into: r.into, rel, axis, depth: r.depth, max_depth: r.max_depth });
+        let at = inverse(parent).0 + parent.1.inverse() * r.point;
+        self.objects.get_mut(&r.object).unwrap().embed = Some(embed::Embedded { into: r.into, at, rel, axis, depth: r.depth, max_depth: r.max_depth });
         self.physics.set_kinematic(body, true);
         self.physics.set_groups(collider, groups_none());
         self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
@@ -3276,6 +3361,16 @@ impl Rig {
         let d = (target.0 + target.1 * pivot) - (now.0 + now.1 * pivot);
         let along = d.dot(axis);
         let across = (d - axis * along).length();
+        // In a creature, what the blade can't follow (across its way in, or out faster than it
+        // slides) drags the creature by where it went in.
+        let strain = d - axis * along.clamp(-embed::SLIDE_SPEED * dt, embed::SLIDE_SPEED * dt);
+        if let embed::Into::Actor { id: actor, part } = e.into
+            && strain.length() > 0.005
+        {
+            let entry = parent.0 + parent.1 * e.at;
+            let speed = (strain.length() * embed::DRAG_RATE).min(PUSH_MAX);
+            self.drags.push(GamePush { id: actor, part: part as u32 + 1, point: entry.extend(1.0).to_array(), normal: strain.normalize().extend(speed).to_array(), ..Default::default() });
+        }
         match embed::step(e.depth, e.max_depth, along, across, dt) {
             embed::Step::Out => {
                 self.unembed(id);
@@ -3366,6 +3461,12 @@ impl Rig {
                     // Held back by the world too far: through it until it's back in the hand.
                     let behind = (now_pos + now_rot * pivot).distance(target.0 + target.1 * pivot);
                     let collider = o.collider;
+                    {
+                        let o = self.objects.get_mut(id).unwrap();
+                        o.aim = Some(target);
+                        o.lag = (target.0 + target.1 * pivot) - (now_pos + now_rot * pivot);
+                    }
+                    let o = &self.objects[id];
                     if !o.through && behind > SLIP {
                         self.physics.set_groups(collider, physics::groups_held_through(hand));
                         self.objects.get_mut(id).unwrap().through = true;
@@ -3915,6 +4016,17 @@ impl Rig {
 
     pub fn object_world_pose(&self, id: u32) -> Option<(Vec3, Quat)> {
         self.obj_pose(id)
+    }
+
+    /// Where a held thing is swung to: where the hand drives it (as the hand swings it, before
+    /// anything stops it); anything else where it is. A blow is judged by the swing (the velocity
+    /// it meets the body with, before the body stops it).
+    pub fn swing_pose(&self, id: u32) -> Option<(Vec3, Quat)> {
+        let o = self.objects.get(&id)?;
+        match (o.holder, o.aim, o.embed) {
+            (Holder::Held(_), Some(aim), None) => Some(aim),
+            _ => self.obj_pose(id),
+        }
     }
 
     pub fn held(&self, hand: usize) -> Option<u32> {

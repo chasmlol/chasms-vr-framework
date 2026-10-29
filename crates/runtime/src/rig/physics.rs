@@ -26,6 +26,12 @@ pub fn groups_free() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
 }
 
+/// A part of one of the game's creatures, followed (`Rig::follow_actors`): the hands, what they
+/// hold and loose objects meet it (and push the creature, through the game).
+pub fn groups_actor() -> InteractionGroups {
+    InteractionGroups::new(G_OBJECT, G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
+}
+
 /// An object held by `hand` touches the world and free objects, never the hands.
 pub fn groups_held(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
@@ -261,6 +267,23 @@ impl Physics {
         let joint = SphericalJointBuilder::new().local_anchor1(to_v(V3::ZERO)).local_anchor2(to_v(local)).contacts_enabled(false);
         self.world.insert_impulse_joint(anchor, body, joint);
         anchor
+    }
+
+    /// A creature's part: a kinematic capsule along +Y, `half` its straight half length.
+    pub fn add_actor_part(&mut self, pos: V3, rot: Q, half: f32, radius: f32) -> (RigidBodyHandle, ColliderHandle) {
+        let body = RigidBodyBuilder::kinematic_position_based().pose(to_pose(pos, rot));
+        let c = ColliderBuilder::capsule_y(half.max(0.001), radius.max(0.005)).friction(0.6).collision_groups(groups_actor());
+        self.world.insert(body, c)
+    }
+
+    /// The colliders touching `c` now (an active contact).
+    pub fn touching(&self, c: ColliderHandle) -> Vec<ColliderHandle> {
+        self.world
+            .narrow_phase
+            .contact_pairs_with(c)
+            .filter(|p| p.has_any_active_contact())
+            .map(|p| if p.collider1 == c { p.collider2 } else { p.collider1 })
+            .collect()
     }
 
     /// A finger's capsule length, as it curls.

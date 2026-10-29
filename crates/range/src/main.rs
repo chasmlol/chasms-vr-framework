@@ -29,6 +29,7 @@ mod content;
 mod effects;
 mod hits;
 mod physical;
+mod ragdoll;
 mod render;
 mod throwables;
 
@@ -123,6 +124,8 @@ struct Game {
     effects: Effects,
     gun_fx: Vec<GunFx>,
     world: hits::World,
+    /// The training dummies: people the player's hands meet, hit, push and stab.
+    dummies: ragdoll::Dummies,
 }
 
 fn main() -> Result<()> {
@@ -159,7 +162,7 @@ impl Game {
         let assets = rustvr_asset::default_root();
         let mut renderer = Renderer::new(&gpu, assets.clone())?;
         let (grid, plain) = content::room();
-        let scenery = vec![renderer.upload(&gpu, &grid)?, renderer.upload(&gpu, &plain)?, renderer.upload(&gpu, &combat::dummy_mesh())?];
+        let scenery = vec![renderer.upload(&gpu, &grid)?, renderer.upload(&gpu, &plain)?];
         let targets = content::targets();
         let target_meshes = targets.iter().map(|t| renderer.upload(&gpu, &content::target_mesh(t))).collect::<Result<Vec<_>>>()?;
         let mut cube_data = MeshData::default();
@@ -281,6 +284,7 @@ impl Game {
             effects: Effects::new(sprites),
             gun_fx,
             world,
+            dummies: combat::dummies(),
         })
     }
 
@@ -336,7 +340,7 @@ impl Game {
             a.register(&self.adapter);
             a.update(&self.adapter);
         }
-        self.combat(now);
+        self.combat(now, dt);
 
         // ---- game logic
         if pressed(&presses, Action::Menu) {
@@ -521,9 +525,13 @@ impl Game {
     }
 
     /// The loose objects a bullet can hit, as boxes (not what the hands hold or wear).
-    /// The dummy, the sword's blade and the fire bolt for the runtime; its hits and casts counted.
-    fn combat(&mut self, _now: f64) {
-        self.adapter.write_actors(&combat::actors());
+    /// The dummies, the sword's blade and the fire bolt for the runtime; its hits and casts counted.
+    /// The dummies are pushed by the hands (and what they hold), hit, then stepped and published.
+    fn combat(&mut self, _now: f64, dt: f32) {
+        let mut pushes: GamePushes = bytemuck::Zeroable::zeroed();
+        if self.adapter.read_game_pushes(&mut pushes) {
+            self.dummies.push(&pushes);
+        }
         if self.combat_for != self.adapter.connections() && self.adapter.connected() {
             self.combat_for = self.adapter.connections();
             let swords: Vec<u32> = self.armory.as_ref().map(|a| a.ids_of_kind(OBJ_MELEE)).unwrap_or_default();
@@ -550,6 +558,7 @@ impl Game {
             );
             match ev.kind {
                 CE_HIT => {
+                    self.dummies.hit(&ev);
                     self.stats_f[rs::F_MELEE_HITS] += 1.0;
                     if ev.flags & CEF_POWER != 0 {
                         self.stats_f[rs::F_MELEE_POWER] += 1.0;
@@ -564,6 +573,8 @@ impl Game {
                 _ => {}
             }
         }
+        self.dummies.step(dt);
+        self.adapter.write_actors(&self.dummies.actors());
     }
 
     fn object_boxes(&self, v: &View) -> Vec<ObjBox> {
@@ -707,6 +718,10 @@ impl Game {
         const SCENERY: usize = 0;
         for i in 0..self.scene.scenery.len() {
             draws.push((SCENERY + i, Mat4::IDENTITY, [1.0; 4], 0.0, false));
+        }
+        // The dummies, part by part.
+        for (m, tint) in self.dummies.draws() {
+            draws.push((200, m, tint, 0.0, false));
         }
         let targets_at = 100;
         for i in 0..self.scene.target_meshes.len() {

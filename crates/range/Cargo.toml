@@ -27,6 +27,8 @@ glam.workspace = true
 egui.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# The training dummies' bodies (ragdolls), simulated as the game's own creatures.
+rapier3d = "0.36"
 windows.workspace = true
 
 [dev-dependencies]

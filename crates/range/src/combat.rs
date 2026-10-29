@@ -1,5 +1,5 @@
-//! The range's combat: a training dummy (a creature the hands can hit, published as capsules every
-//! frame), a sword on the throwables' table (its edges cut both ways, its point stabs, its pommel
+//! The range's combat: training dummies (people the hands can hit, push and stab: `crate::ragdoll`,
+//! published as capsules every frame), a sword on the throwables' table (its edges cut both ways, its point stabs, its pommel
 //! bludgeons) and one spell, a fire bolt, so the runtime's melee and magic can be played and tested
 //! without a game (`rustvr_protocol::combat`).
 
@@ -16,49 +16,15 @@ pub const DUMMY_AT: Vec3 = Vec3::new(0.15, 0.0, 1.15);
 /// The fire bolt's id.
 pub const FIRE_BOLT: u32 = 1;
 
-/// The dummy's body: (from, to, radius, part kind, material), relative to its feet.
-const BODY: &[(Vec3, Vec3, f32, u32, u32)] = &[
-    (Vec3::new(0.0, 1.05, 0.0), Vec3::new(0.0, 1.45, 0.0), 0.17, PART_TORSO, MAT_LEATHER),
-    (Vec3::new(0.0, 1.6, 0.0), Vec3::new(0.0, 1.68, 0.0), 0.11, PART_HEAD, MAT_FLESH),
-    (Vec3::new(-0.22, 1.42, 0.0), Vec3::new(-0.26, 1.05, 0.0), 0.05, PART_ARM, MAT_FLESH),
-    (Vec3::new(0.22, 1.42, 0.0), Vec3::new(0.26, 1.05, 0.0), 0.05, PART_ARM, MAT_FLESH),
-    (Vec3::new(-0.1, 0.95, 0.0), Vec3::new(-0.1, 0.1, 0.0), 0.07, PART_LEG, MAT_FLESH),
-    (Vec3::new(0.1, 0.95, 0.0), Vec3::new(0.1, 0.1, 0.0), 0.07, PART_LEG, MAT_FLESH),
-];
+/// The second dummy: off to the left, turned a little towards the player.
+pub const DUMMY_LEFT_AT: Vec3 = Vec3::new(-0.85, 0.0, 1.45);
 
-pub fn dummy() -> Actor {
-    let mut a: Actor = bytemuck::Zeroable::zeroed();
-    a.id = DUMMY_ID;
-    a.flags = ACT_ALIVE | ACT_HOSTILE;
-    a.health = 1.0;
-    for (i, &(from, to, r, kind, material)) in BODY.iter().enumerate() {
-        a.parts[i] = ActorPart { a: (DUMMY_AT + from).to_array(), radius: r, b: (DUMMY_AT + to).to_array(), kind, material, game_part: i as u32, _pad: [0; 2] };
-    }
-    a.count = BODY.len() as u32;
-    a
-}
-
-pub fn actors() -> Actors {
-    let mut t: Actors = bytemuck::Zeroable::zeroed();
-    t.actors[0] = dummy();
-    t.count = 1;
-    t
-}
-
-/// The dummy as boxes round its capsules (straw yellow, a dark head).
-pub fn dummy_mesh() -> MeshData {
-    let mut m = MeshData::default();
-    for &(from, to, r, kind, _) in BODY {
-        let (a, b) = (DUMMY_AT + from, DUMMY_AT + to);
-        let colour = if kind == PART_HEAD { [70, 55, 40, 255] } else { [196, 168, 96, 255] };
-        let mid = (a + b) * 0.5;
-        let along = (b - a).normalize_or(Vec3::Y);
-        let rot = Quat::from_rotation_arc(Vec3::Y, along);
-        m.add_obox(mid, Vec3::new(r, (b - a).length() * 0.5 + r, r), rot, colour);
-    }
-    // Its post.
-    m.add_box(DUMMY_AT + Vec3::new(-0.03, 0.0, -0.03), DUMMY_AT + Vec3::new(0.03, 1.05, 0.03), [90, 70, 50, 255]);
-    m
+/// The training dummies (people, as ragdolls: `crate::ragdoll`), facing the player, among the
+/// range's walls and furniture: `DUMMY_ID` at `DUMMY_AT`, the next at `DUMMY_LEFT_AT`.
+pub fn dummies() -> crate::ragdoll::Dummies {
+    let facing = |turn: f32| Quat::from_rotation_y(std::f32::consts::PI + turn);
+    let world: Vec<(Vec3, Vec3)> = crate::content::shell().into_iter().chain(crate::content::furniture().into_iter().map(|(lo, hi, _)| (lo, hi))).collect();
+    crate::ragdoll::Dummies::new(&[(DUMMY_AT, facing(0.0)), (DUMMY_LEFT_AT, facing(0.35))], DUMMY_ID, &world)
 }
 
 /// A one-handed sword: the blade along +Z from the guard at 0 to its point at +80 cm, its edges to

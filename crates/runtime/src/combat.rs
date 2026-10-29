@@ -366,11 +366,11 @@ impl Combat {
     }
 
     /// Every creature's body parts (world): ((actor, part index), (a, b)).
-    pub fn actor_parts(&self) -> Vec<((u32, usize), (Vec3, Vec3))> {
+    pub fn actor_parts(&self) -> Vec<((u32, usize), (Vec3, Vec3, f32))> {
         let n = (self.actors.count as usize).min(MAX_ACTORS);
         self.actors.actors[..n]
             .iter()
-            .flat_map(|a| a.parts[..(a.count as usize).min(MAX_ACTOR_PARTS)].iter().enumerate().map(move |(i, p)| ((a.id, i), (Vec3::from_array(p.a), Vec3::from_array(p.b)))))
+            .flat_map(|a| a.parts[..(a.count as usize).min(MAX_ACTOR_PARTS)].iter().enumerate().map(move |(i, p)| ((a.id, i), (Vec3::from_array(p.a), Vec3::from_array(p.b), p.radius))))
             .collect()
     }
 
@@ -427,7 +427,7 @@ impl Combat {
         let mut seen = HashMap::new();
         for h in 0..2 {
             let held = inp.rig.held(h);
-            let weapon = held.and_then(|id| Some((id, *self.melee_desc(id)?, inp.rig.object_world_pose(id)?)));
+            let weapon = held.and_then(|id| Some((id, *self.melee_desc(id)?, inp.rig.swing_pose(id)?)));
             if let Some((id, desc, (p, q))) = weapon {
                 // The weapon's damagers in the world now (the rig's physics is in the world).
                 let (wp, wq) = (p, q);

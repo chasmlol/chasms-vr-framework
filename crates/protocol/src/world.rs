@@ -460,15 +460,19 @@ pub struct GamePose {
 pub const OFF_GAME_PUSHES: usize = 0x004C_D080;
 pub const MAX_GAME_PUSHES: usize = 32;
 
-/// A hand pushing one of the game's own objects ([`OBJF_GAME_SIMULATED`], free): the point
+/// A hand pushing one of the game's own objects ([`OBJF_GAME_SIMULATED`], free), or a part of one
+/// of its creatures (what a hand or what it holds meets, a blade stuck in it dragged): the point
 /// (world space) must move along `normal` (the way the finger or palm moves, or out of it) at
 /// least `normal[3]` m/s.
 /// The game adds what its body's motion there lacks; asked again, it adds nothing more.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct GamePush {
+    /// The object's [`ObjectDesc::id`], or the creature's [`crate::Actor::id`] when `part` isn't 0.
     pub id: u32,
-    pub _pad: [u32; 3],
+    /// 0: an object; `n`: part `n - 1` of creature `id` (as [`crate::Actor::parts`] has them).
+    pub part: u32,
+    pub _pad: [u32; 2],
     pub point: [f32; 4],
     pub normal: [f32; 4],
 }
