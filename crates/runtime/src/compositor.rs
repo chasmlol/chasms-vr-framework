@@ -47,12 +47,69 @@ VOut VSFull(uint id : SV_VertexID) {
 float4 PSBlit(VOut i) : SV_Target { return float4(tex.Sample(samp, i.uv).rgb, 1); }
 
 // Another camera's view of the game's picture: each pixel's direction looked up in one eye's image
-// (`view_proj` here is that eye's), else in the other's (`eye_b`), else dark. A turn of the camera
-// is exact; the few centimetres between it and the eye are left out (far things don't move).
+// (`view_proj` here is that eye's; the camera stands where it was drawn from, so a turn of the
+// camera is exact), else in the other's (`eye_b`), else dark. The other eye stands 6 cm away: where
+// its depth is there, each ray is followed out through it to the surface it shows, so near things
+// line up across the join (no seam); without it, by direction alone (far things don't move).
 cbuffer Reproject : register(b1) {
     float4x4 eye_b;
+    float4 cam_pos;   // xyz: the camera's position (where the first eye's picture was drawn from)
+    float4 b_pos;     // xyz: the other eye's
+    float4 b_fwd;     // xyz: the other eye's forward
+    float4 b_depth;   // x: metres per unit of its depth, y: 1 when its depth is there
 };
 Texture2D tex_b : register(t1);
+Texture2D<float> depth_b : register(t3);
+
+float depth_b_at(float2 uv) {
+    uint w, h;
+    depth_b.GetDimensions(w, h);
+    return depth_b.Load(int3(min(uint2(saturate(uv) * float2(w, h)), uint2(w - 1, h - 1)), 0)) * b_depth.x;
+}
+float2 b_uv(float3 p, out bool in_view) {
+    float4 c = mul(eye_b, float4(p, 1));
+    float2 n = c.xy / max(c.w, 1e-6);
+    in_view = c.w > 0 && abs(n.x) <= 1 && abs(n.y) <= 1;
+    return float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
+}
+// Where the ray from the camera along `d` meets what the other eye shows: how far (`t`, metres) and
+// where in its picture (`uv`). A step that lands far behind a surface has passed behind something
+// nearer the other eye than the camera's line: it goes on past it.
+bool march_b(float3 d, out float2 uv, out float t) {
+    uv = 0;
+    t = 0;
+    if (b_depth.y == 0) return false;
+    float prev = 0.03;
+    [loop] for (int i = 0; i < 48; i++) {
+        float ti = 0.03 * pow(3000.0, i / 47.0);
+        float3 p = cam_pos.xyz + d * ti;
+        bool in_view;
+        float2 u = b_uv(p, in_view);
+        if (in_view) {
+            float z = depth_b_at(u);
+            float behind = dot(p - b_pos.xyz, b_fwd.xyz) - z;
+            if (z > 0 && behind >= 0) {
+                if (behind < 0.05 + 0.15 * z + (ti - prev)) {
+                    float lo = prev, hi = ti;
+                    [unroll] for (int k = 0; k < 6; k++) {
+                        float mid = 0.5 * (lo + hi);
+                        float3 q = cam_pos.xyz + d * mid;
+                        bool v;
+                        float2 uq = b_uv(q, v);
+                        float zq = depth_b_at(uq);
+                        if (zq > 0 && dot(q - b_pos.xyz, b_fwd.xyz) >= zq) hi = mid; else lo = mid;
+                    }
+                    bool v;
+                    t = hi;
+                    uv = b_uv(cam_pos.xyz + d * hi, v);
+                    return true;
+                }
+            }
+        }
+        prev = ti;
+    }
+    return false;
+}
 float3 eye_sample(Texture2D t, float4x4 m, float3 d, out bool ok) {
     float4 c = mul(m, float4(d, 0));
     float2 n = c.xy / max(c.w, 1e-6);
@@ -67,6 +124,9 @@ float4 PSReproject(VOut i) : SV_Target {
     bool ok;
     float3 c = eye_sample(tex, view_proj_src, d, ok);
     if (ok) return float4(c, 1);
+    float2 uv;
+    float t;
+    if (march_b(d, uv, t)) return float4(tex_b.SampleLevel(samp, uv, 0).rgb, 1);
     c = eye_sample(tex_b, eye_b, d, ok);
     if (ok) return float4(c, 1);
     return float4(0.004, 0.004, 0.005, 1);
@@ -83,7 +143,6 @@ cbuffer ReprojectPost : register(b2) {
     float4 fwd_cam;
 };
 Texture2D<float> depth_a : register(t2);
-Texture2D<float> depth_b : register(t3);
 Texture2D bloom_a : register(t4);
 Texture2D bloom_b : register(t5);
 Texture2D lens_a : register(t6);
@@ -116,11 +175,19 @@ PostOut PSReprojectPost(VOut i) {
         o.depth = z > 0 ? z * along / max(dot(d, fwd_a.xyz), 1e-3) : 0;
         o.bloom = bloom_a.SampleLevel(samp, uv, 0);
         o.lens = lens_a.SampleLevel(samp, uv, 0);
-    } else if (eye_uv(eye_b, d, uv)) {
-        float z = load_depth(depth_b, uv);
-        o.depth = z > 0 ? z * along / max(dot(d, fwd_b.xyz), 1e-3) : 0;
-        o.bloom = bloom_b.SampleLevel(samp, uv, 0);
-        o.lens = lens_b.SampleLevel(samp, uv, 0);
+    } else {
+        float t;
+        if (march_b(d, uv, t)) {
+            // (Its depth along this camera's axis, in the game's units as the picture's.)
+            o.depth = t * along / max(b_depth.x, 1e-6);
+            o.bloom = bloom_b.SampleLevel(samp, uv, 0);
+            o.lens = lens_b.SampleLevel(samp, uv, 0);
+        } else if (eye_uv(eye_b, d, uv)) {
+            float z = load_depth(depth_b, uv);
+            o.depth = z > 0 ? z * along / max(dot(d, fwd_b.xyz), 1e-3) : 0;
+            o.bloom = bloom_b.SampleLevel(samp, uv, 0);
+            o.lens = lens_b.SampleLevel(samp, uv, 0);
+        }
     }
     return o;
 }
@@ -223,6 +290,28 @@ struct DrawCb {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ReprojectCb {
     eye_b: [f32; 16],
+    cam_pos: [f32; 4],
+    b_pos: [f32; 4],
+    b_fwd: [f32; 4],
+    b_depth: [f32; 4],
+}
+
+impl ReprojectCb {
+    /// The other eye (`second`: its view-projection, pose and depth, if it has one) for a camera at
+    /// `cam`; `metres`: metres per unit of the game's depth.
+    fn new(cam: Vec3, second: Option<(Mat4, &Pose)>, has_depth: bool, metres: f32) -> Self {
+        let (vp, pos, fwd) = match second {
+            Some((vp, p)) => (vp, Vec3::from_array(p.pos), quat(p.rot) * Vec3::Z),
+            None => (Mat4::ZERO, Vec3::ZERO, Vec3::Z),
+        };
+        ReprojectCb {
+            eye_b: vp.to_cols_array(),
+            cam_pos: cam.extend(1.0).to_array(),
+            b_pos: pos.extend(1.0).to_array(),
+            b_fwd: fwd.extend(0.0).to_array(),
+            b_depth: [metres, if has_depth && second.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0],
+        }
+    }
 }
 
 #[repr(C)]
@@ -268,9 +357,16 @@ pub enum Background<'a> {
     Game(&'a ID3D11ShaderResourceView),
     /// The runtime's own room.
     Void,
-    /// Another camera's view of the game's picture: from `first` (its eye's pose and field of
-    /// view), else from `second`, where `first` doesn't reach.
-    Reprojected { first: (&'a ID3D11ShaderResourceView, Pose, Fov), second: Option<(&'a ID3D11ShaderResourceView, Pose, Fov)> },
+    /// Another camera's view of the game's picture, the camera where `first` was drawn from: from
+    /// `first` (its eye's pose and field of view), else from `second` where `first` doesn't reach,
+    /// followed out along each ray through its depth (`second_depth`, `metres` per unit) when it
+    /// has one.
+    Reprojected {
+        first: (&'a ID3D11ShaderResourceView, Pose, Fov),
+        second: Option<(&'a ID3D11ShaderResourceView, Pose, Fov)>,
+        second_depth: Option<&'a ID3D11ShaderResourceView>,
+        metres: f32,
+    },
     /// What's in the target already (the game's picture moved there, `crate::warp`).
     Keep,
 }
@@ -429,14 +525,14 @@ impl Compositor {
     /// The game's depth, bloom and lens as another camera at the eye `first` was drawn from sees
     /// them (`eye`, `fov`; the desktop view's), into `out`: what the runtime draws over the
     /// reprojected picture hides behind what the game drew and gets its light, as in the headset.
-    pub fn reproject_post(&self, gpu: &Gpu, out: &PostTargets, eye: &Pose, fov: &Fov, first: &PostSource, second: Option<&PostSource>) {
+    pub fn reproject_post(&self, gpu: &Gpu, out: &PostTargets, eye: &Pose, fov: &Fov, first: &PostSource, second: Option<&PostSource>, metres: f32) {
         let ctx = &gpu.ctx;
         let vp = projection(fov) * view_matrix(eye);
         let mut cb = DrawCb::zeroed();
         cb.view_proj = vp.to_cols_array();
         cb.inv_view_proj = vp.inverse().to_cols_array();
         cb.view_proj_src = (projection(&first.fov) * view_matrix(&first.pose)).to_cols_array();
-        let eye_b = second.map_or(Mat4::ZERO, |s| projection(&s.fov) * view_matrix(&s.pose));
+        let b = second.map(|s| (projection(&s.fov) * view_matrix(&s.pose), &s.pose));
         let fwd = |p: &Pose| (quat(p.rot) * Vec3::Z).extend(0.0).to_array();
         let post = ReprojectPostCb { fwd_a: fwd(&first.pose), fwd_b: second.map_or([0.0; 4], |s| fwd(&s.pose)), fwd_cam: fwd(eye) };
         let rtvs = [out.depth.rtv.clone(), out.bloom.rtv.clone(), out.lens.rtv.clone()];
@@ -450,7 +546,7 @@ impl Compositor {
             ctx.OMSetBlendState(&self.opaque, Some(&[0.0; 4]), 0xFFFF_FFFF);
             ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone())]));
             self.cb.update(ctx, &cb);
-            self.reproject_cb.update(ctx, &ReprojectCb { eye_b: eye_b.to_cols_array() });
+            self.reproject_cb.update(ctx, &ReprojectCb::new(Vec3::from_array(first.pose.pos), b, true, metres));
             self.post_cb.update(ctx, &post);
             ctx.VSSetConstantBuffers(0, Some(&[Some(self.cb.buf.clone())]));
             ctx.PSSetConstantBuffers(0, Some(&[Some(self.cb.buf.clone()), Some(self.reproject_cb.buf.clone()), Some(self.post_cb.buf.clone())]));
@@ -509,25 +605,22 @@ impl Compositor {
                     self.full_void.bind(ctx);
                     ctx.PSSetShaderResources(0, Some(&[None]));
                 }
-                Background::Reprojected { first, second } => {
+                Background::Reprojected { first, second, second_depth, metres } => {
                     let mut c = cb;
                     c.view_proj_src = (projection(&first.2) * view_matrix(&first.1)).to_cols_array();
                     self.cb.update(ctx, &c);
-                    let (b_srv, b_vp) = match &second {
-                        Some((srv, pose, fov)) => (Some((*srv).clone()), projection(fov) * view_matrix(pose)),
-                        // Nothing to fall back on: a matrix that puts everything behind it.
-                        None => (None, Mat4::ZERO),
-                    };
-                    self.reproject_cb.update(ctx, &ReprojectCb { eye_b: b_vp.to_cols_array() });
+                    // (Nothing to fall back on: a matrix that puts everything behind it.)
+                    let b = second.as_ref().map(|(_, pose, fov)| (projection(fov) * view_matrix(pose), pose));
+                    self.reproject_cb.update(ctx, &ReprojectCb::new(Vec3::from_array(first.1.pos), b, second_depth.is_some(), metres));
                     ctx.PSSetConstantBuffers(1, Some(&[Some(self.reproject_cb.buf.clone())]));
                     self.full_reproject.bind(ctx);
-                    ctx.PSSetShaderResources(0, Some(&[Some(first.0.clone()), b_srv]));
+                    ctx.PSSetShaderResources(0, Some(&[Some(first.0.clone()), second.map(|s| s.0.clone()), None, second_depth.cloned()]));
                 }
             }
             if !keep {
                 ctx.Draw(3, 0);
             }
-            ctx.PSSetShaderResources(0, Some(&[None, None]));
+            ctx.PSSetShaderResources(0, Some(&[None, None, None, None]));
         }
         self.cb.update(ctx, &cb);
         between(gpu);

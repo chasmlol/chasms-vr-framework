@@ -23,6 +23,38 @@ pub struct Spec {
     pub aux_h: u32,
 }
 
+/// How far past the headset's view the game draws every eye, on every side (degrees). The headset
+/// turns each picture to where the head is when it shows it, a frame or two on (more over a stream,
+/// Virtual Desktop's). A head turning sees round the picture's edge otherwise: undrawn there, the
+/// edges flicker and smear as it turns.
+pub const OVERSCAN_DEG: f32 = 5.0;
+/// The field of view the game draws each eye with, from the headset's (tangents, as [`Fov`] has
+/// them): [`OVERSCAN_DEG`] wider all round.
+pub fn render_fov(headset: [Fov; 2]) -> [Fov; 2] {
+    let m = OVERSCAN_DEG.to_radians();
+    // (`sign`: the side's: left and down are negative tangents.)
+    let wider = |t: f32, sign: f32| sign * ((sign * t).atan() + m).min(80f32.to_radians()).tan();
+    headset.map(|f| Fov { left: wider(f.left, -1.0), right: wider(f.right, 1.0), up: wider(f.up, 1.0), down: wider(f.down, -1.0) })
+}
+
+/// How much wider and taller (as tangent spans) the game's eyes are drawn than the headset's view:
+/// the eye size grows with them, so the picture stays as sharp.
+pub fn render_scale(headset: [Fov; 2], drawn: [Fov; 2]) -> (f32, f32) {
+    let k = |e: usize| {
+        let (h, d) = (headset[e], drawn[e]);
+        ((d.right - d.left) / (h.right - h.left).max(1e-3), (d.up - d.down) / (h.up - h.down).max(1e-3))
+    };
+    let (a, b) = (k(0), k(1));
+    // (Rounded, so the size doesn't change with every frame's tiny differences.)
+    let r = |x: f32| (x.max(1.0) * 50.0).round() / 50.0;
+    (r(a.0.max(b.0)), r(a.1.max(b.1)))
+}
+
+/// The headset's recommended per-eye size grown by `scale` (from [`render_scale`]).
+pub fn overscanned(recommended: (u32, u32), scale: (f32, f32)) -> (u32, u32) {
+    ((recommended.0 as f32 * scale.0) as u32, (recommended.1 as f32 * scale.1) as u32)
+}
+
 /// The per-eye resolution games render at: the headset's recommended size times the render scale,
 /// capped by `max_eye_size`.
 pub fn eye_size(recommended: (u32, u32), s: &Settings) -> (u32, u32) {

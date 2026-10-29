@@ -386,7 +386,10 @@ impl Session {
             tracing::info!("runtime: settings reloaded");
         }
         if let Some(g) = &self.game {
-            let spec = Spec::new(&g.request, self.backend.recommended_size(), &self.settings.current);
+            // (Drawn wider than the headset shows, and bigger to stay as sharp: `targets::render_fov`.)
+            let drawn = crate::targets::render_fov(frame.fov);
+            let recommended = crate::targets::overscanned(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn));
+            let spec = Spec::new(&g.request, recommended, &self.settings.current);
             if self.targets.as_ref().is_none_or(|t| t.spec != spec) {
                 self.generation += 1;
                 match SharedTargets::create(&self.gpu, &self.opts.mapping, self.generation, spec, self.sec.as_ref()) {
@@ -779,12 +782,16 @@ impl Session {
             refresh_hz: self.backend.refresh_hz(),
             hmd: frame.hmd,
             eyes: frame.eyes,
-            fov: frame.fov,
+            // Wider than the headset shows (`targets::render_fov`): its turning the picture to the
+            // head as it shows it never reaches an edge that wasn't drawn.
+            fov: crate::targets::render_fov(frame.fov),
             hands: frame.hands,
             tracking: out.tracking,
             intents: out.intents,
             eye_size: {
-                let (w, h) = crate::targets::eye_size(self.backend.recommended_size(), &self.settings.current);
+                let drawn = crate::targets::render_fov(frame.fov);
+                let recommended = crate::targets::overscanned(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn));
+                let (w, h) = crate::targets::eye_size(recommended, &self.settings.current);
                 [w, h]
             },
         };
@@ -1339,7 +1346,7 @@ impl Session {
                         self.spectator_post = crate::compositor::PostTargets::new(&self.gpu, size.0, size.1).inspect_err(|e| tracing::warn!("desktop view: depth targets: {e:#}")).ok();
                     }
                     if let Some(p) = &self.spectator_post {
-                        self.comp.reproject_post(&self.gpu, p, &cam, &fov, &a, src(first ^ 1).as_ref());
+                        self.comp.reproject_post(&self.gpu, p, &cam, &fov, &a, src(first ^ 1).as_ref(), 1.0 / wpm.max(1e-6));
                         post = Some(p);
                     }
                 }
@@ -1349,7 +1356,12 @@ impl Session {
                 (Some((slot, info)), false) => {
                     let eye = |e: usize| slot.eyes[e].srv.as_ref().map(|srv| (srv, info.eye_pose[e], info.fov[e]));
                     match (eye(first), eye(first ^ 1)) {
-                        (Some(a), b) => crate::compositor::Background::Reprojected { first: a, second: b },
+                        (Some(a), b) => crate::compositor::Background::Reprojected {
+                            first: a,
+                            second: b,
+                            second_depth: (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[first ^ 1].srv.as_ref())).flatten(),
+                            metres: 1.0 / wpm.max(1e-6),
+                        },
                         (None, _) => crate::compositor::Background::Void,
                     }
                 }
