@@ -165,7 +165,7 @@ SKINNING(skinned, bone_rows, bone_turn, bone_stretch)
 
 // Metres a plate's layer comes towards the eye for its depth: overlapping plates nearer than this
 // to one another draw the higher layer's over the lower's (they slide over, they don't clip).
-#define LAYER_DEPTH 0.004
+#define LAYER_DEPTH 0.0025
 
 VSOut VSMain(VSIn i) {
     float4 w = i.weights / max(dot(i.weights, 1), 1e-5);

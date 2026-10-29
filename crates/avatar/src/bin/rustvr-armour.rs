@@ -21,9 +21,9 @@
 //! * `islands.png`: the body at rest, every island its own colour, numbered `mesh.island` as the
 //!   listing numbers them (each part's meshes counted from 0);
 //! * `plates.png`: the same, each plate its own colour, soft parts grey, at rest and arms raised;
-//! * `list.txt` (and with `--list`, printed): each model's meshes and islands (their vertices,
-//!   bones and bounds), and the plates its marks give it (what each rides, its pivot), with what
-//!   in the marks didn't work.
+//! * `list.txt` (with `--list`, printed instead of drawing anything): each model's meshes and
+//!   islands (their vertices, bones and bounds), and the plates its marks give it (what each
+//!   rides, its pivot at rest), with what in the marks didn't work.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -155,6 +155,7 @@ fn main() -> Result<()> {
     std::fs::write(out.join("list.txt"), &listing)?;
     if a.list {
         print!("{listing}");
+        return Ok(());
     }
 
     let gpu = Gpu::new()?;

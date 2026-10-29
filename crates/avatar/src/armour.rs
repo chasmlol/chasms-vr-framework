@@ -138,9 +138,11 @@ fn add_weights(bones: &mut Vec<(usize, f32)>, v: &asset::Vertex, k: f32) {
     }
 }
 
-/// The bone a vertex is mostly on.
-fn heaviest(v: &asset::Vertex) -> Option<usize> {
-    (0..4).filter(|&k| v.weights[k] > 0).max_by_key(|&k| v.weights[k]).map(|k| v.bones[k] as usize)
+/// The bone a vertex is mostly on, and its share.
+fn heaviest(v: &asset::Vertex) -> Option<(usize, f32)> {
+    let total: u32 = v.weights.iter().map(|&w| w as u32).sum();
+    let k = (0..4).filter(|&k| v.weights[k] > 0).max_by_key(|&k| v.weights[k])?;
+    Some((v.bones[k] as usize, v.weights[k] as f32 / total.max(1) as f32))
 }
 
 /// A plate as it's applied: its vertices (of one mesh) and what they all get.
@@ -174,12 +176,13 @@ fn origin(b: &asset::Bone) -> Vec3 {
     Vec3::new(b.model_matrix[12], b.model_matrix[13], b.model_matrix[14])
 }
 
-/// Where a plate riding `a` and `b` turns: the joint between them. Below their nearest common
-/// ancestor each is reached through one joint (the first bone on the way down to it); the joint is
-/// whichever of those is further from the ancestor (a twist bone at the elbow, under the forearm,
-/// turns about the forearm's own axis; the hand, beside it, at the wrist). None when neither is
-/// below the other's ancestor (unrelated bones).
-fn joint_between(bones: &[asset::Bone], a: usize, b: usize) -> Option<Vec3> {
+/// Where a plate at `near` riding `a` and `b` turns: the joint between them nearest it. The joints
+/// between two bones are where each bone on the way from one to the other, through their nearest
+/// common ancestor, meets its parent; a bone at its parent's own joint (a twist bone at the elbow,
+/// under the forearm) only rolls there, and isn't one (a pauldron on the upper chest and the upper
+/// arm turns at the shoulder, not at the neck the clavicles hang from; a couter at the elbow).
+/// None for bones with no common ancestor.
+fn joint_between(bones: &[asset::Bone], a: usize, b: usize, near: Vec3) -> Option<Vec3> {
     let parent = |i: usize| usize::try_from(bones[i].parent).ok().filter(|&p| p < bones.len() && p != i);
     let up = |mut i: usize| {
         let mut chain = vec![i];
@@ -194,9 +197,13 @@ fn joint_between(bones: &[asset::Bone], a: usize, b: usize) -> Option<Vec3> {
     };
     let (ca, cb) = (up(a), up(b));
     let common = *ca.iter().find(|x| cb.contains(x))?;
-    let below = |chain: &[usize]| chain.iter().position(|&x| x == common).and_then(|k| k.checked_sub(1)).map(|k| chain[k]);
-    let at = origin(&bones[common]);
-    [below(&ca), below(&cb)].into_iter().flatten().map(|j| origin(&bones[j])).max_by(|x, y| x.distance(at).total_cmp(&y.distance(at)))
+    let below = |chain: &[usize]| chain.iter().take_while(|&&x| x != common).copied().collect::<Vec<_>>();
+    below(&ca)
+        .into_iter()
+        .chain(below(&cb))
+        .filter(|&j| parent(j).is_none_or(|p| origin(&bones[j]).distance(origin(&bones[p])) > 1e-3))
+        .map(|j| origin(&bones[j]))
+        .min_by(|x, y| x.distance(near).total_cmp(&y.distance(near)))
 }
 
 /// Shares as vertex weights: the four largest, in 255ths summing to 255.
@@ -288,7 +295,7 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Mark
                         isl.side
                     } else {
                         match heaviest(&mesh.vertices[welded[i as usize] as usize]) {
-                            Some(b) if mark.vertices.iter().any(|p| marks::glob(p, &model.bones[b].name)) => bone_side[b],
+                            Some((b, share)) if share >= mark.firm && mark.vertices.iter().any(|p| marks::glob(p, &model.bones[b].name)) => bone_side[b],
                             _ => continue,
                         }
                     };
@@ -316,9 +323,13 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Mark
                 shares.retain(|s| s.1 >= LEAST_SHARE.min(most));
             } else {
                 for (name, &share) in &mark.ride {
-                    match bone_named(&model.bones, name, side, centre) {
-                        Some(b) => shares.push((b, share)),
-                        None => problems.push(format!("{}: plate '{}' rides '{name}', which the skeleton hasn't", piece.name, mark.name)),
+                    // A plate in the middle riding a bone of either side (`Bip01 * Clavicle`) rides
+                    // both, half each.
+                    let both = (side == Side::Middle).then(|| (bone_named(&model.bones, name, Side::Left, centre), bone_named(&model.bones, name, Side::Right, centre)));
+                    match (both, bone_named(&model.bones, name, side, centre)) {
+                        (Some((Some(l), Some(r))), _) if l != r => shares.extend([(l, share * 0.5), (r, share * 0.5)]),
+                        (_, Some(b)) => shares.push((b, share)),
+                        _ => problems.push(format!("{}: plate '{}' rides '{name}', which the skeleton hasn't", piece.name, mark.name)),
                     }
                 }
             }
@@ -337,7 +348,7 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Mark
                         centre
                     }
                 },
-                None if shares.len() >= 2 => joint_between(&model.bones, shares[0].0, shares[1].0).unwrap_or(centre),
+                None if shares.len() >= 2 => joint_between(&model.bones, shares[0].0, shares[1].0, centre).unwrap_or(centre),
                 None => centre,
             };
             // At rest: its vertices as the game skins them there, its pivot where its riders take it.
@@ -351,7 +362,53 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Mark
             out.push(Plate { name: mark.name.clone(), side, mesh: m, vertices, bones, weights, pivot, layer: mark.layer, shape });
         }
     }
+    attach_studs(model, &islands, &moves, &mut out);
     Marked { plates: out, problems, unchosen }
+}
+
+/// Islands no bigger than this (metres across) are studs, rivets and buckles...
+const STUD: f32 = 0.03;
+/// ... and one within this of a plate is on it.
+const ON: f32 = 0.01;
+
+/// Studs, rivets and buckles (islands too small to be plates) sitting on a plate move with it, so
+/// they stay where they're fixed rather than sliding over it on their own weights.
+fn attach_studs(model: &asset::Model, islands: &[Vec<Island>], moves: &[Mat4], out: &mut Vec<Plate>) {
+    let taken: std::collections::HashSet<(usize, u32)> = out.iter().flat_map(|p| p.vertices.iter().map(move |&v| (p.mesh, v))).collect();
+    let mut joins: Vec<(usize, usize, Vec<u32>)> = Vec::new();
+    for (m, mesh) in model.meshes.iter().enumerate() {
+        for isl in &islands[m] {
+            if (isl.max - isl.min).max_element() > STUD || isl.vertices.iter().any(|&v| taken.contains(&(m, v))) {
+                continue;
+            }
+            let at = |v: u32| Vec3::from_array(mesh.vertices[v as usize].pos);
+            // The plate nearest any of its corners.
+            let nearest = out
+                .iter()
+                .enumerate()
+                .map(|(k, p)| {
+                    let pm = &model.meshes[p.mesh];
+                    let d = p.vertices.iter().map(|&i| Vec3::from_array(pm.vertices[i as usize].pos)).map(|q| isl.vertices.iter().map(|&v| at(v).distance(q)).fold(f32::MAX, f32::min)).fold(f32::MAX, f32::min);
+                    (k, d)
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some((k, d)) = nearest
+                && d <= ON
+            {
+                joins.push((k, m, isl.vertices.clone()));
+            }
+        }
+    }
+    for (k, m, vertices) in joins {
+        let shape: Vec<(Vec3, Vec3)> = vertices.iter().map(|&i| blended(&model.meshes[m].vertices[i as usize], moves)).collect();
+        if out[k].mesh == m {
+            out[k].vertices.extend(vertices);
+            out[k].shape.extend(shape);
+        } else {
+            let plate = Plate { mesh: m, vertices, shape, ..out[k].clone() };
+            out.push(plate);
+        }
+    }
 }
 
 /// What a plate rides, for the log and the preview: "Bip01 L Forearm 70%, Bip01 L Hand 30%".

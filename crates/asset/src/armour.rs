@@ -113,6 +113,11 @@ pub struct Plate {
     /// a plate that is part of an island (a glove's back plate, a boot's toe cap).
     #[serde(default, deserialize_with = "one_or_many")]
     pub vertices: Vec<String>,
+    /// With `vertices`: only the corners with at least this share on that bone (0, the default:
+    /// all of them), so the corners blended across a joint stay soft and the joint bends smoothly
+    /// between the plates either side.
+    #[serde(default)]
+    pub firm: f32,
     /// What it rides: bones and their shares (none: its own skin's weights, averaged).
     #[serde(default)]
     pub ride: BTreeMap<String, f32>,
