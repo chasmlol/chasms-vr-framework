@@ -70,6 +70,9 @@ pub struct ArmInput {
     pub chest_rot: Quat,
     /// Hand joint target: the wrist position and the hand's canonical frame.
     pub target: Pose,
+    /// Where the headset tracks the elbow, when it does: the elbow points the way the player's
+    /// does (the arm's own lengths kept).
+    pub elbow: Option<Vec3>,
 }
 
 /// Swivel frame around the shoulder -> wrist axis: elbow direction e(α) = u cos α + o sin α, so
@@ -195,6 +198,16 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     let target_dir = swivel_target(skel, &frame, sign, rest_shoulder, previous, straight, input, |e| {
         two_bone(shoulder, wrist, lengths, e, flex, p.arm_stretch)
     });
+    // The headset's own tracking of the elbow: its way out from the shoulder-to-wrist line, the
+    // model's where the arm is nearly straight (the way is lost in the tracking's noise there).
+    let target_dir = match input.elbow {
+        Some(e) => {
+            let off = (e - shoulder).reject_from(axis);
+            let k = smoothstep(0.01, 0.04, off.length());
+            target_dir.lerp(off.normalize_or(target_dir), k).normalize_or(target_dir)
+        }
+        None => target_dir,
+    };
 
     // Smooth the swivel, never the hand: the elbow direction is filtered in chest space.
     let local = q.inverse() * target_dir;

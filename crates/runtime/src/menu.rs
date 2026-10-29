@@ -288,6 +288,7 @@ fn body(ui: &mut egui::Ui, s: &mut Settings, status: &Status, rects: &mut Vec<(S
         ui.selectable_value(&mut s.body.visibility, BodyVisibility::Full, "Full body");
     });
     ui.checkbox(&mut s.body.game_lighting, "Light the body with the game's lighting");
+    ui.checkbox(&mut s.body.tracked_elbows, "Elbows from the headset's body tracking (Quest 3 / Pro)");
     out
 }
 

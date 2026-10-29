@@ -703,3 +703,30 @@ fn changing_direction_on_the_stick_leaves_the_arms_where_they_are() {
     eprintln!("changing direction: the arms moved {:.1} cm at most ({:?})", worst.0 * 100.0, worst.1);
     assert!(worst.0 < 0.01, "changing direction moved {:?} {:.1} cm", worst.1, worst.0 * 100.0);
 }
+
+#[test]
+fn a_tracked_elbow_turns_the_arm_its_way() {
+    // The rifle pose, its right elbow out to the side by the arm's model: the headset tracks the
+    // player's elbow tucked down under the gun, and the arm follows it; untracked again, it goes
+    // back to the model's.
+    let held = named_pose("rifle");
+    let model = settle(&mut solver(), &held, 120);
+    let tucked = elbow_offset(&model, Joint::RightUpperArm, Joint::RightLowerArm, Joint::RightHand);
+    let shoulder = pos(&model, Joint::RightUpperArm);
+    let wing = shoulder + Vec3::new(0.06, -0.26, 0.08);
+    let mut s = solver();
+    let tracked = settle(&mut s, &TrackedInput { elbows: [None, Some(wing)], ..held }, 120);
+    let e = elbow_offset(&tracked, Joint::RightUpperArm, Joint::RightLowerArm, Joint::RightHand);
+    let want = {
+        let w = pos(&tracked, Joint::RightHand);
+        let axis = (w - shoulder).normalize();
+        let off = wing - shoulder;
+        (off - axis * off.dot(axis)).normalize()
+    };
+    assert!(e.normalize().dot(want) > 0.97, "the elbow points where it's tracked: {e} (want {want}, the model's {tucked})");
+    assert!(e.normalize().dot(tucked.normalize()) < 0.9, "and not where the model had it: {e} vs {tucked}");
+    assert_hands_pinned(&tracked, &held, "tracked elbow");
+    let back = settle(&mut s, &held, 120);
+    let e = elbow_offset(&back, Joint::RightUpperArm, Joint::RightLowerArm, Joint::RightHand);
+    assert!(e.normalize().dot(tucked.normalize()) > 0.99, "untracked, the model's again: {e} vs {tucked}");
+}

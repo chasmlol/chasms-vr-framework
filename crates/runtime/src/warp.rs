@@ -18,6 +18,10 @@
 //!
 //! It also writes what the runtime's body draw needs of the game's picture as it now shows: the
 //! depth (metres along the new eye's view), and the game's bloom and lens moved with it.
+//!
+//! It costs the game little of the GPU: the grid is as fine as the headset's pixels (not the
+//! game's, often larger), the eye's own picture goes first so the other eye's is only drawn where
+//! it's seen, and the bloom and lens are moved only for a game that has them.
 
 use std::collections::HashMap;
 
@@ -36,6 +40,9 @@ use crate::backend::{DepthTarget, EyeTarget};
 use crate::compositor::{FAR, NEAR, projection, view_matrix};
 
 const SHADER: &str = r#"
+#ifndef BLOOM
+#define BLOOM 0
+#endif
 cbuffer Warp : register(b0) {
     float4x4 proj;      // the target's view space -> its clip space
     float4x4 to_view;   // the source eye's view space (tracking metres) -> the target's view space
@@ -77,7 +84,21 @@ WOut VSMain(uint id : SV_VertexID) {
     return o;
 }
 
-struct POut { float4 color : SV_Target0; float z : SV_Target1; float4 bloom : SV_Target2; float4 lens : SV_Target3; float depth : SV_Depth; };
+// What's written: the colour, the view depth, and (a game with them) the bloom and lens.
+#if BLOOM
+#define TARGETS float4 color : SV_Target0; float z : SV_Target1; float4 bloom : SV_Target2; float4 lens : SV_Target3;
+#else
+#define TARGETS float4 color : SV_Target0; float z : SV_Target1;
+#endif
+struct POut { TARGETS };
+struct PDOut { TARGETS float depth : SV_Depth; };
+
+// The picture at `uv` into `o`.
+#if BLOOM
+#define SAMPLE(o, uv) o.color = float4(src.SampleLevel(samp, uv, 0).rgb, 1); o.bloom = src_bloom.SampleLevel(samp, uv, 0); o.lens = src_lens.SampleLevel(samp, uv, 0);
+#else
+#define SAMPLE(o, uv) o.color = float4(src.SampleLevel(samp, uv, 0).rgb, 1);
+#endif
 
 // The source picture's point at `uv`, `d` metres along its view; and where a point is in it.
 float3 src_point(float2 uv, float d) {
@@ -100,29 +121,31 @@ float depth_at(float2 uv) {
 #define SEARCH 16
 #define STEP 1.5
 
-POut PSMain(WOut i) {
-    POut o;
-    float2 uv = i.uv;
-    o.z = i.vz;
-    o.depth = i.pos.z;
-    // A cell stretched across a jump in the picture's depth (a near thing's edge over what's far
-    // behind it, pulled apart by the move) is not a surface; and a pixel whose own depth isn't the
-    // cell's (the edge of a near thing inside a cell whose corners are all on what's behind it,
-    // or the other way round) was moved as something it isn't. Each such pixel finds what it
-    // really sees: along its own line of sight (in the source picture, a line through where the
-    // grid put it), the nearest place the line meets the picture's depth.
+// A cell stretched across a jump in the picture's depth (a near thing's edge over what's far behind
+// it, pulled apart by the move) is not a surface; and a pixel whose own depth isn't the cell's (the
+// edge of a near thing inside a cell whose corners are all on what's behind it, or the other way
+// round) was moved as something it isn't.
+bool astray(WOut i) {
+    if (grid.z <= 0) return false;
     float2 px = i.uv * src_info.xy;
     float dd = length(float2(ddx(i.sd), ddy(i.sd)));
     float dpx = max(length(ddx(px)) + length(ddy(px)), 1e-3);
-    bool stretched = grid.z > 0 && dd / dpx > 0.06 * max(i.sd, 0.05);
+    if (dd / dpx > 0.06 * max(i.sd, 0.05)) return true;
     float own = depth_at(i.uv);
     float cell = i.sd >= grid.w ? 1e6 : i.sd;
-    bool misplaced = false;
-    if (grid.z > 0) {
-        if ((own >= 1e6) != (cell >= 1e6)) misplaced = true;
-        else if (own < 1e6 && abs(own - cell) > 0.05 * cell + 0.01) misplaced = true;
-    }
-    if (stretched || misplaced) {
+    if ((own >= 1e6) != (cell >= 1e6)) return true;
+    return own < 1e6 && abs(own - cell) > 0.05 * cell + 0.01;
+}
+
+// The eye's own picture. Each pixel the grid moved astray finds what it really sees: along its own
+// line of sight (in the source picture, a line through where the grid put it), the nearest place
+// the line meets the picture's depth.
+PDOut PSMain(WOut i) {
+    PDOut o;
+    float2 uv = i.uv;
+    o.z = i.vz;
+    o.depth = i.pos.z;
+    if (astray(i)) {
         // This pixel's line of sight in the source's view space: C + t D, t its depth in the
         // target's view (the other eye's put farther: undone here, done again on what's found).
         float2 ndc = float2(i.pos.x / target.x * 2 - 1, 1 - i.pos.y / target.y * 2);
@@ -188,9 +211,17 @@ POut PSMain(WOut i) {
             o.depth = 0.999998;
         }
     }
-    o.color = float4(src.SampleLevel(samp, uv, 0).rgb, 1);
-    o.bloom = src_bloom.SampleLevel(samp, uv, 0);
-    o.lens = src_lens.SampleLevel(samp, uv, 0);
+    SAMPLE(o, uv)
+    return o;
+}
+
+// The other eye's picture, drawn after: only where the eye's own has nothing real (its edges, what
+// a move uncovers); its own strays are left out.
+POut PSOther(WOut i) {
+    if (astray(i)) discard;
+    POut o;
+    o.z = i.vz;
+    SAMPLE(o, i.uv)
     return o;
 }
 
@@ -210,9 +241,10 @@ POut PSFill(FOut i) {
     float3 d = mul(from_target, float4(v.xyz / v.w, 0)).xyz;
     POut o;
     o.z = 0;
+#if BLOOM
     o.bloom = 0;
     o.lens = 0;
-    o.depth = 1;
+#endif
     if (d.z <= 1e-4) {
         o.color = float4(0.004, 0.004, 0.005, 1);
         return o;
@@ -254,8 +286,8 @@ struct WarpCb {
 /// eyes show the same surface, the eye's own picture is the one seen.
 const OTHER_EYE_BACK: f32 = 1.01;
 
-/// Grid points every this many of the source's pixels.
-pub const CELL_PIXELS: u32 = 6;
+/// Grid points every this many of the target's pixels (the source's, scaled to them).
+pub const CELL_PIXELS: u32 = 4;
 /// Points farther than this (metres) are drawn as directions (the projection's far plane is 200 m).
 const FARTHEST: f32 = 190.0;
 
@@ -297,9 +329,27 @@ struct Targets {
     lens: Texture,
 }
 
-pub struct Warp {
-    program: Program,
+/// One way of drawing (`BLOOM`: with the game's bloom and lens, or without).
+struct Programs {
+    own: Program,
+    other: Program,
     fill: Program,
+}
+
+impl Programs {
+    fn new(gpu: &Gpu, bloom: bool) -> Result<Programs> {
+        let src = format!("#define BLOOM {}\n{SHADER}", bloom as u32);
+        Ok(Programs {
+            own: Program::with_entries(gpu, &src, "warp", "VSMain", "PSMain", &[])?,
+            other: Program::with_entries(gpu, &src, "warp", "VSMain", "PSOther", &[])?,
+            fill: Program::with_entries(gpu, &src, "warp", "VSFill", "PSFill", &[])?,
+        })
+    }
+}
+
+pub struct Warp {
+    /// Without the bloom and lens, and with them.
+    programs: [Programs; 2],
     headset_depth: Program,
     cb: ConstantBuffer<WarpCb>,
     linear: ID3D11SamplerState,
@@ -355,8 +405,7 @@ impl Warp {
             s.unwrap()
         };
         Ok(Warp {
-            program: Program::with_entries(gpu, SHADER, "warp", "VSMain", "PSMain", &[])?,
-            fill: Program::with_entries(gpu, SHADER, "warp", "VSFill", "PSFill", &[])?,
+            programs: [Programs::new(gpu, false)?, Programs::new(gpu, true)?],
             headset_depth: Program::with_entries(gpu, SHADER, "warp", "VSFill", "PSHeadsetDepth", &[])?,
             cb: ConstantBuffer::new(gpu)?,
             linear: pipeline::sampler(gpu, true, false)?,
@@ -418,22 +467,25 @@ impl Warp {
         Ok(g)
     }
 
-    /// Draws `sources` into `target` as seen from `eye` with `fov`: the last one's edge drawn on
-    /// outwards first, then all of them, the nearest surface winning (put the eye's own picture
-    /// last, the other's first: it fills the edges and what the move uncovers).
+    /// Draws `sources` into `target` as seen from `eye` with `fov`: the last one (the eye's own
+    /// picture) with its edge drawn on outwards, then the others (the other eye's) where it has
+    /// nothing real: its edges, and what the move uncovers.
     pub fn draw(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, sources: &[WarpSource]) -> Result<()> {
         let ctx = &gpu.ctx;
         let ti = self.targets(gpu, target.width, target.height)?;
         let t = &self.targets[ti];
         let dsv = t.depth.dsv.clone().unwrap();
+        // (The bloom and lens only for a game that has them.)
+        let bloom = sources.iter().any(|s| s.bloom.is_some() || s.lens.is_some());
         let rtvs = [Some(target.rtv.clone()), t.view_z.rtv.clone(), t.bloom.rtv.clone(), t.lens.rtv.clone()];
+        let rtvs = &rtvs[..if bloom { 4 } else { 2 }];
         let proj = projection(fov);
         let inv_proj = proj.inverse();
         unsafe {
             for rtv in rtvs.iter().skip(1).flatten() {
                 ctx.ClearRenderTargetView(rtv, &[0.0; 4]);
             }
-            ctx.OMSetRenderTargets(Some(&rtvs), &dsv);
+            ctx.OMSetRenderTargets(Some(rtvs), &dsv);
             ctx.OMSetBlendState(&self.opaque, Some(&[0.0; 4]), 0xFFFF_FFFF);
             ctx.RSSetState(&self.raster);
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -457,26 +509,35 @@ impl Warp {
                 target: [target.width as f32, target.height as f32, 0.0, 0.0],
             }
         };
+        let programs = &self.programs[bloom as usize];
         // The edge drawn on, behind everything.
         if let Some(s) = sources.last() {
             self.cb.update(ctx, &cb_for(s, (1, 1), 1.0));
-            self.fill.bind(ctx);
+            programs.fill.bind(ctx);
             unsafe {
                 ctx.OMSetDepthStencilState(&self.no_depth, 0);
                 ctx.PSSetShaderResources(0, Some(&[Some(s.color.clone())]));
                 ctx.Draw(3, 0);
+                ctx.OMSetDepthStencilState(&self.depth_test, 0);
+                ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0 as u32, 1.0, 0);
             }
         }
-        self.program.bind(ctx);
-        unsafe {
-            ctx.OMSetDepthStencilState(&self.depth_test, 0);
-            ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0 as u32, 1.0, 0);
-        }
-        for (k, s) in sources.iter().enumerate() {
-            let cell = CELL_PIXELS;
+        // The eye's own picture, then the other's where it has nothing real.
+        let order = sources.iter().rev().enumerate();
+        let mut grids = Vec::new();
+        for (k, s) in order {
+            // (Grid points a few of the target's pixels apart, however large the game's picture.)
+            let scale = (s.width as f32 / target.width.max(1) as f32).max(1.0);
+            let cell = ((CELL_PIXELS as f32 * scale).round() as u32).max(1);
             let cells = (s.width.div_ceil(cell).max(1), s.height.div_ceil(cell).max(1));
+            grids.push((k, cells));
+        }
+        for (k, cells) in grids {
+            let s = &sources[sources.len() - 1 - k];
+            let own = k == 0;
             let (ib, count) = self.grid(gpu, cells)?;
-            let own = k + 1 == sources.len();
+            let programs = &self.programs[bloom as usize];
+            (if own { &programs.own } else { &programs.other }).bind(ctx);
             self.cb.update(ctx, &cb_for(s, cells, if own { 1.0 } else { OTHER_EYE_BACK }));
             let srvs = [Some(s.color.clone()), s.depth.cloned(), s.bloom.cloned(), s.lens.cloned()];
             unsafe {

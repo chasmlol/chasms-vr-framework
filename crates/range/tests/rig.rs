@@ -114,11 +114,11 @@ fn hold_with(w: &Weapon, gun: Mat4, support: bool) -> Held {
     let head = IkPose { pos: EYE, rot: Quat::IDENTITY };
     let mut out = None;
     for _ in 0..120 {
-        out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false }));
+        out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2] }));
     }
     let out = out.unwrap();
     let mut fs = [FingerSolver::new(), FingerSolver::new()];
-    let firing = FingerInput { trigger: 0.0, squeeze: 1.0, touch_trigger: true, touch_thumb: false, thumb_press: false };
+    let firing = FingerInput { trigger: 0.0, squeeze: 1.0, touch_trigger: true, touch_thumb: false, thumb_press: false, tracked: None };
     let support = FingerInput { trigger: 0.0, squeeze: 1.0, ..Default::default() };
     let mut fingers = [Fingers::default(); 2];
     for _ in 0..60 {

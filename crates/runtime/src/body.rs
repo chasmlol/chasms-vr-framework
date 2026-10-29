@@ -231,7 +231,9 @@ impl PlayerBody {
             })
         });
         // Seated players still play a standing character: the body is drawn standing.
-        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false });
+        // The elbows where the headset tracks them (when the player lets it).
+        let elbows = f.elbows.map(|e| e.filter(|_| inp.settings.body.tracked_elbows).map(|e| Vec3::from_array(e) - down));
+        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows });
         for j in out.joints.iter_mut().chain(out.hand_targets.iter_mut()) {
             j.pos += down;
         }
@@ -577,7 +579,7 @@ mod tests {
         let grips = [Some(grip_for(Side::Left, -0.78)), Some(grip_for(Side::Right, 0.78))];
         let mut out = None;
         for _ in 0..120 {
-            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false }));
+            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2] }));
         }
         let out = out.unwrap();
         for j in [Joint::LeftUpperArm, Joint::LeftLowerArm, Joint::RightUpperArm, Joint::RightLowerArm, Joint::LeftHand, Joint::RightHand, Joint::Hips, Joint::Chest] {

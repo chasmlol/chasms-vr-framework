@@ -32,6 +32,9 @@ pub struct HmdFrame {
     /// Each hand's fingers as the headset's cameras see them, when it tracks the hand itself (the
     /// controller put down): curls, thumb .. little, 0 straight to 1 closed.
     pub fingers: [Option<[f32; 5]>; 2],
+    /// Each elbow where the headset tracks it (a Quest's body tracking: its cameras and its own
+    /// body model), tracking space.
+    pub elbows: [Option<[f32; 3]>; 2],
 }
 
 /// Where the head, the eyes and the controllers are at some moment, as the headset predicts it.

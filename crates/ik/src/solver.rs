@@ -83,6 +83,7 @@ impl BodySolver {
             grips: [None, None],
             locomotion: Vec3::ZERO,
             seated: false,
+            elbows: [None, None],
         };
         let out = self.solve_frame(&neutral);
         self.state = None;
@@ -244,7 +245,9 @@ impl BodySolver {
                 None => Pose { pos: chest_pos + chest_rot * local.pos, rot: (chest_rot * local.rot).normalize() },
             };
             targets[i] = target;
-            let input = ArmInput { side, chest_pos, chest_rot, target };
+            // (A tracked elbow that isn't a number is no elbow.)
+            let elbow = input.elbows[i].filter(|e| e.is_finite());
+            let input = ArmInput { side, chest_pos, chest_rot, target, elbow };
             arm::solve(p, skel, dt, &mut state.arms[i], &input)
         });
 

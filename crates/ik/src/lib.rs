@@ -93,6 +93,9 @@ pub struct TrackedInput {
     /// Velocity (m/s, tracking space) of artificial stick movement this frame.
     pub locomotion: Vec3,
     pub seated: bool,
+    /// Each elbow where the headset tracks it [left, right] (a Quest's body tracking), tracking
+    /// space; `None` = not tracked: the arm's own model places it.
+    pub elbows: [Option<Vec3>; 2],
 }
 
 /// The two measurements the body is scaled from.

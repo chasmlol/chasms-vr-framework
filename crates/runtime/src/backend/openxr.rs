@@ -6,7 +6,8 @@
 //! a game drawing a frame behind is given), each eye's depth with its picture
 //! (`XR_KHR_composition_layer_depth`, for the headset's own reprojection), the controllers' touch
 //! sensors (a finger off the trigger points, a thumb off the thumbrest lifts), and hands tracked by
-//! the headset's cameras (`XR_EXT_hand_tracking`: the fingers as they are, a fist grabs).
+//! the headset's cameras (`XR_EXT_hand_tracking`: the fingers as they are, a fist grabs), and the
+//! elbows where the headset's body tracking has them (`XR_FB_body_tracking`).
 //!
 //! OpenXR is right-handed with -Z forward; tracking space here is left-handed with +Z forward, so
 //! every pose crossing this boundary has Z mirrored: positions (x, y, -z), quaternions
@@ -31,6 +32,8 @@ use windows::core::Interface;
 use super::{Backend, DepthTarget, EyeTarget, HmdFrame, Located};
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
+/// The joints `XR_FB_body_tracking`'s default set has (`XR_BODY_JOINT_COUNT_FB`).
+const BODY_JOINTS: usize = 70;
 
 struct Hands {
     set: xr::ActionSet,
@@ -83,6 +86,10 @@ pub struct OpenXrBackend {
     depth_chains: Vec<DepthChain>,
     /// The hands the headset's cameras track, when its runtime offers that.
     trackers: Option<[xr::HandTracker; 2]>,
+    /// The body the headset tracks (its elbows), when its runtime offers that.
+    body: Option<xr::sys::BodyTrackerFB>,
+    /// The body tracker has tracked (said once).
+    body_seen: bool,
     size: (u32, u32),
     /// The headset's refresh rate (Hz), as its runtime says (`XR_FB_display_refresh_rate`) or as
     /// its frame period says.
@@ -117,12 +124,14 @@ impl OpenXrBackend {
         exts.fb_display_refresh_rate = available.fb_display_refresh_rate;
         exts.ext_hand_tracking = available.ext_hand_tracking;
         exts.ext_hand_tracking_data_source = available.ext_hand_tracking && available.ext_hand_tracking_data_source;
+        exts.fb_body_tracking = available.fb_body_tracking;
         tracing::info!(
-            "openxr: headset depth {}, refresh rate control {}, hand tracking {}{}",
+            "openxr: headset depth {}, refresh rate control {}, hand tracking {}{}, body tracking {}",
             yes(exts.khr_composition_layer_depth),
             yes(exts.fb_display_refresh_rate),
             yes(exts.ext_hand_tracking),
-            if exts.ext_hand_tracking_data_source { " (the hands alone)" } else { "" }
+            if exts.ext_hand_tracking_data_source { " (the hands alone)" } else { "" },
+            yes(exts.fb_body_tracking)
         );
         let instance = entry
             .create_instance(
@@ -244,6 +253,21 @@ impl OpenXrBackend {
         } else {
             None
         };
+        let body = instance.exts().fb_body_tracking.as_ref().and_then(|fp| {
+            let info = xr::sys::BodyTrackerCreateInfoFB {
+                ty: xr::sys::BodyTrackerCreateInfoFB::TYPE,
+                next: std::ptr::null(),
+                body_joint_set: xr::sys::BodyJointSetFB::DEFAULT,
+            };
+            let mut out = <xr::sys::BodyTrackerFB as xr::sys::Handle>::NULL;
+            let r = unsafe { (fp.create_body_tracker)(session.as_raw(), &info, &mut out) };
+            if r == xr::sys::Result::SUCCESS {
+                Some(out)
+            } else {
+                tracing::info!("openxr: no body tracking: {r:?}");
+                None
+            }
+        });
         tracing::info!("openxr: {}x{} per eye, swapchain format {:?}", size.0, size.1, format);
         let to_qpc = instance.exts().khr_win32_convert_performance_counter_time.map(|e| e.convert_time_to_win32_performance_counter);
         if to_qpc.is_none() {
@@ -261,6 +285,8 @@ impl OpenXrBackend {
                 chains,
                 depth_chains,
                 trackers,
+                body,
+                body_seen: false,
                 size,
                 refresh,
                 refresh_ext,
@@ -294,6 +320,34 @@ impl OpenXrBackend {
             let _ = QueryPerformanceFrequency(&mut freq);
         }
         now + (period.as_nanos() as i128 * freq as i128 / 1_000_000_000) as i64
+    }
+
+    /// The elbows where the headset's body tracking has them at `time`, when it's tracking.
+    fn elbows(&mut self, time: xr::Time) -> [Option<[f32; 3]>; 2] {
+        let (Some(tracker), Some(fp)) = (self.body, self._instance.exts().fb_body_tracking.as_ref()) else { return [None; 2] };
+        let info = xr::sys::BodyJointsLocateInfoFB { ty: xr::sys::BodyJointsLocateInfoFB::TYPE, next: std::ptr::null(), base_space: self.stage.as_raw(), time };
+        let mut joints = [xr::sys::BodyJointLocationFB::default(); BODY_JOINTS];
+        let mut out = xr::sys::BodyJointLocationsFB {
+            ty: xr::sys::BodyJointLocationsFB::TYPE,
+            next: std::ptr::null_mut(),
+            is_active: false.into(),
+            confidence: 0.0,
+            joint_count: BODY_JOINTS as u32,
+            joint_locations: joints.as_mut_ptr(),
+            skeleton_changed_count: 0,
+            time,
+        };
+        if unsafe { (fp.locate_body_joints)(tracker, &info, &mut out) } != xr::sys::Result::SUCCESS || !bool::from(out.is_active) || out.confidence < 0.3 {
+            return [None; 2];
+        }
+        if !self.body_seen {
+            self.body_seen = true;
+            tracing::info!("openxr: the headset is tracking the body (confidence {:.2}): the elbows follow it", out.confidence);
+        }
+        [xr::sys::BodyJointFB::LEFT_ARM_LOWER, xr::sys::BodyJointFB::RIGHT_ARM_LOWER].map(|j| {
+            let l = joints[j.into_raw() as usize];
+            l.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID).then(|| from_xr(&l.pose, true).pos)
+        })
     }
 
     /// Handles session state changes. Err when the session is over.
@@ -441,6 +495,7 @@ impl Backend for OpenXrBackend {
         for h in 0..2 {
             f.hands[h] = self.controller(h, time).unwrap_or_default();
         }
+        f.elbows = self.elbows(time);
         // Hands the cameras track: the fingers as they are, and a fist grabs (the runtime makes
         // a pinch the trigger itself).
         if let Some(trackers) = &self.trackers {
