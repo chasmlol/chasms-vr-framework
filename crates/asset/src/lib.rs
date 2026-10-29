@@ -243,14 +243,21 @@ pub fn default_root() -> PathBuf {
     repo_root().join("local_assets")
 }
 
-/// The repository this was built from, where `local_assets/` and `captures/` are: this one, or one
-/// that has it inside (a game adapter's, with this framework as its `framework/` submodule), the
-/// nearest that has a `local_assets/`.
+/// The repository where `local_assets/` and `captures/` are: the nearest folder above the running
+/// program that has a `local_assets/` (a game adapter's repository runs its runtime from its own
+/// `target/`), else the one above where this was built from (this one, or a game adapter's with
+/// this framework as its `framework/` submodule). (Where it was built from alone isn't enough: two
+/// checkouts of the framework building into one `target/` share this crate, and the path built
+/// into it is whichever built it first.)
 pub fn repo_root() -> PathBuf {
+    let has_assets = |d: &Path| d.join("local_assets").is_dir();
+    if let Some(found) = std::env::current_exe().ok().and_then(|exe| exe.ancestors().find(|d| has_assets(d)).map(Path::to_path_buf)) {
+        return found;
+    }
     // crates/asset -> this repository's root
     let own = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let own = own.canonicalize().unwrap_or(own);
-    own.ancestors().find(|d| d.join("local_assets").is_dir()).map(Path::to_path_buf).unwrap_or(own)
+    own.ancestors().find(|d| has_assets(d)).map(Path::to_path_buf).unwrap_or(own)
 }
 
 pub fn save_model(dir: &Path, key: &str, model: &Model) -> Result<()> {

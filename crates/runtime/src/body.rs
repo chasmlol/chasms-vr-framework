@@ -171,6 +171,8 @@ const SIDES: [Side; 2] = [Side::Left, Side::Right];
 /// Wrist to the middle finger's knuckle against a person's height (palm length: about 10.3 cm in
 /// a 1.75 m adult).
 const HAND_PER_HEIGHT: f32 = 0.059;
+/// A grown-up's height (metres), for the hands when the player hasn't said theirs.
+const TYPICAL_HEIGHT: f32 = 1.75;
 
 /// Grip-to-grip distance with the arms out, estimated from the eye height: the arm span about
 /// equals the height (eyes 11 cm below the top of the head), less most of the hands beyond the
@@ -209,8 +211,10 @@ impl PlayerBody {
 
     pub fn update(&mut self, inp: &BodyInput) -> &RtBody {
         // The hands a real hand's size for the player's height (wrist to the middle finger's
-        // knuckle is about 5.9% of a person's height), times the setting.
-        let height = self.solver.calibration().eye_height + 0.11;
+        // knuckle is about 5.9% of a person's height), times the setting: the height they've set,
+        // else a grown-up's. (Never the head's height as measured: a seated player's, it changes
+        // as they move.)
+        let height = if inp.settings.body.height > 1.0 { inp.settings.body.height } else { TYPICAL_HEIGHT };
         self.hand_length = HAND_PER_HEIGHT * height * inp.settings.body.hand_size.clamp(0.5, 2.0);
         let f = inp.frame;
         if let Some(c) = self.calibration(inp) {
