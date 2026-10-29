@@ -1051,16 +1051,26 @@ impl Rig {
             return;
         }
         self.table_seq = table.seq;
-        let mut seen = Vec::new();
         let descs = &table.descs[..(table.count as usize).min(MAX_OBJECTS)];
         // Templates first: a gun loads itself from its magazine template as it's added.
         self.templates = descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_TEMPLATE != 0).copied().collect();
+        // (A driven thing is only drawn: no body, nothing the hands meet.)
+        let seen: Vec<u32> = descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_TEMPLATE == 0 && d.kind != OBJ_DRIVEN).map(|d| d.id).collect();
+        // What's gone goes first (a holster it was in is free for what's new), and so does what
+        // came back as something else (a sword become a bow): it's made again.
+        let gone: Vec<u32> = self
+            .objects
+            .iter()
+            .filter(|(id, o)| !o.spawned && (!seen.contains(id) || descs.iter().any(|d| d.id == **id && d.kind != o.desc.kind)))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            self.remove(id);
+        }
         for d in descs {
-            // (A driven thing is only drawn: no body, nothing the hands meet.)
-            if d.id == 0 || d.flags & OBJF_TEMPLATE != 0 || d.kind == OBJ_DRIVEN {
+            if !seen.contains(&d.id) {
                 continue;
             }
-            seen.push(d.id);
             match self.objects.get_mut(&d.id) {
                 Some(o) => {
                     o.desc = *d;
@@ -1086,10 +1096,6 @@ impl Rig {
                     self.start_in_slot(d);
                 }
             }
-        }
-        let gone: Vec<u32> = self.objects.iter().filter(|(id, o)| !o.spawned && !seen.contains(id)).map(|(id, _)| *id).collect();
-        for id in gone {
-            self.remove(id);
         }
     }
 
@@ -1958,7 +1964,8 @@ impl Rig {
         // Something to throw in a swinging hand (not a gun or a magazine, which you hold on to).
         let throwing = {
             let h = &self.hands.as_ref().unwrap()[i];
-            h.holding.and_then(|id| self.objects.get(&id)).is_some_and(|o| o.desc.kind != OBJ_WEAPON && o.desc.kind != OBJ_MAGAZINE) && h.history.recent().length() > THROW_EASE_SPEED
+            // (Nor an arrow: brought to the string fast, or drawing it, it's held on to.)
+            h.holding.and_then(|id| self.objects.get(&id)).is_some_and(|o| !matches!(o.desc.kind, OBJ_WEAPON | OBJ_MAGAZINE | OBJ_ARROW)) && h.history.recent().length() > THROW_EASE_SPEED
         };
         let (pressed, released) = {
             let h = &mut self.hands.as_mut().unwrap()[i];
@@ -2314,6 +2321,7 @@ impl Rig {
         h.glove = Glove::Idle;
         self.physics.set_groups(h.collider, groups_none());
         self.debug.grabs += 1;
+        tracing::info!("rig: hand {i} takes {id:#x} (kind {}, {on:?})", d.kind);
         self.emit(Cue::Grab, Some(i), Some(id), palm, 1.0);
     }
 
@@ -3291,6 +3299,9 @@ impl Rig {
                 let (ap, aq) = self.physics.pose(a.body);
                 let string = bp + bq * bow::nock(&d, 0.0);
                 let nock_at = ap + aq * v3(a.desc.mag_well);
+                if (self.now * 2.0).floor() != ((self.now - inp.dt as f64) * 2.0).floor() {
+                    tracing::info!("rig: the arrow's nock {:.3} m from the string ({nock_at:.2?}, {string:.2?}), pointing {:.2} along the bow", nock_at.distance(string), (aq * Vec3::Z).dot(bq * Vec3::Z));
+                }
                 if nock_at.distance(string) < bow::NOCK_REACH * self.map.world_per_meter && (aq * Vec3::Z).dot(bq * Vec3::Z) > -0.3 {
                     self.nock(bid, aid, sh);
                 }
@@ -3325,6 +3336,7 @@ impl Rig {
             *b = bow::BowState { nocked: Some(aid), drawing: Some(hand), nocked_at: now, drawn_at: now, nocked_from: Some(from), shots: b.shots, loosed: b.loosed, full: b.full, ..Default::default() };
         }
         self.debug.nocks += 1;
+        tracing::info!("rig: an arrow {aid:#x} nocked on {bid:#x} by hand {hand}");
         let at = bp + bq * bow::nock(&d, 0.0);
         self.emit(Cue::BowNock, Some(hand), Some(bid), at, 1.0);
         self.emit(Cue::BowNock, Some(hand ^ 1), Some(bid), at, 0.6);
