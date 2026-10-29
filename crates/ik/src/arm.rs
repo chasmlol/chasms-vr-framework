@@ -158,6 +158,19 @@ pub fn two_bone(
     }
 }
 
+/// How far from the shoulder an arm `length` long bends as if the hand were, reaching `d` from
+/// where the shoulder rests: `d`, until `ease` short of full reach; from there it eases (with the
+/// same slope at its start and none at its end) onto full reach, `ease` past it, and stays there.
+/// The shoulder goes the rest of the way.
+fn eased_reach(d: f32, length: f32, ease: f32) -> f32 {
+    if ease > 0.0 && d > length - ease {
+        let u = (d - (length - ease)).min(2.0 * ease);
+        length - ease + u - u * u / (4.0 * ease)
+    } else {
+        d.min(length)
+    }
+}
+
 pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, input: &ArmInput) -> ArmPose {
     let sign = if input.side == Side::Left { -1.0 } else { 1.0 };
     let q = input.chest_rot;
@@ -165,17 +178,19 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     let wrist = input.target.pos;
     let arm = skel.arm_length();
 
-    // The shoulder: where it rests while the hand is within the arm's reach of it. Past that it
-    // goes the hand's way as a shoulder blade does (forward or across the chest most, up in a shrug,
-    // back and down less, out least), as far as the straight arm needs to reach, up to its own
-    // reach that way (`BodyParams::shoulder_reach`); only then does the arm stretch. The clavicle
-    // turns about its root to put it there.
+    // The shoulder: where it rests while the hand is well within the arm's reach. Near full reach
+    // and past it, it goes the hand's way as a shoulder blade does (forward or across the chest
+    // most, up in a shrug, back and down less, out least; `BodyParams::shoulder_reach`). Over the
+    // last `arm_ease` of reach either side of full it takes a growing share of the reaching, so the
+    // elbow straightens at a steady rate (a chain's bend changes ever faster as it straightens: it
+    // would snap straight), then all of it; the bones keep their length. Only past the shoulder's
+    // own reach does the arm stretch. The clavicle points at it.
     let clavicle_root = input.chest_pos + q * Vec3::new(sign * skel.clavicle_root, skel.shoulder_up, 0.0);
     let rest_shoulder = input.chest_pos + q * Vec3::new(sign * skel.shoulder_half, skel.shoulder_up, 0.0);
-    let clavicle_len = skel.shoulder_half - skel.clavicle_root;
-    let rest_dir = (rest_shoulder - clavicle_root).normalize_or(outward);
     let to_hand = wrist - rest_shoulder;
-    let clavicle_dir = if to_hand.length() > arm {
+    let reaching = to_hand.length();
+    let bend_at = eased_reach(reaching, arm, (p.arm_ease * arm).clamp(0.0, 0.25 * arm));
+    let slide = if reaching > bend_at {
         // (Chest space, outward +X on either side.)
         let l = q.inverse() * to_hand.normalize_or_zero();
         let (x, y, z) = (l.x * sign, l.y, l.z);
@@ -183,25 +198,12 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
         let sq = |v: f32| v * v;
         let reach = skel.scale
             * (sq(z.max(0.0)) * fwd + sq(x.min(0.0)) * fwd + sq(z.min(0.0)) * back + sq(y.max(0.0)) * rise + sq(y.min(0.0)) * drop + sq(x.max(0.0)) * out);
-        let furthest = (rest_shoulder + to_hand.normalize_or_zero() * reach - clavicle_root).normalize_or(rest_dir);
-        let turn = Quat::from_rotation_arc(rest_dir, furthest);
-        let at = |t: f32| Quat::IDENTITY.slerp(turn, t) * rest_dir;
-        let short = |t: f32| (clavicle_root + at(t) * clavicle_len).distance(wrist) - arm;
-        // The least turn that brings the hand within reach (all of it when even that doesn't).
-        if short(1.0) > 0.0 {
-            furthest
-        } else {
-            let (mut lo, mut hi) = (0.0f32, 1.0f32);
-            for _ in 0..14 {
-                let mid = 0.5 * (lo + hi);
-                if short(mid) > 0.0 { lo = mid } else { hi = mid }
-            }
-            at(hi)
-        }
+        (reaching - bend_at).min(reach)
     } else {
-        rest_dir
+        0.0
     };
-    let shoulder = clavicle_root + clavicle_dir * clavicle_len;
+    let shoulder = rest_shoulder + to_hand.normalize_or_zero() * slide;
+    let clavicle_dir = (shoulder - clavicle_root).normalize_or(outward);
     let clavicle_rot = frame_yz(clavicle_dir, forward, up);
     let hand_rot = input.target.rot;
     let lengths = [skel.upper_arm, skel.lower_arm];
