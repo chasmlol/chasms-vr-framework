@@ -547,7 +547,7 @@ impl Session {
                 tracing::info!("runtime: the game's menu, piece {i}: at {:.3?}, {:.2} x {:.2} m, of {:.3?}", p.panel.center, p.panel.width, p.panel.height, p.uv);
             }
         }
-        let layout = self.layout.update(
+        let mut layout = self.layout.update(
             &self.settings.current,
             head_pos,
             head_rot,
@@ -556,6 +556,24 @@ impl Session {
             hud_panel,
             if runtime_menu_open { Some(self.menu.aspect()) } else { None },
         );
+        // The runtime's settings beside a game menu that floats in pieces: to the right of them, as
+        // far away and as big to the eye as they'd be on their own, turned to it.
+        if let (Some(rm), false) = (layout.runtime_menu.as_mut(), self.menu_pieces.is_empty()) {
+            let yaw_of = |p: Vec3| (p - head_pos).x.atan2((p - head_pos).z);
+            let fwd = head_rot * Vec3::Z;
+            let ahead = fwd.x.atan2(fwd.z);
+            let edges = self.menu_pieces.iter().map(|p| p.panel.center + p.panel.right * p.panel.width * 0.5);
+            let (right, d) = edges.fold((f32::MIN, 1.0f32), |(r, d), e| {
+                let y = crate::wrap_angle(yaw_of(e) - ahead);
+                if y > r { (y, Vec3::new(e.x - head_pos.x, 0.0, e.z - head_pos.z).length()) } else { (r, d) }
+            });
+            let scale = d / self.settings.current.ui.menu_distance.max(0.1);
+            let (w, h) = (rm.width * scale, rm.height * scale);
+            let yaw = ahead + right + (w * 0.5 / d).atan() + 3f32.to_radians();
+            let pitch = 8f32.to_radians();
+            let c = head_pos + panels::Panel::dir(yaw, pitch) * d;
+            *rm = panels::Panel::facing(c, yaw, pitch, w, w / h.max(1e-4));
+        }
         let hand = &frame.hands[dom];
         let laser_origin = Vec3::from_array(hand.aim.pos);
         let laser_dir = quat(hand.aim.rot) * Vec3::Z;

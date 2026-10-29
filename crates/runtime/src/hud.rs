@@ -16,6 +16,12 @@
 //! | overlay | fixed to the face, over the whole view (damage, fades) |
 //! | centre and the rest | the flat screen, lazily following the head |
 //! | hidden | not drawn (the crosshair: the gun's sights aim) |
+//! | gaze | where the head looks, fixed to it, 1.6 m out (what looking there does: "Open Door") |
+//! | compass | low in front of the body, lazily following its turn |
+//! | target | over the foe it's about |
+//!
+//! Several status pieces stack up the forearm from the wrist, the first the size the settings say
+//! and the others to its scale; several hints stack upwards.
 //!
 //! Everything that follows the head does so lazily: it stays put while the head turns less than
 //! the dead zone (20 degrees), then glides back in front (0.15 s) and stops. It never rolls.
@@ -295,6 +301,10 @@ impl HudPlacer {
         let strip_full = 2.0 * cd * (u.caption_width_deg.to_radians() * 0.5).tan() * by_height;
         let strip_max = 2.0 * cd * (u.caption_max_deg.to_radians() * 0.5).tan();
         let per_metre = unit_per_metre(s, layout);
+        // (The status pieces share one size, the first's as the settings say; each stacks on the
+        // last.)
+        let status_unit = layout.entries().iter().find(|e| e.group == 0 && e.role == HUD_STATUS).map(|e| u.status_width / ((e.uv[2] - e.uv[0]).max(1e-4) * aspect));
+        let (mut status_stack, mut hints_stack) = (0.0f32, 0.0f32);
         for e in layout.entries().iter().filter(|e| e.group == 0) {
             let scale = if e.scale > 0.0 { e.scale } else { 1.0 };
             let (du, dv) = ((e.uv[2] - e.uv[0]).max(1e-4), (e.uv[3] - e.uv[1]).max(1e-4));
@@ -312,7 +322,12 @@ impl HudPlacer {
             };
             let piece = match e.role {
                 HUD_SUBTITLES => Some((strip(0.0, u.caption_pitch_deg), 1.0)),
-                HUD_HINTS => Some((strip(0.0, u.caption_pitch_deg - 7.0), 1.0)),
+                HUD_HINTS => {
+                    let mut panel = strip(0.0, u.caption_pitch_deg - 7.0);
+                    panel.center += panel.up * hints_stack;
+                    hints_stack += panel.height + 0.01;
+                    Some((panel, 1.0))
+                }
                 HUD_PROMPTS => Some((strip(u.caption_max_deg * 0.5 + 6.0, u.caption_pitch_deg), 1.0)),
                 HUD_AMMO => at.gun.map(|(gun, sight, dir)| {
                     // Beside the receiver on the gun's left, facing the eye.
@@ -323,9 +338,12 @@ impl HudPlacer {
                     (facing_eye(c, head_pos, w, h), 1.0)
                 }),
                 HUD_STATUS => at.off_hand.map(|(p, q)| {
-                    // On the back of the wrist (a little up the forearm from the grip).
-                    let c = p + q * Vec3::new(0.0, 0.035, -0.09);
-                    let (w, h) = sized(u.status_width / du, f32::MAX);
+                    // On the back of the wrist (a little up the forearm from the grip), and the next
+                    // further up it.
+                    let unit = status_unit.unwrap_or(1.0) * scale;
+                    let (w, h) = (du * aspect * unit, dv * unit);
+                    let c = p + q * Vec3::new(0.0, 0.035, -0.09 - status_stack - h * 0.5);
+                    status_stack += h + 0.008;
                     let to = (c - head_pos).normalize_or(Vec3::Z);
                     let off = to.angle_between(fwd).to_degrees();
                     let opacity = 1.0 - ((off - 30.0) / 15.0).clamp(0.0, 1.0);
@@ -348,6 +366,17 @@ impl HudPlacer {
                     let unit = DISTANCE * per_metre * scale;
                     let (w, h) = (du * aspect * unit, dv * unit);
                     let mut panel = Panel::facing(head_pos + Panel::dir(ay, pitch) * DISTANCE, ay, pitch, w, aspect);
+                    panel.height = h;
+                    Some((panel, 1.0))
+                }
+                HUD_GAZE => {
+                    // Where the head looks, fixed to it (no roll), as big as the game's text there.
+                    const DISTANCE: f32 = 1.6;
+                    let unit = DISTANCE * per_metre * scale;
+                    let (w, h) = (du * aspect * unit, dv * unit);
+                    let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
+                    let c = head_pos + rot * Vec3::new(e.offset[0] * unit, e.offset[1] * unit, DISTANCE);
+                    let mut panel = Panel::facing(c, yaw, pitch, w, aspect);
                     panel.height = h;
                     Some((panel, 1.0))
                 }

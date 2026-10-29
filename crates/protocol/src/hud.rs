@@ -56,6 +56,10 @@ pub const HUD_MENU: u32 = 10;
 pub const HUD_COMPASS: u32 = 11;
 /// What's said about a foe (its health): over the thing the layout's `target` says, facing the eye.
 pub const HUD_TARGET: u32 = 12;
+/// What the eyes are on (a crosshair, what it can activate: "Open Door", a name): where the head
+/// looks, fixed to it (it says what looking there does), its `offset` from that point (the group's
+/// units). Pieces drawn there are small, so it stays out of the way.
+pub const HUD_GAZE: u32 = 13;
 
 // ---- element flags ------------------------------------------------------------------------------
 /// The laser points at it: where it hits is where the game's cursor goes (and the trigger clicks).
