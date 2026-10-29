@@ -606,12 +606,17 @@ impl Session {
             a.set_volume(if snd.enabled { snd.volume } else { 0.0 });
             a.set_listener(rustvr_audio::Listener { pos: head_pos, rot: head_rot });
         }
-        // A click on either panel: a soft UI click where the laser hits.
-        if let (Some((_, t, _)), Some(a)) = (pick, &self.audio)
-            && trigger_down && !self.menu_trigger_was && snd.enabled {
+        // A click on either panel: a soft UI click where the laser hits, and a tick in the hand.
+        if let Some((_, t, _)) = pick
+            && trigger_down
+            && !self.menu_trigger_was
+        {
+            self.backend.haptic(dom, 0.015, 180.0, 0.35);
+            if let (Some(a), true) = (&self.audio, snd.enabled) {
                 let at = laser_origin + laser_dir * t;
                 a.play_event(rustvr_audio::Event::UiClick, rustvr_audio::SetKey::NONE, Some(rustvr_audio::Sound::UiClick), at, 1.0);
             }
+        }
         self.menu_trigger_was = trigger_down;
 
         // ---- the rig: the game's collision and objects, then the hands
