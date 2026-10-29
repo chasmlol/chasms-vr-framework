@@ -50,6 +50,30 @@ pub fn solid_for_hand(hand: usize) -> InteractionGroups {
     InteractionGroups::new(Group::ALL, G_WORLD | G_HELD[hand ^ 1], InteractionTestMode::And)
 }
 
+/// What's solid to a hand as it's moved ([`Physics::reach`], [`Physics::sweep`]): the groups (the
+/// world, what the other hand holds), and loose things it's held back by as well (`also`).
+#[derive(Clone, Copy)]
+pub struct Solid<'a> {
+    pub groups: InteractionGroups,
+    pub also: &'a [ColliderHandle],
+}
+
+impl<'a> Solid<'a> {
+    /// What's solid to empty hand `hand`, and these loose things.
+    pub fn hand(hand: usize, also: &'a [ColliderHandle]) -> Self {
+        Solid { groups: solid_for_hand(hand), also }
+    }
+
+    fn groups(&self) -> InteractionGroups {
+        if self.also.is_empty() { self.groups } else { InteractionGroups::new(self.groups.memberships, self.groups.filter | G_OBJECT, InteractionTestMode::And) }
+    }
+
+    /// Whether collider `h` counts (a loose thing only if it's one of `also`).
+    fn counts(&self, h: ColliderHandle, col: &Collider) -> bool {
+        !col.collision_groups().memberships.intersects(G_OBJECT) || self.also.contains(&h)
+    }
+}
+
 /// The gap a hand keeps from what's solid to it.
 const SKIN: f32 = 0.002;
 /// How many times a hand's move goes round: put out of what it's in, swept, slid on along it.
@@ -305,11 +329,12 @@ impl Physics {
     /// on through a wall leaves the hand on its face, going where the controller goes along it,
     /// never into it. `inside`: something solid it may be in (it just let go of it): it isn't put
     /// out of that, but it only ever moves out of it, never on in or through.
-    pub fn reach(&self, c: ColliderHandle, rot: Q, to: V3, solid: InteractionGroups, inside: Option<ColliderHandle>) -> V3 {
+    pub fn reach(&self, c: ColliderHandle, rot: Q, to: V3, solid: Solid, inside: Option<ColliderHandle>) -> V3 {
         let Some(col) = self.world.colliders.get(c) else { return to };
         let shape = col.shape();
-        let filter = QueryFilter { groups: Some(solid), exclude_collider: Some(c), ..Default::default() };
-        let not_inside = |h: ColliderHandle, _: &Collider| Some(h) != inside;
+        let counts = |h: ColliderHandle, col: &Collider| solid.counts(h, col);
+        let filter = QueryFilter { groups: Some(solid.groups()), exclude_collider: Some(c), predicate: Some(&counts), ..Default::default() };
+        let not_inside = |h: ColliderHandle, col: &Collider| Some(h) != inside && solid.counts(h, col);
         let pushed_out_of = QueryFilter { predicate: Some(&not_inside), ..filter };
         let mut pos = from_v(col.position().translation);
         // Out of what it's in, deepest first.
@@ -349,6 +374,28 @@ impl Physics {
             left += n * 1e-4;
         }
         pos
+    }
+
+    /// How far `shape` at `pose` gets along `motion` (0..1 of the way) before what's solid stops it,
+    /// and the normal of what it met there; None: all the way. One sweep, no sliding: cheap, for
+    /// looking ahead.
+    pub fn sweep(&self, shape: &dyn rapier3d::parry::shape::Shape, pose: (V3, Q), motion: V3, solid: Solid) -> Option<(f32, V3)> {
+        if motion.length_squared() < 1e-12 {
+            return None;
+        }
+        let counts = |h: ColliderHandle, col: &Collider| solid.counts(h, col);
+        let filter = QueryFilter { groups: Some(solid.groups()), predicate: Some(&counts), ..Default::default() };
+        let options = rapier3d::parry::query::ShapeCastOptions { max_time_of_impact: 1.0, target_distance: SKIN, stop_at_penetration: false, compute_impact_geometry_on_penetration: true };
+        let (_, hit) = self.world.cast_shape(&to_pose(pose.0, pose.1), to_v(motion), shape, options, filter)?;
+        Some((hit.time_of_impact.clamp(0.0, 1.0), from_v(hit.normal1).normalize_or_zero()))
+    }
+
+    /// Whether a ball `radius` across at `at` is in anything solid.
+    pub fn ball_in(&self, at: V3, radius: f32, solid: Solid) -> bool {
+        let ball = rapier3d::parry::shape::Ball::new(radius);
+        let counts = |h: ColliderHandle, col: &Collider| solid.counts(h, col);
+        let filter = QueryFilter { groups: Some(solid.groups()), predicate: Some(&counts), ..Default::default() };
+        self.world.intersect_shape(to_pose(at, Q::IDENTITY), &ball, filter).next().is_some()
     }
 
     /// Whether a finger from `a` to `b` (world, `radius` thick) is in anything solid (`solid`, not
@@ -804,7 +851,7 @@ mod tests {
         }
         assert!(p.pose(h).0.distance(V3::new(0.0, 1.0, 0.4)) < 0.01, "free space: on target");
         for _ in 0..30 {
-            let to = p.reach(c, Q::IDENTITY, V3::new(0.0, 1.0, 1.3), solid_for_hand(1), None);
+            let to = p.reach(c, Q::IDENTITY, V3::new(0.0, 1.0, 1.3), Solid::hand(1, &[]), None);
             p.track(h, to, Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
             p.step();
         }
@@ -836,7 +883,7 @@ mod tests {
         p.set_dt(1.0 / 90.0);
         let mut path = Vec::new();
         for _ in 0..180 {
-            let to = p.reach(c, Q::IDENTITY, target, solid_for_hand(0), None);
+            let to = p.reach(c, Q::IDENTITY, target, Solid::hand(0, &[]), None);
             p.track(h, to, Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
             // (Turned as the controller is, whatever it meets.)
             p.set_rotation(h, Q::IDENTITY);

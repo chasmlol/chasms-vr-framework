@@ -288,6 +288,15 @@ struct Hand {
     reach_from: Option<(Vec3, Vec3)>,
     /// Empty, resting on what the other hand holds (that thing's id): it goes along with it.
     rests_on: Option<u32>,
+    /// Empty and stuck on the wrong side of something (its controller clear through it): finding
+    /// its way round.
+    round: Round,
+    /// Loose things it's held back by (pinned where they are, a gun on a table): solid to it while
+    /// it goes round them.
+    pinned: Vec<ColliderHandle>,
+    /// Its wrist turned off the controller's to roll round an edge, and where that's easing to.
+    tilt: Quat,
+    tilt_to: Quat,
     /// How far each finger (thumb .. little) is pushed open by what the empty hand is pressed on
     /// (0 or less), and the fingers' curls with it.
     give: [f32; 5],
@@ -533,6 +542,46 @@ fn fit_fingers(physics: &Physics, offsets: &rustvr_ik::HandOffsets, i: usize, h:
 
 /// Steps a finger pushed aside takes looking for room, out from its curl either way.
 const FIT_STEPS: usize = 10;
+/// An empty hand stuck on the wrong side of something, finding its way round it.
+#[derive(Clone, Copy, Debug, Default)]
+enum Round {
+    #[default]
+    No,
+    /// Trying ways along the surface it's stuck on (`normal`): from where it is (`from`) towards its
+    /// controller (`toward`), the ways tried so far and the best (how far round, which way).
+    Looking { from: Vec3, toward: Vec3, normal: Vec3, dirs: [Vec3; PROBE_DIRS], tried: usize, best: Option<(f32, Vec3)> },
+    /// Going round that way since `since`; where it was last frame and how long it's hardly moved.
+    Going { dir: Vec3, normal: Vec3, toward: Vec3, since: f64, last: Vec3, still: f32 },
+    /// No way round within reach (a wall, the floor): it rests where it is and looks again after.
+    NoWay { until: f64 },
+}
+
+/// Stuck: held back this far (m) and getting no nearer, its controller clear (this much room round
+/// it) on the far side of what's in the way.
+const STUCK: f32 = 0.05;
+const STUCK_CLEAR: f32 = 0.02;
+/// Looking for the way round: this many ways along the surface (a few a frame), each walked this
+/// far a step at a time, a little off the surface (so it doesn't catch on it).
+const PROBE_DIRS: usize = 12;
+const PROBE_PER_FRAME: usize = 3;
+const PROBE_STEPS: usize = 5;
+const PROBE_STEP: f32 = 0.08;
+const PROBE_LIFT: f32 = 0.15;
+/// Going round: it heads this far ahead that way at a time; the controller moving this far (m)
+/// starts the looking over; hardly moving (less than this a frame) this long (s), or going round
+/// this long at all, it gives up for `NO_WAY_WAIT`.
+const ROUND_AHEAD: f32 = 0.12;
+const ROUND_REPLAN: f32 = 0.15;
+const ROUND_STILL_MOVE: f32 = 0.003;
+const ROUND_STILL: f32 = 0.25;
+const ROUND_MAX: f32 = 2.0;
+const NO_WAY_WAIT: f64 = 0.5;
+/// How far the wrist rolls (radians) to get over an edge it's caught on.
+const ROUND_TILT: f32 = 0.45;
+/// An empty hand this far short of where it was sent (m) is held back by something loose; pressed
+/// on such a thing that won't move, it presses on at most this fast (m/s).
+const PINNED: f32 = 0.005;
+const PRESS_SPEED: f32 = 0.6;
 /// An empty hand held back this far from its controller (m) is pressed on something; held back
 /// at all (beyond rounding), it catches up eased. Moving freely it follows its controller exactly.
 const PRESSED: f32 = 0.01;
@@ -1566,6 +1615,10 @@ impl Rig {
                 passing: None,
                 reach_from: None,
                 rests_on: None,
+                round: Round::No,
+                pinned: Vec::new(),
+                tilt: Quat::IDENTITY,
+                tilt_to: Quat::IDENTITY,
                 give: [0.0; 5],
                 curls: [0.0; 5],
                 held_curls: [0.0; 5],
@@ -3761,6 +3814,10 @@ impl Rig {
             if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() || h.valve.is_some() {
                 h.reach_from = None;
                 h.give = [0.0; 5];
+                h.round = Round::No;
+                h.pinned.clear();
+                h.tilt = Quat::IDENTITY;
+                h.tilt_to = Quat::IDENTITY;
                 continue;
             }
             // Just let go of what the other hand still holds: it comes out of it, not knocked off.
@@ -3804,7 +3861,20 @@ impl Rig {
                 if passing.is_none_or(|c| self.physics.distance_between(h.collider, c) > 0.0) {
                     h.passing = None;
                 }
-                let solid = physics::solid_for_hand(i);
+                // Loose things it's held back by (it didn't get where it was sent, pressed on them):
+                // solid to it while it goes round them.
+                if h.reach_from.is_some_and(|(sent, _)| pos.distance(sent) > PINNED) {
+                    for c in self.physics.touching(h.collider) {
+                        if !h.pinned.contains(&c) {
+                            h.pinned.push(c);
+                        }
+                    }
+                } else if !matches!(h.round, Round::Going { .. }) {
+                    h.pinned.clear();
+                }
+                let pinned = h.pinned.clone();
+                let going = matches!(h.round, Round::Going { .. });
+                let solid = physics::Solid::hand(i, if going { &pinned } else { &[] });
                 let side = if i == 0 { rustvr_ik::Side::Left } else { rustvr_ik::Side::Right };
                 let joint = self.offsets.hand_frame(side, rustvr_ik::Pose::IDENTITY);
                 let local = |curls: [f32; 5]| fingers::segments((joint.pos, joint.rot), i == 1, curls);
@@ -3817,7 +3887,13 @@ impl Rig {
                 // of where it was sent. Moving freely, nothing: it follows the controller exactly.)
                 let behind = h.reach_from.map_or(0.0, |(sent, was)| sent.distance(was).max(pos.distance(sent)));
                 let pressed = behind > PRESSED;
-                let rot = if pressed { turned.slerp(h.target.1, 1.0 - (-dt / PRESSED_TURN_TIME).exp()).normalize() } else { h.target.1 };
+                // (Rolled off the controller's turn while going round an edge, easing back after.)
+                h.tilt = h.tilt.slerp(h.tilt_to, 1.0 - (-dt / PRESSED_TURN_TIME).exp()).normalize();
+                if h.tilt_to == Quat::IDENTITY && h.tilt.angle_between(Quat::IDENTITY) < 0.01 {
+                    h.tilt = Quat::IDENTITY;
+                }
+                let aim = (h.tilt * h.target.1).normalize();
+                let rot = if pressed { turned.slerp(aim, 1.0 - (-dt / PRESSED_TURN_TIME).exp()).normalize() } else { aim };
                 // Its fingers as the controller has them (eased, as the drawn hand's are), and as
                 // far open as they'd be pushed (a relaxed hand's back past straight, a clenched
                 // fist's hardly).
@@ -3829,7 +3905,97 @@ impl Rig {
                 // Where the palm alone gets to: the fingers bend to make room for it there, eased
                 // and never faster than a finger moves, and never into anything where the hand is.
                 self.physics.set_hand_shape(h.collider, palm, &[]);
-                let intent = self.physics.reach(h.collider, rot, h.target.0, solid, passing);
+                let mut intent = self.physics.reach(h.collider, rot, h.target.0, solid, passing);
+                // Stuck on the wrong side of something (held back, getting no nearer, its controller
+                // clear through on the far side): it finds the way round and goes round, as a hand
+                // would, rather than waiting to be pulled through.
+                {
+                    let pinned_solid = physics::Solid::hand(i, &pinned);
+                    let palm_box = rapier3d::parry::shape::Cuboid::new(physics::to_v(palm.2));
+                    let palm_at = |p: Vec3, q: Quat| (p + q * palm.0, (q * palm.1).normalize());
+                    let stuck = intent.distance(h.target.0) > STUCK && intent.distance(h.target.0) > pos.distance(h.target.0) - 0.002;
+                    let through = || !self.physics.ball_in(h.target.0, STUCK_CLEAR, pinned_solid);
+                    match h.round {
+                        Round::No if stuck && through() => {
+                            // Which way it's held back: the surface it's on, towards the controller.
+                            let toward = h.target.0;
+                            if let Some((_, n)) = self.physics.sweep(&palm_box, palm_at(intent, rot), toward - intent, pinned_solid).filter(|(_, n)| n.length_squared() > 0.5) {
+                                let along = toward - intent;
+                                let t0 = (along - n * along.dot(n)).try_normalize().unwrap_or_else(|| n.any_orthonormal_vector());
+                                let dirs = std::array::from_fn(|k| (Quat::from_axis_angle(n, k as f32 * std::f32::consts::TAU / PROBE_DIRS as f32) * t0 + n * PROBE_LIFT).normalize());
+                                h.round = Round::Looking { from: intent, toward, normal: n, dirs, tried: 0, best: None };
+                            }
+                        }
+                        Round::Looking { from, toward, normal, dirs, tried, best } => {
+                            if !stuck || toward.distance(h.target.0) > ROUND_REPLAN {
+                                h.round = Round::No;
+                            } else {
+                                // A few ways a frame: along the surface a step at a time, until a
+                                // straight way to the controller opens (the shortest way round wins).
+                                let mut best = best;
+                                for &dir in dirs.iter().skip(tried).take(PROBE_PER_FRAME) {
+                                    let mut p = from;
+                                    let mut walked = 0.0;
+                                    for _ in 0..PROBE_STEPS {
+                                        let step = dir * PROBE_STEP;
+                                        let got = self.physics.sweep(&palm_box, palm_at(p, rot), step, pinned_solid).map_or(1.0, |(t, _)| t);
+                                        p += step * got;
+                                        walked += PROBE_STEP * got;
+                                        if self.physics.sweep(&palm_box, palm_at(p, rot), toward - p, pinned_solid).is_none() {
+                                            let cost = walked + p.distance(toward);
+                                            if best.is_none_or(|(c, _)| cost < c) {
+                                                best = Some((cost, dir));
+                                            }
+                                            break;
+                                        }
+                                        if got < 0.99 {
+                                            break;
+                                        }
+                                    }
+                                }
+                                let tried = (tried + PROBE_PER_FRAME).min(PROBE_DIRS);
+                                h.round = match (tried == PROBE_DIRS, best) {
+                                    (false, _) => Round::Looking { from, toward, normal, dirs, tried, best },
+                                    (true, Some((_, dir))) => Round::Going { dir, normal, toward, since: now, last: pos, still: 0.0 },
+                                    (true, None) => Round::NoWay { until: now + NO_WAY_WAIT },
+                                };
+                            }
+                        }
+                        Round::Going { dir, normal, toward, since, last, still } => {
+                            // Clear to go straight there now, the controller somewhere else, or no
+                            // getting anywhere: done.
+                            let clear = self.physics.sweep(&palm_box, palm_at(pos, rot), h.target.0 - pos, pinned_solid).is_none();
+                            let still = if pos.distance(last) < ROUND_STILL_MOVE { still + dt } else { 0.0 };
+                            if clear || toward.distance(h.target.0) > ROUND_REPLAN {
+                                h.round = Round::No;
+                                h.tilt_to = Quat::IDENTITY;
+                            } else if still > ROUND_STILL || now - since > ROUND_MAX as f64 {
+                                h.round = Round::NoWay { until: now + NO_WAY_WAIT };
+                                h.tilt_to = Quat::IDENTITY;
+                            } else {
+                                // On along the surface that way (sliding round what it meets).
+                                let ahead = pos + dir * ROUND_AHEAD;
+                                intent = self.physics.reach(h.collider, rot, ahead, solid, passing);
+                                // Caught on an edge: the wrist rolls over it, if that gets it on.
+                                if intent.distance(pos) < ROUND_STILL_MOVE {
+                                    let axis = normal.cross(dir).normalize_or_zero();
+                                    for turn in [ROUND_TILT, -ROUND_TILT] {
+                                        let tilt = Quat::from_axis_angle(axis, turn);
+                                        let rolled = self.physics.reach(h.collider, (tilt * rot).normalize(), ahead, solid, passing);
+                                        if rolled.distance(pos) > intent.distance(pos) + ROUND_STILL_MOVE {
+                                            intent = rolled;
+                                            h.tilt_to = (tilt * h.tilt_to).normalize();
+                                            break;
+                                        }
+                                    }
+                                }
+                                h.round = Round::Going { dir, normal, toward, since, last: pos, still };
+                            }
+                        }
+                        Round::NoWay { until } if now > until => h.round = Round::No,
+                        Round::No | Round::NoWay { .. } => {}
+                    }
+                }
                 fit_fingers(&self.physics, &self.offsets, i, h, (intent, rot), (pos, rot), passing, ease, FINGER_SPEED * dt);
                 // The hand with its fingers as they are now, as far towards there as it gets: they
                 // hold it back until they've given way, never pushed into what they're pressed on.
@@ -3844,7 +4010,11 @@ impl Rig {
                     Some((_, was)) if behind > HELD_BACK && want.distance(pos) > h.target.0.distance(was) + 1e-4 => {
                         let (moved, len) = (h.target.0.distance(was), want.distance(pos));
                         let catch = 1.0 - (-dt / CATCH_UP_TIME).exp();
-                        let goal = pos + (want - pos) * ((moved + (len - moved) * catch) / len);
+                        // (Held back by something loose that won't move, it presses on it gently,
+                        // never hard enough to be pushed through it.)
+                        let extra = (len - moved) * catch;
+                        let extra = if pinned.is_empty() { extra } else { extra.min(PRESS_SPEED * dt) };
+                        let goal = pos + (want - pos) * ((moved + extra) / len);
                         self.physics.reach(h.collider, rot, goal, solid, passing)
                     }
                     _ => want,
