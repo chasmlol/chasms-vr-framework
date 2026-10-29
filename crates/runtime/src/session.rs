@@ -106,7 +106,8 @@ pub struct Session {
     target_wanted: Option<Spec>,
     target_shrink: f32,
     /// The overscan the game draws with now (degrees): the setting's, or as much of it as a game
-    /// at a size of its own keeps sharp (`targets::fitting_overscan`); and the last said of it.
+    /// at a size of its own keeps sharp (`targets::fitting_overscan`); and the setting last said to
+    /// be held back.
     overscan_shown: f32,
     overscan_said: f32,
     spectator_cam: crate::spectator::SteadyCamera,
@@ -432,7 +433,9 @@ impl Session {
             } else {
                 self.settings.current.vr.overscan
             };
-            if (self.overscan_shown - self.settings.current.vr.overscan).abs() > 0.5 && (self.overscan_shown - self.overscan_said).abs() > 0.5 {
+            let wanted_overscan = self.settings.current.vr.overscan;
+            if (self.overscan_shown - wanted_overscan).abs() > 0.5 && (wanted_overscan - self.overscan_said).abs() > 0.5 {
+                self.overscan_said = wanted_overscan;
                 tracing::info!(
                     "runtime: the game draws {}x{} an eye until it's restarted: {:.0} of the {:.0} degrees of overscan show now",
                     g.request.eye_w,
@@ -441,7 +444,6 @@ impl Session {
                     self.settings.current.vr.overscan
                 );
             }
-            self.overscan_said = self.overscan_shown;
             let wanted = Spec::new(&g.request, self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn), &self.settings.current);
             // (Smaller by `target_shrink` while the GPU couldn't make this size: a supersampled and
             // overscanned eye can be more than it has room for.)
