@@ -335,7 +335,14 @@ impl Link {
     pub fn read_item_infos_into(&self, out: &mut ItemInfos) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_ITEM_INFO), out) }
     }
-    /// Runtime: a melee hit, block or cast for the game.
+    /// Adapter: how its bows bend and their arrows fly ([`Bows`]).
+    pub fn write_bows(&self, v: &Bows) {
+        unsafe { seq_write(self.base.add(OFF_BOWS), v) }
+    }
+    pub fn read_bows_into(&self, out: &mut Bows) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_BOWS), out) }
+    }
+    /// Runtime: a melee hit, block, cast or loosed arrow for the game.
     pub fn push_combat_event(&self, ev: &CombatEvent) {
         let written = self.u64_at(OFF_COMBAT_EVENTS + offset_of!(CombatEvents, written));
         let n = written.load(Ordering::Relaxed);

@@ -397,6 +397,20 @@ pub const OBJ_VALVE: u32 = 6;
 /// Valves: a knob, turned by the hand's twist about its axis (a wheel is turned by the hand's place
 /// on its rim). The runtime takes any valve smaller than a hand's grip as one.
 pub const JOINT_TWIST: u32 = 1 << 0;
+/// A bow, in the guns' object space: the arrow flies along +Z, its upper limb is +Y, X across it.
+/// Held by its grip (`grip_line`, `grip`, `grip_rot` for the right hand; the left takes the mirror
+/// image), the arrow resting at `muzzle` (on the bow hand's side of the bow: `muzzle.x` is for the
+/// right hand, the left's is the other way), its string's nock point at rest at `handle`, drawn
+/// back along -Z by at most `handle_travel` (the bow's full draw). It shoots the arrows
+/// ([`OBJ_ARROW`] templates) of its `ammo_type`; the [`crate::Bows`] table says how it bends and
+/// how its arrows fly. Its state's `slide` is how far it's bent (the draw's share of
+/// `handle_travel`, and its limbs' spring after a shot), `rounds` whether an arrow is nocked.
+pub const OBJ_BOW: u32 = 8;
+/// An arrow (a template the quiver hands out: [`OBJF_TEMPLATE`]), its point along +Z: its tip at
+/// `muzzle`, its nock (where the string goes) at `mag_well`, where the fingers pinch it at `grip`.
+/// It fits the bows of its `ammo_type`; with [`OBJF_GAME_AMMO`] its `rounds` are how many the game
+/// says the player has (0: the quiver is empty).
+pub const OBJ_ARROW: u32 = 9;
 
 pub const OBJF_GRABBABLE: u32 = 1 << 0;
 /// Gravity gloves can pull it.
