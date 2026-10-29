@@ -10,6 +10,12 @@
 //!   are recognised. Without one (or if it fails to load) a built-in mannequin is drawn instead.
 //! * **Visibility:** hands only, hands and arms, or the full body. In first person the head (and
 //!   everything under it) collapses onto the neck so the wearer never sees inside it.
+//! * **Joints that keep their volume:** every vertex on two or more bones is skinned about its
+//!   optimised centre of rotation ([`cor`]), so elbows don't pinch and wrists don't twist into a
+//!   ribbon.
+//! * **Armour:** a game's marks ([`rustvr_asset::armour`]) make parts of its armour rigid plates,
+//!   each riding one bone or several with shares ([`armour`], [`compose`], `docs/ARMOUR.md`);
+//!   `rustvr-armour` previews them through a sweep of poses.
 //! * **Ghost hands:** where a physics hand is held back by the world, a translucent hand shows
 //!   where the controller really is.
 //! * **Held poses:** a hand holding a gun the game has its own hand pose for ([`HeldHand`], from

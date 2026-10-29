@@ -28,8 +28,8 @@
 //! ```
 //!
 //! over every mesh of the body: the skin and the armour over it are the same limb. A game's meshes
-//! are coarse, so a triangle whose corners' weights differ by more than [`SPLIT`] is sampled as its
-//! four halves (and theirs, to [`DEPTH`] levels), as the paper subdivides the mesh. Only the pairs of
+//! are coarse, so a triangle whose corners' weights differ by more than `SPLIT` is sampled as its
+//! four halves (and theirs, to `DEPTH` levels), as the paper subdivides the mesh. Only the pairs of
 //! bones a vertex has can make `s` other than 0, so the triangles are filed by the pairs they carry
 //! and each vertex visits only its pairs' files.
 
