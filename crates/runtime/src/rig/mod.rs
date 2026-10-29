@@ -546,8 +546,9 @@ const PRESSED_TURN_TIME: f32 = 0.06;
 const FINGER_EASE_TIME: f32 = 0.06;
 const FINGER_SPEED: f32 = 5.0;
 /// An empty hand held back catches up with its controller over about this long (s), once what
-/// held it back is out of the way, rather than all at once.
-const CATCH_UP_TIME: f32 = 0.15;
+/// held it back is out of the way: quickly (settled in about a tenth of a second), but a glide,
+/// not a jump.
+const CATCH_UP_TIME: f32 = 0.045;
 /// The most a blade stuck in a loose thing gives it at once, dragging it (N s).
 const DRAG_IMPULSE_MAX: f32 = 20.0;
 /// A held thing pressed into a creature asks for this many m/s per metre the hand would have it
