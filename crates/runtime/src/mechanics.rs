@@ -1224,6 +1224,8 @@ impl Mechanics {
             if self.btn_b[dom].pressed() || self.btn_b[off].pressed() {
                 self.press(Action::MenuBack);
             }
+            // The dominant stick scrolls the game's menu, as its mouse wheel would.
+            out.intents.scroll = deadzone(sy, 0.2) * inp.settings.ui.menu_scroll;
             if let Some(cur) = inp.cursor {
                 out.intents.flags |= INT_CURSOR;
                 out.intents.cursor_uv = cur.uv.to_array();

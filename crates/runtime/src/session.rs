@@ -172,6 +172,9 @@ pub struct Session {
     /// Their convex collision (see `Rig::set_game_hulls`).
     game_hulls: Box<GameHulls>,
     hud: crate::hud::HudPlacer,
+    /// The game's menus in pieces in the world this frame (`hud.rs`: groups), placed before the
+    /// laser picks among them.
+    menu_pieces: Vec<crate::hud::HudPiece>,
     /// The game's lighting of its first-person model (the last consistent copy), and whether
     /// there is one: the body is shaded with it.
     game_lighting: Box<GameLighting>,
@@ -307,6 +310,7 @@ impl Session {
             game_lighting_read: bytemuck::zeroed_box(),
             has_game_lighting: false,
             hud: Default::default(),
+            menu_pieces: Vec::new(),
             audio: if opts.audio {
                 Some(rustvr_audio::Audio::new())
             } else {
@@ -497,18 +501,42 @@ impl Session {
         }
 
         // ---- panels and pointing
+        if alive {
+            let seq = self.link.hud_layout_seq();
+            if seq != self.hud_layout_seq && self.link.read_hud_layout_into(&mut self.hud_layout) {
+                self.hud_layout_seq = seq;
+                tracing::info!(
+                    "runtime: the game's HUD has {} pieces in {} groups (layout {}, flags {:#x})",
+                    self.hud_layout.count,
+                    self.hud_layout.group_count,
+                    seq,
+                    self.hud_layout.flags
+                );
+            }
+        }
         let gflags = self.game.as_ref().map(|g| g.flags).unwrap_or(0);
         let menu_mode = gflags & GS_MENU != 0;
-        let runtime_menu_open = menu_mode || !alive;
         let shown_info = self.shown.map(|(_, i)| i);
+        // A menu over the game's world, which goes on being drawn (the game keeps rendering it, and
+        // its menus have real alpha): the world, the body and the menu floating in it, never the
+        // void.
+        let floating = menu_mode && alive && shown_info.is_some_and(|i| i.flags & SLOT_STEREO != 0) && self.hud_layout.flags & HUDL_ALPHA != 0;
+        let grouped = floating && self.hud_layout.group_count > 0;
+        // The runtime's own settings beside the game's menus outside the world, and in the world
+        // only beside the game's pause menu (not beside a chest's list).
+        let runtime_menu_open = (menu_mode && (!floating || self.hud_layout.flags & HUDL_SETTINGS != 0)) || !alive;
         let hud_aspect = shown_info
             .filter(|i| i.flags & SLOT_HUD != 0 && i.hud_aspect > 0.0)
             .map(|i| i.hud_aspect)
             .or_else(|| self.targets.as_ref().map(|t| t.spec.hud_w as f32 / t.spec.hud_h.max(1) as f32));
-        let menu_panel = if menu_mode { hud_aspect.or(Some(16.0 / 9.0)) } else { None };
+        let menu_panel = if menu_mode && !grouped { hud_aspect.or(Some(16.0 / 9.0)) } else { None };
         let hud_panel = if !menu_mode && shown_info.is_some_and(|i| i.flags & SLOT_HUD != 0) { hud_aspect } else { None };
         let head_pos = Vec3::from_array(frame.hmd.pos);
         let head_rot = quat(frame.hmd.rot);
+        self.menu_pieces = match (grouped, hud_aspect) {
+            (true, Some(aspect)) => self.hud.place_groups(&self.settings.current, head_pos, head_rot, frame.dt, aspect, &self.hud_layout, self.map_now.as_ref()),
+            _ => Vec::new(),
+        };
         let layout = self.layout.update(
             &self.settings.current,
             head_pos,
@@ -521,11 +549,21 @@ impl Session {
         let hand = &frame.hands[dom];
         let laser_origin = Vec3::from_array(hand.aim.pos);
         let laser_dir = quat(hand.aim.rot) * Vec3::Z;
-        let pick = if hand.connected != 0 && (layout.game_menu.is_some() || layout.runtime_menu.is_some()) {
+        let mut pick = if hand.connected != 0 && (layout.game_menu.is_some() || layout.runtime_menu.is_some()) {
             layout.pick(laser_origin, laser_dir)
         } else {
             None
         };
+        // The menu's pieces the laser can point at: the nearest it hits, where in the HUD texture.
+        if hand.connected != 0 {
+            for piece in self.menu_pieces.iter().filter(|p| p.flags & HUDE_POINT != 0) {
+                if let Some((t, uv)) = piece.hit(laser_origin, laser_dir)
+                    && pick.is_none_or(|b| t < b.1)
+                {
+                    pick = Some((PanelId::GameMenu, t, uv));
+                }
+            }
+        }
         let trigger_down = hand.trigger > 0.6;
         let cursor = match pick {
             Some((PanelId::GameMenu, _, uv)) => Some(Cursor { uv, down: trigger_down }),
@@ -570,11 +608,6 @@ impl Session {
             if seq != self.hand_poses_seq && self.link.read_hand_poses_into(&mut self.hand_poses) {
                 self.hand_poses_seq = seq;
                 tracing::info!("runtime: {} hand poses registered (table {})", self.hand_poses.count, seq);
-            }
-            let seq = self.link.hud_layout_seq();
-            if seq != self.hud_layout_seq && self.link.read_hud_layout_into(&mut self.hud_layout) {
-                self.hud_layout_seq = seq;
-                tracing::info!("runtime: the game's HUD has {} pieces (layout {})", self.hud_layout.count, seq);
             }
             let seq = self.link.kicks_seq();
             if seq != self.kicks_seq && self.link.read_kicks_into(&mut self.kicks) {
@@ -1003,7 +1036,7 @@ impl Session {
 
         // ---- compose
         let t_compose = std::time::Instant::now();
-        self.compose(&frame, &out, &layout, pick.map(|(_, t, _)| laser_origin + laser_dir * t), menu_mode, alive)?;
+        self.compose(&frame, &out, &layout, pick.map(|(_, t, _)| laser_origin + laser_dir * t), menu_mode, floating, alive)?;
         // A frame that took long (over a refresh and a half): where its time went, once a second.
         let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f32() * 1000.0;
         let t_end = std::time::Instant::now();
@@ -1181,6 +1214,7 @@ impl Session {
         layout: &panels::Frame,
         laser_end: Option<Vec3>,
         menu_mode: bool,
+        floating: bool,
         alive: bool,
     ) -> Result<()> {
         let t_wait = std::time::Instant::now();
@@ -1192,7 +1226,7 @@ impl Session {
         let locked = shown.filter(|(slot, _)| slot.acquire(50));
         self.pacing.wait(crate::pacing::Wait::Picture, t_wait.elapsed().as_secs_f32() * 1000.0);
         let s = &self.settings.current;
-        let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && !menu_mode && alive);
+        let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && (!menu_mode || floating) && alive);
         let framework = self.mech.framework_view && self.rig_active_last;
         // The game's picture moved to this headset frame's eyes, by its depth (`crate::warp`), and
         // everything drawn and submitted with them: the world where it is at every headset frame,
@@ -1258,9 +1292,28 @@ impl Session {
         let mut hud_shown = false;
         if let Some((slot, info)) = &locked
             && let Some(hud) = &slot.hud {
+                let srv = hud.srv.as_ref().unwrap();
+                // The game's menus in pieces, floating in the world (placed before pointing): their
+                // edges soft over a few texels where the adapter cut them out of a bigger picture.
+                let (tex_w, tex_h) = (hud.width as f32, hud.height as f32);
+                for piece in self.menu_pieces.iter().filter(|_| menu_mode) {
+                    let texels = 6.0;
+                    let soft = if piece.flags & HUDE_SOFT != 0 {
+                        [texels * 2.0 / ((piece.uv[2] - piece.uv[0]) * tex_w).max(1.0), texels * 2.0 / ((piece.uv[3] - piece.uv[1]) * tex_h).max(1.0)]
+                    } else {
+                        [0.0; 2]
+                    };
+                    layers.world_panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive: false, soft });
+                }
                 if menu_mode {
+                    // A menu nobody described, whole: over the world as the game drew it (its
+                    // alpha), or on its own outside it.
                     if let Some(p) = layout.game_menu {
-                        layers.panels.push(PanelLayer::whole(p, hud.srv.as_ref().unwrap()));
+                        if floating {
+                            layers.world_panels.push(PanelLayer { opacity: self.settings.current.ui.menu_opacity, ..PanelLayer::whole(p, srv) });
+                        } else {
+                            layers.panels.push(PanelLayer::whole(p, srv));
+                        }
                     }
                 } else if info.flags & SLOT_HUD != 0
                     && let Some(p) = layout.hud {
@@ -1279,6 +1332,7 @@ impl Session {
                             gun,
                             off_hand: (off.connected != 0).then(|| (Vec3::from_array(off.grip.pos), quat(off.grip.rot))),
                             held: self.card.map(|(p, opacity)| (p.center, opacity)),
+                            map: self.map_now,
                         };
                         let aspect = p.width / p.height.max(1e-4);
                         let pieces = self.hud.place(
@@ -1300,7 +1354,7 @@ impl Session {
                             }
                             // The game's layout says its HUD has no usable alpha: added to the view.
                             let additive = self.hud_layout.flags & HUDL_ADDITIVE != 0 && info.flags & SLOT_STEREO != 0;
-                            layers.panels.push(PanelLayer { panel: piece.panel, srv: hud.srv.as_ref().unwrap(), opacity: piece.opacity, uv: piece.uv, additive });
+                            layers.panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive, soft: [0.0; 2] });
                         }
                         hud_shown = true;
                     }
@@ -1329,7 +1383,8 @@ impl Session {
             rustvr_avatar::LaserBeam { from: origin, to: origin + w.aim_dir * hit.unwrap_or(30.0), hit: hit.is_some() }
         });
         self.body.set_laser(&self.gpu, laser);
-        if layout.game_menu.is_some() || layout.runtime_menu.is_some() {
+        let pointable = self.menu_pieces.iter().any(|p| p.flags & HUDE_POINT != 0);
+        if layout.game_menu.is_some() || layout.runtime_menu.is_some() || (menu_mode && pointable) {
             let hand = &frame.hands[dom];
             if hand.connected != 0 {
                 let o = Vec3::from_array(hand.aim.pos);
@@ -1357,7 +1412,7 @@ impl Session {
         // geometry where the game gave its depth.
         // (A game that draws the body in its own picture has none in the framework view: the runtime
         // draws it there.)
-        let draw_body = (self.draws_body || framework) && !menu_mode;
+        let draw_body = (self.draws_body || framework) && (!menu_mode || floating);
         let (wpm, light) = match (&self.game, self.map_now) {
             (Some(g), Some(map)) => {
                 let mut l = g.light;

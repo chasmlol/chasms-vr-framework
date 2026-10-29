@@ -373,6 +373,12 @@ pub struct Ui {
     /// OBS's window in the headset: over the left wrist when it's looked at, or pinned with F9
     /// (`obs_view.rs`).
     pub obs_view: bool,
+    /// The game's menus in pieces in the world (`hud.rs`): how tall a line of the game's text looks
+    /// (degrees: the menus' size at any distance), how opaque they are, and how fast the dominant
+    /// stick scrolls them (wheel notches a second at full tilt).
+    pub menu_text_deg: f32,
+    pub menu_opacity: f32,
+    pub menu_scroll: f32,
 }
 
 
@@ -513,6 +519,9 @@ impl Default for Ui {
             ammo_width: 0.10,
             status_width: 0.09,
             obs_view: false,
+            menu_text_deg: 1.5,
+            menu_opacity: 0.94,
+            menu_scroll: 10.0,
         }
     }
 }

@@ -23,11 +23,31 @@
 //! The game still decides when a piece shows: its rectangle is drawn every frame, so a piece
 //! appears and fades exactly as the game draws it. Without a layout the whole HUD is one flat
 //! screen, as before.
+//!
+//! The compass goes low in front of the body (26 degrees under the horizon, lazily following the
+//! head's turn), where a glance down finds it without it sitting in the view; what's said about a
+//! foe (its health) floats over the foe.
+//!
+//! **Menus** come as groups of pieces (`HudGroup`): the parts of a menu that matter, cut out of the
+//! game's own screen. Each group floats where it belongs ([`HudPlacer::place_groups`]):
+//!
+//! | Anchor | Where |
+//! |---|---|
+//! | a thing in the world | at its distance (0.9 to 1.4 m: the laser's comfortable range), 10 degrees under the eyes, beside it on its side wherever it would otherwise cover it (never more than 40 degrees round) |
+//! | the player | 1.1 m ahead of where they faced, 8 degrees under the eyes; it comes round after a turn of 65 degrees |
+//! | a pop-up | 0.8 m ahead of where the eyes look, nearer than what's behind it |
+//!
+//! Once placed a group stays put in the world (it's placed again only when its thing moves, or the
+//! head walks away from where it was, gliding over 0.3 s). Its pieces lie on an upright cylinder
+//! round the eye it was placed for, each turned to face it, so a wide menu keeps its text at one
+//! distance. Every group is sized from the game's own text (`HudLayout::text_height`) so a line of
+//! it is `menu_text_deg` degrees tall wherever the group is.
 
 use glam::{Mat4, Quat, Vec3};
 use rustvr_protocol::*;
 
 use crate::panels::Panel;
+use crate::rig::WorldMap;
 use crate::settings::Settings;
 
 /// One piece of the HUD in the world: a rectangle of the HUD texture on a panel.
@@ -38,6 +58,17 @@ pub struct HudPiece {
     pub uv: [f32; 4],
     pub opacity: f32,
     pub role: u32,
+    /// `HUDE_*`: whether the laser points at it, whether its edges fade.
+    pub flags: u32,
+}
+
+impl HudPiece {
+    /// Where a ray hits it: the distance and the point of the HUD texture it hits.
+    pub fn hit(&self, origin: Vec3, dir: Vec3) -> Option<(f32, glam::Vec2)> {
+        let (t, p) = self.panel.hit(origin, dir)?;
+        let uv = glam::Vec2::new(self.uv[0] + (self.uv[2] - self.uv[0]) * p.x, self.uv[1] + (self.uv[3] - self.uv[1]) * p.y);
+        Some((t, uv))
+    }
 }
 
 /// What the pieces can attach to this frame (tracking space).
@@ -49,6 +80,8 @@ pub struct Attach {
     pub off_hand: Option<(Vec3, Quat)>,
     /// Where the card of the thing in a hand goes (over it, eased), and how strongly it shows.
     pub held: Option<(Vec3, f32)>,
+    /// Tracking space -> the game's world (for the things pieces float over).
+    pub map: Option<WorldMap>,
 }
 
 /// How wide the game's own card of a thing in a hand is (metres).
@@ -78,16 +111,152 @@ impl Lazy {
     }
 }
 
-/// Where the head-following pieces are anchored (yaw and pitch), kept between frames.
+/// A group of a menu's pieces as it was placed in the world (tracking space).
+#[derive(Clone, Copy, Debug)]
+struct Placed {
+    id: u32,
+    anchor: u32,
+    /// Where its thing was when it was placed.
+    thing: Option<Vec3>,
+    /// The eye it was placed for: its pieces lie on an upright cylinder round it, facing it.
+    eye: Vec3,
+    /// The direction of the group's origin from the eye, the origin's height and the cylinder's
+    /// radius.
+    yaw: f32,
+    height: f32,
+    distance: f32,
+    /// Metres per group unit (the HUD texture's height at the group's size).
+    unit: f32,
+}
+
+impl Placed {
+    /// Part of the way from `self` to `to`.
+    fn lerp(&self, to: &Placed, t: f32) -> Placed {
+        Placed {
+            eye: self.eye.lerp(to.eye, t),
+            yaw: self.yaw + crate::wrap_angle(to.yaw - self.yaw) * t,
+            height: self.height + (to.height - self.height) * t,
+            distance: self.distance + (to.distance - self.distance) * t,
+            unit: self.unit + (to.unit - self.unit) * t,
+            ..*to
+        }
+    }
+}
+
+/// A group gliding from where it was to where it's placed again.
+#[derive(Clone, Copy, Debug)]
+struct Glide {
+    from: Placed,
+    t: f32,
+}
+
+/// How long a group glides to where it's placed again (seconds).
+const GLIDE: f32 = 0.3;
+
+/// Where the head-following pieces are anchored (yaw and pitch), and where the menus' groups were
+/// placed, kept between frames.
 #[derive(Default)]
 pub struct HudPlacer {
     anchor: Option<(Lazy, Lazy)>,
+    groups: Vec<(Placed, Option<Glide>)>,
+}
+
+/// The extent of group `group`'s pieces (x0, y0, x1, y1 in its units, y up).
+fn footprint(layout: &HudLayout, group: u32, aspect: f32) -> Option<[f32; 4]> {
+    let mut b: Option<[f32; 4]> = None;
+    for e in layout.entries().iter().filter(|e| e.group == group) {
+        let (w, h) = piece_size(e, aspect);
+        let r = [e.offset[0] - w * 0.5, e.offset[1] - h * 0.5, e.offset[0] + w * 0.5, e.offset[1] + h * 0.5];
+        b = Some(match b {
+            None => r,
+            Some(b) => [b[0].min(r[0]), b[1].min(r[1]), b[2].max(r[2]), b[3].max(r[3])],
+        });
+    }
+    b
+}
+
+/// A piece's size in its group's units (the HUD texture's height).
+fn piece_size(e: &HudElement, aspect: f32) -> (f32, f32) {
+    let scale = if e.scale > 0.0 { e.scale } else { 1.0 };
+    ((e.uv[2] - e.uv[0]).max(1e-4) * aspect * scale, (e.uv[3] - e.uv[1]).max(1e-4) * scale)
+}
+
+/// Metres per unit of the game's UI (the HUD texture's height) per metre away: a line of the
+/// game's text (`text_height` of the texture) is `menu_text_deg` degrees tall.
+fn unit_per_metre(s: &Settings, layout: &HudLayout) -> f32 {
+    let text = if layout.text_height > 0.0 { layout.text_height } else { 0.025 };
+    s.ui.menu_text_deg.to_radians().tan() / text
 }
 
 impl HudPlacer {
     /// Forget the anchor (the HUD went away): it starts in front of the head next time.
     pub fn reset(&mut self) {
         self.anchor = None;
+    }
+
+    /// Places the menus' groups (the layout's pieces that have one) for this frame. `aspect`: the
+    /// HUD texture's width / height; `map`: tracking -> the game's world, for the things groups go
+    /// beside.
+    pub fn place_groups(&mut self, s: &Settings, head_pos: Vec3, head_rot: Quat, dt: f32, aspect: f32, layout: &HudLayout, map: Option<&WorldMap>) -> Vec<HudPiece> {
+        let groups = layout.group_entries();
+        self.groups.retain(|(p, _)| groups.iter().any(|g| g.id == p.id && g.anchor == p.anchor));
+        let fwd = head_rot * Vec3::Z;
+        let head_yaw = fwd.x.atan2(fwd.z);
+        let head_pitch = -(fwd.y.clamp(-1.0, 1.0)).asin();
+        let per_metre = unit_per_metre(s, layout);
+        let mut out = Vec::new();
+        for (i, g) in groups.iter().enumerate() {
+            let n = i as u32 + 1;
+            let Some(fp) = footprint(layout, n, aspect) else { continue };
+            let thing = map.map(|m| m.inv_point(Vec3::from_array(g.at)));
+            let slot = self.groups.iter().position(|(p, _)| p.id == g.id && p.anchor == g.anchor);
+            let stale = slot.map(|k| &self.groups[k].0).is_none_or(|p| match g.anchor {
+                ANCHOR_WORLD => thing.zip(p.thing).is_some_and(|(t, then)| t.distance(then) > 0.3) || head_pos.distance(p.eye) > 0.8,
+                ANCHOR_PLAYER => crate::wrap_angle(head_yaw - p.yaw).abs() > 65f32.to_radians() || head_pos.distance(p.eye) > 0.8,
+                _ => false,
+            });
+            if stale {
+                let placed = place_group(g, fp, thing, head_pos, head_yaw, head_pitch, per_metre);
+                match slot {
+                    // (Placed again: it glides there from where it was.)
+                    Some(k) => {
+                        let (old, glide) = self.groups[k];
+                        let from = glide.map_or(old, |gl| gl.from.lerp(&old, (gl.t / GLIDE).min(1.0)));
+                        self.groups[k] = (placed, Some(Glide { from, t: 0.0 }));
+                    }
+                    None => self.groups.push((placed, None)),
+                }
+            }
+            let k = self.groups.iter().position(|(p, _)| p.id == g.id && p.anchor == g.anchor).unwrap();
+            let (to, glide) = &mut self.groups[k];
+            let p = match glide {
+                Some(gl) => {
+                    gl.t += dt;
+                    let t = (gl.t / GLIDE).min(1.0);
+                    let p = gl.from.lerp(to, t * t * (3.0 - 2.0 * t));
+                    if t >= 1.0 {
+                        *glide = None;
+                    }
+                    p
+                }
+                None => *to,
+            };
+            for e in layout.entries().iter().filter(|e| e.group == n) {
+                let (w, h) = piece_size(e, aspect);
+                let (w, h) = (w * p.unit, h * p.unit);
+                // Round the cylinder by its offset (an arc), up by its height, nearer by its lift.
+                let r = (p.distance - e.offset[2] * p.unit).max(0.3);
+                let yaw = p.yaw + e.offset[0] * p.unit / p.distance;
+                let y = p.height + e.offset[1] * p.unit;
+                let c = Vec3::new(p.eye.x + yaw.sin() * r, y, p.eye.z + yaw.cos() * r);
+                let pitch = (p.eye.y - y).atan2(r);
+                let mut panel = Panel::facing(c, yaw, pitch, w, w / h.max(1e-4));
+                panel.height = h;
+                let opacity = if e.opacity > 0.0 { e.opacity } else { 1.0 } * s.ui.menu_opacity;
+                out.push(HudPiece { panel, uv: e.uv, opacity, role: e.role, flags: e.flags });
+            }
+        }
+        out
     }
 
     /// Places this frame's pieces. `layout`: what the adapter said its HUD is (None: one flat
@@ -115,17 +284,18 @@ impl HudPlacer {
         let screen = Panel::facing(head_pos + Panel::dir(ay, ap) * u.hud_distance, ay, ap, u.hud_size * by_height, aspect);
         let full = [0.0, 0.0, 1.0, 1.0];
         let Some(layout) = layout.filter(|l| l.count > 0 && u.split_hud) else {
-            return vec![HudPiece { panel: screen, uv: full, opacity: 1.0, role: 0 }];
+            return vec![HudPiece { panel: screen, uv: full, opacity: 1.0, role: 0, flags: 0 }];
         };
         let mut out = Vec::new();
         if layout.flags & HUDL_REST_HIDDEN == 0 {
-            out.push(HudPiece { panel: screen, uv: full, opacity: 1.0, role: 0 });
+            out.push(HudPiece { panel: screen, uv: full, opacity: 1.0, role: 0, flags: 0 });
         }
         // The caption strip: the whole layer would be `caption_width_deg` wide at its distance.
         let cd = u.caption_distance;
         let strip_full = 2.0 * cd * (u.caption_width_deg.to_radians() * 0.5).tan() * by_height;
         let strip_max = 2.0 * cd * (u.caption_max_deg.to_radians() * 0.5).tan();
-        for e in layout.entries() {
+        let per_metre = unit_per_metre(s, layout);
+        for e in layout.entries().iter().filter(|e| e.group == 0) {
             let scale = if e.scale > 0.0 { e.scale } else { 1.0 };
             let (du, dv) = ((e.uv[2] - e.uv[0]).max(1e-4), (e.uv[3] - e.uv[1]).max(1e-4));
             // A rectangle of the layer `full_w` metres wide (for the whole layer), no wider than `max_w`.
@@ -170,6 +340,23 @@ impl HudPlacer {
                     let (w, h) = sized(HELD_WIDTH / du, f32::MAX);
                     (facing_eye(c, head_pos, w, h), opacity)
                 }),
+                HUD_COMPASS => {
+                    // Low in front of the body: the head's lazy turn, a fixed angle under the
+                    // horizon (not the head's pitch: looking down finds it).
+                    const DISTANCE: f32 = 1.2;
+                    let pitch = 26f32.to_radians();
+                    let unit = DISTANCE * per_metre * scale;
+                    let (w, h) = (du * aspect * unit, dv * unit);
+                    let mut panel = Panel::facing(head_pos + Panel::dir(ay, pitch) * DISTANCE, ay, pitch, w, aspect);
+                    panel.height = h;
+                    Some((panel, 1.0))
+                }
+                HUD_TARGET => at.map.filter(|_| layout.has_target != 0).map(|m| {
+                    // Over the foe, as big as the game's text there would be.
+                    let c = m.inv_point(Vec3::from_array(layout.target));
+                    let unit = c.distance(head_pos).max(0.5) * per_metre * scale;
+                    (facing_eye(c, head_pos, du * aspect * unit, dv * unit), 1.0)
+                }),
                 HUD_HIDDEN => None,
                 // The centre, and anything else: where it was on the flat screen.
                 _ => {
@@ -184,11 +371,55 @@ impl HudPlacer {
             if let Some((panel, opacity)) = piece
                 && opacity > 0.01
             {
-                out.push(HudPiece { panel, uv: e.uv, opacity, role: e.role });
+                out.push(HudPiece { panel, uv: e.uv, opacity, role: e.role, flags: e.flags });
             }
         }
         out
     }
+}
+
+/// Where a group goes when it's first placed (or placed again): see the module's table.
+fn place_group(g: &HudGroup, fp: [f32; 4], thing: Option<Vec3>, eye: Vec3, head_yaw: f32, head_pitch: f32, per_metre: f32) -> Placed {
+    let deg = |d: f32| d.to_radians();
+    // Where the group's middle goes: its direction from the eye (yaw, and pitch under the eye's
+    // level) and its distance.
+    let (yaw, pitch, distance) = match (g.anchor, thing) {
+        (ANCHOR_WORLD, Some(t)) => {
+            let v = t - eye;
+            let flat = Vec3::new(v.x, 0.0, v.z).length().max(0.1);
+            let yaw_t = v.x.atan2(v.z);
+            let distance = (flat - g.radius * 0.5).clamp(0.9, 1.4);
+            let unit = distance * per_metre;
+            // How far round the group and the thing reach from their middles (angles).
+            let (half_w, half_h) = ((fp[2] - fp[0]) * 0.5 * unit, (fp[3] - fp[1]) * 0.5 * unit);
+            let (bw, bh) = ((half_w / distance).atan(), (half_h / distance).atan());
+            let tall = if g.height > 0.0 { g.height } else { g.radius };
+            let (top, bottom) = ((eye.y - (t.y + tall)).atan2(flat), (eye.y - (t.y - tall)).atan2(flat));
+            let alpha = (g.radius / flat).atan().min(deg(60.0));
+            match g.side {
+                SIDE_BELOW => (yaw_t, top + bh + deg(1.0), distance),
+                SIDE_FRONT => (yaw_t, (eye.y - t.y).atan2(flat), (flat - g.radius - 0.1).clamp(0.8, 1.4)),
+                side => {
+                    let pitch = deg(10.0);
+                    // Beside it, if it would cover it (a chest on the floor is well under a list at
+                    // this height; a merchant's face isn't).
+                    let covers = pitch - bh < bottom && pitch + bh > top;
+                    let sign = if side == SIDE_LEFT { -1.0 } else { 1.0 };
+                    let yaw = if covers { yaw_t + sign * (alpha + bw + deg(2.0)) } else { yaw_t };
+                    let off = crate::wrap_angle(yaw - head_yaw).clamp(-deg(40.0), deg(40.0));
+                    (head_yaw + off, pitch, distance)
+                }
+            }
+        }
+        (ANCHOR_POPUP, _) => (head_yaw, head_pitch.clamp(-deg(5.0), deg(25.0)), 0.8),
+        // The player's own menus, and a thing the runtime can't place (no world mapping).
+        _ => (head_yaw, deg(8.0), 1.1),
+    };
+    let unit = distance * per_metre;
+    // The group's middle there; its origin is offset from its middle.
+    let (cx, cy) = ((fp[0] + fp[2]) * 0.5, (fp[1] + fp[3]) * 0.5);
+    let height = eye.y - distance * pitch.tan() - cy * unit;
+    Placed { id: g.id, anchor: g.anchor, thing, eye, yaw: yaw - cx * unit / distance, height, distance, unit }
 }
 
 /// A `w` x `h` panel at `c`, upright, turned to face the eye at `eye`.
@@ -288,7 +519,7 @@ mod tests {
         let gun = Mat4::from_translation(Vec3::new(0.15, 1.35, 0.35));
         let sight = Vec3::new(0.15, 1.40, 0.30);
         let wrist_ahead = (Vec3::new(-0.05, 1.45, 0.35), Quat::IDENTITY);
-        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), held: None };
+        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), held: None, map: None };
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
         let ammo = p.iter().find(|p| p.role == HUD_AMMO).unwrap();
         assert!(ammo.panel.center.distance(sight) < 0.15 && ammo.panel.center.x < sight.x, "{:?}", ammo.panel.center);

@@ -237,6 +237,25 @@ VOut VSQuad(uint id : SV_VertexID) {
     return o;
 }
 
+// The texture over this pixel's whole footprint: a panel seen smaller than its texture (a game's UI
+// drawn at the eye's resolution and shown a few degrees across) is averaged over the texels it
+// covers rather than sampled at one, so text doesn't shimmer. (The texture has no smaller copies of
+// itself to sample.)
+float4 sample_footprint(float2 uv) {
+    uint w, h;
+    tex.GetDimensions(w, h);
+    float2 dx = ddx(uv), dy = ddy(uv);
+    float2 size = float2(w, h);
+    float n = clamp(ceil(max(length(dx * size), length(dy * size))), 1, 4);
+    float4 acc = 0;
+    [loop] for (float a = 0; a < n; a++) {
+        [loop] for (float b = 0; b < n; b++) {
+            acc += tex.SampleLevel(samp, uv + dx * ((a + 0.5) / n - 0.5) + dy * ((b + 0.5) / n - 0.5), 0);
+        }
+    }
+    return acc / (n * n);
+}
+
 float4 PSQuad(VOut i) : SV_Target {
     int mode = (int)params.x;
     if (mode == 1) return color;
@@ -265,7 +284,10 @@ float4 PSQuad(VOut i) : SV_Target {
         float vignette = saturate((1 - r) * 12);
         return float4(c * vignette, 1);
     }
-    float4 t = tex.Sample(samp, i.uv) * params.z;
+    float4 t = sample_footprint(i.uv) * params.z;
+    // A soft edge: faded out over the last part of the quad (`color.xy` of its half-width and
+    // half-height).
+    if (color.x > 0) t *= smoothstep(0, color.x, 1 - abs(i.local.x)) * smoothstep(0, color.y, 1 - abs(i.local.y));
     // Added to what's behind (a texture whose alpha means nothing): premultiplied with no coverage.
     if (params.w > 0.5) t.a = 0;
     return t;
@@ -386,12 +408,14 @@ pub struct PanelLayer<'a> {
     pub uv: [f32; 4],
     /// Its colour is added to what's behind it (its alpha is ignored).
     pub additive: bool,
+    /// Its edges fade out over this part of its half-width and half-height (0: a hard edge).
+    pub soft: [f32; 2],
 }
 
 impl<'a> PanelLayer<'a> {
     /// The whole texture on `panel`.
     pub fn whole(panel: Panel, srv: &'a ID3D11ShaderResourceView) -> Self {
-        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0], additive: false }
+        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0], additive: false, soft: [0.0; 2] }
     }
 }
 
@@ -426,6 +450,9 @@ pub struct Laser {
 #[derive(Default)]
 pub struct Layers<'a> {
     pub lens: Option<LensLayer<'a>>,
+    /// Panels in the world (a game's menus floating there): drawn before the body, which is nearer
+    /// (the hands are never covered by a menu they're in front of).
+    pub world_panels: Vec<PanelLayer<'a>>,
     pub panels: Vec<PanelLayer<'a>>,
     /// Panels only the headset shows: never the desktop view, never a recording (OBS's window).
     pub private: Vec<PanelLayer<'a>>,
@@ -622,6 +649,18 @@ impl Compositor {
             }
             ctx.PSSetShaderResources(0, Some(&[None, None, None, None]));
         }
+        if !layers.world_panels.is_empty() {
+            self.bind(gpu, target);
+            unsafe {
+                ctx.OMSetBlendState(&self.premul, Some(&[0.0; 4]), 0xFFFF_FFFF);
+                ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            }
+            self.quad.bind(ctx);
+            for p in &layers.world_panels {
+                self.draw_panel(gpu, &cb, p);
+            }
+            unsafe { ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
+        }
         self.cb.update(ctx, &cb);
         between(gpu);
         self.bind(gpu, target);
@@ -646,13 +685,7 @@ impl Compositor {
         }
         // (The headset's own, `private`, only in the headset: `comfort` is only for it.)
         for p in layers.panels.iter().chain(layers.private.iter().filter(|_| comfort)) {
-            let mut c = cb;
-            c.center = p.panel.center.extend(1.0).to_array();
-            c.axis_x = (p.panel.right * p.panel.width * 0.5).extend(0.0).to_array();
-            c.axis_y = (p.panel.up * p.panel.height * 0.5).extend(0.0).to_array();
-            c.params = [MODE_TEXTURE, 0.0, p.opacity, if p.additive { 1.0 } else { 0.0 }];
-            c.uv_rect = p.uv;
-            self.draw_quad(gpu, &c, Some(p.srv));
+            self.draw_panel(gpu, &cb, p);
         }
         for (pos, rot) in &layers.markers {
             self.draw_ribbon(gpu, &cb, eye_pos, *pos, *pos + *rot * Vec3::Z * 0.08, 0.012, Vec4::new(0.35, 0.55, 0.65, 0.9));
@@ -691,6 +724,17 @@ impl Compositor {
             ctx.PSSetShaderResources(0, Some(&[None]));
             ctx.OMSetRenderTargets(None, None);
         }
+    }
+
+    fn draw_panel(&self, gpu: &Gpu, cb: &DrawCb, p: &PanelLayer) {
+        let mut c = *cb;
+        c.center = p.panel.center.extend(1.0).to_array();
+        c.axis_x = (p.panel.right * p.panel.width * 0.5).extend(0.0).to_array();
+        c.axis_y = (p.panel.up * p.panel.height * 0.5).extend(0.0).to_array();
+        c.params = [MODE_TEXTURE, 0.0, p.opacity, if p.additive { 1.0 } else { 0.0 }];
+        c.color = [p.soft[0], p.soft[1], 0.0, 0.0];
+        c.uv_rect = p.uv;
+        self.draw_quad(gpu, &c, Some(p.srv));
     }
 
     fn draw_quad(&self, gpu: &Gpu, cb: &DrawCb, srv: Option<&ID3D11ShaderResourceView>) {

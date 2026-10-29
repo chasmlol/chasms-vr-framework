@@ -413,7 +413,10 @@ pub struct Intents {
     pub _pad1: u32,
     /// Laser pointer on the game's menu panel, 0..1 (top-left origin), while [`INT_CURSOR`].
     pub cursor_uv: [f32; 2],
-    pub _pad2: [f32; 2],
+    /// Scrolling the game's menu (the dominant stick): notches a second, up positive, as a mouse
+    /// wheel turns.
+    pub scroll: f32,
+    pub _pad2: f32,
 }
 pub const INT_WEAPON: u32 = 1 << 0;
 pub const INT_TWO_HANDED: u32 = 1 << 1;
