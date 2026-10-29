@@ -54,11 +54,14 @@ pub struct Spectator {
     /// The window's first size, pixels (it's kept on the screen).
     pub width: u32,
     pub height: u32,
+    /// It opens borderless over the whole monitor (F11 switches back to a window).
+    pub fullscreen: bool,
 }
 
 impl Default for Spectator {
     fn default() -> Self {
-        Spectator { enabled: true, eye: Eye::Right, fov: 90.0, smoothing: 0.1, max_lag: 8.0, roll_lock: true, width: 1600, height: 900 }
+        // (105 degrees across: wide, still inside what the headset's two eyes see.)
+        Spectator { enabled: true, eye: Eye::Right, fov: 105.0, smoothing: 0.1, max_lag: 8.0, roll_lock: true, width: 1600, height: 900, fullscreen: true }
     }
 }
 

@@ -134,7 +134,7 @@ mod win {
     impl Window {
         /// Opens the window, `width` x `height` (made to fit its monitor), without taking focus;
         /// `hidden`: off every screen (for tests: its frames are only saved).
-        pub fn open(gpu: &Gpu, width: u32, height: u32, hidden: bool) -> Result<Window> {
+        pub fn open(gpu: &Gpu, width: u32, height: u32, hidden: bool, fullscreen: bool) -> Result<Window> {
             unsafe {
                 let inst = GetModuleHandleW(None)?;
                 let class = WNDCLASSW {
@@ -193,6 +193,9 @@ mod win {
                 CLOSED.store(false, Ordering::Relaxed);
                 let mut win = Window { hwnd, swap, target: None, windowed: None };
                 win.make_target(gpu)?;
+                if fullscreen && !hidden {
+                    win.toggle_fullscreen();
+                }
                 Ok(win)
             }
         }

@@ -219,7 +219,7 @@ impl Session {
         let capture = env.strip_prefix("capture:").map(PathBuf::from);
         let wanted = (sp.enabled || capture.is_some()) && backend.name() != "sim" && env != "0";
         let spectator = wanted
-            .then(|| crate::spectator::Window::open(&gpu, sp.width, sp.height, capture.is_some()))
+            .then(|| crate::spectator::Window::open(&gpu, sp.width, sp.height, capture.is_some(), sp.fullscreen))
             .and_then(|w| w.inspect_err(|e| tracing::warn!("desktop view: {e:#}")).ok());
         if spectator.is_some() {
             tracing::info!("desktop view: open");
