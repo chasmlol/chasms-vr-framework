@@ -81,6 +81,9 @@ enum Drive {
     /// Rigid with its parent plus `share` of the twist between the `segment` joint and the
     /// `driver` joint below it, about the segment's axis.
     Twist { segment: Joint, driver: Joint, share: f32 },
+    /// Exactly where another bone is, bound in another pose (a plate shaped at rest, see
+    /// `armour.rs`): its skin goes where that bone takes skin bound in that pose.
+    Copy(usize),
 }
 
 struct Bone {
@@ -180,11 +183,21 @@ pub struct Rig {
     /// The player's hands' size (wrist to the middle finger's knuckle, metres): the hands are drawn
     /// that size rather than the model's at the body's scale. None: the model's.
     hand_length: Option<f32>,
+    /// For each copy of a bone (`Drive::Copy`): its pose's model space -> the bind pose's, which
+    /// carries the copied bone's visibility plane over to it.
+    copied_from: Vec<Option<Mat4>>,
 }
 
 impl Rig {
     /// Builds the rig for a skeleton. `meshes` (vertex lists) place the twist bones' shares.
     pub fn new(bones: &[asset::Bone], meshes: &[&[asset::Vertex]]) -> Result<Rig> {
+        Rig::with_copies(bones, meshes, &[])
+    }
+
+    /// [`Rig::new`], with some bones copies of others (`(copy, of)`): bound in another pose, each
+    /// moves exactly as the bone it copies does (its parent; plates shaped at rest are skinned to
+    /// them, see `armour.rs`).
+    pub fn with_copies(bones: &[asset::Bone], meshes: &[&[asset::Vertex]], copies: &[(usize, usize)]) -> Result<Rig> {
         if bones.is_empty() {
             bail!("the model has no skeleton");
         }
@@ -195,7 +208,9 @@ impl Rig {
         let parents: Vec<Option<usize>> =
             bones.iter().enumerate().map(|(i, b)| usize::try_from(b.parent).ok().filter(|&p| p < n && p != i)).collect();
         let tree = Tree::new(parents);
-        let classes: Vec<Option<Class>> = bones.iter().map(|b| names::classify(&b.name)).collect();
+        // (A copy plays no part of its own.)
+        let classes: Vec<Option<Class>> =
+            bones.iter().enumerate().map(|(i, b)| if copies.iter().any(|c| c.0 == i) { None } else { names::classify(&b.name) }).collect();
         let map = Mapping::new(&tree, &classes);
 
         let world: Vec<Mat4> = bones.iter().map(|b| Mat4::from_cols_array(&b.model_matrix)).collect();
@@ -265,6 +280,13 @@ impl Rig {
             drive[b] = Drive::Twist { segment, driver, share: share - inherited };
             tracing::debug!("rig: twist bone '{}' takes {:.0}% of the {driver:?}'s roll", bones[b].name, share * 100.0);
         }
+        let mut copied_from = vec![None; n];
+        for &(copy, of) in copies {
+            if copy < n && of < n && copy != of {
+                drive[copy] = Drive::Copy(of);
+                copied_from[copy] = Some(world[of] * world[copy].inverse());
+            }
+        }
 
         // Parts, for showing only the arms or hands.
         let part_of_bone = |b: usize| {
@@ -327,6 +349,7 @@ impl Rig {
             head,
             scale_pairs,
             hand_length: None,
+            copied_from,
         })
     }
 
@@ -493,6 +516,8 @@ impl Rig {
                     None => follow(out),
                 },
                 Drive::Follow => follow(out),
+                // (A copy is below the bone it copies, so that's posed already.)
+                Drive::Copy(of) => (out.rot[of], out.pos[of]),
                 Drive::Finger { side, finger, segment } if posed_fingers[side] => {
                     (finger_rot[side][finger][segment] * bone.bind_rot, finger_pos[side][finger][segment])
                 }
@@ -598,11 +623,23 @@ impl Rig {
         };
         self.bones
             .iter()
-            .map(|bone| match (show, bone.part) {
-                (Show::Full, _) => SHOWN,
-                (Show::Arms, Part::Hand(side) | Part::LowerArm(side) | Part::UpperArm(side)) => cut(UPPER_ARM[side], LOWER_ARM[side], 0.2),
-                (Show::Hands | Show::Hand(_), Part::Hand(side) | Part::LowerArm(side)) if sides(side) => cut(LOWER_ARM[side], HAND[side], 0.78),
-                _ => HIDDEN,
+            .zip(&self.copied_from)
+            .map(|(bone, copied)| {
+                let plane = match (show, bone.part) {
+                    (Show::Full, _) => SHOWN,
+                    (Show::Arms, Part::Hand(side) | Part::LowerArm(side) | Part::UpperArm(side)) => cut(UPPER_ARM[side], LOWER_ARM[side], 0.2),
+                    (Show::Hands | Show::Hand(_), Part::Hand(side) | Part::LowerArm(side)) if sides(side) => cut(LOWER_ARM[side], HAND[side], 0.78),
+                    _ => HIDDEN,
+                };
+                // A copy's skin is bound in its own pose: the plane carried over to it.
+                match copied {
+                    Some(to_bind) if plane[..3] != [0.0; 3] => {
+                        let n = Vec3::new(plane[0], plane[1], plane[2]);
+                        let m = Mat3::from_mat4(*to_bind).transpose() * n;
+                        [m.x, m.y, m.z, n.dot(to_bind.w_axis.truncate()) + plane[3]]
+                    }
+                    _ => plane,
+                }
             })
             .collect()
     }
@@ -1106,6 +1143,45 @@ impl Skeleton {
         let canonical = canonical_frames(&map, &tree, &|b| bind[b].1);
         Skeleton { names: bones.iter().map(|b| b.name.clone()).collect(), map, bind, canonical }
     }
+}
+
+/// How far from straight down the arms hang at rest (radians, out to the sides).
+const ARMS_HANG: f32 = 0.16;
+
+/// Each bone's model matrix with the body standing at rest: the arms hanging at its sides, as a
+/// body is mostly seen, rather than out level as models are bound (everything else as bound). For
+/// shaping what spans the shoulder as the game's own skinning shapes it there (`armour.rs`).
+pub fn rest_pose(bones: &[asset::Bone]) -> Vec<Mat4> {
+    let s = Skeleton::new(bones);
+    let world: Vec<Mat4> = bones.iter().map(|b| Mat4::from_cols_array(&b.model_matrix)).collect();
+    let mut out = world.clone();
+    let n = bones.len();
+    let parent = |b: usize| usize::try_from(bones[b].parent).ok().filter(|&p| p < n && p != b);
+    let under = |b: usize, top: usize| {
+        let mut x = Some(b);
+        for _ in 0..=n {
+            match x {
+                Some(y) if y == top => return true,
+                Some(y) => x = parent(y),
+                None => return false,
+            }
+        }
+        false
+    };
+    for side in 0..2 {
+        let (Some(upper), Some(lower)) = (s.map.joints[UPPER_ARM[side] as usize], s.map.joints[LOWER_ARM[side] as usize]) else { continue };
+        let (shoulder, elbow) = (s.bind[upper].1, s.bind[lower].1);
+        let out_dir = if side == 0 { -1.0 } else { 1.0 };
+        let hang = Vec3::new(out_dir * ARMS_HANG.sin(), -ARMS_HANG.cos(), 0.0);
+        let Some(arm) = (elbow - shoulder).try_normalize() else { continue };
+        let turn = Mat4::from_translation(shoulder) * Mat4::from_quat(Quat::from_rotation_arc(arm, hang)) * Mat4::from_translation(-shoulder);
+        for b in 0..n {
+            if under(b, upper) {
+                out[b] = turn * world[b];
+            }
+        }
+    }
+    out
 }
 
 /// The joints that draw a model exactly in its bind pose (model space): each mapped joint at its

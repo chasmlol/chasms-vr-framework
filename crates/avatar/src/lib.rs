@@ -70,7 +70,7 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11RenderTargetView, ID3D11ShaderR
 pub use grasp::{Grasp, Solid};
 pub use held::{HeldHand, held_hands};
 pub use render::HeldModel;
-pub use rig::{GameHand, bind_joints, finger_reach, game_hand};
+pub use rig::{GameHand, bind_joints, finger_reach, game_hand, rest_pose};
 
 /// Each finger's joint curls (thumb .. little; 0 straight .. 1 a fist's) the hand `side` of a model
 /// with `bones` (None: the built-in mannequin) closes to on `grasp`, its hand joint at `hand` (the
@@ -160,8 +160,17 @@ pub enum AvatarSource {
     /// hands.
     Model { dir: PathBuf, body: String, hands: Option<String> },
     /// A model given directly, with the textures its meshes and materials name (by key), and how
-    /// each vertex is skinned (see [`Centres`]; None: worked out from the model's weights).
-    Built { model: asset::Model, textures: HashMap<String, asset::Texture>, centres: Option<Centres> },
+    /// it's skinned beyond its weights (None: worked out from them).
+    Built { model: asset::Model, textures: HashMap<String, asset::Texture>, skinning: Option<Skin> },
+}
+
+/// How a model is skinned beyond its weights.
+#[derive(Clone, Debug, Default)]
+pub struct Skin {
+    /// Each vertex's centre of rotation.
+    pub centres: Centres,
+    /// Bones that are copies of others bound in another pose (copy, of): see `armour.rs`.
+    pub copies: Vec<(usize, usize)>,
 }
 
 /// Each mesh's vertices' centres of rotation (`cor.rs`): `[x, y, z, w]`, w 0 for a vertex skinned
@@ -203,9 +212,12 @@ impl Avatar {
         let renderer = render::Renderer::new(gpu)?;
         let (body, arms) = match source {
             AvatarSource::Procedural => (None, None),
-            AvatarSource::Built { model, textures, centres } => {
+            AvatarSource::Built { model, textures, skinning } => {
                 let textures: HashMap<String, Arc<asset::Texture>> = textures.into_iter().map(|(k, t)| (k, Arc::new(t))).collect();
-                let body = render::Character::new(gpu, from_model(model, centres, |key| textures.get(key).cloned()));
+                let (centres, copies) = skinning.map_or((None, Vec::new()), |s| (Some(s.centres), s.copies));
+                let mut source = from_model(model, centres, |key| textures.get(key).cloned());
+                source.copies = copies;
+                let body = render::Character::new(gpu, source);
                 (body.map_err(|e| tracing::warn!("avatar: {e:#}; drawing the mannequin instead")).ok(), None)
             }
             AvatarSource::Model { dir, body, hands } => {
@@ -481,6 +493,8 @@ impl HeldModel {
 pub(crate) struct Source {
     pub bones: Vec<asset::Bone>,
     pub meshes: Vec<SourceMesh>,
+    /// Bones that copy others ([`Skin::copies`]).
+    pub copies: Vec<(usize, usize)>,
 }
 
 pub(crate) struct SourceMesh {
@@ -535,6 +549,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
     let mut model = asset::Model { version: asset::FORMAT_VERSION, source: format!("{skeleton} with {} parts", parts.len()), bones: skel.bones, ..Default::default() };
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     let mut plates: Vec<armour::Plate> = Vec::new();
+    let rest = rig::rest_pose(&model.bones);
     for key in parts {
         let part = match asset::load_model(dir, key) {
             Ok(p) => p,
@@ -557,14 +572,14 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         if let (Skinning::Marked(marks), Some(name)) = (skinning, names.get(key))
             && let Some(piece) = marks.piece(name)
         {
-            let (found, problems) = armour::plates(piece, &part);
-            for p in &problems {
+            let marked = armour::plates(piece, &part, &rest);
+            for p in &marked.problems {
                 tracing::warn!("avatar: {name}: {p}");
             }
-            let list: Vec<String> = found.iter().map(|p| format!("{} ({}) on {}", p.name, p.side.name(), armour::riders(p, &part.bones))).collect();
-            tracing::info!("avatar: {name} ({}): {} plates: {}", piece.name, found.len(), list.join("; "));
+            let list: Vec<String> = marked.plates.iter().map(|p| format!("{} ({}) on {}", p.name, p.side.name(), armour::riders(p, &part.bones))).collect();
+            tracing::info!("avatar: {name} ({}): {} plates: {}", piece.name, marked.plates.len(), list.join("; "));
             let first = model.meshes.len();
-            plates.extend(found.into_iter().map(|p| armour::Plate { mesh: p.mesh + first, ..p }));
+            plates.extend(marked.plates.into_iter().map(|p| armour::Plate { mesh: p.mesh + first, ..p }));
         }
         for mut m in part.meshes {
             swap(&mut m.texture);
@@ -587,11 +602,39 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             }
         }
     }
+    // Plates are shaped at rest, so they ride their riders bound at rest: a copy of each rider
+    // that moves between its bind pose and rest (an arm's bones), the copy below it.
+    let mut copies: Vec<(usize, usize)> = Vec::new();
+    let skeleton_bones = model.bones.len();
+    for p in &mut plates {
+        for k in 0..4 {
+            let b = p.bones[k] as usize;
+            if p.weights[k] == 0 || b >= skeleton_bones || Mat4::from_cols_array(&model.bones[b].model_matrix).abs_diff_eq(rest[b], 1e-5) {
+                continue;
+            }
+            let copy = match copies.iter().find(|c| c.1 == b) {
+                Some(c) => c.0,
+                None => {
+                    let original = &model.bones[b];
+                    let (_, rot, pos) = rest[b].to_scale_rotation_translation();
+                    let bone = asset::Bone { name: format!("{} at rest", original.name), parent: b as i32, local_pos: pos.to_array(), local_rot: rot.to_array(), model_matrix: rest[b].to_cols_array() };
+                    model.bones.push(bone);
+                    copies.push((model.bones.len() - 1, b));
+                    model.bones.len() - 1
+                }
+            };
+            match u8::try_from(copy) {
+                Ok(c) => p.bones[k] = c,
+                Err(_) => tracing::warn!("avatar: past 256 bones: the plate {} rides {} as bound", p.name, model.bones[b].name),
+            }
+        }
+    }
     for p in &plates {
         let mesh = &mut model.meshes[p.mesh];
-        for &i in &p.vertices {
+        for (&i, &(pos, normal)) in p.vertices.iter().zip(&p.shape) {
             let v = &mut mesh.vertices[i as usize];
             (v.bones, v.weights) = (p.bones, p.weights);
+            (v.pos, v.normal) = (pos.to_array(), normal.to_array());
             centres[p.mesh][i as usize] = [p.pivot.x, p.pivot.y, p.pivot.z, 1.0 + p.layer as f32];
         }
     }
@@ -609,7 +652,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             }
         }
     }
-    Ok(AvatarSource::Built { model, textures, centres: Some(centres) })
+    Ok(AvatarSource::Built { model, textures, skinning: Some(Skin { centres, copies }) })
 }
 
 /// Puts a part skinned to another skeleton (`part.bones`) on `bones` by the bones' names: each
@@ -711,5 +754,5 @@ fn from_model(model: asset::Model, centres: Option<Centres>, mut texture: impl F
             SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material, centres }
         })
         .collect();
-    Source { bones: model.bones, meshes }
+    Source { bones: model.bones, meshes, copies: Vec::new() }
 }

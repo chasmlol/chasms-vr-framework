@@ -381,7 +381,14 @@ impl PlayerBody {
                 (Some(m), Some(p)) => tracing::info!("runtime: armour marks for {} pieces from {}", m.pieces.len(), p.display()),
                 _ => tracing::info!("runtime: no armour marks for {game}: every piece soft"),
             }
-            let skinning = marks.as_ref().map_or(rustvr_avatar::Skinning::Centres, rustvr_avatar::Skinning::Marked);
+            let mut skinning = marks.as_ref().map_or(rustvr_avatar::Skinning::Centres, rustvr_avatar::Skinning::Marked);
+            // (`RUSTVR_SKINNING=linear` or `centres`: the game's own skinning, or no plates, to
+            // compare against.)
+            match std::env::var("RUSTVR_SKINNING").as_deref() {
+                Ok("linear") => skinning = rustvr_avatar::Skinning::Linear,
+                Ok("centres") => skinning = rustvr_avatar::Skinning::Centres,
+                _ => {}
+            }
             let _ = tx.send(rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps, skinning));
         });
         self.game_body = Some(rx);

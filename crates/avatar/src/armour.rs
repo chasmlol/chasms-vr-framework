@@ -6,13 +6,21 @@
 //! piece and never bends. Riding two bones, it turns by each one's share about the joint between
 //! them, which is what a game's helper joint does for a couter or a pauldron.
 //!
+//! A plate keeps the shape the game's own skinning gives it on a body standing at rest, the arms at
+//! its sides ([`crate::rig::rest_pose`]), not the shape it's modelled in, with the arms out level:
+//! a pauldron the game drapes over the shoulder by bending it stays draped, where rigid in its
+//! modelled shape it would stand out like a wing with the arms down. Its vertices are put in that
+//! shape and skinned to copies of its riders bound at rest (`compose`); for a plate whose riders
+//! all move alike between the two poses (all on one arm, or none on an arm) that's the same as its
+//! modelled shape on the riders themselves.
+//!
 //! Islands (the pieces of a mesh whose triangles share corners, corners at the same place being
 //! the same corner) are what plates are chosen from; [`islands`] lists them as the preview shows
 //! them.
 
 use std::collections::HashMap;
 
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use rustvr_asset as asset;
 use rustvr_asset::armour::{self as marks, MeshRef, Pivot, Side};
 
@@ -145,8 +153,11 @@ pub struct Plate {
     /// The riders, as vertex weights (bone indices, 255ths summing to 255).
     pub bones: [u8; 4],
     pub weights: [u8; 4],
+    /// Where it turns about, at rest.
     pub pivot: Vec3,
     pub layer: u8,
+    /// Its vertices at rest (positions and normals, in `vertices`' order).
+    pub shape: Vec<(Vec3, Vec3)>,
 }
 
 /// The bone named `pattern` (a [`marks::glob`]) for something on `side` near `near`: the one on that
@@ -208,11 +219,43 @@ fn quantise(shares: &[(usize, f32)]) -> Option<([u8; 4], [u8; 4])> {
     Some((bones, weights))
 }
 
-/// The plates of `piece` in `model` (a part skinned to its body's skeleton), with what went wrong
-/// in its marks (a bone it rides that the skeleton hasn't, a plate that chose nothing).
-pub fn plates(piece: &marks::Piece, model: &asset::Model) -> (Vec<Plate>, Vec<String>) {
+/// What a piece's marks make of a model.
+#[derive(Clone, Debug, Default)]
+pub struct Marked {
+    pub plates: Vec<Plate>,
+    /// What went wrong (a bone a plate rides that the skeleton hasn't).
+    pub problems: Vec<String>,
+    /// The plates that chose nothing in this model (a rule for several models that this one has
+    /// nothing for).
+    pub unchosen: Vec<String>,
+}
+
+/// Where the game's own skinning (linear blending) puts a vertex with each bone moved by `moves`.
+fn blended(v: &asset::Vertex, moves: &[Mat4]) -> (Vec3, Vec3) {
+    let total: u32 = v.weights.iter().map(|&w| w as u32).sum();
+    if total == 0 || moves.is_empty() {
+        return (Vec3::from_array(v.pos), Vec3::from_array(v.normal));
+    }
+    let mut m = Mat4::ZERO;
+    for k in 0..4 {
+        if v.weights[k] > 0 {
+            m += moves.get(v.bones[k] as usize).copied().unwrap_or(Mat4::IDENTITY) * (v.weights[k] as f32 / total as f32);
+        }
+    }
+    (m.transform_point3(Vec3::from_array(v.pos)), m.transform_vector3(Vec3::from_array(v.normal)).normalize_or_zero())
+}
+
+/// The plates of `piece` in `model` (a part skinned to its body's skeleton), shaped at rest:
+/// `rest` is each bone's model matrix with the body at rest ([`crate::rig::rest_pose`]; empty: as
+/// bound).
+pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Marked {
+    // Each bone's move from its bind pose to rest.
+    let moves: Vec<Mat4> = model.bones.iter().zip(rest).map(|(b, r)| *r * Mat4::from_cols_array(&b.model_matrix).inverse()).collect();
     let mut out = Vec::new();
     let mut problems = Vec::new();
+    let mut unchosen = Vec::new();
+    // The side each bone is on (where its joint is).
+    let bone_side: Vec<Side> = model.bones.iter().map(|b| Side::of(origin(b).x)).collect();
     let islands: Vec<Vec<Island>> = model.meshes.iter().map(islands).collect();
     for mark in &piece.plates {
         let meshes: Vec<usize> = match &mark.mesh {
@@ -228,33 +271,36 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model) -> (Vec<Plate>, Vec<St
             let welded = welds(mesh);
             // Each weld group's bone: the heaviest of its first corner (they share weights).
             for (k, isl) in islands[m].iter().enumerate() {
+                let size = (isl.max - isl.min).max_element();
                 let take = (mark.island.is_empty() || mark.island.contains(&k))
                     && bone_ok(isl.heaviest())
                     && mark.side.takes(isl.side)
-                    && mark.within.is_none_or(|b| b.contains(isl.centre.to_array()));
+                    && mark.within.is_none_or(|b| b.contains(isl.centre.to_array()))
+                    && mark.largest.is_none_or(|l| size <= l);
                 if !take {
                     continue;
                 }
-                let vertices: Vec<u32> = isl
-                    .vertices
-                    .iter()
-                    .copied()
-                    .filter(|&i| {
-                        mark.vertices.is_empty()
-                            || heaviest(&mesh.vertices[welded[i as usize] as usize]).is_some_and(|b| mark.vertices.iter().any(|p| marks::glob(p, &model.bones[b].name)))
-                    })
-                    .collect();
-                if vertices.is_empty() {
-                    continue;
-                }
-                match chosen.iter_mut().find(|(key, _)| *key == (isl.side, m)) {
-                    Some((_, v)) => v.extend(vertices),
-                    None => chosen.push(((isl.side, m), vertices)),
+                // A plate made of some of an island's corners is on the side of their bones (an
+                // island across the body, both legs' leather, gives each leg its own plate);
+                // one made of whole islands, on theirs.
+                for &i in &isl.vertices {
+                    let side = if mark.vertices.is_empty() {
+                        isl.side
+                    } else {
+                        match heaviest(&mesh.vertices[welded[i as usize] as usize]) {
+                            Some(b) if mark.vertices.iter().any(|p| marks::glob(p, &model.bones[b].name)) => bone_side[b],
+                            _ => continue,
+                        }
+                    };
+                    match chosen.iter_mut().find(|(key, _)| *key == (side, m)) {
+                        Some((_, v)) => v.push(i),
+                        None => chosen.push(((side, m), vec![i])),
+                    }
                 }
             }
         }
         if chosen.is_empty() {
-            problems.push(format!("{}: plate '{}' chose nothing", piece.name, mark.name));
+            unchosen.push(mark.name.clone());
             continue;
         }
         for ((side, m), vertices) in chosen {
@@ -294,10 +340,18 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model) -> (Vec<Plate>, Vec<St
                 None if shares.len() >= 2 => joint_between(&model.bones, shares[0].0, shares[1].0).unwrap_or(centre),
                 None => centre,
             };
-            out.push(Plate { name: mark.name.clone(), side, mesh: m, vertices, bones, weights, pivot, layer: mark.layer });
+            // At rest: its vertices as the game skins them there, its pivot where its riders take it.
+            let shape: Vec<(Vec3, Vec3)> = vertices.iter().map(|&i| blended(&mesh.vertices[i as usize], &moves)).collect();
+            let total: f32 = shares.iter().map(|s| s.1).sum::<f32>().max(1e-6);
+            let pivot = if moves.is_empty() {
+                pivot
+            } else {
+                shares.iter().map(|&(b, w)| moves.get(b).map_or(pivot, |m| m.transform_point3(pivot)) * (w / total)).sum()
+            };
+            out.push(Plate { name: mark.name.clone(), side, mesh: m, vertices, bones, weights, pivot, layer: mark.layer, shape });
         }
     }
-    (out, problems)
+    Marked { plates: out, problems, unchosen }
 }
 
 /// What a plate rides, for the log and the preview: "Bip01 L Forearm 70%, Bip01 L Hand 30%".

@@ -105,6 +105,10 @@ pub struct Plate {
     /// Islands whose middle is inside this box (right side; mirrored on the left).
     #[serde(default)]
     pub within: Option<Bounds>,
+    /// Islands no bigger than this (metres, their bounds' longest side): a plate, not the sleeve
+    /// it's on.
+    #[serde(default)]
+    pub largest: Option<f32>,
     /// Of the islands chosen, only the corners mostly on one of these bones (none: all of them):
     /// a plate that is part of an island (a glove's back plate, a boot's toe cap).
     #[serde(default, deserialize_with = "one_or_many")]

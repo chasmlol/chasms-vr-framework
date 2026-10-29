@@ -257,13 +257,16 @@ fn list(dir: &Path, skeleton: &str, parts: &[String], name_of: &HashMap<String, 
             }
         }
         if let Some(piece) = piece {
-            let (plates, problems) = armour::plates(piece, &model);
-            for p in &plates {
+            let marked = armour::plates(piece, &model, &rustvr_avatar::rest_pose(&model.bones));
+            for p in &marked.plates {
                 writeln!(s, "  plate '{}' ({}, {}): mesh {}, {} vertices, rides {}, turns about {:.3?}, layer {}", p.name, p.side.name(), colour_name(plate_count), p.mesh, p.vertices.len(), armour::riders(p, &model.bones), p.pivot.to_array(), p.layer)?;
                 plate_count += 1;
             }
-            for p in problems {
+            for p in &marked.problems {
                 writeln!(s, "  PROBLEM: {p}")?;
+            }
+            if !marked.unchosen.is_empty() {
+                writeln!(s, "  (nothing here for: {})", marked.unchosen.join(", "))?;
             }
         }
     }
@@ -301,8 +304,9 @@ type Label = (String, usize, Vec<u32>);
 
 /// A body with every island (or plate) its own colour, and (islands) their labels.
 fn coloured(source: AvatarSource, dir: &Path, parts: &[String], marks: &ArmourFile, name_of: &HashMap<String, String>, colours: Colours) -> Result<(AvatarSource, Vec<Label>)> {
-    let AvatarSource::Built { model, centres, .. } = source else { bail!("not a built body") };
-    let centres = centres.unwrap_or_default();
+    let AvatarSource::Built { model, skinning, .. } = source else { bail!("not a built body") };
+    let skinning = skinning.unwrap_or_default();
+    let centres = &skinning.centres;
     // Each composed mesh's part and its index in the part, as `compose` lays them out.
     let mut owner = Vec::new();
     for key in parts {
@@ -330,8 +334,7 @@ fn coloured(source: AvatarSource, dir: &Path, parts: &[String], marks: &ArmourFi
                 let _ = rustvr_avatar::rebind(&mut part, &skel);
             }
             if let Some(piece) = name_of.get(key).and_then(|n| marks.piece(n)) {
-                let (plates, _) = armour::plates(piece, &part);
-                for p in plates {
+                for p in armour::plates(piece, &part, &[]).plates {
                     for &v in &p.vertices {
                         plate_of.insert((first + p.mesh, v), count);
                     }
@@ -373,7 +376,7 @@ fn coloured(source: AvatarSource, dir: &Path, parts: &[String], marks: &ArmourFi
         }
     }
     let model = asset::Model { meshes, ..model };
-    Ok((AvatarSource::Built { model, textures, centres: Some(out_centres) }, labels))
+    Ok((AvatarSource::Built { model, textures, skinning: Some(rustvr_avatar::Skin { centres: out_centres, copies: skinning.copies }) }, labels))
 }
 
 fn solid(c: [f32; 3]) -> asset::Texture {

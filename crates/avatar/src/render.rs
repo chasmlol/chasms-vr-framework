@@ -917,7 +917,7 @@ impl Character {
             }
         }
         let vertex_lists: Vec<&[asset::Vertex]> = source.meshes.iter().map(|m| m.vertices.as_slice()).collect();
-        let rig = Rig::new(&source.bones, &vertex_lists)?;
+        let rig = Rig::with_copies(&source.bones, &vertex_lists, &source.copies)?;
         let vis = SHOWS.map(|s| rig.visibility(s));
 
         let mut meshes = Vec::new();
