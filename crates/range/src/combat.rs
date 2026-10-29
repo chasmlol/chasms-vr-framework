@@ -16,8 +16,9 @@ pub const DUMMY_AT: Vec3 = Vec3::new(0.15, 0.0, 1.15);
 /// The fire bolt's id.
 pub const FIRE_BOLT: u32 = 1;
 
-/// The second dummy: off to the left, turned a little towards the player.
-pub const DUMMY_LEFT_AT: Vec3 = Vec3::new(-0.85, 0.0, 1.45);
+/// The second dummy: off to the left, turned a little towards the player, behind the throwables'
+/// table (clear of the sword's blade lying across it).
+pub const DUMMY_LEFT_AT: Vec3 = Vec3::new(-0.85, 0.0, 1.88);
 
 /// The training dummies (people, as ragdolls: `crate::ragdoll`), facing the player, among the
 /// range's walls and furniture: `DUMMY_ID` at `DUMMY_AT`, the next at `DUMMY_LEFT_AT`.

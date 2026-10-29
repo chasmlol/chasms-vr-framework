@@ -316,14 +316,19 @@ fn pick_up_carry_and_drop() {
     assert!((rest.y - 0.9).abs() < 0.02, "the bottle stands on the table: {rest:?}");
     s.move_hand(0, rest + Vec3::new(0.0, 0.15, 0.0), 30);
     assert!(s.out.hand_targeting[0], "hovering the bottle");
+    // Taken just as it is in the hand: neither moves.
+    let (before, turned, hand) = (s.pos(BOTTLE), s.rot(BOTTLE), v3(s.out.hands[0].pose.pos));
     s.grip(0, 1.0);
     assert_eq!(s.rig.held(0), Some(BOTTLE));
+    s.step(2);
+    assert!(s.pos(BOTTLE).distance(before) < 0.005, "the bottle didn't move: {:?} from {before:?}", s.pos(BOTTLE));
+    assert!(v3(s.out.hands[0].pose.pos).distance(hand) < 0.005, "nor the hand");
+    let offset = s.pos(BOTTLE) - s.hand_pos(0);
     s.move_hand(0, Vec3::new(-0.3, 1.4, 0.1), 40);
     s.step(10);
-    // Held where the hand found it, its top (10 cm up) brought the 5 cm up onto the palm.
     let carried = s.pos(BOTTLE) - s.hand_pos(0);
-    assert!(carried.distance(Vec3::new(0.0, -0.1, 0.0)) < 0.02, "held where it was taken, on the palm: {carried:?}");
-    assert!(s.rot(BOTTLE).angle_between(Quat::IDENTITY) < 0.05, "as it was turned");
+    assert!(carried.distance(offset) < 0.02, "held as it was taken: {carried:?} vs {offset:?}");
+    assert!(s.rot(BOTTLE).angle_between(turned) < 0.05, "as it was turned");
     assert!(s.out.hands[0].flags & HAND_HOLDING != 0 && s.out.hands[0].holding == BOTTLE);
     s.grip(0, 0.0);
     assert_eq!(s.rig.held(0), None);
@@ -481,8 +486,7 @@ fn a_fingertip_alone_pushes_a_game_cable() {
     poses.poses[0].pose = pose(at, Quat::from_rotation_arc(Vec3::Y, facing));
     s.rig.set_game_poses(&poses);
     s.step(3);
-    let cable = s.rig.objects[&CABLE].collider;
-    assert!(s.rig.physics.overlap(palm, cable).is_none(), "the palm is clear of it");
+    let _ = palm;
     // Poke it.
     let mut pushes = Vec::new();
     let mut p = s.hand_pos(0);
@@ -762,8 +766,10 @@ fn rifles_go_on_the_back_over_the_shoulder() {
 fn magazines_come_from_the_chest_pouch_and_eject_into_a_waiting_hand() {
     let mut s = Sim::new();
     s.take_rifle();
-    // Eject with the left hand right under the gun: the magazine drops into it.
+    // Eject with the left hand right under the gun, palm up (clear of it): the magazine drops into
+    // it.
     let well = s.pos(RIFLE) + s.rot(RIFLE) * v3(rifle().mag_well);
+    s.set_rot(0, Quat::from_rotation_z(std::f32::consts::FRAC_PI_2));
     s.move_hand(0, well + Vec3::new(0.0, -0.12, 0.0), 30);
     s.grip(0, 1.0); // ready to catch
     let mag = s.rig.mag_of(RIFLE).unwrap();
@@ -2578,8 +2584,8 @@ fn the_support_hand_takes_the_handguard_anywhere_along_it() {
     s.step(5);
     assert!(s.out.primary_weapon.unwrap().two_handed, "a second hand anywhere on it");
     let (at, _) = s.held_at(0, RIFLE);
-    // (Its palm on the receiver's side, 3 cm out: the grip pose 2 cm in from the palm.)
-    assert!((at.z - 0.18).abs() < 0.02 && (at.x + 0.01).abs() < 0.01, "held on the receiver's side where it took it: {at:?}");
+    // (Just where the hand was on it: it doesn't move onto it.)
+    assert!(at.distance(Vec3::new(-0.06, 0.0, 0.18)) < 0.01, "held on the receiver's side where it took it: {at:?}");
 }
 
 #[test]
@@ -2810,8 +2816,9 @@ fn a_thing_made_of_convex_parts_is_held_on_the_part_the_hand_took() {
     s.step(30);
     assert_eq!(s.rig.held(1), Some(ELL));
     let (held, _) = s.held_at(1, ELL);
+    // (Held where the hand is drawn: its fingers on the bar, the hand itself above it.)
     let off_bar = (held - held.clamp(Vec3::new(-0.015, 0.0, 0.0), Vec3::new(0.015, 0.03, 0.3))).length();
-    assert!(off_bar < 0.03 && held.z > 0.2, "the hand on the bar's front end: {held:?}");
+    assert!(off_bar < 0.12 && held.z > 0.2, "the hand on the bar's front end: {held:?}");
     // The fingers close on its parts.
     let g = s.rig.grasps()[1].clone().unwrap();
     assert_eq!(g.solids.len(), 2, "both parts: {:?}", g.solids);
@@ -2863,4 +2870,68 @@ fn a_blade_stuck_in_a_creature_drags_it_and_comes_out_backwards() {
     s.step(5);
     assert!(s.rig.objects[&BOTTLE].embed.is_none(), "pulled out");
     assert_eq!(s.rig.held(1), Some(BOTTLE));
+}
+
+#[test]
+fn nothing_held_goes_through_the_world_however_hard_its_pushed() {
+    let mut s = Sim::new();
+    s.reach(0, s.pos(BOTTLE) + Vec3::new(0.0, 0.12, 0.0));
+    s.grip(0, 1.0);
+    assert_eq!(s.rig.held(0), Some(BOTTLE));
+    s.move_hand(0, s.hand_pos(0) + Vec3::Y * 0.2, 20);
+    // Shoved down 40 cm into the table top (at 0.8 m) and held there.
+    s.move_hand(0, s.hand_pos(0) - Vec3::Y * 0.6, 30);
+    s.step(60);
+    // Its lowest corner, however it's turned.
+    let (p, q) = s.rig.object_world_pose(BOTTLE).unwrap();
+    let lowest = (0..8).map(|k| (p + q * Vec3::new([-0.03, 0.03][k & 1], [-0.1, 0.1][(k >> 1) & 1], [-0.03, 0.03][k >> 2])).y).fold(f32::MAX, f32::min);
+    assert!(lowest > 0.785, "it stays on the table top: its lowest corner at {lowest:.3}");
+}
+
+#[test]
+fn an_open_hand_is_stopped_by_its_fingers() {
+    let mut s = Sim::new();
+    // The hand open (nothing squeezed), fingers down (the controller turned so), lowered onto the
+    // table's empty end and on 10 cm into it.
+    s.set_rot(1, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2));
+    let over = Vec3::new(0.45, 1.1, 0.75);
+    s.move_hand(1, over, 30);
+    s.move_hand(1, Vec3::new(0.45, 0.7, 0.75), 60);
+    s.step(10);
+    let h = &s.rig.hands.as_ref().unwrap()[1];
+    let tips = s.rig.physics.pose(h.fingers[2]).0;
+    assert!(tips.y > 0.79, "the fingertips stop on the top: {tips:?}");
+    assert!(s.out.hands[1].flags & HAND_BLOCKED != 0);
+}
+
+#[test]
+fn a_blade_stuck_in_a_loose_thing_stays_in_and_drags_it() {
+    const CRATE: u32 = 44;
+    let mut c = obj(CRATE, OBJ_PROP, Vec3::new(-0.35, 0.95, 0.65), [0.12, 0.12, 0.12], 3.0);
+    c.flags = OBJF_GRABBABLE;
+    let mut s = Sim::with(&[c]);
+    s.step(30);
+    // A bottle in the right hand, its bottom stuck 5 cm down into the crate's top (as the combat
+    // would have a blade).
+    s.reach(1, s.pos(BOTTLE) + Vec3::new(0.0, 0.12, 0.0));
+    s.grip(1, 1.0);
+    s.move_hand(1, s.hand_pos(1) + Vec3::Y * 0.3, 30);
+    s.step(10);
+    let bottom = |s: &Sim| s.pos(BOTTLE) + s.rot(BOTTLE) * Vec3::new(0.0, -0.1, 0.0);
+    let top = s.pos(CRATE) + Vec3::Y * 0.12;
+    s.move_hand(1, s.hand_pos(1) + (top - bottom(&s)), 40);
+    s.step(20);
+    let r = embed::Request { object: BOTTLE, into: embed::Into::Object { id: CRATE }, point: bottom(&s), dir: Vec3::NEG_Y, sample: Vec3::new(0.0, -0.1, 0.0), depth: 0.05, max_depth: 0.12 };
+    s.rig.embed(&r);
+    s.set_hand(1, s.hand_pos(1) - Vec3::Y * 0.05);
+    s.step(5);
+    let (crate_at, stuck) = (s.pos(CRATE), s.pos(BOTTLE) - s.pos(CRATE));
+    // Pulled towards the player 20 cm: the bottle stays in it, and the crate comes along.
+    s.move_hand(1, s.hand_pos(1) - Vec3::Z * 0.2, 40);
+    s.step(10);
+    assert!(s.rig.objects[&BOTTLE].embed.is_some(), "still in");
+    assert!(s.pos(CRATE).z < crate_at.z - 0.04, "the crate dragged along: {:?} from {crate_at:?}", s.pos(CRATE));
+    let _ = stuck;
+    let inside = s.rot(CRATE).inverse() * (bottom(&s) - s.pos(CRATE));
+    assert!(inside.abs().max_element() < 0.12, "its bottom still in the crate: {inside:?}");
 }

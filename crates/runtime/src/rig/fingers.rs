@@ -20,6 +20,18 @@ const FINGERS: [([f32; 3], [f32; 3], f32); 5] = [
     ([0.0, 0.095, -0.010], [0.0, 1.0, 0.0], 0.08),
     ([0.0, 0.088, -0.027], [0.0, 1.0, 0.0], 0.065),
 ];
+/// The palm: a box from the wrist to the knuckles, as wide as the knuckles and as thick as a hand
+/// (its centre in the hand frame, its half sizes along the frame's axes). The fist's grip axis runs
+/// just off its face, so what the hand holds there sits in it.
+const PALM: ([f32; 3], [f32; 3]) = ([0.0, 0.05, 0.0], [0.014, 0.046, 0.038]);
+
+/// The palm's box for a hand joint at `hand` (position, the canonical frame's rotation): its
+/// centre, rotation and half sizes.
+pub fn palm(hand: (Vec3, Quat)) -> (Vec3, Quat, Vec3) {
+    let (c, half) = PALM;
+    (hand.0 + hand.1 * Vec3::from_array(c), hand.1, Vec3::from_array(half))
+}
+
 /// How far a full curl turns a finger (the thumb less), radians.
 const CURL: [f32; 5] = [1.2, 1.9, 1.9, 1.9, 1.9];
 

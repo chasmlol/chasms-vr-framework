@@ -12,6 +12,8 @@ use glam::{Quat, Vec3};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Into {
     World,
+    /// One of the rig's loose things ([`rustvr_protocol::ObjectDesc::id`]): it's dragged along.
+    Object { id: u32 },
     /// A creature's body part ([`rustvr_protocol::Actor`] id, part index).
     Actor { id: u32, part: usize },
 }
@@ -57,8 +59,9 @@ pub const DRAG_RATE: f32 = 12.0;
 pub const SLIDE_SPEED: f32 = 0.9;
 
 /// How fast (m/s) an axe's edge must chop, and a point stab, to stay in.
-pub const AXE_SPEED: f32 = 4.0;
-pub const STAB_SPEED: f32 = 2.5;
+/// (The materials' minimums: a pierce 1 m/s into anything, an axe's slash 3.)
+pub const AXE_SPEED: f32 = 3.0;
+pub const STAB_SPEED: f32 = 1.0;
 /// How deep an axe bites, and how deep it can go; a point's default reach in.
 pub const AXE_DEPTH: f32 = 0.03;
 pub const AXE_MAX_DEPTH: f32 = 0.05;

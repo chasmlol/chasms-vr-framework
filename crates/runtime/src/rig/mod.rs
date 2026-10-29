@@ -162,8 +162,6 @@ struct Obj {
     /// last one gave it (`physics::Drive::carry`, `carried`).
     carry: Option<(Vec3, Quat)>,
     carried: (Vec3, Vec3),
-    /// Held: going through the world for now (`SLIP`).
-    through: bool,
     /// Held: where the hand would have it (its drive's target, as the hand swings it), and how far
     /// its hold is behind that (world).
     aim: Option<(Vec3, Quat)>,
@@ -232,6 +230,9 @@ struct Support {
     at: Vec3,
     rot: Quat,
     on: On,
+    /// Where the hold is from the hand's controller (the controller's own space): the hand was
+    /// stopped short of where the controller went, and stays so (0 on a handle).
+    reach: Vec3,
 }
 
 /// A hand's fingers on what it holds, for the drawn hand (see [`Rig::grasps`]).
@@ -266,7 +267,6 @@ struct Hand {
     /// something, they're on it); and they knock loose things about only while it isn't about to
     /// take one (they'd nudge it out of the grab).
     fingers_on: bool,
-    fingers_solid: bool,
     grip_down: bool,
     grip_toggled: bool,
     prev_buttons: u32,
@@ -274,6 +274,10 @@ struct Hand {
     holding: Option<u32>,
     /// Where on what it holds it has it.
     on: On,
+    /// Taken anywhere: the drawn hand's place on it (its grip pose in the thing's space), where the
+    /// hand was when it took it (the thing is held from the controller as it was then; neither
+    /// moves). None: on its grip, as the attach has it.
+    hold: Option<(Vec3, Quat)>,
     support: Option<Support>,
     handle: Option<u32>,
     hover: Hover,
@@ -434,6 +438,8 @@ const SPAWN_BASE: u32 = 0x8000_0000;
 /// its own speed into it, and never more than `PUSH_MAX` in all.
 const PUSH_OUT: f32 = 10.0;
 const PUSH_MAX: f32 = 4.0;
+/// The most a blade stuck in a loose thing gives it at once, dragging it (N s).
+const DRAG_IMPULSE_MAX: f32 = 20.0;
 /// A held thing pressed into a creature asks for this many m/s per metre the hand would have it
 /// go further.
 const PUSH_LAG: f32 = 8.0;
@@ -447,11 +453,6 @@ const LEASH: f32 = 0.7;
 /// turn or a teleport, not a walk (as `crate::locomotion` tells them apart).
 const SNAP_TURN: f32 = 0.3;
 const SNAP_MOVE: f32 = 1.0;
-/// A held thing the world holds back further than this from the hand (metres: a fence the walk
-/// carries it along, a doorway it catches in) goes through the world until it's back in the hand
-/// (within `SLIP_BACK`) and clear of it: it's never dragged along behind and then jumps back.
-const SLIP: f32 = 0.1;
-const SLIP_BACK: f32 = 0.02;
 /// The least a held thing speeds up and spins up, however heavy (m/s^2, rad/s^2).
 const MIN_HELD_ACCEL: f32 = 15.0;
 const MIN_HELD_ANG_ACCEL: f32 = 40.0;
@@ -464,6 +465,8 @@ const PALM_REACH: f32 = 0.1;
 /// A hand this near what the other hand holds (metres, from its grip pose to the surface) has its
 /// palm on it.
 const ON_IT: f32 = 0.035;
+/// A hand takes a thing it's on: its palm or a finger touching it, or all but (metres).
+const TOUCH: f32 = 0.03;
 /// A hand slower than this (m/s) near a thing it could take is reaching for it, not swatting it.
 const REACH_SPEED: f32 = 0.8;
 /// Two hands closer than this on a thing (metres) don't aim it.
@@ -917,7 +920,6 @@ impl Rig {
                 in_contact: false,
                 carry: None,
                 carried: (Vec3::ZERO, Vec3::ZERO),
-                through: false,
                 aim: None,
                 lag: Vec3::ZERO,
                 prev_vel: Vec3::ZERO,
@@ -1032,7 +1034,6 @@ impl Rig {
     /// A loose dynamic body again: gravity, normal damping, colliding with everything.
     fn free_body(&mut self, id: u32, groups: rapier3d::prelude::InteractionGroups) {
         let Some(o) = self.objects.get_mut(&id) else { return };
-        o.through = false;
         o.holder = Holder::Free;
         o.free_since = self.now;
         o.blend = None;
@@ -1236,21 +1237,18 @@ impl Rig {
         for (i, h) in hands.iter_mut().enumerate() {
             let side = if i == 0 { rustvr_ik::Side::Left } else { rustvr_ik::Side::Right };
             let (gp, gq) = self.physics.pose(h.body);
-            let hand = self.offsets.hand_frame(side, rustvr_ik::Pose { pos: gp, rot: gq });
+            // The hand joint in the hand body's own space (the body is the controller's grip).
+            let hand = self.offsets.hand_frame(side, rustvr_ik::Pose::IDENTITY);
             let c = &inp.frame.hands[i];
             let grip = c.squeeze.clamp(0.0, 1.0);
             let curls = [grip * 0.6, c.trigger.clamp(0.0, 1.0), grip, grip, grip];
             h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none() && h.valve.is_none();
-            let solid = h.fingers_on && h.hover == Hover::None && matches!(h.glove, Glove::Idle);
-            if solid != h.fingers_solid {
-                h.fingers_solid = solid;
-                for f in h.fingers {
-                    if let Some(c) = self.physics.collider_of(f) {
-                        self.physics.set_groups(c, if solid { physics::groups_finger(i) } else { groups_none() });
-                    }
-                }
-            }
-            for (k, (a, b)) in fingers::segments((hand.pos, hand.rot), i == 1, curls).into_iter().enumerate() {
+            // The fingers are the hand's own collider (curled as the controller has them): what
+            // the hand meets, they meet too, and nothing goes through them.
+            let local = fingers::segments((hand.pos, hand.rot), i == 1, curls);
+            self.physics.set_hand_shape(h.collider, fingers::palm((hand.pos, hand.rot)), &local);
+            let segs = local.map(|(a, b)| (gp + gq * a, gp + gq * b));
+            for (k, (a, b)) in segs.into_iter().enumerate() {
                 let (at, rot, half) = fingers::capsule_pose(a, b);
                 let f = h.fingers[k];
                 self.physics.set_capsule_half_height(f, half);
@@ -1427,9 +1425,13 @@ impl Rig {
         if self.hands.is_some() {
             return;
         }
+        let palms = [rustvr_ik::Side::Left, rustvr_ik::Side::Right].map(|side| {
+            let hand = self.offsets.hand_frame(side, rustvr_ik::Pose::IDENTITY);
+            fingers::palm((hand.pos, hand.rot))
+        });
         let mk = |p: &mut Physics, i: usize| {
             let g = &f.hands[i].grip;
-            let (body, collider) = p.add_hand(i, v3(g.pos), q4(g.rot));
+            let (body, collider) = p.add_hand(i, v3(g.pos), q4(g.rot), palms[i]);
             let fingers = std::array::from_fn(|_| p.add_finger(0.02));
             Hand {
                 body,
@@ -1438,13 +1440,13 @@ impl Rig {
                 finger_at: [v3(g.pos); 5],
                 finger_vel: [Vec3::ZERO; 5],
                 fingers_on: false,
-                fingers_solid: false,
                 grip_down: false,
                 grip_toggled: false,
                 prev_buttons: 0,
                 trigger: 0.0,
                 holding: None,
                 on: On::Free,
+                hold: None,
                 support: None,
                 handle: None,
                 hover: Hover::None,
@@ -1613,11 +1615,12 @@ impl Rig {
                 }
             }
         }
-        // What the other hand holds, anywhere on it: both hands hold it (and once the other lets go,
+        // What the other hand holds, the hand on it: both hands hold it (and once the other lets go,
         // this one does: from hand to hand).
+        let hand_c = self.hands.as_ref().unwrap()[i].collider;
         if hover == Hover::None
             && let Some(id) = self.hands.as_ref().unwrap()[i ^ 1].holding
-            && self.objects.get(&id).is_some_and(|o| o.desc.flags & OBJF_GRABBABLE != 0 && self.physics.distance_to(o.collider, palm) < s.interaction.grab_radius)
+            && self.objects.get(&id).is_some_and(|o| o.desc.flags & OBJF_GRABBABLE != 0 && self.physics.distance_between(hand_c, o.collider) < TOUCH)
         {
             hover = Hover::Object(id);
         }
@@ -1628,9 +1631,10 @@ impl Rig {
                 hover = Hover::Valve(id);
             }
         }
-        // 3. The nearest free object within reach of the palm (7 cm from its surface).
+        // 3. The nearest free thing the hand is on (the palm or a finger touching it, or all but),
+        // or one flying to it within the gloves' catch.
         if hover == Hover::None {
-            let reach = s.interaction.grab_radius;
+            let reach = TOUCH;
             let prev = match h.hover {
                 Hover::Object(id) => Some(id),
                 _ => None,
@@ -1640,12 +1644,13 @@ impl Rig {
                 if o.desc.flags & OBJF_GRABBABLE == 0 || !matches!(o.holder, Holder::Free | Holder::Pulled { .. } | Holder::Stuck { .. }) {
                     continue;
                 }
-                let d = self.physics.distance_to(o.collider, palm);
+                let pulled = matches!(o.holder, Holder::Pulled { hand, .. } if hand == i);
+                // Something flying to this hand is caught from further away (from the palm).
+                let d = if pulled { self.physics.distance_to(o.collider, palm) } else { self.physics.distance_between(hand_c, o.collider) };
                 // Hysteresis: keep the current choice unless another is clearly closer.
-                let d = if Some(*id) == prev { d - 0.02 } else { d };
+                let d = if Some(*id) == prev { d - 0.01 } else { d };
                 let mut limit = if Some(*id) == prev { reach * 1.5 } else { reach };
-                // Something flying to this hand can be caught from further away.
-                if matches!(o.holder, Holder::Pulled { hand, .. } if hand == i) {
+                if pulled {
                     limit = limit.max(s.interaction.glove_catch_radius);
                 }
                 if d < limit && best.is_none_or(|b| d < b.1) {
@@ -1905,6 +1910,7 @@ impl Rig {
         let gun = d.kind == OBJ_WEAPON;
         // Where the hand is on it (its controller grip pose in the thing's space).
         let local = (rot.inverse() * (palm - pos), (rot.inverse() * grip_rot).normalize());
+        let mut drawn = None;
         // Its grip, if the hand took it there: a gun's pistol grip locks on, a handle takes the
         // hand anywhere along it. Drawn from a holster or caught (`snap`), a gun or a rigged
         // weapon goes into the hand by its grip whatever.
@@ -1931,22 +1937,35 @@ impl Rig {
             let rot = held_mag_rot();
             let top = v3(d.mag_well);
             (Attach::Fixed(HELD_MAG_TOP - rot * top, rot), On::Free)
-        } else {
-            // Anywhere: as the hand found it, its surface brought onto the palm (caught, it was up
-            // to `glove_catch_radius` away).
-            let shift = self.palm_on(i, o.collider, (palm, grip_rot), !snap) - palm;
+        } else if snap {
+            // Caught from the gloves (it was up to `glove_catch_radius` away): its surface into the
+            // palm.
+            let shift = self.palm_on(i, o.collider, (palm, grip_rot), false) - palm;
             let rel = compose(inverse((palm, grip_rot)), (pos - shift, rot));
             (Attach::Fixed(rel.0, rel.1), On::Free)
+        } else {
+            // Anywhere: held just as it is (from the controller as it is now), the hand drawn just
+            // where it is (where the world stopped it): neither moves, and the fingers close on it
+            // from where they are.
+            let rel = compose(inverse((palm, grip_rot)), (pos, rot));
+            let hand = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
+            drawn = Some(compose(inverse((pos, rot)), hand));
+            (Attach::Fixed(rel.0, rel.1), On::Free)
+        };
+        // Where it goes in the hand: it eases there (nowhere, taken anywhere with the hand where
+        // the controller is).
+        let to = match attach {
+            Attach::Fixed(p, q) => compose((palm, grip_rot), (p, q)).0,
+            Attach::Gun => palm,
         };
         let o = self.objects.get_mut(&id).unwrap();
         o.attach = attach;
-        o.blend = Some((pos, rot, self.now, pos.distance(palm)));
+        o.blend = Some((pos, rot, self.now, pos.distance(to)));
         if let Holder::Holstered(slot) = o.holder {
             o.home_slot = Some(slot);
         }
         // Not yet moving with the player: it's taken up from where it was.
         (o.carry, o.carried) = (None, (Vec3::ZERO, Vec3::ZERO));
-        o.through = false;
         o.holder = Holder::Held(i);
         o.handled = true;
         o.hovered = false;
@@ -1961,6 +1980,7 @@ impl Rig {
         let h = &mut self.hands.as_mut().unwrap()[i];
         h.holding = Some(id);
         h.on = on;
+        h.hold = drawn;
         h.glove = Glove::Idle;
         self.physics.set_groups(h.collider, groups_none());
         self.debug.grabs += 1;
@@ -1979,16 +1999,18 @@ impl Rig {
         let Some(o) = self.objects.get(&id) else { return };
         let (op, oq) = self.physics.pose(o.body);
         let (collider, gun) = (o.collider, o.desc.kind == OBJ_WEAPON);
-        let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
+        let palm = self.hands.as_ref().unwrap()[i].target.0;
         let other_on = self.hands.as_ref().unwrap()[other].on;
         if other_on != On::Grip
             && let Some(hold) = self.handle_hold(i, id, On::Grip)
         {
-            let theirs = self.hold_of(id, other);
+            let theirs = self.drawn_hold(id, other);
+            let reach = self.reach_of(other, (op, oq), theirs);
             {
                 let h = &mut self.hands.as_mut().unwrap()[other];
                 h.holding = None;
-                h.support = Some(Support { id, at: theirs.0, rot: theirs.1, on: other_on });
+                h.hold = None;
+                h.support = Some(Support { id, at: theirs.0, rot: theirs.1, on: other_on, reach });
                 h.euro.reset();
             }
             let now = self.now;
@@ -2001,6 +2023,7 @@ impl Rig {
             let h = &mut self.hands.as_mut().unwrap()[i];
             h.holding = Some(id);
             h.on = On::Grip;
+            h.hold = None;
             h.glove = Glove::Idle;
             let c = h.collider;
             self.physics.set_groups(c, groups_none());
@@ -2011,18 +2034,30 @@ impl Rig {
         let (at, rot, on) = match self.handle_hold(i, id, On::Foregrip) {
             Some((at, rot)) => (at, rot, On::Foregrip),
             None => {
-                // Anywhere: where the hand took it, the hand brought onto its surface.
-                let to = self.palm_on(i, collider, (palm, grip_rot), true);
-                (oq.inverse() * (to - op), (oq.inverse() * grip_rot).normalize(), On::Free)
+                // Anywhere: just where the hand is drawn on it now (neither moves).
+                let (hp, hq) = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
+                (oq.inverse() * (hp - op), (oq.inverse() * hq).normalize(), On::Free)
             }
         };
+        let reach = if on == On::Free { self.reach_of(i, (op, oq), (at, rot)) } else { Vec3::ZERO };
         let h = &mut self.hands.as_mut().unwrap()[i];
-        h.support = Some(Support { id, at, rot, on });
+        h.support = Some(Support { id, at, rot, on, reach });
         h.glove = Glove::Idle;
         h.euro.reset();
         let c = h.collider;
         self.physics.set_groups(c, groups_none());
         self.emit(Cue::Grab, Some(i), Some(id), palm, 0.7);
+    }
+
+    /// Where hand `i` is drawn on thing `id` it holds (its grip pose in the thing's space).
+    fn drawn_hold(&self, id: u32, i: usize) -> (Vec3, Quat) {
+        self.hands.as_ref().and_then(|h| h[i].hold).unwrap_or_else(|| self.hold_of(id, i))
+    }
+
+    /// Where a hold (`at` on a thing at `thing`) is from hand `i`'s controller, in its own space.
+    fn reach_of(&self, i: usize, thing: (Vec3, Quat), at: (Vec3, Quat)) -> Vec3 {
+        let (cp, cq) = self.hands.as_ref().unwrap()[i].target;
+        cq.inverse() * (thing.0 + thing.1 * at.0 - cp)
     }
 
     /// The handle `which` of a thing (`d`) for hand `i` ([`grips`]).
@@ -2118,18 +2153,20 @@ impl Rig {
         }
         // The other hand has it too: it holds it now, where it has it (from hand to hand).
         if let Some(sup) = self.hands.as_ref().unwrap()[i ^ 1].support.filter(|s| s.id == id) {
+            let (p, q) = self.physics.pose(self.objects[&id].body);
             let h = &mut self.hands.as_mut().unwrap()[i ^ 1];
             h.support = None;
             h.holding = Some(id);
             h.on = sup.on;
-            let now = self.now;
+            // Held from its controller just as it is now, the hand drawn where it is on it: neither
+            // moves as it's handed over.
+            let ctrl = h.target;
+            h.hold = Some((sup.at, sup.rot));
             let o = self.objects.get_mut(&id).unwrap();
-            let rel = inverse((sup.at, sup.rot));
+            let rel = compose(inverse(ctrl), (p, q));
             o.attach = Attach::Fixed(rel.0, rel.1);
             o.holder = Holder::Held(i ^ 1);
-            // (Its hand was on its surface, not where the controller is: it settles into the palm.)
-            let (p, q) = self.physics.pose(o.body);
-            o.blend = Some((p, q, now, 0.0));
+            o.blend = None;
             let c = o.collider;
             self.physics.set_groups(c, groups_held(i ^ 1));
             self.emit(Cue::Release, Some(i), Some(id), palm, 0.5);
@@ -2483,7 +2520,7 @@ impl Rig {
         let h = &mut self.hands.as_mut().unwrap()[hand ^ 1];
         let Some(sup) = h.support.filter(|s| s.id == id) else { return pose };
         let raw = h.grip_t.0;
-        let steady = map.point(h.euro.filter(raw, dt));
+        let steady = map.point(h.euro.filter(raw, dt)) + h.target.1 * sup.reach;
         let (pos, rot) = pose;
         let pivot_w = pos + rot * pivot;
         let cur = (pos + rot * sup.at - pivot_w).normalize_or_zero();
@@ -2712,7 +2749,7 @@ impl Rig {
                         let h = &mut self.hands.as_mut().unwrap()[i];
                         h.barrels = None;
                         if Self::foregrip_on_barrels(&d) && b.at.distance(v3(d.foregrip)) < FOREGRIP_REACH {
-                            h.support = Some(Support { id, at: b.at, rot, on: On::Foregrip });
+                            h.support = Some(Support { id, at: b.at, rot, on: On::Foregrip, reach: Vec3::ZERO });
                             h.euro.reset();
                         } else {
                             let c = h.collider;
@@ -3288,6 +3325,15 @@ impl Rig {
     }
 
     /// The world's static collision: where a ray meets it, and what it's made of.
+    /// The first of the rig's loose things (not `skip`, nothing in a hand) along a ray: (its id,
+    /// how far, the surface's normal).
+    pub fn thing_hit(&self, origin: Vec3, dir: Vec3, max: f32, skip: u32) -> Option<(u32, f32, Vec3)> {
+        let skip_c = self.objects.get(&skip).map(|o| o.collider)?;
+        let (d, c, n) = self.physics.ray_cast(origin, dir, max, skip_c)?;
+        let (id, _) = self.objects.iter().find(|(_, o)| o.collider == c && matches!(o.holder, Holder::Free | Holder::Stuck { .. }))?;
+        Some((*id, d, n))
+    }
+
     pub fn world_hit(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<physics::WorldHit> {
         self.physics.world_hit(origin, dir, max)
     }
@@ -3296,6 +3342,7 @@ impl Rig {
         match into {
             embed::Into::World => Some((Vec3::ZERO, Quat::IDENTITY)),
             embed::Into::Actor { id, part } => self.actor_parts.get(&(id, part)).map(|&(a, b, _)| embed::part_frame(a, b)),
+            embed::Into::Object { id } => self.obj_pose(id),
         }
     }
 
@@ -3307,8 +3354,9 @@ impl Rig {
             return;
         }
         let Some(parent) = self.embed_parent(r.into) else { return };
-        let (_, q) = self.physics.pose(o.body);
-        // Placed so the point that met the surface is at it, then in.
+        // Turned as it was swung (as the blow was judged: what stopped it may already have tipped
+        // it over), placed so the point that met the surface is at it, then in.
+        let Some((_, q)) = self.swing_pose(r.object) else { return };
         let surface = (r.point - q * r.sample, q);
         let rel = compose(inverse(parent), surface);
         let axis = parent.1.inverse() * r.dir;
@@ -3370,6 +3418,20 @@ impl Rig {
             let entry = parent.0 + parent.1 * e.at;
             let speed = (strain.length() * embed::DRAG_RATE).min(PUSH_MAX);
             self.drags.push(GamePush { id: actor, part: part as u32 + 1, point: entry.extend(1.0).to_array(), normal: strain.normalize().extend(speed).to_array(), ..Default::default() });
+        }
+        // In a loose thing, the same, on the thing itself: what its point there lacks of the pull.
+        if let embed::Into::Object { id: thing } = e.into
+            && strain.length() > 0.005
+            && let Some(t) = self.objects.get(&thing)
+        {
+            let entry = parent.0 + parent.1 * e.at;
+            let dir = strain.normalize();
+            let want = (strain.length() * embed::DRAG_RATE).min(PUSH_MAX);
+            let (body, mass) = (t.body, t.desc.mass.max(0.05));
+            let lacking = want - self.physics.velocity(body).0.dot(dir);
+            if lacking > 0.0 {
+                self.physics.apply_impulse(body, dir * (lacking * mass).min(DRAG_IMPULSE_MAX), entry);
+            }
         }
         match embed::step(e.depth, e.max_depth, along, across, dt) {
             embed::Step::Out => {
@@ -3458,22 +3520,13 @@ impl Rig {
                         Attach::Fixed(p, q) => inverse((p, q)).0,
                     };
                     let (now_pos, now_rot) = self.physics.pose(o.body);
-                    // Held back by the world too far: through it until it's back in the hand.
-                    let behind = (now_pos + now_rot * pivot).distance(target.0 + target.1 * pivot);
-                    let collider = o.collider;
                     {
                         let o = self.objects.get_mut(id).unwrap();
                         o.aim = Some(target);
                         o.lag = (target.0 + target.1 * pivot) - (now_pos + now_rot * pivot);
                     }
-                    let o = &self.objects[id];
-                    if !o.through && behind > SLIP {
-                        self.physics.set_groups(collider, physics::groups_held_through(hand));
-                        self.objects.get_mut(id).unwrap().through = true;
-                    } else if o.through && behind < SLIP_BACK && !self.physics.in_world(collider) {
-                        self.physics.set_groups(collider, groups_held(hand));
-                        self.objects.get_mut(id).unwrap().through = false;
-                    }
+                    // (Held back by the world, it stays held back: nothing a hand holds goes
+                    // through anything.)
                     let o = &self.objects[id];
                     let (mut carry, mut carried) = (o.carry, o.carried);
                     if now_pos.distance(target.0) > LEASH && self.physics.reachable(head, target.0) {
@@ -3605,7 +3658,10 @@ impl Rig {
                 self.physics.set_groups(h.collider, groups_hand(i));
             }
             if s.interaction.physics_hands {
+                // Stopped where the world stops it, but always turned as the controller is (a touch
+                // never tips it: a thing taken is held as the hand is turned).
                 self.physics.track(h.body, h.target.0, h.target.1, dt, &physics::Drive::FREE);
+                self.physics.set_rotation(h.body, h.target.1);
             } else {
                 self.physics.set_pose(h.body, h.target.0, h.target.1);
                 self.physics.set_groups(h.collider, groups_none());
@@ -3695,7 +3751,8 @@ impl Rig {
             let (wp, wr) = self.physics.pose(o.body);
             let target = self.hands.as_ref().unwrap()[i].target.0;
             let on_it = wp + wr * sup.at;
-            if on_it.distance(target) > FOREGRIP_BREAK * self.map.world_per_meter {
+            let ctrl = self.hands.as_ref().unwrap()[i].target;
+            if on_it.distance(ctrl.0 + ctrl.1 * sup.reach) > FOREGRIP_BREAK * self.map.world_per_meter {
                 self.hands.as_mut().unwrap()[i].support = None;
                 self.physics.set_groups(self.hands.as_ref().unwrap()[i].collider, groups_hand(i));
                 self.emit(Cue::Release, Some(i), Some(sup.id), target, 0.6);
@@ -3744,7 +3801,7 @@ impl Rig {
                                 }
                             }
                         }
-                        Attach::Fixed(p, q) => compose(op, inverse((p, q))),
+                        Attach::Fixed(p, q) => h.hold.map_or_else(|| compose(op, inverse((p, q))), |at| compose(op, at)),
                     };
                     self.physics.set_pose(h.body, hold.0, hold.1);
                     self.physics.set_velocity(h.body, Vec3::ZERO, Vec3::ZERO);
@@ -3891,6 +3948,21 @@ impl Rig {
             None => self.physics.grasp_solids(o.collider, &mut g),
         }
         Some(((id, on), g))
+    }
+
+    /// Testing: hand `i`'s physical fingers (each one's ends, world).
+    pub fn debug_fingers(&self, i: usize) -> Vec<(Vec3, Vec3)> {
+        let Some(h) = self.hands.as_ref().map(|h| &h[i]) else { return Vec::new() };
+        h.fingers.iter().map(|&f| {
+            let (p, q) = self.physics.pose(f);
+            (p - q * Vec3::Y * 0.04, p + q * Vec3::Y * 0.04)
+        }).collect()
+    }
+
+    /// Testing: how far hand `i`'s collider (palm and fingers) is from thing `id`'s.
+    pub fn debug_hand_gap(&self, i: usize, id: u32) -> f32 {
+        let (Some(h), Some(o)) = (self.hands.as_ref().map(|h| &h[i]), self.objects.get(&id)) else { return f32::MAX };
+        self.physics.distance_between(h.collider, o.collider)
     }
 
     /// What each hand's fingers close on this frame (tracking space), if anything.

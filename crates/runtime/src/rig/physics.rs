@@ -37,12 +37,6 @@ pub fn groups_held(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
 }
 
-/// An object held by `hand` that the world has held back too far: free objects only, until it's
-/// back in the hand and clear of the world.
-pub fn groups_held_through(hand: usize) -> InteractionGroups {
-    InteractionGroups::new(G_HELD[hand], G_OBJECT, InteractionTestMode::And)
-}
-
 /// A hand touches the world and free objects (not what either hand is holding).
 pub fn groups_hand(hand: usize) -> InteractionGroups {
     InteractionGroups::new(G_HAND[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
@@ -196,17 +190,33 @@ impl Physics {
         true
     }
 
-    /// A hand: a light dynamic palm box with no gravity, driven by velocity.
-    pub fn add_hand(&mut self, hand: usize, pos: V3, rot: Q) -> (RigidBodyHandle, ColliderHandle) {
+    /// A hand: a light dynamic palm box with no gravity, driven by velocity. `palm`: the box in the
+    /// hand's own space (centre, rotation, half sizes; [`super::fingers::palm`]).
+    pub fn add_hand(&mut self, hand: usize, pos: V3, rot: Q, palm: (V3, Q, V3)) -> (RigidBodyHandle, ColliderHandle) {
         let body = RigidBodyBuilder::dynamic()
             .pose(to_pose(pos, rot))
             .gravity_scale(0.0)
             .ccd_enabled(true)
             .linear_damping(0.0)
             .angular_damping(0.0);
-        // Palm-sized box (HIGGS's hand half-extents ~0.05 x 0.015 x 0.09), 0.5 kg like LÖVR's hand.
-        let c = ColliderBuilder::cuboid(0.045, 0.02, 0.07).mass(0.5).friction(1.0).collision_groups(groups_hand(hand));
+        // 0.5 kg like LÖVR's hand.
+        let (at, q, half) = palm;
+        let c = ColliderBuilder::cuboid(half.x, half.y, half.z).position(to_pose(at, q)).mass(0.5).friction(1.0).collision_groups(groups_hand(hand));
         self.world.insert(body, c)
+    }
+
+    /// A hand's collider as the palm and its fingers (`palm` its box: centre, rotation, half sizes;
+    /// `fingers` each one's ends; all in the hand's own space), so the fingers meet what the hand
+    /// does: nothing goes through them.
+    pub fn set_hand_shape(&mut self, c: ColliderHandle, palm: (V3, Q, V3), fingers: &[(V3, V3); 5]) {
+        let Some(col) = self.world.colliders.get_mut(c) else { return };
+        col.set_position_wrt_parent(to_pose(V3::ZERO, Q::IDENTITY));
+        let (at, q, half) = palm;
+        let mut parts = vec![(to_pose(at, q), SharedShape::cuboid(half.x, half.y, half.z))];
+        for &(a, b) in fingers {
+            parts.push((to_pose(V3::ZERO, Q::IDENTITY), SharedShape::capsule(to_v(a), to_v(b), super::fingers::RADIUS)));
+        }
+        col.set_shape(SharedShape::compound(parts));
     }
 
     /// A finger: a kinematic capsule (along its +Y, `half_height` of straight part), touching
@@ -276,6 +286,12 @@ impl Physics {
         self.world.insert(body, c)
     }
 
+    /// How far apart two colliders are (0 touching or overlapping).
+    pub fn distance_between(&self, a: ColliderHandle, b: ColliderHandle) -> f32 {
+        let (Some(a), Some(b)) = (self.world.colliders.get(a), self.world.colliders.get(b)) else { return f32::MAX };
+        rapier3d::parry::query::distance(a.position(), a.shape(), b.position(), b.shape()).map_or(f32::MAX, |d| d.distance)
+    }
+
     /// The colliders touching `c` now (an active contact).
     pub fn touching(&self, c: ColliderHandle) -> Vec<ColliderHandle> {
         self.world
@@ -319,6 +335,13 @@ impl Physics {
 
     pub fn set_pose(&mut self, b: RigidBodyHandle, pos: V3, rot: Q) {
         self.world.bodies[b].set_position(to_pose(pos, rot), true);
+    }
+
+    /// Turns a body to `rot` where it is, its spin stopped.
+    pub fn set_rotation(&mut self, b: RigidBodyHandle, rot: Q) {
+        let rb = &mut self.world.bodies[b];
+        rb.set_rotation(to_q(rot.normalize()), true);
+        rb.set_angvel(Vector::ZERO, true);
     }
 
     pub fn set_velocity(&mut self, b: RigidBodyHandle, lin: V3, ang: V3) {
@@ -693,7 +716,7 @@ mod tests {
         floor(&mut p);
         let wall = ColBox { id: 2, center: [0.0, 1.0, 1.0], half_extents: [2.0, 2.0, 0.05], rot: [0.0, 0.0, 0.0, 1.0], ..Default::default() };
         p.apply_collision(COL_BOX, bytemuck::bytes_of(&wall));
-        let (h, _) = p.add_hand(1, V3::new(0.0, 1.0, 0.0), Q::IDENTITY);
+        let (h, _) = p.add_hand(1, V3::new(0.0, 1.0, 0.0), Q::IDENTITY, test_palm(1));
         p.set_dt(1.0 / 90.0);
         for _ in 0..5 {
             p.track(h, V3::new(0.0, 1.0, 0.4), Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
@@ -706,6 +729,13 @@ mod tests {
         }
         let z = p.pose(h).0.z;
         assert!(z < 0.95, "the wall stops the hand: z = {z}");
+    }
+
+    /// Hand `i`'s palm on its grip, as the rig puts it.
+    fn test_palm(i: usize) -> (V3, Q, V3) {
+        let side = if i == 0 { rustvr_ik::Side::Left } else { rustvr_ik::Side::Right };
+        let hand = rustvr_ik::HandOffsets::default().hand_frame(side, rustvr_ik::Pose::IDENTITY);
+        super::super::fingers::palm((hand.pos, hand.rot))
     }
 
     /// A collision mesh as a game streams it: a quad of two one-sided triangles (no thickness).
@@ -721,11 +751,13 @@ mod tests {
     /// A hand driven the way the rig drives an empty hand, towards a controller held `behind` the
     /// surface, for two seconds: where it ends up.
     fn push_into(p: &mut Physics, start: V3, target: V3) -> Vec<V3> {
-        let (h, _) = p.add_hand(0, start, Q::IDENTITY);
+        let (h, _) = p.add_hand(0, start, Q::IDENTITY, test_palm(0));
         p.set_dt(1.0 / 90.0);
         let mut path = Vec::new();
         for _ in 0..180 {
             p.track(h, target, Q::IDENTITY, 1.0 / 90.0, &Drive::FREE);
+            // (Turned as the controller is, whatever it meets.)
+            p.set_rotation(h, Q::IDENTITY);
             p.step();
             path.push(p.pose(h).0);
         }

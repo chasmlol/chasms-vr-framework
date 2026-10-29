@@ -473,6 +473,10 @@ impl Combat {
                         }
                         if let Some((point, _)) = self.bite_world(inp, d.kind, d.flags, frame, edge, &prev[di], &now[di], dt, speed_needed) {
                             self.embeds.push(embed::Request { object: id, into: embed::Into::World, point, dir: way, sample: local(point), depth, max_depth });
+                            continue;
+                        }
+                        if let Some((thing, point)) = Self::bite_thing(inp, id, d.kind, d.flags, frame, edge, &prev[di], &now[di], dt, speed_needed) {
+                            self.embeds.push(embed::Request { object: id, into: embed::Into::Object { id: thing }, point, dir: way, sample: local(point), depth, max_depth });
                         }
                     }
                     self.blocks(inp, h, id, &desc, &prev, &now, dt, &mut events);
@@ -597,7 +601,8 @@ impl Combat {
             }
             let Some(hit) = inp.rig.world_hit(prev[k], way, len) else { continue };
             let dir = way / len;
-            let material = hit.material?;
+            // (What the game didn't say the material of, a blade bites as wood.)
+            let material = hit.material.unwrap_or(MAT_WOOD);
             if !biteable(material) {
                 return None;
             }
@@ -609,6 +614,32 @@ impl Combat {
                 within(across, edge, across_deg) && within(-hit.normal, edge, normal_deg)
             };
             return clean.then_some((prev[k] + dir * hit.distance, material));
+        }
+        None
+    }
+
+    /// A damager's sweep against the rig's loose things (a crate, a barrel): where it chopped or
+    /// stabbed into one (as [`Combat::bite_world`] judges it), at least `speed` fast: (the thing,
+    /// where).
+    #[allow(clippy::too_many_arguments)]
+    fn bite_thing(inp: &CombatInput, weapon: u32, kind: u32, flags: u32, along: Vec3, edge: Vec3, prev: &[Vec3; SAMPLES], now: &[Vec3; SAMPLES], dt: f32, speed: f32) -> Option<(u32, Vec3)> {
+        let within = |a: Vec3, b: Vec3, deg: f32| a.dot(b) >= deg.to_radians().cos();
+        for k in 0..SAMPLES {
+            let way = now[k] - prev[k];
+            let len = way.length();
+            if len < 1e-4 || len / dt < speed {
+                continue;
+            }
+            let Some((thing, dist, normal)) = inp.rig.thing_hit(prev[k], way, len, weapon) else { continue };
+            let dir = way / len;
+            let clean = if kind == DMG_PIERCE {
+                within(dir, along, PIERCE_DEG) && within(-normal, along, NORMAL_DEG)
+            } else {
+                let across = (dir - along * dir.dot(along)).normalize_or_zero();
+                let (across_deg, normal_deg) = if flags & DMGF_AXE != 0 { (AXE_ACROSS_DEG, AXE_NORMAL_DEG) } else { (SLASH_ACROSS_DEG, NORMAL_DEG) };
+                within(across, edge, across_deg) && within(-normal, edge, normal_deg)
+            };
+            return clean.then_some((thing, prev[k] + dir * dist));
         }
         None
     }
@@ -764,23 +795,28 @@ impl Combat {
         if vel.length() > THROW_SPEED {
             dir = (dir * 0.7 + vel.normalize() * 0.3).normalize();
         }
-        // Aim assist: the creature whose middle is nearest the line, within a few degrees.
+        // Aim assist: the creature whose body (the middle of a torso part: a chest or a pelvis) is
+        // nearest the line, within a few degrees.
         let n = (self.actors.count as usize).min(MAX_ACTORS);
         let mut best: Option<(f32, Vec3, u32)> = None;
         for a in &self.actors.actors[..n] {
             if a.flags & ACT_ALIVE == 0 || a.count == 0 {
                 continue;
             }
-            let torso = a.parts[..a.count as usize].iter().find(|p| p.kind == PART_TORSO).unwrap_or(&a.parts[0]);
-            let c = (Vec3::from_array(torso.a) + Vec3::from_array(torso.b)) * 0.5;
-            let to = c - palm;
-            let d = to.length();
-            if d < 0.3 || d > AIM_ASSIST_RANGE {
-                continue;
-            }
-            let angle = to.normalize().dot(dir).clamp(-1.0, 1.0).acos();
-            if angle <= AIM_ASSIST_DEG.to_radians() && best.is_none_or(|(b, ..)| angle < b) {
-                best = Some((angle, to.normalize(), a.id));
+            let parts = &a.parts[..a.count as usize];
+            let torso = parts.iter().filter(|p| p.kind == PART_TORSO);
+            let aimed: Vec<_> = if torso.clone().next().is_some() { torso.collect() } else { vec![&parts[0]] };
+            for part in aimed {
+                let c = (Vec3::from_array(part.a) + Vec3::from_array(part.b)) * 0.5;
+                let to = c - palm;
+                let d = to.length();
+                if d < 0.3 || d > AIM_ASSIST_RANGE {
+                    continue;
+                }
+                let angle = to.normalize().dot(dir).clamp(-1.0, 1.0).acos();
+                if angle <= AIM_ASSIST_DEG.to_radians() && best.is_none_or(|(b, ..)| angle < b) {
+                    best = Some((angle, to.normalize(), a.id));
+                }
             }
         }
         match best {

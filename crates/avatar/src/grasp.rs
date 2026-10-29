@@ -3,7 +3,9 @@
 //! A hand holding something it isn't drawn in a game's own pose for wraps its fingers round the
 //! thing's surface ([`Grasp`]): each finger bends in from straight, all its joints together, and a
 //! segment that meets the surface stops there (with the joints before it) while the joints beyond
-//! it carry on, the way a finger folds round a handle or over an edge. The fingers are the drawn
+//! it carry on, the way a finger folds round a handle or over an edge. A finger that's in the thing
+//! straight (a thumb under a palm laid flat on a crate) first bends back at its base until it's
+//! out, as far as a finger can. The fingers are the drawn
 //! hand's own (its model's joints, lengths and bending axes), so they land on the surface whatever
 //! hand the model has. The surface is a few solids in tracking space: the part of the thing the
 //! hand has hold of (a handle's capsule), or the whole thing's collision shape.
@@ -97,8 +99,13 @@ impl Grasp {
 pub(crate) trait Chain {
     /// How many segments it has (1..=3).
     fn segments(&self) -> usize;
-    /// The segments (start, end) in tracking space for these curls (0 straight .. 1 a fist's).
+    /// The segments (start, end) in tracking space for these curls (0 straight .. 1 a fist's;
+    /// the base's below 0 bent back).
     fn place(&self, curls: [f32; 3]) -> [(Vec3, Vec3); 3];
+    /// How far its base can bend back (a curl, at least 0).
+    fn lift(&self) -> f32 {
+        0.0
+    }
 }
 
 /// Steps a finger takes from straight to a fist, and halvings that find where it meets the surface
@@ -107,28 +114,61 @@ const STEPS: usize = 20;
 const HALVINGS: usize = 6;
 /// Where along a segment it's checked against the surface (0 its joint, 1 its end).
 const SAMPLES: [f32; 6] = [0.1, 0.28, 0.46, 0.64, 0.82, 1.0];
+/// How far along a segment from its joint the knuckle's crease reaches: nearer the joint the
+/// segment may come that much closer to the surface (it folds round an edge it's on).
+const CREASE: f32 = 0.5;
+/// Steps a finger in the thing takes bending back out of it.
+const LIFT_STEPS: usize = 12;
+/// A finger is in the thing when its skin is this much of its thickness under the surface.
+const SUNK: f32 = 0.5;
 
 /// Each joint's curl for a finger closed on `grasp`, `radius` thick: bent in from straight, joints
-/// stopping from the base out as their segments meet the surface. A segment already on (or in) the
-/// surface when straight stays straight there; a finger that meets nothing makes a fist.
+/// stopping from the base out as their segments meet the surface. A finger in the surface when
+/// straight bends back at its base until it's out (as far as [`Chain::lift`]); a segment on it
+/// then stays there; a finger that meets nothing makes a fist.
 pub(crate) fn wrap(chain: &impl Chain, grasp: &Grasp, radius: f32) -> [f32; 3] {
     let n = chain.segments().clamp(1, 3);
-    // Segment k touches: within the finger's thickness of the surface anywhere along it.
+    // Segment k's nearest to the surface (its centre line).
+    let nearest = |curls: [f32; 3], k: usize| {
+        let (a, b) = chain.place(curls)[k];
+        SAMPLES.iter().map(|&t| grasp.distance(a.lerp(b, t))).fold(f32::INFINITY, f32::min)
+    };
+    // Segment k touches: within the finger's thickness of the surface anywhere along it (less
+    // near its joint, where the knuckle's crease lets it fold close round an edge).
     let touches = |curls: [f32; 3], k: usize| {
         let (a, b) = chain.place(curls)[k];
-        SAMPLES.iter().any(|&t| grasp.distance(a.lerp(b, t)) < radius)
+        SAMPLES.iter().any(|&t| grasp.distance(a.lerp(b, t)) < radius * (t / CREASE).min(1.0))
     };
-    let mut curls = [0.0f32; 3];
+    // How deep the finger's skin is under the surface at its deepest.
+    let sunk = |curls: [f32; 3]| (0..n).map(|k| radius - nearest(curls, k)).fold(f32::NEG_INFINITY, f32::max);
+    // Where it closes from: straight, or bent back out of the thing.
+    let mut start = [0.0f32; 3];
+    if sunk(start) > SUNK * radius && chain.lift() > 0.0 {
+        let mut best = (sunk(start), 0.0);
+        for step in 1..=LIFT_STEPS {
+            let back = -chain.lift() * step as f32 / LIFT_STEPS as f32;
+            let d = sunk([back, 0.0, 0.0]);
+            if d < best.0 {
+                best = (d, back);
+            }
+            if d <= SUNK * radius {
+                break;
+            }
+        }
+        start[0] = best.1;
+    }
+    let mut curls = start;
     // Joints 0..held stop where they are.
     let mut held = 0;
     // Already on it, straight.
     while held < n && touches(curls, held) {
         held += 1;
     }
+    // The joints from `held` on, `t` of the way from where they start to a fist's.
     let at = |base: [f32; 3], held: usize, t: f32| {
         let mut c = base;
-        for v in c.iter_mut().skip(held) {
-            *v = t;
+        for k in held..3 {
+            c[k] = start[k] + (1.0 - start[k]) * t;
         }
         c
     };
@@ -226,6 +266,35 @@ mod tests {
         assert!(curls[1] > 0.3, "the rest bends down over the edge: {curls:?}");
         let (_, tip) = f.place(curls)[2];
         assert!(tip.z < -0.02, "the tip comes down the far side: {tip:?}");
+    }
+
+    /// The same finger, its base able to bend back.
+    struct Lifting(Line);
+
+    impl Chain for Lifting {
+        fn segments(&self) -> usize {
+            3
+        }
+        fn place(&self, curls: [f32; 3]) -> [(Vec3, Vec3); 3] {
+            self.0.place(curls)
+        }
+        fn lift(&self) -> f32 {
+            0.5
+        }
+    }
+
+    #[test]
+    fn a_finger_in_the_thing_bends_back_out_onto_it() {
+        // A slab whose top is 2 mm under the straight finger's middle: 6 mm of it lies in it.
+        let g = Grasp { solids: vec![Solid::Box { centre: Vec3::new(0.0, 0.1, -0.052), rot: Quat::IDENTITY, half: Vec3::new(0.2, 0.2, 0.05) }], fingers: ALL_FINGERS, weight: 1.0, ..Default::default() };
+        let r = 0.008;
+        let f = Lifting(finger());
+        let curls = wrap(&f, &g, r);
+        assert!(curls[0] < -0.05, "the base bends back: {curls:?}");
+        let deepest = f.place(curls).iter().flat_map(|&(a, b)| (1..=10).map(move |i| a.lerp(b, i as f32 / 10.0))).map(|p| g.distance(p)).fold(f32::INFINITY, f32::min);
+        assert!(deepest > r * (1.0 - SUNK) - 1e-3, "out of it, on it: {deepest}");
+        // Unable to bend back, it stays as it was (straight, in it).
+        assert_eq!(wrap(&f.0, &g, r)[0], 0.0);
     }
 
     #[test]

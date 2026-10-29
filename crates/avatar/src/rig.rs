@@ -42,6 +42,9 @@ const CURL: [[f32; 3]; 5] = [
     [1.43, 1.75, 1.08],
     [1.54, 1.66, 1.05], // little
 ];
+/// How far each finger's base bends back from straight at most (a curl: a finger pressed flat on
+/// something, a thumb moved off it).
+const LIFT: [f32; 5] = [1.6, 0.3, 0.3, 0.3, 0.3];
 /// Spread at splay 1 (radians towards the thumb side) of each finger's base. Fingers close up as
 /// they curl into a fist.
 const SPREAD: [f32; 5] = [0.35, 0.21, 0.03, -0.14, -0.31];
@@ -574,6 +577,19 @@ impl Rig {
         let scale = self.scale(joints);
         std::array::from_fn(|f| self.wrap(side, f, (Vec3::from_array(hand.pos), quat(hand.rot)), scale, g))
     }
+
+    /// Each finger's segments (thumb .. little; (start, end) in tracking space, as many as it has)
+    /// bent to `curls`, hand `side`'s joint at `hand` and the body at `joints`: for tests.
+    pub fn finger_segments(&self, joints: &[Pose; JOINT_COUNT], side: usize, hand: Pose, curls: [[f32; 3]; 5]) -> [Vec<(Vec3, Vec3)>; 5] {
+        use grasp::Chain;
+        let scale = self.scale(joints);
+        let hand = (Vec3::from_array(hand.pos), quat(hand.rot));
+        std::array::from_fn(|f| {
+            let (Some(chain), Some(hb)) = (&self.fingers[side][f], self.joint_bone[HAND[side] as usize]) else { return Vec::new() };
+            let posed = PosedChain { finger: chain, index: f, splay: WRAP_SPLAY, origin: hand.0, turn: hand.1 * self.inv_canonical[HAND[side] as usize], bind_hand: self.bones[hb].bind_pos, scale };
+            posed.place(curls[f])[..chain.count].to_vec()
+        })
+    }
 }
 
 impl grasp::Chain for PosedChain<'_> {
@@ -597,6 +613,10 @@ impl grasp::Chain for PosedChain<'_> {
         }
         out
     }
+
+    fn lift(&self) -> f32 {
+        LIFT[self.index]
+    }
 }
 
 impl Finger {
@@ -606,7 +626,8 @@ impl Finger {
         let splay = splay.clamp(0.0, 1.0) * (1.0 - curls[0].clamp(0.0, 1.0));
         let mut q = Quat::IDENTITY;
         for k in 0..self.count {
-            let curl = curls[k].clamp(0.0, 1.0);
+            // (The base may bend back: a finger pressed flat, a thumb lifted off.)
+            let curl = curls[k].clamp(if k == 0 { -LIFT[finger] } else { 0.0 }, 1.0);
             let flex = if k == 0 && finger == 0 {
                 curl * CURL[0][0]
             } else {

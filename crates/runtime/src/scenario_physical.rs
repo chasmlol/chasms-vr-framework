@@ -158,8 +158,10 @@ fn take_rifle(t: f64, rifle: &ObjSnap) -> (Vec3, Quat) {
     // Reach with the hand turned the way it would hold the gun as it lies, so it doesn't swing.
     let along = hand_rot_for(rifle, rifle.rot);
     let above = grip + Vec3::Y * 0.08;
+    // Then slowly down onto it (the hand stops on the gun, round its grip).
+    let on = grip + Vec3::Y * 0.015;
     let level = hand_rot_for(rifle, Quat::IDENTITY);
-    let pos = keys(t, &[(0.0, rest), (0.35, Vec3::new(grip.x, 1.2, grip.z)), (0.6, above), (0.75, above), (1.0, Vec3::new(0.5, 1.3, 0.35))]);
+    let pos = keys(t, &[(0.0, rest), (0.35, Vec3::new(grip.x, 1.2, grip.z)), (0.5, above), (0.62, on), (0.75, on), (1.0, Vec3::new(0.5, 1.3, 0.35))]);
     let rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.35, along), (0.75, along), (1.0, level)]);
     (pos, rot)
 }
@@ -183,6 +185,9 @@ fn table_knife(objs: &[ObjSnap]) -> Option<ObjSnap> {
 
 /// The thrown object, in the live snapshot.
 /// The sword on the throwables' table.
+/// Where the stab into the floor goes in (x; clear of the tables, in front of the player).
+const STAB_FLOOR_X: f32 = 0.15;
+
 fn table_sword(objs: &[ObjSnap]) -> Option<ObjSnap> {
     objs.iter().find(|o| o.kind == OBJ_MELEE && o.flags & OS_HOLSTERED == 0).copied()
 }
@@ -699,14 +704,17 @@ pub fn all() -> Vec<Scenario> {
                 latched(|t, objs, _| {
                     let mut b = Body::rest();
                     let Some(bottle) = prop_near(objs, Vec3::new(-0.55, 0.97, 0.36)) else { return b };
-                    let top = bottle.pos + Vec3::Y * bottle.half_extents.y;
-                    let above = top + Vec3::Y * 0.055;
+                    // Round its neck from the left: the fist upright, the palm towards it, brought
+                    // in slowly until the palm is on it (the controller goes on into it).
+                    let neck = bottle.pos + Vec3::Y * (bottle.half_extents.y * 0.6);
+                    let beside = neck - Vec3::X * 0.12;
                     let rest = Body::rest().hands[0].pos;
                     b.head_rot = Quat::from_rotation_x(0.45 * (1.0 - ramp(t, 0.9, 1.2)));
                     b.hands[0].pos = keys(
                         t,
-                        &[(0.0, rest), (0.3, Vec3::new(-0.45, 1.3, 0.36)), (0.5, above), (0.7, above), (1.0, Vec3::new(-0.35, 1.4, 0.2)), (1.3, Vec3::new(-0.35, 1.5, -0.15)), (1.45, Vec3::new(-0.3, 1.65, 0.65))],
+                        &[(0.0, rest), (0.2, beside + Vec3::Y * 0.3), (0.35, beside), (0.5, neck - Vec3::X * 0.04), (0.7, neck), (1.0, Vec3::new(-0.35, 1.4, 0.2)), (1.3, Vec3::new(-0.35, 1.5, -0.15)), (1.45, Vec3::new(-0.3, 1.65, 0.65))],
                     );
+                    b.hands[0].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.2, Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))]);
                     // Let go part-way through the swing, at full speed.
                     b.hands[0].squeeze = on(t, &[(0.6, 1.4)]);
                     b
@@ -894,14 +902,18 @@ pub fn all() -> Vec<Scenario> {
                     let mut b = Body::rest();
                     let Some(s) = table_sword(objs) else { return b };
                     let above = s.at(s.grip) + Vec3::Y * 0.05;
-                    // The blade forward and level, its edges up and down (the back of the hand to
-                    // the flat): raised, then brought down through the dummy's chest, then (after a
-                    // pause) laid on it slowly.
-                    let up = Vec3::new(0.2, 1.75, 0.42);
+                    // Raised point up, then the blade forward and level over the dummy's head, its
+                    // edges up and down (the back of the hand to the flat); brought down through the
+                    // dummy, then (after a pause) laid on it slowly.
+                    let raised = Vec3::new(0.2, 1.65, 0.2);
+                    let up = Vec3::new(0.2, 1.9, 0.3);
                     let down = Vec3::new(0.2, 0.95, 0.42);
                     let rest = Body::rest().hands[1].pos;
-                    b.hands[1].pos = keys(t, &[(0.0, rest), (0.25, above + Vec3::Y * 0.25), (0.45, above), (0.6, above), (1.0, up), (1.2, up), (1.36, down), (1.8, down), (2.2, Vec3::new(0.2, 1.38, 0.42)), (2.8, Vec3::new(0.2, 1.22, 0.42))]);
-                    b.hands[1].rot = qkeys(t, &[(0.6, Quat::IDENTITY), (1.0, look_rot(Vec3::Z))]);
+                    b.hands[1].pos = keys(t, &[(0.0, rest), (0.25, above + Vec3::Y * 0.25), (0.45, above), (0.6, above), (0.85, raised), (1.0, up), (1.2, up), (1.36, down), (1.8, down), (2.2, Vec3::new(0.2, 1.38, 0.42)), (2.8, Vec3::new(0.2, 1.22, 0.42))]);
+                    // Turned to hold it as it lies (thumb towards the blade), then point up, then
+                    // forward.
+                    let lies = hand_rot_for(&s, s.rot);
+                    b.hands[1].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.25, lies), (0.6, lies), (0.85, look_rot(Vec3::Y)), (1.0, look_rot(Vec3::Z))]);
                     b.hands[1].squeeze = on(t, &[(0.5, 3.2)]);
                     b
                 })
@@ -940,7 +952,8 @@ pub fn all() -> Vec<Scenario> {
                         t,
                         &[(0.0, rest), (0.25, above + Vec3::Y * 0.25), (0.6, above), (0.75, above), (1.3, back), (1.6, back), (1.72, into), (2.2, into), (2.7, dragged), (3.1, dragged), (3.3, into), (4.0, back - Vec3::Z * 0.1)],
                     );
-                    b.hands[1].rot = qkeys(t, &[(0.75, Quat::IDENTITY), (1.3, look_rot(Vec3::Z))]);
+                    let lies = hand_rot_for(&s, s.rot);
+                    b.hands[1].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.25, lies), (0.75, lies), (1.3, look_rot(Vec3::Z))]);
                     b.hands[1].squeeze = on(t, &[(0.65, 4.6)]);
                     b.head_rot = Quat::from_rotation_x(0.2);
                     b
@@ -953,6 +966,53 @@ pub fn all() -> Vec<Scenario> {
                 check(4.5, "still in the hand once out", |c| ensure(c.objects.iter().any(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0), || "dropped".into())),
             ],
             captures: vec![(2.15, "stab_in"), (3.0, "stab_dragged"), (4.4, "stab_out")],
+        },
+        Scenario {
+            name: "stab_floor",
+            about: "physical: the sword taken by its handle, thrust point down into the floor: it goes in and stays; the hand pulled sideways doesn't move it (the blade stays where it went in); pulled back up the way it went in, it comes out",
+            duration: 4.6,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, objs, _| {
+                    let mut b = Body::rest();
+                    let Some(s) = table_sword(objs) else { return b };
+                    let above = s.at(s.grip) + Vec3::Y * 0.05;
+                    let rest = Body::rest().hands[1].pos;
+                    // Point down, the point 44 cm over the floor: then thrust (0.5 m in 0.12 s, the
+                    // point 6 cm into the floor), held, the hand pulled 15 cm right, held, back,
+                    // pulled up out.
+                    let back = Vec3::new(STAB_FLOOR_X, 1.3, 0.4);
+                    let into = back - Vec3::Y * 0.5;
+                    let dragged = into + Vec3::X * 0.15;
+                    b.hands[1].pos = keys(
+                        t,
+                        &[(0.0, rest), (0.25, above + Vec3::Y * 0.25), (0.6, above), (0.75, above), (1.3, back), (1.6, back), (1.72, into), (2.2, into), (2.7, dragged), (3.1, dragged), (3.3, into), (4.0, back + Vec3::Y * 0.05)],
+                    );
+                    let lies = hand_rot_for(&s, s.rot);
+                    b.hands[1].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.25, lies), (0.75, lies), (1.3, look_rot(Vec3::NEG_Y))]);
+                    b.hands[1].squeeze = on(t, &[(0.65, 4.6)]);
+                    b.head_rot = Quat::from_rotation_x(0.4);
+                    b
+                })
+            },
+            checks: vec![
+                check(1.5, "the sword is in the right hand", |c| ensure(c.objects.iter().any(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0), || "not held".into())),
+                check(2.1, "the thrust went into the floor and stayed", |c| ensure(c.rig.embeds >= 1, || format!("{} embeds", c.rig.embeds))),
+                check(3.0, "pulled sideways, the blade stays where it went in", |c| {
+                    let Some(s) = c.objects.iter().find(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0) else { return Err("not held".into()) };
+                    ensure((s.pos.x - STAB_FLOOR_X).abs() < 0.04, || format!("the sword moved to x {:.3} (went in at {STAB_FLOOR_X})", s.pos.x))
+                }),
+                check(4.5, "pulled up, it came out and is still in the hand", |c| {
+                    let Some(s) = c.objects.iter().find(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0) else { return Err("dropped".into()) };
+                    ensure(s.pos.y > 0.9, || format!("still in the floor: y {:.3}", s.pos.y))
+                }),
+            ],
+            captures: vec![(2.15, "stab_floor_in"), (3.0, "stab_floor_dragged"), (4.4, "stab_floor_out")],
         },
         Scenario {
             name: "spell",
@@ -1795,25 +1855,28 @@ pub fn all() -> Vec<Scenario> {
             start: Body::rest,
             settings: |_| {},
             input: || {
-                latched(|t, objs, see| {
+                latched(|t, objs, _| {
                     let mut b = Body::rest();
                     let Some(bottle) = prop_near(objs, Vec3::new(-0.55, 0.97, 0.36)) else { return b };
                     b.head_rot = Quat::from_rotation_x(0.35);
-                    // The fist's axis up the bottle, the palm against its side.
+                    // The fist's axis up the bottle, the palm against its side (the controller a
+                    // little into it: the hand stops on it).
                     let upright = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-                    let side = bottle.pos - Vec3::X * (bottle.half_extents.x + 0.03);
+                    let side = bottle.pos + Vec3::Y * (bottle.half_extents.y * 0.6) - Vec3::X * (bottle.half_extents.x - 0.01);
                     let lifted = Vec3::new(-0.08, 1.4, 0.36);
                     let rest = Body::rest().hands[0].pos;
-                    b.hands[0].pos = keys(t, &[(0.0, rest), (0.4, side + Vec3::Y * 0.25 - Vec3::X * 0.1), (0.8, side), (0.95, side), (1.4, lifted), (3.0, lifted), (3.4, rest)]);
+                    // Round its neck: over it, down beside it, then in from the side (it stands).
+                    let beside = side - Vec3::X * 0.12;
+                    b.hands[0].pos = keys(t, &[(0.0, rest), (0.2, beside + Vec3::Y * 0.3), (0.35, beside), (0.5, side - Vec3::X * 0.04), (0.75, side), (0.95, side), (1.4, lifted), (3.0, lifted), (3.4, rest)]);
                     b.hands[0].rot = upright;
                     b.hands[0].squeeze = on(t, &[(0.85, 3.0)]);
-                    // The right hand to its other side once it's up.
+                    // The right hand to its other side once it's up: over beside it, then slowly
+                    // in until the hand is on it (it rests on it rather than shoving it out of the
+                    // left hand).
                     let rest = Body::rest().hands[1].pos;
-                    let other = live(see, bottle.id).filter(|_| t > 1.5).map(|now| now.pos + Vec3::X * (bottle.half_extents.x + 0.03));
-                    b.hands[1].pos = match other {
-                        Some(p) => rest.lerp(p, ramp(t, 1.5, 2.1)),
-                        None => rest,
-                    };
+                    let held_at = lifted + Vec3::X * (bottle.half_extents.x - 0.01) - Vec3::Y * (bottle.half_extents.y * 0.6);
+                    let other = held_at + Vec3::X * (bottle.half_extents.x - 0.01);
+                    b.hands[1].pos = keys(t, &[(1.5, rest), (1.9, other + Vec3::X * 0.08), (2.15, other)]);
                     b.hands[1].rot = upright;
                     b.hands[1].squeeze = on(t, &[(2.2, 4.2)]);
                     lean_in(&mut b, t, [1.2, 1.5, 1.65, 1.8], lifted + Vec3::new(0.05, 0.08, 0.3), lifted);

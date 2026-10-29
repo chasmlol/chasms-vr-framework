@@ -85,6 +85,20 @@ pub fn grasp_curls(bones: Option<&[asset::Bone]>, joints: &[Pose; JOINT_COUNT], 
     Ok(rig::Rig::new(bones, &[])?.grasp_curls(joints, side, hand, grasp))
 }
 
+/// Each finger's segments (thumb .. little; (start, end), tracking space) of hand `side` bent to
+/// `curls`, as [`grasp_curls`] places them. For checking grasps without drawing.
+pub fn finger_segments(bones: Option<&[asset::Bone]>, joints: &[Pose; JOINT_COUNT], side: usize, hand: Pose, curls: [[f32; 3]; 5]) -> Result<[Vec<(glam::Vec3, glam::Vec3)>; 5]> {
+    let mannequin;
+    let bones = match bones {
+        Some(b) => b,
+        None => {
+            mannequin = procedural::mannequin().bones;
+            &mannequin
+        }
+    };
+    Ok(rig::Rig::new(bones, &[])?.finger_segments(joints, side, hand, curls))
+}
+
 /// Everything about the player's body for one frame (tracking space).
 pub struct AvatarFrame<'a> {
     pub joints: &'a [Pose; JOINT_COUNT],
