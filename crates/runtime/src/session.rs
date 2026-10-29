@@ -87,6 +87,8 @@ pub struct Session {
     pub settings: SettingsStore,
     pub mech: Mechanics,
     comp: Compositor,
+    /// The game's picture moved to every headset frame's eyes, by its depth (`crate::warp`).
+    warp: crate::warp::Warp,
     /// The runtime's physics world, shown instead of the game's picture (`Mechanics::framework_view`).
     physics_view: crate::physics_view::PhysicsView,
     /// Frame pacing, said every ten seconds (`crate::pacing`).
@@ -230,6 +232,7 @@ impl Session {
             spectator_capture: capture.map(|d| (d, 0.0)),
             spectator_cam: crate::spectator::SteadyCamera::default(),
             comp: Compositor::new(&gpu)?,
+            warp: crate::warp::Warp::new(&gpu)?,
             physics_view: crate::physics_view::PhysicsView::new(&gpu)?,
             pacing: crate::pacing::Pacing::new(&gpu)?,
             physics_tris: Vec::new(),
@@ -385,6 +388,7 @@ impl Session {
         if self.settings.poll() {
             tracing::info!("runtime: settings reloaded");
         }
+        self.backend.want_refresh(self.settings.current.vr.refresh_hz);
         if let Some(g) = &self.game {
             // (Drawn wider than the headset shows, and bigger to stay as sharp: `targets::render_fov`.)
             let drawn = crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan);
@@ -767,6 +771,26 @@ impl Session {
         }
 
         // ---- tell the adapter
+        // The game's picture of this frame is shown `game_lag` after it (a frame or more): it's
+        // given the head and hands where they'll be then, as the headset predicts them, so what it
+        // draws is where things are when it's seen. (What the runtime draws itself is drawn for
+        // this frame, with this frame's poses.)
+        let mut ahead = frame;
+        let lead = if self.settings.current.vr.predict && !self.opts.lockstep { self.game_lag.clamp(0.0, 0.05) } else { 0.0 };
+        if lead > 0.0005
+            && let Some(at) = self.backend.locate_at(frame.display_time_ns + (lead as f64 * 1e9) as i64)
+        {
+            ahead.hmd = at.hmd;
+            ahead.eyes = at.eyes;
+            for h in 0..2 {
+                if at.grips[h].valid != 0 {
+                    ahead.hands[h].grip = at.grips[h];
+                }
+                if at.aims[h].valid != 0 {
+                    ahead.hands[h].aim = at.aims[h];
+                }
+            }
+        }
         let mut rt = RtFrame {
             seq: 0,
             flags: RT_ACTIVE
@@ -780,12 +804,12 @@ impl Session {
             display_time_ns: frame.display_time_ns,
             dt: frame.dt,
             refresh_hz: self.backend.refresh_hz(),
-            hmd: frame.hmd,
-            eyes: frame.eyes,
+            hmd: ahead.hmd,
+            eyes: ahead.eyes,
             // Wider than the headset shows (`targets::render_fov`): its turning the picture to the
             // head as it shows it never reaches an edge that wasn't drawn.
             fov: crate::targets::render_fov(frame.fov, self.settings.current.vr.overscan),
-            hands: frame.hands,
+            hands: ahead.hands,
             tracking: out.tracking,
             intents: out.intents,
             eye_size: {
@@ -1061,13 +1085,18 @@ impl Session {
         let s = &self.settings.current;
         let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && !menu_mode && alive);
         let framework = self.mech.framework_view && self.rig_active_last;
-        // Over the game's picture, everything is drawn from the eyes the game drew it from, and
-        // submitted with them: the headset turns the whole frame for where the head is when it
-        // shows. (The runtime's own view: this headset frame's eyes.)
+        // The game's picture moved to this headset frame's eyes, by its depth (`crate::warp`), and
+        // everything drawn and submitted with them: the world where it is at every headset frame,
+        // however late the picture. Not moved, everything over the game's picture is drawn from
+        // the eyes the game drew it from, and submitted with them: the headset turns the whole
+        // frame for where the head is when it shows. (The runtime's own view: this frame's eyes.)
+        let warped = s.vr.reproject && stereo.is_some() && !framework;
         let (poses, fovs) = match &stereo {
-            Some((_, info)) if !framework => (info.eye_pose, info.fov),
+            Some((_, info)) if !framework && !warped => (info.eye_pose, info.fov),
             _ => (frame.eyes, frame.fov),
         };
+        // The headset's depth, when it takes it (written below, after each eye).
+        let headset_depth = if s.vr.headset_depth { self.backend.depth_targets(&self.gpu) } else { None };
 
         // OBS's window: over the left wrist when it's looked at (the hand empty), or pinned (F9).
         let left = {
@@ -1267,29 +1296,78 @@ impl Session {
         let body = &mut self.body;
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
+        let warp = &mut self.warp;
         let map_now = self.map_now;
         for e in 0..2 {
             let target = &eyes[e];
             let (eye, fov) = (&poses[e], &fovs[e]);
-            // Behind it: the game's picture as it drew it (and its depth, which the body hides
-            // behind), or the runtime's own view.
+            // Behind it: the game's picture as it drew it, or moved to this frame's eye (and its
+            // depth, which the body hides behind), or the runtime's own view.
             let mut background = crate::compositor::Background::Void;
             let (mut depth_srv, mut bloom_srv, mut lens_srv) = (None, None, None);
+            // The game's depth's units (game units, or metres once moved).
+            let mut depth_units = wpm;
+            let mut moved = false;
             if let (Some((slot, info)), false) = (&stereo, framework) {
-                if let Some(srv) = slot.eyes[e].srv.as_ref() {
-                    background = crate::compositor::Background::Game(srv);
+                let bloomy = info.flags & SLOT_BLOOM != 0;
+                if warped {
+                    // Each eye's picture from where it was in the world to where this eye is now:
+                    // the other eye's first (it fills this one's edges), then this eye's own.
+                    let source = |k: usize| -> Option<crate::warp::WarpSource> {
+                        let tex = &slot.eyes[k];
+                        let then = info.eye_map[k];
+                        let given = then.world_per_meter > 0.0;
+                        let then = WorldMap::from_slot(&then);
+                        let to_target = match map_now {
+                            Some(now) if given => now.matrix().inverse() * then.matrix(),
+                            _ => glam::Mat4::IDENTITY,
+                        };
+                        Some(crate::warp::WarpSource {
+                            color: tex.srv.as_ref()?,
+                            depth: (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[k].srv.as_ref())).flatten(),
+                            bloom: slot.bloom.as_ref().filter(|_| bloomy).and_then(|b| b[k].srv.as_ref()),
+                            lens: slot.lens.as_ref().filter(|_| bloomy).and_then(|l| l[k].srv.as_ref()),
+                            width: tex.width,
+                            height: tex.height,
+                            pose: info.eye_pose[k],
+                            fov: info.fov[k],
+                            to_target,
+                            metres_per_unit: 1.0 / if given { then.world_per_meter } else { wpm },
+                        })
+                    };
+                    let sources: Vec<_> = [source(e ^ 1), source(e)].into_iter().flatten().collect();
+                    if !sources.is_empty() {
+                        match warp.draw(&self.gpu, target, eye, fov, &sources).and_then(|_| warp.post(&self.gpu, target.width, target.height)) {
+                            Ok(post) => {
+                                background = crate::compositor::Background::Keep;
+                                moved = true;
+                                depth_units = 1.0;
+                                depth_srv = (info.flags & SLOT_DEPTH != 0).then_some(post.depth);
+                                if bloomy {
+                                    bloom_srv = Some(post.bloom);
+                                    lens_srv = Some(post.lens);
+                                }
+                            }
+                            Err(err) => tracing::warn!("runtime: moving the game's picture: {err:#}"),
+                        }
+                    }
                 }
-                depth_srv = (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[e].srv.clone())).flatten();
-                // The game's bloom and lens over its picture, which the hands drawn over it get too.
-                if info.flags & SLOT_BLOOM != 0 {
-                    bloom_srv = slot.bloom.as_ref().and_then(|b| b[e].srv.clone());
-                    lens_srv = slot.lens.as_ref().and_then(|l| l[e].srv.clone());
+                if !moved {
+                    if let Some(srv) = slot.eyes[e].srv.as_ref() {
+                        background = crate::compositor::Background::Game(srv);
+                    }
+                    depth_srv = (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[e].srv.clone())).flatten();
+                    // The game's bloom and lens over its picture, which the hands drawn over it get too.
+                    if bloomy {
+                        bloom_srv = slot.bloom.as_ref().and_then(|b| b[e].srv.clone());
+                        lens_srv = slot.lens.as_ref().and_then(|l| l[e].srv.clone());
+                    }
                 }
             }
-            let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: wpm, bloom: bloom_srv.as_ref(), lens: lens_srv.as_ref() });
+            let mut depth = depth_srv.as_ref().map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: depth_units, bloom: bloom_srv.as_ref(), lens: lens_srv.as_ref() });
             // What the hands hold, and what lies in the game's world placed where this eye's picture
-            // shows it (the mapping the game drew it with).
-            let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| WorldMap::from_slot(&info.eye_map[e]));
+            // shows it (the mapping the game drew it with; the mapping now, the picture moved to it).
+            let eye_map = stereo.as_ref().filter(|_| !framework && !moved).map(|(_, info)| WorldMap::from_slot(&info.eye_map[e]));
             held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
             let held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
@@ -1305,6 +1383,14 @@ impl Session {
                     tracing::warn!("combat debug view: {e:#}");
                 }
             });
+            // The headset's depth for this eye: the game's world as it shows, and the body (and
+            // what it holds) where it's nearer.
+            if let Some(d) = headset_depth.as_ref().map(|d| &d[e]) {
+                warp.headset_depth(&self.gpu, d, depth_srv.as_ref(), 1.0 / depth_units.max(1e-6));
+                if draw_body {
+                    body.draw_depth(&self.gpu, d, eye, fov, &held);
+                }
+            }
         }
         // The desktop view: the same frame from its steadied camera between the eyes.
         if let Some(target) = self.spectator.as_ref().and_then(|w| w.target()) {

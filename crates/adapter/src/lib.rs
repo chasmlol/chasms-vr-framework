@@ -266,12 +266,20 @@ impl Adapter {
     }
 
     /// Reports the game's state. Fills in the name, the texture request, the tracking state and
-    /// the frame counter.
+    /// the frame counter, and (when the game hasn't said when its clock stood there) stamps it now:
+    /// the runtime carries the player's walk and turn on from the stamp to every headset frame.
     pub fn write_state(&mut self, state: &mut GameState) {
         let Some(link) = &self.link else { return };
         set_name(&mut state.name, &self.cfg.name);
         state.request = self.cfg.request;
         state.tracking = self.tracking.state();
+        if state.time_qpc == 0 {
+            let mut now = 0i64;
+            unsafe {
+                let _ = windows::Win32::System::Performance::QueryPerformanceCounter(&mut now);
+            }
+            state.time_qpc = now;
+        }
         self.state_frame += 1;
         state.frame = self.state_frame;
         link.write_game_state(state);

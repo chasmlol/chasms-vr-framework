@@ -24,6 +24,7 @@ pub mod session;
 pub mod settings;
 pub mod spectator;
 pub mod targets;
+pub mod warp;
 pub mod locomotion;
 pub mod pacing;
 

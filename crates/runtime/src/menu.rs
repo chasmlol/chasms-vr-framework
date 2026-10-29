@@ -466,6 +466,14 @@ fn display(ui: &mut egui::Ui, s: &mut Settings) {
     slider(ui, "Resolution scale", &mut s.vr.render_scale, 0.5, 2.0, "", 2);
     slider(ui, "World scale", &mut s.vr.world_scale, 0.7, 1.4, "", 2);
     ui.checkbox(&mut s.vr.reproject, "Smooth the game's picture to every headset frame (walking and turning too)");
+    ui.checkbox(&mut s.vr.predict, "Draw the game for when its picture is shown (head and hands a frame ahead)");
+    ui.checkbox(&mut s.vr.headset_depth, "Give the headset each frame's depth");
+    ui.horizontal(|ui| {
+        ui.label("Refresh rate");
+        for (hz, name) in [(0.0, "highest"), (72.0, "72"), (90.0, "90"), (120.0, "120")] {
+            ui.radio_value(&mut s.vr.refresh_hz, hz, name);
+        }
+    });
     // (More draws more: for a wider desktop view when recording, in games that can spare it.)
     slider(ui, "Overscan: drawn past the headset's view", &mut s.vr.overscan, 0.0, 30.0, " deg", 0);
     slider(ui, "HUD distance", &mut s.ui.hud_distance, 0.6, 3.0, " m", 2);

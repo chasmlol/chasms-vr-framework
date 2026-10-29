@@ -22,13 +22,16 @@ pub struct FingerInput {
     pub touch_thumb: bool,
     /// The thumb presses a face button or the stick.
     pub thumb_press: bool,
+    /// The fingers as the headset's cameras see them (a hand tracked without its controller):
+    /// curls, thumb .. little, which an empty hand takes as they are.
+    pub tracked: Option<[f32; 5]>,
 }
 
 impl FingerInput {
     /// What a controller's trigger, grip and touch sensors say of the fingers.
     pub fn from_controller(c: &rustvr_protocol::Controller) -> Self {
         use rustvr_protocol::*;
-        let touch_thumb = c.buttons & (CTRL_TOUCH_A | CTRL_TOUCH_B | CTRL_TOUCH_STICK) != 0;
+        let touch_thumb = c.buttons & (CTRL_TOUCH_A | CTRL_TOUCH_B | CTRL_TOUCH_STICK | CTRL_TOUCH_REST) != 0;
         let thumb_press = c.buttons & (CTRL_A | CTRL_B | CTRL_STICK_CLICK) != 0;
         FingerInput {
             trigger: c.trigger,
@@ -36,7 +39,13 @@ impl FingerInput {
             touch_trigger: c.buttons & CTRL_TOUCH_TRIGGER != 0 || c.trigger > 0.02,
             touch_thumb: touch_thumb || thumb_press,
             thumb_press,
+            tracked: None,
         }
+    }
+
+    /// [`FingerInput::from_controller`], with the fingers as the headset tracks them when it does.
+    pub fn from_hand(c: &rustvr_protocol::Controller, tracked: Option<[f32; 5]>) -> Self {
+        FingerInput { tracked, ..Self::from_controller(c) }
     }
 }
 
@@ -125,6 +134,12 @@ impl FingerSolver {
     /// smoothing.
     pub fn target(input: &FingerInput, hold: HoldShape) -> ([f32; 5], f32) {
         let squeeze = unit(input.squeeze);
+        // A tracked hand's fingers are where they are (holding nothing).
+        if let (Some(t), HoldShape::None) = (input.tracked, hold) {
+            let curl = t.map(unit);
+            let open = 1.0 - (curl[1] + curl[2] + curl[3] + curl[4]) / 4.0;
+            return (curl, 0.5 * open);
+        }
         let thumb = if input.thumb_press {
             0.85
         } else if input.touch_thumb {
@@ -172,7 +187,7 @@ mod tests {
         let point = settle(&mut f, &FingerInput { squeeze: 1.0, touch_thumb: true, ..Default::default() }, HoldShape::None);
         assert!(point.curl[1] < 0.1 && point.curl[2] > 0.95 && point.curl[0] > 0.5);
         // Fist: everything pressed.
-        let fist = FingerInput { trigger: 1.0, squeeze: 1.0, touch_trigger: true, touch_thumb: true, thumb_press: true };
+        let fist = FingerInput { trigger: 1.0, squeeze: 1.0, touch_trigger: true, touch_thumb: true, thumb_press: true, tracked: None };
         let fist = settle(&mut f, &fist, HoldShape::None);
         assert!(fist.curl.iter().all(|&c| c > 0.8), "{fist:?}");
         // Thumbs up: squeeze and trigger, thumb lifted.

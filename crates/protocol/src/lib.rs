@@ -301,6 +301,8 @@ pub const CTRL_TOUCH_TRIGGER: u32 = 1 << 6;
 pub const CTRL_TOUCH_A: u32 = 1 << 7;
 pub const CTRL_TOUCH_B: u32 = 1 << 8;
 pub const CTRL_TOUCH_STICK: u32 = 1 << 9;
+/// The thumb rests on the thumbrest (Touch controllers).
+pub const CTRL_TOUCH_REST: u32 = 1 << 10;
 
 pub const HAND_LEFT: usize = 0;
 pub const HAND_RIGHT: usize = 1;

@@ -7,6 +7,11 @@
 //! D3D11 swapchains made on the app's own device, frame pacing at the headset's rate, and the
 //! submitted projection layers, which captures read back.
 //!
+//! And what a Quest 3's runtime offers besides: poses at any moment (the script played on to it, as
+//! a real runtime predicts), the Touch controllers' touch sensors, each eye's depth with its
+//! picture (`XR_KHR_composition_layer_depth`), and refresh rates to choose from
+//! (`XR_FB_display_refresh_rate`: 72, 90 and 120 Hz).
+//!
 //! Every call takes the one global lock; `xrWaitFrame` sleeps outside it.
 
 use std::collections::{HashMap, VecDeque};
@@ -56,6 +61,8 @@ pub(crate) struct Submitted {
     pub fov: xr::Fovf,
     pub swapchain: u64,
     pub rect: xr::Rect2Di,
+    /// Its depth's swapchain and near and far planes, when the app gave its depth.
+    pub depth: Option<(u64, f32, f32)>,
 }
 
 pub(crate) struct Rt {
@@ -74,6 +81,10 @@ pub(crate) struct Rt {
     control_rx: std::sync::mpsc::Receiver<Result<Control, String>>,
     last_capture_cmd: Option<String>,
     pub pose: Pose,
+    /// The frame's predicted display time and the script's time it stands for: a pose asked for at
+    /// another moment is the script's then.
+    frame_time_ns: i64,
+    frame_script_t: f64,
     /// Each hand's velocity now (stage space: metres and radians a second), from the script.
     hand_vel: [(Vec3, Vec3); 2],
     pub focused: bool,
@@ -111,7 +122,11 @@ pub(crate) struct Rt {
 enum Event {
     State(xr::SessionState),
     ProfileChanged,
+    RefreshChanged(f32, f32),
 }
+
+/// The refresh rates the emulated headset runs at (a Quest 3's).
+const REFRESH_RATES: [f32; 3] = [72.0, 90.0, 120.0];
 
 pub(crate) static RT: Mutex<Option<Rt>> = Mutex::new(None);
 
@@ -166,6 +181,8 @@ impl Rt {
             control_rx: watch_control(control_path),
             last_capture_cmd: None,
             pose: Pose::default(),
+            frame_time_ns: 0,
+            frame_script_t: 0.0,
             hand_vel: [(Vec3::ZERO, Vec3::ZERO); 2],
             focused: true,
             quit: false,
@@ -365,6 +382,29 @@ impl Rt {
         let _ = std::fs::write(self.dir.join("status.toml"), text);
     }
 
+    /// The pose at `time` (an `XrTime`): this frame's, or the script played on (or back) to then,
+    /// as a real runtime predicts a moment ahead.
+    fn pose_at(&self, time: i64) -> Pose {
+        if time == 0 || (time - self.frame_time_ns).abs() < 500_000 {
+            return self.pose;
+        }
+        let t = (self.frame_script_t + (time - self.frame_time_ns) as f64 * 1e-9).max(0.0);
+        let mut p = sample(&self.script, t);
+        if let Some(c) = &self.control {
+            p.apply(&c.head, &c.left, &c.right);
+        }
+        p
+    }
+
+    /// [`Rt::space_pose`] at `time`.
+    fn space_pose_at(&mut self, s: u64, time: i64) -> Option<(Vec3, Quat)> {
+        let now = self.pose;
+        self.pose = self.pose_at(time);
+        let p = self.space_pose(s);
+        self.pose = now;
+        p
+    }
+
     /// A space's pose in the stage, and whether it's tracked.
     fn space_pose(&self, s: u64) -> Option<(Vec3, Quat)> {
         match self.spaces.get(&s)? {
@@ -441,6 +481,13 @@ impl Rt {
             "a/click" | "x/click" => (b(hd.a), glam::Vec2::ZERO),
             "b/click" | "y/click" => (b(hd.b), glam::Vec2::ZERO),
             "menu/click" => (b(hd.menu), glam::Vec2::ZERO),
+            // The touch sensors, as a player's fingers rest: the index on the trigger once it's
+            // pulled at all, the thumb on what it presses, else on the thumbrest.
+            "trigger/touch" => (b(hd.trigger > 0.02), glam::Vec2::ZERO),
+            "a/touch" | "x/touch" => (b(hd.a), glam::Vec2::ZERO),
+            "b/touch" | "y/touch" => (b(hd.b), glam::Vec2::ZERO),
+            "thumbstick/touch" => (b(hd.stick_click || hd.stick.length() > 0.05), glam::Vec2::ZERO),
+            "thumbrest/touch" => (b(!(hd.a || hd.b || hd.stick_click || hd.stick.length() > 0.05)), glam::Vec2::ZERO),
             _ => (0.0, glam::Vec2::ZERO),
         }
     }
@@ -633,13 +680,21 @@ pub unsafe extern "system" fn get_instance_proc_addr(_instance: xr::Instance, na
         "xrApplyHapticFeedback" => apply_haptic_feedback,
         "xrStopHapticFeedback" => stop_haptic_feedback,
         "xrGetD3D11GraphicsRequirementsKHR" => get_d3d11_graphics_requirements,
+        "xrEnumerateDisplayRefreshRatesFB" => enumerate_display_refresh_rates,
+        "xrGetDisplayRefreshRateFB" => get_display_refresh_rate,
+        "xrRequestDisplayRefreshRateFB" => request_display_refresh_rate,
     };
     unsafe { *function = f };
     if f.is_some() { xr::Result::SUCCESS } else { xr::Result::ERROR_FUNCTION_UNSUPPORTED }
 }
 
 unsafe extern "system" fn enumerate_instance_extension_properties(_layer: *const c_char, cap: u32, count: *mut u32, out: *mut xr::ExtensionProperties) -> xr::Result {
-    const EXTS: [(&str, u32); 2] = [("XR_KHR_D3D11_enable", 9), ("XR_KHR_win32_convert_performance_counter_time", 1)];
+    const EXTS: [(&str, u32); 4] = [
+        ("XR_KHR_D3D11_enable", 9),
+        ("XR_KHR_win32_convert_performance_counter_time", 1),
+        ("XR_KHR_composition_layer_depth", 6),
+        ("XR_FB_display_refresh_rate", 1),
+    ];
     unsafe {
         *count = EXTS.len() as u32;
         if cap == 0 {
@@ -708,6 +763,15 @@ unsafe extern "system" fn poll_event(_instance: xr::Instance, buf: *mut xr::Even
                 Event::ProfileChanged => {
                     let ev = buf as *mut xr::EventDataInteractionProfileChanged;
                     *ev = xr::EventDataInteractionProfileChanged { ty: xr::StructureType::EVENT_DATA_INTERACTION_PROFILE_CHANGED, next: std::ptr::null(), session };
+                }
+                Event::RefreshChanged(from, to) => {
+                    let ev = buf as *mut xr::EventDataDisplayRefreshRateChangedFB;
+                    *ev = xr::EventDataDisplayRefreshRateChangedFB {
+                        ty: xr::StructureType::EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB,
+                        next: std::ptr::null(),
+                        from_display_refresh_rate: from,
+                        to_display_refresh_rate: to,
+                    };
                 }
             }
         }
@@ -821,9 +885,9 @@ unsafe extern "system" fn create_action_space(_s: xr::Session, info: *const xr::
     })
 }
 
-unsafe extern "system" fn locate_space(space: xr::Space, base: xr::Space, _time: xr::Time, loc: *mut xr::SpaceLocation) -> xr::Result {
+unsafe extern "system" fn locate_space(space: xr::Space, base: xr::Space, time: xr::Time, loc: *mut xr::SpaceLocation) -> xr::Result {
     with_rt!(r => {
-        let (a, b) = (r.space_pose(space.into_raw()), r.space_pose(base.into_raw()));
+        let (a, b) = (r.space_pose_at(space.into_raw(), time.as_nanos()), r.space_pose_at(base.into_raw(), time.as_nanos()));
         unsafe {
             match (a, b) {
                 (Some((pa, qa)), Some((pb, qb))) => {
@@ -1058,8 +1122,10 @@ unsafe extern "system" fn wait_frame(_s: xr::Session, _info: *const xr::FrameWai
             r.fps_at = Instant::now();
         }
         let render = matches!(r.session_state, xr::SessionState::VISIBLE | xr::SessionState::FOCUSED);
+        r.frame_time_ns = r.now_ns() + period.as_nanos() as i64;
+        r.frame_script_t = r.script_time();
         unsafe {
-            (*state).predicted_display_time = xr::Time::from_nanos(r.now_ns() + period.as_nanos() as i64);
+            (*state).predicted_display_time = xr::Time::from_nanos(r.frame_time_ns);
             (*state).predicted_display_period = xr::Duration::from_nanos(period.as_nanos() as i64);
             (*state).should_render = if render { xr::TRUE } else { xr::FALSE };
         }
@@ -1084,7 +1150,17 @@ unsafe extern "system" fn end_frame(_s: xr::Session, info: *const xr::FrameEndIn
             let p = base as *const xr::CompositionLayerProjection;
             for v in 0..unsafe { (*p).view_count } as usize {
                 let pv = unsafe { &*(*p).views.add(v) };
-                views.push(Submitted { pose: pv.pose, fov: pv.fov, swapchain: pv.sub_image.swapchain.into_raw(), rect: pv.sub_image.image_rect });
+                // Its depth, on the view's chain.
+                let mut depth = None;
+                let mut n = pv.next as *const xr::BaseInStructure;
+                while !n.is_null() {
+                    if unsafe { (*n).ty } == xr::StructureType::COMPOSITION_LAYER_DEPTH_INFO_KHR {
+                        let d = unsafe { &*(n as *const xr::CompositionLayerDepthInfoKHR) };
+                        depth = Some((d.sub_image.swapchain.into_raw(), d.near_z, d.far_z));
+                    }
+                    n = unsafe { (*n).next };
+                }
+                views.push(Submitted { pose: pv.pose, fov: pv.fov, swapchain: pv.sub_image.swapchain.into_raw(), rect: pv.sub_image.image_rect, depth });
             }
         }
         if !views.is_empty() {
@@ -1125,7 +1201,13 @@ unsafe extern "system" fn end_frame(_s: xr::Session, info: *const xr::FrameEndIn
 unsafe extern "system" fn locate_views(_s: xr::Session, info: *const xr::ViewLocateInfo, state: *mut xr::ViewState, cap: u32, count: *mut u32, out: *mut xr::View) -> xr::Result {
     with_rt!(r => {
         let base = unsafe { (*info).space.into_raw() };
-        let (pb, qb) = r.space_pose(base).unwrap_or((Vec3::ZERO, Quat::IDENTITY));
+        let time = unsafe { (*info).display_time.as_nanos() };
+        let (pb, qb) = r.space_pose_at(base, time).unwrap_or((Vec3::ZERO, Quat::IDENTITY));
+        // The eyes at that moment (this frame's pose kept as it is).
+        let now = r.pose;
+        r.pose = r.pose_at(time);
+        let eyes = [eye_pose(r, 0), eye_pose(r, 1)];
+        r.pose = now;
         unsafe {
             (*state).view_state_flags = xr::ViewStateFlags::POSITION_VALID | xr::ViewStateFlags::ORIENTATION_VALID | xr::ViewStateFlags::POSITION_TRACKED | xr::ViewStateFlags::ORIENTATION_TRACKED;
             *count = 2;
@@ -1136,12 +1218,40 @@ unsafe extern "system" fn locate_views(_s: xr::Session, info: *const xr::ViewLoc
                 return xr::Result::ERROR_SIZE_INSUFFICIENT;
             }
             let inv = qb.inverse();
-            for e in 0..2 {
-                let (p, q) = eye_pose(r, e);
+            for (e, (p, q)) in eyes.into_iter().enumerate() {
                 let v = &mut *out.add(e);
                 v.pose = to_xr(inv * (p - pb), (inv * q).normalize());
                 v.fov = eye_fov(&r.script, e);
             }
+        }
+        xr::Result::SUCCESS
+    })
+}
+
+unsafe extern "system" fn enumerate_display_refresh_rates(_s: xr::Session, cap: u32, count: *mut u32, out: *mut f32) -> xr::Result {
+    let mut rates = REFRESH_RATES.to_vec();
+    with_rt!(r => if !rates.contains(&r.script.refresh) {
+        rates.push(r.script.refresh);
+        rates.sort_by(f32::total_cmp);
+    });
+    unsafe { two_call(cap, count, out, &rates) }
+}
+
+unsafe extern "system" fn get_display_refresh_rate(_s: xr::Session, out: *mut f32) -> xr::Result {
+    with_rt!(r => unsafe { *out = r.script.refresh });
+    xr::Result::SUCCESS
+}
+
+unsafe extern "system" fn request_display_refresh_rate(_s: xr::Session, rate: f32) -> xr::Result {
+    with_rt!(r => {
+        if !REFRESH_RATES.contains(&rate) && rate != r.script.refresh {
+            return xr::Result::ERROR_DISPLAY_REFRESH_RATE_UNSUPPORTED_FB;
+        }
+        let from = r.script.refresh;
+        if from != rate {
+            r.script.refresh = rate;
+            r.events.push_back(Event::RefreshChanged(from, rate));
+            r.log(&format!("refresh rate {from} -> {rate} Hz"));
         }
         xr::Result::SUCCESS
     })

@@ -859,8 +859,9 @@ impl Game {
             aux_pose: it.scope_cam,
             hud_aspect: slot_hud.as_ref().map(|(_, w, h, _)| *w as f32 / *h as f32).unwrap_or(16.0 / 9.0),
             _pad: [0; 3],
-            // (The range renders every headset frame: nothing to move.)
-            eye_map: [SlotMap::default(); 2],
+            // Where the eyes were in the world as they were drawn: the runtime moves the picture
+            // on to where the head and the walking player are when it's shown.
+            eye_map: [v.slot_map(); 2],
             player_frame: 0,
             states_frame: 0,
         };

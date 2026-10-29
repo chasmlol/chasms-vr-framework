@@ -1404,7 +1404,7 @@ impl Rig {
             let curls = if h.reach_from.is_some() {
                 h.curls
             } else {
-                rustvr_ik::FingerSolver::target(&rustvr_ik::FingerInput::from_controller(&inp.frame.hands[i]), rustvr_ik::HoldShape::None).0
+                rustvr_ik::FingerSolver::target(&rustvr_ik::FingerInput::from_hand(&inp.frame.hands[i], inp.frame.fingers[i]), rustvr_ik::HoldShape::None).0
             };
             h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none() && h.valve.is_none();
             // The fingers are the hand's own collider (curled as the controller has them): what
@@ -3898,7 +3898,7 @@ impl Rig {
                 // far open as they'd be pushed (a relaxed hand's back past straight, a clenched
                 // fist's hardly).
                 let ease = 1.0 - (-dt / FINGER_EASE_TIME).exp();
-                let raw = rustvr_ik::FingerSolver::target(&rustvr_ik::FingerInput::from_controller(&inp.frame.hands[i]), rustvr_ik::HoldShape::None).0;
+                let raw = rustvr_ik::FingerSolver::target(&rustvr_ik::FingerInput::from_hand(&inp.frame.hands[i], inp.frame.fingers[i]), rustvr_ik::HoldShape::None).0;
                 let held: [f32; 5] = if h.reach_from.is_some() { std::array::from_fn(|f| h.held_curls[f] + (raw[f] - h.held_curls[f]) * ease) } else { raw };
                 h.held_curls = held;
                 h.open = std::array::from_fn(|f| (held[f] - fingers::give(held[f])).max(-fingers::BACK[f]));

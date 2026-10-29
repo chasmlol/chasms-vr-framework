@@ -1,6 +1,13 @@
 //! Real headsets through OpenXR (SteamVR, Virtual Desktop, Quest Link, WMR, Pimax...) with a D3D11
 //! session.
 //!
+//! Everything the headset offers that the player feels is used when its runtime has it: the
+//! refresh rate it runs at (`XR_FB_display_refresh_rate`), poses predicted for a later moment (what
+//! a game drawing a frame behind is given), each eye's depth with its picture
+//! (`XR_KHR_composition_layer_depth`, for the headset's own reprojection), the controllers' touch
+//! sensors (a finger off the trigger points, a thumb off the thumbrest lifts), and hands tracked by
+//! the headset's cameras (`XR_EXT_hand_tracking`: the fingers as they are, a fist grabs).
+//!
 //! OpenXR is right-handed with -Z forward; tracking space here is left-handed with +Z forward, so
 //! every pose crossing this boundary has Z mirrored: positions (x, y, -z), quaternions
 //! (-x, -y, z, w). FOV angles keep their meaning (left is still -X).
@@ -9,14 +16,19 @@ use anyhow::{Context, Result, anyhow, bail};
 use openxr as xr;
 use rustvr_gpu::Gpu;
 use rustvr_protocol::*;
+use glam::Vec3;
 use windows::Win32::Graphics::Direct3D11::{
-    D3D11_RENDER_TARGET_VIEW_DESC, D3D11_RENDER_TARGET_VIEW_DESC_0, D3D11_RTV_DIMENSION_TEXTURE2D, D3D11_TEX2D_RTV,
+    D3D11_DEPTH_STENCIL_VIEW_DESC, D3D11_DEPTH_STENCIL_VIEW_DESC_0, D3D11_DSV_DIMENSION_TEXTURE2D, D3D11_RENDER_TARGET_VIEW_DESC,
+    D3D11_RENDER_TARGET_VIEW_DESC_0, D3D11_RTV_DIMENSION_TEXTURE2D, D3D11_TEX2D_DSV, D3D11_TEX2D_RTV, ID3D11DepthStencilView,
     ID3D11RenderTargetView, ID3D11Texture2D,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_D16_UNORM, DXGI_FORMAT_D24_UNORM_S8_UINT, DXGI_FORMAT_D32_FLOAT,
+    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+};
 use windows::core::Interface;
 
-use super::{Backend, EyeTarget, HmdFrame};
+use super::{Backend, DepthTarget, EyeTarget, HmdFrame, Located};
 
 const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_STEREO;
 
@@ -32,6 +44,13 @@ struct Hands {
     b: xr::Action<bool>,
     stick_click: xr::Action<bool>,
     menu: xr::Action<bool>,
+    /// The touch sensors: the index finger on the trigger, the thumb on A / X, B / Y, the stick or
+    /// the thumbrest.
+    touch_trigger: xr::Action<bool>,
+    touch_a: xr::Action<bool>,
+    touch_b: xr::Action<bool>,
+    touch_stick: xr::Action<bool>,
+    touch_rest: xr::Action<bool>,
     haptic: xr::Action<xr::Haptic>,
     paths: [xr::Path; 2],
     grip_space: [xr::Space; 2],
@@ -44,6 +63,13 @@ struct EyeChain {
     acquired: Option<u32>,
 }
 
+/// One eye's depth images, for the headset (`XR_KHR_composition_layer_depth`).
+struct DepthChain {
+    swapchain: xr::Swapchain<xr::D3D11>,
+    images: Vec<ID3D11DepthStencilView>,
+    acquired: Option<u32>,
+}
+
 pub struct OpenXrBackend {
     _instance: xr::Instance,
     session: xr::Session<xr::D3D11>,
@@ -53,8 +79,18 @@ pub struct OpenXrBackend {
     view: xr::Space,
     hands: Hands,
     chains: Vec<EyeChain>,
+    /// Each eye's depth for the headset, when its runtime takes it.
+    depth_chains: Vec<DepthChain>,
+    /// The hands the headset's cameras track, when its runtime offers that.
+    trackers: Option<[xr::HandTracker; 2]>,
     size: (u32, u32),
+    /// The headset's refresh rate (Hz), as its runtime says (`XR_FB_display_refresh_rate`) or as
+    /// its frame period says.
     refresh: f32,
+    /// Its runtime says the refresh rate (and may change it when asked).
+    refresh_ext: bool,
+    /// What the player last asked for (Hz, 0: the highest), so it's asked once.
+    refresh_wanted: Option<f32>,
     running: bool,
     focused: bool,
     frame_state: Option<xr::FrameState>,
@@ -77,6 +113,17 @@ impl OpenXrBackend {
         let mut exts = xr::ExtensionSet::default();
         exts.khr_d3d11_enable = true;
         exts.khr_win32_convert_performance_counter_time = available.khr_win32_convert_performance_counter_time;
+        exts.khr_composition_layer_depth = available.khr_composition_layer_depth;
+        exts.fb_display_refresh_rate = available.fb_display_refresh_rate;
+        exts.ext_hand_tracking = available.ext_hand_tracking;
+        exts.ext_hand_tracking_data_source = available.ext_hand_tracking && available.ext_hand_tracking_data_source;
+        tracing::info!(
+            "openxr: headset depth {}, refresh rate control {}, hand tracking {}{}",
+            yes(exts.khr_composition_layer_depth),
+            yes(exts.fb_display_refresh_rate),
+            yes(exts.ext_hand_tracking),
+            if exts.ext_hand_tracking_data_source { " (the hands alone)" } else { "" }
+        );
         let instance = entry
             .create_instance(
                 &xr::ApplicationInfo { application_name: app_name, application_version: 1, engine_name: "RustVR", engine_version: 1, api_version: xr::Version::new(1, 0, 0) },
@@ -131,7 +178,72 @@ impl OpenXrBackend {
             }
             chains.push(EyeChain { swapchain, images, acquired: None });
         }
-        let refresh = 90.0;
+        // The headset's depth (its runtime reprojects with it): a depth format it takes, one chain
+        // an eye the size of the colour.
+        let mut depth_chains = Vec::new();
+        if instance.exts().khr_composition_layer_depth.is_some() {
+            let depth_format = [DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_D24_UNORM_S8_UINT, DXGI_FORMAT_D16_UNORM].into_iter().find(|f| formats.contains(&(f.0 as u32)));
+            match depth_format {
+                Some(df) => {
+                    for v in &views {
+                        let made = session.create_swapchain(&xr::SwapchainCreateInfo {
+                            create_flags: xr::SwapchainCreateFlags::EMPTY,
+                            usage_flags: xr::SwapchainUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                            format: df.0 as u32,
+                            sample_count: 1,
+                            width: v.recommended_image_rect_width,
+                            height: v.recommended_image_rect_height,
+                            face_count: 1,
+                            array_size: 1,
+                            mip_count: 1,
+                        });
+                        let chain = made.map_err(anyhow::Error::from).and_then(|swapchain| {
+                            let mut images = Vec::new();
+                            for raw in swapchain.enumerate_images()? {
+                                let tex = unsafe { ID3D11Texture2D::from_raw_borrowed(&raw) }.cloned().ok_or_else(|| anyhow!("null depth image"))?;
+                                images.push(dsv(&gpu, &tex, df)?);
+                            }
+                            Ok(DepthChain { swapchain, images, acquired: None })
+                        });
+                        match chain {
+                            Ok(c) => depth_chains.push(c),
+                            Err(e) => {
+                                tracing::warn!("openxr: no depth for the headset: {e:#}");
+                                depth_chains.clear();
+                                break;
+                            }
+                        }
+                    }
+                    if !depth_chains.is_empty() {
+                        tracing::info!("openxr: each eye's depth goes to the headset ({df:?})");
+                    }
+                }
+                None => tracing::info!("openxr: the runtime takes depth but no depth format we write"),
+            }
+        }
+        // The rate it runs at: its runtime's word, else (until frames say) 90.
+        let refresh_ext = instance.exts().fb_display_refresh_rate.is_some();
+        let refresh = if refresh_ext {
+            match session.enumerate_display_refresh_rates() {
+                Ok(rates) => tracing::info!("openxr: refresh rates {rates:?}"),
+                Err(e) => tracing::info!("openxr: refresh rates: {e}"),
+            }
+            session.get_display_refresh_rate().ok().filter(|r| *r > 20.0).unwrap_or(90.0)
+        } else {
+            90.0
+        };
+        tracing::info!("openxr: {refresh:.0} Hz");
+        let trackers = if instance.exts().ext_hand_tracking.is_some() {
+            match hand_trackers(&instance, &session) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::info!("openxr: no hand tracking: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         tracing::info!("openxr: {}x{} per eye, swapchain format {:?}", size.0, size.1, format);
         let to_qpc = instance.exts().khr_win32_convert_performance_counter_time.map(|e| e.convert_time_to_win32_performance_counter);
         if to_qpc.is_none() {
@@ -147,8 +259,12 @@ impl OpenXrBackend {
                 view,
                 hands,
                 chains,
+                depth_chains,
+                trackers,
                 size,
                 refresh,
+                refresh_ext,
+                refresh_wanted: None,
                 running: false,
                 focused: false,
                 frame_state: None,
@@ -203,6 +319,13 @@ impl OpenXrBackend {
                     }
                 }
                 xr::Event::InstanceLossPending(_) => bail!("the OpenXR runtime is shutting down"),
+                xr::Event::DisplayRefreshRateChangedFB(e) => {
+                    let (from, to) = (e.from_display_refresh_rate(), e.to_display_refresh_rate());
+                    tracing::info!("openxr: refresh rate {from:.0} -> {to:.0} Hz");
+                    if to > 20.0 {
+                        self.refresh = to;
+                    }
+                }
                 _ => {}
             }
         }
@@ -238,6 +361,11 @@ impl OpenXrBackend {
         bit(&hd.b, CTRL_B)?;
         bit(&hd.stick_click, CTRL_STICK_CLICK)?;
         bit(&hd.menu, CTRL_MENU)?;
+        bit(&hd.touch_trigger, CTRL_TOUCH_TRIGGER)?;
+        bit(&hd.touch_a, CTRL_TOUCH_A)?;
+        bit(&hd.touch_b, CTRL_TOUCH_B)?;
+        bit(&hd.touch_stick, CTRL_TOUCH_STICK)?;
+        bit(&hd.touch_rest, CTRL_TOUCH_REST)?;
         if c.trigger > 0.85 {
             b |= CTRL_TRIGGER_CLICK;
         }
@@ -271,6 +399,15 @@ impl Backend for OpenXrBackend {
         let state = self.waiter.wait()?;
         self.stream.begin()?;
         let time = state.predicted_display_time;
+        // Without its runtime's word on the rate, the frame period says it.
+        let period = state.predicted_display_period.as_nanos();
+        if !self.refresh_ext && (4_000_000..20_000_000).contains(&period) {
+            let hz = 1e9 / period as f32;
+            if (hz - self.refresh).abs() > 0.5 {
+                tracing::info!("openxr: {hz:.0} Hz (by the frame period)");
+                self.refresh = hz;
+            }
+        }
         if !state.should_render {
             // Every begun frame must be ended, even when there's nothing to show.
             self.stream.end(time, xr::EnvironmentBlendMode::OPAQUE, &[])?;
@@ -304,7 +441,97 @@ impl Backend for OpenXrBackend {
         for h in 0..2 {
             f.hands[h] = self.controller(h, time).unwrap_or_default();
         }
+        // Hands the cameras track: the fingers as they are, and a fist grabs (the runtime makes
+        // a pinch the trigger itself).
+        if let Some(trackers) = &self.trackers {
+            for h in 0..2 {
+                let Ok(Some(joints)) = self.stage.locate_hand_joints(&trackers[h], time) else { continue };
+                let tracked = |j: &xr::HandJointLocation| j.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID);
+                if !joints.iter().all(tracked) {
+                    continue;
+                }
+                let curls = finger_curls(&joints.map(|j| Vec3::new(j.pose.position.x, j.pose.position.y, j.pose.position.z)));
+                f.fingers[h] = Some(curls);
+                let c = &mut f.hands[h];
+                c.squeeze = c.squeeze.max(fist(&curls));
+                if c.squeeze > 0.75 {
+                    c.buttons |= CTRL_SQUEEZE_CLICK;
+                }
+            }
+        }
         Ok(Some(f))
+    }
+
+    fn locate_at(&mut self, time_ns: i64) -> Option<Located> {
+        if !self.running {
+            return None;
+        }
+        let time = xr::Time::from_nanos(time_ns);
+        let (flags, views) = self.session.locate_views(VIEW_TYPE, time, &self.stage).ok()?;
+        let valid = flags.contains(xr::ViewStateFlags::POSITION_VALID | xr::ViewStateFlags::ORIENTATION_VALID);
+        if !valid || views.len() < 2 {
+            return None;
+        }
+        let head = self.view.locate(&self.stage, time).ok()?;
+        let mut l = Located { hmd: from_xr(&head.pose, true), ..Default::default() };
+        for e in 0..2 {
+            l.eyes[e] = from_xr(&views[e].pose, true);
+        }
+        let ok = |s: &xr::SpaceLocation| s.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID);
+        for h in 0..2 {
+            if let Ok(g) = self.hands.grip_space[h].locate(&self.stage, time) {
+                l.grips[h] = from_xr(&g.pose, ok(&g));
+            }
+            if let Ok(a) = self.hands.aim_space[h].locate(&self.stage, time) {
+                l.aims[h] = from_xr(&a.pose, ok(&a));
+            }
+        }
+        Some(l)
+    }
+
+    fn depth_targets(&mut self, _gpu: &Gpu) -> Option<[DepthTarget; 2]> {
+        if self.depth_chains.len() != 2 || !self.began {
+            return None;
+        }
+        let mut out = Vec::new();
+        for c in &mut self.depth_chains {
+            let i = match c.acquired {
+                Some(i) => i,
+                None => {
+                    let i = c.swapchain.acquire_image().ok()?;
+                    c.swapchain.wait_image(xr::Duration::INFINITE).ok()?;
+                    c.acquired = Some(i);
+                    i
+                }
+            };
+            out.push(DepthTarget { dsv: c.images[i as usize].clone(), width: self.size.0, height: self.size.1 });
+        }
+        let mut it = out.into_iter();
+        Some([it.next()?, it.next()?])
+    }
+
+    fn want_refresh(&mut self, hz: f32) {
+        if !self.refresh_ext || !self.running || self.refresh_wanted == Some(hz) {
+            return;
+        }
+        self.refresh_wanted = Some(hz);
+        let rates = self.session.enumerate_display_refresh_rates().unwrap_or_default();
+        let pick = if hz > 0.0 {
+            rates.iter().copied().min_by(|a, b| (a - hz).abs().total_cmp(&(b - hz).abs()))
+        } else {
+            rates.iter().copied().max_by(f32::total_cmp)
+        };
+        let Some(rate) = pick else { return };
+        match self.session.request_display_refresh_rate(rate) {
+            Ok(()) => tracing::info!("openxr: asked for {rate:.0} Hz (of {rates:?})"),
+            // (Virtual Desktop keeps the rate its own settings have: 72 to 120 there.)
+            Err(e) => tracing::info!("openxr: {rate:.0} Hz refused ({e}); the headset's own settings choose its rate"),
+        }
+        if let Ok(r) = self.session.get_display_refresh_rate()
+            && r > 20.0
+        {
+            self.refresh = r;
+        }
     }
 
     fn eye_targets(&mut self, _gpu: &Gpu) -> Result<[EyeTarget; 2]> {
@@ -339,6 +566,13 @@ impl Backend for OpenXrBackend {
                 rendered = true;
             }
         }
+        let mut depth = 0;
+        for c in &mut self.depth_chains {
+            if c.acquired.take().is_some() {
+                c.swapchain.release_image()?;
+                depth += 1;
+            }
+        }
         if !rendered || !state.should_render {
             self.stream.end(state.predicted_display_time, xr::EnvironmentBlendMode::OPAQUE, &[])?;
             return Ok(());
@@ -347,9 +581,25 @@ impl Backend for OpenXrBackend {
             offset: xr::Offset2Di { x: 0, y: 0 },
             extent: xr::Extent2Di { width: self.size.0 as i32, height: self.size.1 as i32 },
         };
+        // Each eye's depth with it (as the compositor's projection keeps it: near at 0, far at 1).
+        let depth_infos: Vec<xr::sys::CompositionLayerDepthInfoKHR> = if depth == 2 {
+            (0..2)
+                .map(|e| xr::sys::CompositionLayerDepthInfoKHR {
+                    ty: xr::sys::CompositionLayerDepthInfoKHR::TYPE,
+                    next: std::ptr::null(),
+                    sub_image: xr::sys::SwapchainSubImage { swapchain: self.depth_chains[e].swapchain.as_raw(), image_rect: rect, image_array_index: 0 },
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                    near_z: crate::compositor::NEAR,
+                    far_z: crate::compositor::FAR,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let views: Vec<xr::CompositionLayerProjectionView<xr::D3D11>> = (0..2)
             .map(|e| {
-                xr::CompositionLayerProjectionView::new()
+                let v = xr::CompositionLayerProjectionView::new()
                     .pose(to_xr(&poses[e]))
                     .fov(xr::Fovf {
                         angle_left: fov[e].left.atan(),
@@ -357,7 +607,16 @@ impl Backend for OpenXrBackend {
                         angle_up: fov[e].up.atan(),
                         angle_down: fov[e].down.atan(),
                     })
-                    .sub_image(xr::SwapchainSubImage::new().swapchain(&self.chains[e].swapchain).image_array_index(0).image_rect(rect))
+                    .sub_image(xr::SwapchainSubImage::new().swapchain(&self.chains[e].swapchain).image_array_index(0).image_rect(rect));
+                match depth_infos.get(e) {
+                    Some(d) => {
+                        let mut raw = v.into_raw();
+                        raw.next = d as *const xr::sys::CompositionLayerDepthInfoKHR as *const _;
+                        // (`depth_infos` outlives the frame's end below.)
+                        unsafe { xr::CompositionLayerProjectionView::from_raw(raw) }
+                    }
+                    None => v,
+                }
             })
             .collect();
         let layer = xr::CompositionLayerProjection::new().space(&self.stage).views(&views);
@@ -386,6 +645,11 @@ fn create_actions(instance: &xr::Instance, session: &xr::Session<xr::D3D11>) -> 
     let b = set.create_action::<bool>("button_b", "B / Y", &paths)?;
     let stick_click = set.create_action::<bool>("thumbstick_click", "Thumbstick click", &paths)?;
     let menu = set.create_action::<bool>("menu", "Menu", &paths)?;
+    let touch_trigger = set.create_action::<bool>("touch_trigger", "Finger on the trigger", &paths)?;
+    let touch_a = set.create_action::<bool>("touch_a", "Thumb on A / X", &paths)?;
+    let touch_b = set.create_action::<bool>("touch_b", "Thumb on B / Y", &paths)?;
+    let touch_stick = set.create_action::<bool>("touch_thumbstick", "Thumb on the thumbstick", &paths)?;
+    let touch_rest = set.create_action::<bool>("touch_thumbrest", "Thumb on the thumbrest", &paths)?;
     let haptic = set.create_action::<xr::Haptic>("haptic", "Vibration", &paths)?;
 
     // Suggested bindings for the common controllers, as (input, action) per hand. Players can
@@ -401,6 +665,11 @@ fn create_actions(instance: &xr::Instance, session: &xr::Session<xr::D3D11>) -> 
         StickClick,
         Menu,
         Haptic,
+        TouchTrigger,
+        TouchA,
+        TouchB,
+        TouchStick,
+        TouchRest,
     }
     use Act::*;
     let common: &[(&str, Act)] = &[
@@ -413,15 +682,58 @@ fn create_actions(instance: &xr::Instance, session: &xr::Session<xr::D3D11>) -> 
         (
             "/interaction_profiles/oculus/touch_controller",
             [
-                &[("input/squeeze/value", Squeeze), ("input/thumbstick", Stick), ("input/thumbstick/click", StickClick), ("input/x/click", A), ("input/y/click", B), ("input/menu/click", Menu)],
-                &[("input/squeeze/value", Squeeze), ("input/thumbstick", Stick), ("input/thumbstick/click", StickClick), ("input/a/click", A), ("input/b/click", B)],
+                &[
+                    ("input/squeeze/value", Squeeze),
+                    ("input/thumbstick", Stick),
+                    ("input/thumbstick/click", StickClick),
+                    ("input/x/click", A),
+                    ("input/y/click", B),
+                    ("input/menu/click", Menu),
+                    ("input/trigger/touch", TouchTrigger),
+                    ("input/x/touch", TouchA),
+                    ("input/y/touch", TouchB),
+                    ("input/thumbstick/touch", TouchStick),
+                    ("input/thumbrest/touch", TouchRest),
+                ],
+                &[
+                    ("input/squeeze/value", Squeeze),
+                    ("input/thumbstick", Stick),
+                    ("input/thumbstick/click", StickClick),
+                    ("input/a/click", A),
+                    ("input/b/click", B),
+                    ("input/trigger/touch", TouchTrigger),
+                    ("input/a/touch", TouchA),
+                    ("input/b/touch", TouchB),
+                    ("input/thumbstick/touch", TouchStick),
+                    ("input/thumbrest/touch", TouchRest),
+                ],
             ],
         ),
         (
             "/interaction_profiles/valve/index_controller",
             [
-                &[("input/squeeze/value", Squeeze), ("input/thumbstick", Stick), ("input/thumbstick/click", StickClick), ("input/a/click", A), ("input/b/click", B)],
-                &[("input/squeeze/value", Squeeze), ("input/thumbstick", Stick), ("input/thumbstick/click", StickClick), ("input/a/click", A), ("input/b/click", B)],
+                &[
+                    ("input/squeeze/value", Squeeze),
+                    ("input/thumbstick", Stick),
+                    ("input/thumbstick/click", StickClick),
+                    ("input/a/click", A),
+                    ("input/b/click", B),
+                    ("input/trigger/touch", TouchTrigger),
+                    ("input/a/touch", TouchA),
+                    ("input/b/touch", TouchB),
+                    ("input/thumbstick/touch", TouchStick),
+                ],
+                &[
+                    ("input/squeeze/value", Squeeze),
+                    ("input/thumbstick", Stick),
+                    ("input/thumbstick/click", StickClick),
+                    ("input/a/click", A),
+                    ("input/b/click", B),
+                    ("input/trigger/touch", TouchTrigger),
+                    ("input/a/touch", TouchA),
+                    ("input/b/touch", TouchB),
+                    ("input/thumbstick/touch", TouchStick),
+                ],
             ],
         ),
         (
@@ -455,6 +767,11 @@ fn create_actions(instance: &xr::Instance, session: &xr::Session<xr::D3D11>) -> 
                     StickClick => xr::Binding::new(&stick_click, path),
                     Menu => xr::Binding::new(&menu, path),
                     Haptic => xr::Binding::new(&haptic, path),
+                    TouchTrigger => xr::Binding::new(&touch_trigger, path),
+                    TouchA => xr::Binding::new(&touch_a, path),
+                    TouchB => xr::Binding::new(&touch_b, path),
+                    TouchStick => xr::Binding::new(&touch_stick, path),
+                    TouchRest => xr::Binding::new(&touch_rest, path),
                 });
             }
         }
@@ -468,7 +785,96 @@ fn create_actions(instance: &xr::Instance, session: &xr::Session<xr::D3D11>) -> 
         grip.create_space(session, paths[1], xr::Posef::IDENTITY)?,
     ];
     let aim_space = [aim.create_space(session, paths[0], xr::Posef::IDENTITY)?, aim.create_space(session, paths[1], xr::Posef::IDENTITY)?];
-    Ok(Hands { set, grip, _aim: aim, trigger, squeeze, stick, a, b, stick_click, menu, haptic, paths, grip_space, aim_space })
+    Ok(Hands {
+        set,
+        grip,
+        _aim: aim,
+        trigger,
+        squeeze,
+        stick,
+        a,
+        b,
+        stick_click,
+        menu,
+        touch_trigger,
+        touch_a,
+        touch_b,
+        touch_stick,
+        touch_rest,
+        haptic,
+        paths,
+        grip_space,
+        aim_space,
+    })
+}
+
+/// One tracker for each hand. Where the runtime can tell, only the hands themselves (not hands it
+/// makes up from controllers): a controller in the hand drives the fingers by its own sensors.
+fn hand_trackers(instance: &xr::Instance, session: &xr::Session<xr::D3D11>) -> Result<[xr::HandTracker; 2]> {
+    let fp = instance.exts().ext_hand_tracking.as_ref().ok_or_else(|| anyhow!("no XR_EXT_hand_tracking"))?;
+    let alone = instance.exts().ext_hand_tracking_data_source.is_some();
+    let make = |hand: xr::Hand| -> Result<xr::HandTracker> {
+        let mut sources = [xr::sys::HandTrackingDataSourceEXT::UNOBSTRUCTED];
+        let source = xr::sys::HandTrackingDataSourceInfoEXT {
+            ty: xr::sys::HandTrackingDataSourceInfoEXT::TYPE,
+            next: std::ptr::null(),
+            requested_data_source_count: 1,
+            requested_data_sources: sources.as_mut_ptr(),
+        };
+        let info = xr::sys::HandTrackerCreateInfoEXT {
+            ty: xr::sys::HandTrackerCreateInfoEXT::TYPE,
+            next: if alone { &source as *const _ as *const _ } else { std::ptr::null() },
+            hand,
+            hand_joint_set: xr::sys::HandJointSetEXT::DEFAULT,
+        };
+        let mut out = <xr::sys::HandTrackerEXT as xr::sys::Handle>::NULL;
+        let r = unsafe { (fp.create_hand_tracker)(session.as_raw(), &info, &mut out) };
+        if r != xr::sys::Result::SUCCESS {
+            bail!("creating a hand tracker: {r:?}");
+        }
+        Ok(unsafe { xr::HandTracker::from_raw(session, out) })
+    };
+    Ok([make(xr::Hand::LEFT)?, make(xr::Hand::RIGHT)?])
+}
+
+/// How far each finger is closed (thumb .. little, 0 straight to 1 closed) from a tracked hand's
+/// joint positions (OpenXR's 26: palm, wrist, then each finger base to tip): the bend along the
+/// finger, joint by joint, against a closed finger's.
+fn finger_curls(j: &[Vec3; 26]) -> [f32; 5] {
+    // (Each finger's joints, base to tip, and how much a closed one bends in all, est.: the thumb
+    // across the palm, the others into a fist.)
+    const FINGERS: [(&[usize], f32); 5] = [(&[2, 3, 4, 5], 1.0), (&[6, 7, 8, 9, 10], 4.0), (&[11, 12, 13, 14, 15], 4.0), (&[16, 17, 18, 19, 20], 4.0), (&[21, 22, 23, 24, 25], 4.0)];
+    FINGERS.map(|(chain, closed)| {
+        let mut bend = 0.0;
+        for k in 0..chain.len() - 2 {
+            let a = (j[chain[k + 1]] - j[chain[k]]).normalize_or_zero();
+            let b = (j[chain[k + 2]] - j[chain[k + 1]]).normalize_or_zero();
+            bend += a.dot(b).clamp(-1.0, 1.0).acos();
+        }
+        (bend / closed).clamp(0.0, 1.0)
+    })
+}
+
+/// A tracked hand's grab: the middle, ring and little fingers closed (a fist), 0 to 1.
+fn fist(curls: &[f32; 5]) -> f32 {
+    let closed = (curls[2] + curls[3] + curls[4]) / 3.0;
+    ((closed - 0.45) / 0.35).clamp(0.0, 1.0)
+}
+
+fn yes(b: bool) -> &'static str {
+    if b { "yes" } else { "no" }
+}
+
+fn dsv(gpu: &Gpu, tex: &ID3D11Texture2D, format: DXGI_FORMAT) -> Result<ID3D11DepthStencilView> {
+    let desc = D3D11_DEPTH_STENCIL_VIEW_DESC {
+        Format: format,
+        ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
+        Flags: 0,
+        Anonymous: D3D11_DEPTH_STENCIL_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_DSV { MipSlice: 0 } },
+    };
+    let mut v = None;
+    unsafe { gpu.device.CreateDepthStencilView(tex, Some(&desc), Some(&mut v))? };
+    v.ok_or_else(|| anyhow!("no depth stencil view"))
 }
 
 fn rtv(gpu: &Gpu, tex: &ID3D11Texture2D, format: DXGI_FORMAT) -> Result<ID3D11RenderTargetView> {
@@ -499,7 +905,37 @@ pub fn to_xr(p: &Pose) -> xr::Posef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::{Quat, Vec3};
+    use glam::Quat;
+
+    /// A hand laid out flat (fingers straight along -Z), then each finger bent `angle` at each of
+    /// its joints.
+    fn hand(angle: [f32; 5]) -> [Vec3; 26] {
+        let mut j = [Vec3::ZERO; 26];
+        let chains: [&[usize]; 5] = [&[2, 3, 4, 5], &[6, 7, 8, 9, 10], &[11, 12, 13, 14, 15], &[16, 17, 18, 19, 20], &[21, 22, 23, 24, 25]];
+        for (f, chain) in chains.iter().enumerate() {
+            let mut p = Vec3::new(f as f32 * 0.02, 0.0, 0.0);
+            let mut dir = Vec3::NEG_Z;
+            for (k, &i) in chain.iter().enumerate() {
+                j[i] = p;
+                if k > 0 {
+                    dir = Quat::from_rotation_x(-angle[f]) * dir;
+                }
+                p += dir * 0.03;
+            }
+        }
+        j
+    }
+
+    #[test]
+    fn tracked_fingers_read_open_and_closed() {
+        let open = finger_curls(&hand([0.0; 5]));
+        assert!(open.iter().all(|c| *c < 0.02), "a flat hand is open: {open:?}");
+        let fist_hand = finger_curls(&hand([0.55, 1.4, 1.4, 1.4, 1.4]));
+        assert!(fist_hand[1..].iter().all(|c| *c > 0.9), "a fist is closed: {fist_hand:?}");
+        assert!(fist(&fist_hand) > 0.99 && fist(&open) == 0.0, "a fist grabs, an open hand doesn't");
+        let point = finger_curls(&hand([0.4, 0.0, 1.4, 1.4, 1.4]));
+        assert!(point[1] < 0.05 && point[2] > 0.9, "pointing: {point:?}");
+    }
 
     #[test]
     fn mirroring_keeps_meaning() {

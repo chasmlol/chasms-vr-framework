@@ -5,6 +5,7 @@
 //! compositor does. A wrong pose or field of view in the submission shows up here exactly as it
 //! would in the headset (a shifted, stretched or cut-off picture; dark grey where the layer has
 //! nothing). `<name>_raw.png` is the submitted images as they are, and `<name>.toml` the numbers.
+//! With the app's depth for the headset, `<name>_depth.png` is it (white near, black 10 m and on).
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -76,6 +77,47 @@ fn read_back(r: &Rt, swapchain: u64, rect: &xr::Rect2Di) -> Result<Image> {
             p[3] = 255;
         }
         Ok(Image { w, h, px })
+    }
+}
+
+/// A depth image the app gave with its picture, read back as metres along the view (`near` and
+/// `far`: its projection's planes, depth 0 at near and 1 at far as D3D keeps it).
+fn read_depth(r: &Rt, swapchain: u64, near: f32, far: f32) -> Result<(u32, u32, Vec<f32>)> {
+    let c = r.chains.get(&swapchain).context("the depth's swapchain is gone")?;
+    let i = c.last_released.context("the depth's swapchain has no released image")?;
+    let tex = &c.images[i as usize];
+    let device = r.device.as_ref().context("no device")?;
+    let format = DXGI_FORMAT(c.format as i32);
+    if format != DXGI_FORMAT_D32_FLOAT {
+        bail!("can't read depth format {}", c.format);
+    }
+    unsafe {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: c.width,
+            Height: c.height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R32_TYPELESS,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
+        };
+        let mut staging = None;
+        device.CreateTexture2D(&desc, None, Some(&mut staging))?;
+        let staging = staging.context("staging texture")?;
+        let ctx = device.GetImmediateContext()?;
+        ctx.CopyResource(&staging, tex);
+        let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+        ctx.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
+        let mut out = Vec::with_capacity((c.width * c.height) as usize);
+        for y in 0..c.height {
+            let row = std::slice::from_raw_parts((m.pData as *const u8).add((y * m.RowPitch) as usize) as *const f32, c.width as usize);
+            out.extend(row.iter().map(|&d| if d >= 1.0 { f32::INFINITY } else { near / (1.0 - d * (far - near) / far).max(1e-6) }));
+        }
+        ctx.Unmap(&staging, 0);
+        Ok((c.width, c.height, out))
     }
 }
 
@@ -411,11 +453,13 @@ pub(crate) fn save(r: &mut Rt, name: &str) -> Result<PathBuf> {
     let path = dir.join(format!("{name}.png"));
     let width = r.script.capture_width.max(64);
     let mut info = format!(
-        "time = {:.3}\nframes = {}\nfocused = {}\nlayers = {}\nhead = {{ pos = {:?}, yaw = {}, pitch = {} }}\n",
+        "time = {:.3}\nframes = {}\nfocused = {}\nlayers = {}\nrefresh = {}\ndepth = {}\nhead = {{ pos = {:?}, yaw = {}, pitch = {} }}\n",
         r.script_time(),
         r.frames,
         r.focused,
         r.last_layer_count,
+        r.script.refresh,
+        r.last_layers.iter().all(|l| l.depth.is_some()) && !r.last_layers.is_empty(),
         r.pose.head.pos.to_array(),
         r.pose.head.yaw,
         r.pose.head.pitch
@@ -435,7 +479,33 @@ pub(crate) fn save(r: &mut Rt, name: &str) -> Result<PathBuf> {
     rustvr_gpu::save_png(&path, both.w, both.h, &both.px)?;
     let raw_both = side_by_side(&shrink(&raw[0], width), &shrink(&raw[1], width));
     rustvr_gpu::save_png(&dir.join(format!("{name}_raw.png")), raw_both.w, raw_both.h, &raw_both.px)?;
+    // The depth the headset got with each eye, side by side.
+    let mut centre_depth = [None; 2];
+    let depths: Vec<_> = layers.iter().take(2).filter_map(|l| l.depth).map(|(sc, n, f)| read_depth(r, sc, n, f)).collect();
+    if depths.len() == 2 {
+        let mut imgs = Vec::new();
+        for (e, d) in depths.into_iter().enumerate() {
+            match d {
+                Ok((w, h, z)) => {
+                    centre_depth[e] = Some(z[(h / 2 * w + w / 2) as usize]);
+                    let px = z.iter().flat_map(|&m| {
+                        let v = ((1.0 - m / 10.0).clamp(0.0, 1.0) * 255.0) as u8;
+                        [v, v, v, 255]
+                    });
+                    imgs.push(Image { w, h, px: px.collect() });
+                }
+                Err(e) => info.push_str(&format!("depth_note = \"{e:#}\"\n")),
+            }
+        }
+        if imgs.len() == 2 {
+            let both = side_by_side(&shrink(&imgs[0], width), &shrink(&imgs[1], width));
+            rustvr_gpu::save_png(&dir.join(format!("{name}_depth.png")), both.w, both.h, &both.px)?;
+        }
+    }
     for (e, l) in layers.iter().take(2).enumerate() {
+        if let Some(z) = centre_depth[e] {
+            info.push_str(&format!("[eye{e}_depth]\ncentre_m = {}\n", if z.is_finite() { format!("{z:.3}") } else { "\"far\"".into() }));
+        }
         let f = eye_fov(&r.script, e);
         info.push_str(&format!(
             "[eye{e}]\nlayer_fov = [{:.2}, {:.2}, {:.2}, {:.2}]\nheadset_fov = [{:.2}, {:.2}, {:.2}, {:.2}]\nlayer_pos = [{:.3}, {:.3}, {:.3}]\nimage = [{}, {}]\n",

@@ -270,7 +270,7 @@ impl PlayerBody {
                 holding: rig.map(|h| h.holding).unwrap_or(0),
                 _pad: [0; 2],
             };
-            let fi = FingerInput::from_controller(c);
+            let fi = FingerInput::from_hand(c, f.fingers[i]);
             body.fingers[i] = self.fingers[i].update(f.dt.clamp(1e-4, 0.1), &fi, inp.holds[i]);
             // Pressed on something, the fingers are pushed open (and the hand spreads a little).
             let give = inp.finger_give[i];
@@ -410,6 +410,29 @@ impl PlayerBody {
         let special = self.special.as_deref_mut().map(|f| f as &mut dyn FnMut(&rustvr_avatar::SpecialDraw));
         if let Err(e) = avatar.draw_with(gpu, &target.rtv, target.width, target.height, eye, fov, &frame, depth, true, holding, special) {
             tracing::warn!("runtime: drawing the avatar: {e:#}");
+        }
+    }
+
+    /// The body's depth (and what it holds), as [`Body::draw`] last drew it from `eye`, into the
+    /// headset's depth for that eye where it's nearer (the compositor's projection).
+    pub fn draw_depth(&mut self, gpu: &Gpu, target: &crate::backend::DepthTarget, eye: &Pose, fov: &Fov, holding: &[rustvr_avatar::HeldDraw]) {
+        let body = self.body;
+        let Some(avatar) = self.avatar.as_mut() else { return };
+        let frame = AvatarFrame {
+            joints: &body.joints,
+            fingers: body.fingers,
+            hands: body.hands,
+            ghosts: self.ghosts,
+            held: self.held,
+            grasp: [self.grasp[0].as_ref(), self.grasp[1].as_ref()],
+            visibility: body.visibility,
+            light: LightHint::default(),
+            first_person: true,
+            plain: self.plain,
+        };
+        let proj = crate::compositor::projection(fov);
+        if let Err(e) = avatar.draw_game_depth(gpu, &target.dsv, target.width, target.height, eye, fov, proj, &frame, holding) {
+            tracing::warn!("runtime: the body's depth for the headset: {e:#}");
         }
     }
 }
