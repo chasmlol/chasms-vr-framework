@@ -524,7 +524,6 @@ impl Gore {
             Some(&(a, b, kind)) => {
                 let (s, _) = crate::combat::closest_segments(a, b, point, point);
                 let len = a.distance(b).max(1e-3);
-                let on = a.lerp(b, s);
                 if kind == DMG_PIERCE {
                     // From the point back as deep as it went.
                     let back = (a - b).normalize_or_zero();
@@ -534,12 +533,17 @@ impl Gore {
                     }
                 } else {
                     // Along the edge as far as the body it went through, either side of where it
-                    // met (a blade is bloodied as far as it went in).
+                    // met (a blade is bloodied as far as it went in), but only on the
+                    // blade: a band that would run past its point or its hilt stops there, or the
+                    // blood past the point drips from nothing.
                     let along = (b - a) / len;
                     let n = ((depth * 2.0 / 0.025) as usize).clamp(3, 10);
-                    for j in 0..n {
-                        let off = (j as f32 - (n as f32 - 1.0) * 0.5) * 0.025;
-                        add(on + along * off, 0.03 + 0.012 * s.min(1.0));
+                    let half = (n as f32 - 1.0) * 0.5 * 0.025;
+                    let (lo, hi) = ((s * len - half).max(0.0), (s * len + half).min(len));
+                    let m = (((hi - lo) / 0.025).round() as usize + 1).clamp(1, n);
+                    for j in 0..m {
+                        let at = if m > 1 { lo + (hi - lo) * j as f32 / (m - 1) as f32 } else { s * len };
+                        add(a + along * at, 0.03 + 0.012 * s.min(1.0));
                     }
                 }
             }
@@ -764,11 +768,14 @@ impl Gore {
                 on_body.push((i, on));
                 continue;
             }
-            if let Some(&(id, ..)) = held.iter().find(|(_, a, b)| {
-                let (s, _) = crate::combat::closest_segments(*a, *b, d.pos, d.pos);
-                a.lerp(*b, s).distance(d.pos) < 0.02
+            // (Where it meets the blade, on the blade: the blood a drop leaves there drips from
+            // there.)
+            if let Some((id, on)) = held.iter().find_map(|&(id, a, b)| {
+                let (s, _) = crate::combat::closest_segments(a, b, d.pos, d.pos);
+                let on = a.lerp(b, s);
+                (on.distance(d.pos) < 0.02).then_some((id, on))
             }) {
-                on_blade.push((i, id));
+                on_blade.push((i, id, on));
             }
         }
         // Probes against the world, in turn.
@@ -818,7 +825,7 @@ impl Gore {
                 self.splat_body(inp, on, inp.map.inv_point(d.pos), (d.size * 7.0).clamp(0.012, 0.04), -d.vel.normalize_or(Vec3::Y), now);
             }
         }
-        for &(i, id) in &on_blade {
+        for &(i, id, on) in &on_blade {
             if gone[i] {
                 continue;
             }
@@ -826,7 +833,7 @@ impl Gore {
             gone[i] = true;
             if let (true, Some((wp, wq))) = (self.liquid(d.blood), rig.swing_pose(id)) {
                 let inv = wq.inverse();
-                let at = inv * (d.pos - wp);
+                let at = inv * (on - wp);
                 let r = (d.size * 5.0).clamp(0.008, 0.02);
                 let list = self.held_splats.entry(id).or_default();
                 // On blood already there it adds to it; else a splat of its own (the smallest goes
