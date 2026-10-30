@@ -711,7 +711,7 @@ impl Session {
             // What the thing in a hand is, on a card beside it.
             self.item_card.read(&self.link);
             self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
-            // Where a drawn arrow would land, when the player asks for it.
+            // Where a drawn arrow points, when the player asks for it.
             let head = (Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot));
             self.bow_mark = self.crosshair.update(&self.gpu, self.settings.current.archery.crosshair, &self.rig, &self.bows, self.map_now.as_ref(), head, frame.dt);
             // The body the game makes up, when it changes.

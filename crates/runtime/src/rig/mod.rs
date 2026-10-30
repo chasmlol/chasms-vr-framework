@@ -3876,11 +3876,6 @@ impl Rig {
         self.physics.world_hit(origin, dir, max)
     }
 
-    /// The creatures' body parts this frame (world): each capsule's ends and radius.
-    pub fn actor_capsules(&self) -> Vec<(Vec3, Vec3, f32)> {
-        self.actor_parts.values().copied().collect()
-    }
-
     /// The arrow a hand is drawing on a held bow: the bow, the arrow's tip and its way (world),
     /// and the draw's strength.
     pub fn drawn_arrow(&self) -> Option<(u32, Vec3, Vec3, f32)> {

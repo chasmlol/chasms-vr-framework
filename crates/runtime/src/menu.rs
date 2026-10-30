@@ -374,7 +374,7 @@ fn help(ui: &mut egui::Ui) {
         ("Bring its back end to the string", "it goes on the string"),
         ("Pull back and let go", "loose it: the further drawn, the faster it flies"),
         ("Let go after a short pull", "the arrow stays on the string"),
-        ("Hands tab", "where the quiver is, and a crosshair where the arrow will land"),
+        ("Hands tab", "where the quiver is, and a crosshair where the bow points"),
     ]);
     section(ui, "Holsters", &[
         ("Let go of a gun at a hip", "holster it there"),
@@ -433,7 +433,7 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
         ui.selectable_value(&mut a.quiver, Quiver::Hip, "At the hip");
         ui.selectable_value(&mut a.quiver, Quiver::Both, "Both");
     });
-    let r = ui.checkbox(&mut a.crosshair, "Bow crosshair (where a nocked arrow will land)");
+    let r = ui.checkbox(&mut a.crosshair, "Bow crosshair (where a drawn arrow points)");
     rects.push(("hands:crosshair".into(), r.rect));
     ui.checkbox(&mut a.fit_draw, "Fit a bow's full draw to my arm");
     ui.separator();

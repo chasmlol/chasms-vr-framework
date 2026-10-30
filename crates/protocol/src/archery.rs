@@ -1,8 +1,9 @@
 //! Bows: what the object table can't say about a bow ([`crate::OBJ_BOW`]) and the arrows it
 //! shoots ([`crate::OBJ_ARROW`]): its model bent at full draw, how its limbs spring back after a
-//! shot, and how the game's own arrow flies, for the runtime to bend the bow as the string is drawn
-//! and to show where an arrow will land. The shot itself is the game's: a [`crate::CE_LOOSE`]
-//! combat event gives it the arrow's place, its way and the draw, and the game fires its own arrow.
+//! shot, how the game's own arrow flies and the game's crosshair, for the runtime to bend the bow
+//! as the string is drawn and to show where a drawn arrow points. The shot itself is the game's: a
+//! [`crate::CE_LOOSE`] combat event gives it the arrow's place, its way and the draw, and the game
+//! fires its own arrow.
 //!
 //! The adapter writes the table with its objects, when they change; a bow without an entry is
 //! drawn straight and has no crosshair.
@@ -42,13 +43,13 @@ pub struct BowDesc {
     /// (m/s^2).
     pub speed: [f32; 2],
     pub gravity: [f32; 2],
-    /// How far the game's arrow flies at most (metres; 0: as far as the crosshair looks).
+    /// How far the game's arrow flies at most (metres; 0: until it hits something).
     pub range: f32,
     /// The least draw that looses an arrow (share of the full draw; 0: the runtime's own).
     pub min_draw: f32,
     pub _p0: [f32; 2],
     /// The game's own crosshair, a texture in the runtime's asset cache (`<game>/<key>`; empty:
-    /// none), shown where an arrow will land when the player asks for it.
+    /// none), shown straight out along a drawn arrow when the player asks for it.
     pub crosshair: [u8; 32],
 }
 

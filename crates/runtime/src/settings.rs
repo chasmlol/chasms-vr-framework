@@ -269,7 +269,7 @@ pub struct Interaction {
 pub struct Archery {
     /// Where the hand takes an arrow while the other holds a bow.
     pub quiver: Quiver,
-    /// The game's crosshair where a nocked arrow will land.
+    /// The game's crosshair straight out along a drawn arrow.
     pub crosshair: bool,
     /// The full draw fits the arm: the bow's own, or as far as the arm draws to the chin when
     /// that's shorter (off: always the bow's own).
