@@ -279,6 +279,8 @@ struct Hand {
     grip_toggled: bool,
     prev_buttons: u32,
     trigger: f32,
+    /// The grip's squeeze (0..1) as the controller has it.
+    squeeze: f32,
     holding: Option<u32>,
     /// Where on what it holds it has it.
     on: On,
@@ -618,6 +620,9 @@ const SHOULDER_DROP: f32 = 0.25;
 const SHOULDER_OUT: f32 = 0.18;
 /// Faster than this (m/s), a hand pushes the way it moves.
 const PUSH_MOVING: f32 = 0.2;
+/// A hand squeezing its grip less than this is open (it shoves; squeezing more, it's taking hold or
+/// a fist).
+const OPEN_HAND: f32 = 0.3;
 const LEASH: f32 = 0.7;
 /// A turn (radians) or a move (metres) of the player's mapping in one step past which it's a snap
 /// turn or a teleport, not a walk (as `crate::locomotion` tells them apart).
@@ -1366,6 +1371,7 @@ impl Rig {
                 h.target = (map.point(h.grip_t.0), map.rot(h.grip_t.1));
                 h.aim_rot = map.rot(h.aim_t.1);
                 h.trigger = c.trigger;
+                h.squeeze = c.squeeze;
                 h.history.push(inp.now, h.grip_t.0, Some(h.vel_t), h.ang_t, map);
             }
         }
@@ -1578,7 +1584,9 @@ impl Rig {
         for (&(actor, part), &(_, proxy, ..)) in &self.proxies {
             for c in self.physics.touching(proxy) {
                 // Who's pressing, and how far behind where it's driven it is (what it presses with).
-                let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0, Some(self.map.vel(h.vel_t)))).or_else(|| {
+                // (Only an open hand shoves: one closing is taking hold, a fist punches, the game's
+                // own blow.)
+                let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0, Some(if h.squeeze < OPEN_HAND { self.map.vel(h.vel_t) } else { Vec3::ZERO }))).or_else(|| {
                     self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
                 });
                 let Some((body, lag, controller)) = pusher else { continue };
@@ -1631,6 +1639,7 @@ impl Rig {
                 grip_toggled: false,
                 prev_buttons: 0,
                 trigger: 0.0,
+                squeeze: 0.0,
                 holding: None,
                 on: On::Free,
                 hold: None,
