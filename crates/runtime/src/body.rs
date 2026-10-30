@@ -467,6 +467,14 @@ impl PlayerBody {
         }
     }
 
+    /// The sheets on what the hands hold from now on (the game's menus held in them), drawn with
+    /// the body.
+    pub fn set_sheets(&mut self, sheets: Vec<rustvr_avatar::Sheet>) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.set_sheets(sheets);
+        }
+    }
+
     /// Draws the body into one eye, with what the runtime draws of what the player holds (`holding`,
     /// see `crate::held_objects`). `light.sun_dir` must already be in tracking space.
     pub fn draw(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw]) {

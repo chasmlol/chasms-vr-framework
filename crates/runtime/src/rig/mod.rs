@@ -156,6 +156,8 @@ struct Obj {
     /// A hand has had it (held or pulled): a game's prop the runtime draws stays the runtime's to
     /// draw from then on ([`OS_RUNTIME_DRAWN`]).
     handled: bool,
+    /// Things that open ([`OBJF_OPENS`]): times the other hand opened or shut it.
+    opens: u32,
     /// Touching the world or another object (a held one knocking into something is felt).
     in_contact: bool,
     /// Held: where the player's walk and turn take it this step, and the share of its velocity the
@@ -1082,6 +1084,7 @@ impl Rig {
                 hovered: false,
                 hands_off_until: 0.0,
                 handled: false,
+                opens: 0,
                 in_contact: false,
                 carry: None,
                 carried: (Vec3::ZERO, Vec3::ZERO),
@@ -1967,6 +1970,13 @@ impl Rig {
                     _ => {}
                 }
             }
+            // The other hand's grip on a held book opens it (or shuts it): it stays in the hand
+            // that has it, and this one stays free to turn its pages.
+            Hover::Object(id) if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1) && o.desc.flags & OBJF_OPENS != 0) => {
+                let o = self.objects.get_mut(&id).unwrap();
+                o.opens = o.opens.wrapping_add(1);
+                self.emit(Cue::Grab, Some(i), Some(id), palm, 0.4);
+            }
             Hover::Object(id) if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1)) => self.second_hand(i, id),
             Hover::Object(id) => {
                 // Gripped as it flies in from the gloves: a catch (it may still be half a metre out).
@@ -2401,6 +2411,19 @@ impl Rig {
                 self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
                 return;
             }
+        }
+        // Kept on the body (a map): back to the slot it was drawn from, however it's let go.
+        if o.desc.flags & OBJF_KEPT != 0
+            && let Some(slot) = o.home_slot.filter(|&s| self.slots[s as usize].is_none_or(|x| x == id))
+        {
+            let from = self.physics.pose(o.body);
+            o.holder = Holder::Returning { slot, t0: self.now, from };
+            self.slots[slot as usize] = Some(id);
+            self.physics.set_kinematic(o.body, true);
+            self.physics.set_groups(o.collider, groups_none());
+            self.debug.returns += 1;
+            self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
+            return;
         }
         // A throw leaves from where the object was at the peak, carried along it to now (unless
         // that's far, or through the world).
@@ -4426,7 +4449,8 @@ impl Rig {
                     (rounds, w.shots, w.chamber_bits(), w.slide)
                 }
                 // A valve: how far it's turned (radians about its axis).
-                None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(0), 0, o.valve.map_or(0.0, |v| v.angle)),
+                // (Grenades: times they went off; things that open: times they were opened or shut.)
+                None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(o.opens), 0, o.valve.map_or(0.0, |v| v.angle)),
             };
             // An air gun's pressure, a bolt's lift; a grenade's fuse.
             let fuse = match &o.weapon {

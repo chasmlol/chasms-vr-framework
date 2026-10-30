@@ -48,6 +48,9 @@
 //! round the eye it was placed for, each turned to face it, so a wide menu keeps its text at one
 //! distance. Every group is sized from the game's own text (`HudLayout::text_height`) so a line of
 //! it is `menu_text_deg` degrees tall wherever the group is.
+//!
+//! Groups held in the hands ([`ANCHOR_HELD`]: a book's pages, a map) are placed with the hands, by
+//! `crate::held_menus`.
 
 use glam::{Mat4, Quat, Vec3};
 use rustvr_protocol::*;
@@ -211,7 +214,7 @@ impl HudPlacer {
         let head_pitch = -(fwd.y.clamp(-1.0, 1.0)).asin();
         let per_metre = unit_per_metre(s, layout);
         let mut out = Vec::new();
-        for (i, g) in groups.iter().enumerate() {
+        for (i, g) in groups.iter().enumerate().filter(|(_, g)| g.anchor != ANCHOR_HELD) {
             let n = i as u32 + 1;
             let Some(fp) = footprint(layout, n, aspect) else { continue };
             let thing = map.map(|m| m.inv_point(Vec3::from_array(g.at)));

@@ -175,6 +175,12 @@ pub struct Session {
     /// The game's menus in pieces in the world this frame (`hud.rs`: groups), placed before the
     /// laser picks among them.
     menu_pieces: Vec<crate::hud::HudPiece>,
+    /// The game's menus held in the hands (`held_menus.rs`: a book's pages, a map), and this
+    /// frame's: their pieces, drawn with the body, and the hands holding them.
+    held_menus: crate::held_menus::HeldMenus,
+    held: crate::held_menus::HeldOut,
+    /// The hand the laser comes from this frame.
+    pointer: usize,
     /// The game's lighting of its first-person model (the last consistent copy), and whether
     /// there is one: the body is shaded with it.
     game_lighting: Box<GameLighting>,
@@ -310,6 +316,9 @@ impl Session {
             game_lighting_read: bytemuck::zeroed_box(),
             has_game_lighting: false,
             hud: Default::default(),
+            held_menus: Default::default(),
+            held: Default::default(),
+            pointer: 1,
             menu_pieces: Vec::new(),
             audio: if opts.audio {
                 Some(rustvr_audio::Audio::new())
@@ -574,7 +583,11 @@ impl Session {
             let c = head_pos + panels::Panel::dir(yaw, pitch) * d;
             *rm = panels::Panel::facing(c, yaw, pitch, w, w / h.max(1e-4));
         }
-        let hand = &frame.hands[dom];
+        // The laser from the dominant hand, unless it's holding a menu (a book, the map): then from
+        // the other, free one.
+        let pointer = if self.held.holding[dom] && !self.held.holding[dom ^ 1] { dom ^ 1 } else { dom };
+        self.pointer = pointer;
+        let hand = &frame.hands[pointer];
         let laser_origin = Vec3::from_array(hand.aim.pos);
         let laser_dir = quat(hand.aim.rot) * Vec3::Z;
         let mut pick = if hand.connected != 0 && (layout.game_menu.is_some() || layout.runtime_menu.is_some()) {
@@ -584,7 +597,8 @@ impl Session {
         };
         // The menu's pieces the laser can point at: the nearest it hits, where in the HUD texture.
         if hand.connected != 0 {
-            for piece in self.menu_pieces.iter().filter(|p| p.flags & HUDE_POINT != 0) {
+            // (The ones held in the hands as they were last frame: they're placed with the hands.)
+            for piece in self.menu_pieces.iter().chain(self.held.pieces.iter().filter(|_| menu_mode)).filter(|p| p.flags & HUDE_POINT != 0) {
                 if let Some((t, uv)) = piece.hit(laser_origin, laser_dir)
                     && pick.is_none_or(|b| t < b.1)
                 {
@@ -593,7 +607,7 @@ impl Session {
             }
         }
         let trigger_down = hand.trigger > 0.6;
-        let cursor = match pick {
+        let mut cursor = match pick {
             Some((PanelId::GameMenu, _, uv)) => Some(Cursor { uv, down: trigger_down }),
             _ => None,
         };
@@ -612,7 +626,7 @@ impl Session {
             && trigger_down
             && !self.menu_trigger_was
         {
-            self.backend.haptic(dom, 0.015, 180.0, 0.35);
+            self.backend.haptic(pointer, 0.015, 180.0, 0.35);
             if let (Some(a), true, PanelId::RuntimeMenu) = (&self.audio, snd.enabled, id) {
                 let at = laser_origin + laser_dir * t;
                 a.play_event(rustvr_audio::Event::UiClick, rustvr_audio::SetKey::NONE, Some(rustvr_audio::Sound::UiClick), at, 1.0);
@@ -706,7 +720,10 @@ impl Session {
                 tracing::info!("runtime: test: the nearest prop into the {} hand: {got:?}", if hand == 0 { "left" } else { "right" });
             }
             let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
-            let rig_paused = menu_mode || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
+            // (A menu held in the hands keeps them going while the game waits: the book can be moved,
+            // handed over and let go, the map spread. Fights stay paused with the game.)
+            let held_open = floating && self.hud_layout.group_entries().iter().any(|g| g.anchor == ANCHOR_HELD);
+            let rig_paused = (menu_mode && !held_open) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
                 map: rig_map,
@@ -760,6 +777,47 @@ impl Session {
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
             }
             self.rig.write_states(&mut self.states);
+            // The game's menus held in the hands (a book's pages, the map), with the hands as they
+            // are now: placed, their pages turned and their sheets dragged by the free hand.
+            let held_open = held_open && hud_aspect.is_some();
+            if held_open {
+                let map = rig_map;
+                let things: Vec<crate::held_menus::Thing> = self.states.states[..(self.states.count as usize).min(MAX_OBJECTS)]
+                    .iter()
+                    .filter(|st| st.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) != 0)
+                    .filter_map(|st| {
+                        let d = self.objects.descs[..(self.objects.count as usize).min(MAX_OBJECTS)].iter().find(|d| d.id == st.id)?;
+                        // (Held things' poses are in tracking space.)
+                        let (pos, rot) = if st.flags & OS_TRACKING != 0 { (Vec3::from_array(st.pose.pos), quat(st.pose.rot)) } else { (map.inv_point(Vec3::from_array(st.pose.pos)), map.inv_rot(quat(st.pose.rot))) };
+                        let hand = if st.flags & OS_HELD_LEFT != 0 { 0 } else { 1 };
+                        Some(crate::held_menus::Thing { id: st.id, pos, rot, centre: Vec3::from_array(d.center), half: Vec3::from_array(d.half_extents), hand })
+                    })
+                    .collect();
+                let hands = [0, 1].map(|i| {
+                    let c = &frame.hands[i];
+                    crate::held_menus::Hand { grip: (c.connected != 0).then(|| (Vec3::from_array(c.grip.pos), quat(c.grip.rot))), squeeze: c.squeeze, trigger: c.trigger }
+                });
+                let held = self.held_menus.update(&self.settings.current, head_pos, head_rot, frame.dt, now, hud_aspect.unwrap(), &self.hud_layout, &things, &hands);
+                for &a in &held.presses {
+                    tracing::info!("runtime: the free hand turned a page: {}", a.name());
+                    self.mech.press(a);
+                }
+                if let Some((uv, down)) = held.cursor {
+                    cursor = Some(Cursor { uv, down });
+                }
+                for &(h, secs, freq, amp) in &held.haptics {
+                    self.backend.haptic(h, secs, freq, amp);
+                }
+                if held.pieces.len() != self.held.pieces.len() {
+                    for (i, p) in held.pieces.iter().enumerate() {
+                        tracing::info!("runtime: the game's menu in the hands, piece {i}: at {:.3?}, {:.2} x {:.2} m, of {:.3?}", p.panel.center, p.panel.width, p.panel.height, p.uv);
+                    }
+                }
+                self.held = held;
+            } else {
+                self.held = Default::default();
+                self.held_menus = Default::default();
+            }
             // What the thing in a hand is, on a card beside it.
             self.item_card.read(&self.link);
             self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
@@ -776,7 +834,7 @@ impl Session {
                 dominant: self.settings.current.dominant(),
                 now,
                 dt: frame.dt,
-                paused: rig_paused,
+                paused: rig_paused || menu_mode,
             });
             for ev in &combat {
                 self.link.push_combat_event(ev);
@@ -1324,6 +1382,10 @@ impl Session {
                     self.stats.scope_frames += 1;
                 }
         let mut hud_shown = false;
+        // The game's menus held in the hands, drawn with the body in its depth (a hand in front of
+        // a page covers it); where no body is drawn, in the world as the rest.
+        let mut sheets = Vec::new();
+        let sheets_with_body = (self.draws_body || framework) && floating;
         if let Some((slot, info)) = &locked
             && let Some(hud) = &slot.hud {
                 let srv = hud.srv.as_ref().unwrap();
@@ -1338,6 +1400,20 @@ impl Session {
                         [0.0; 2]
                     };
                     layers.world_panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive: false, soft });
+                }
+                for piece in self.held.pieces.iter().filter(|_| menu_mode) {
+                    let texels = 3.0;
+                    let soft = if piece.flags & HUDE_SOFT != 0 {
+                        [texels * 2.0 / ((piece.uv[2] - piece.uv[0]) * tex_w).max(1.0), texels * 2.0 / ((piece.uv[3] - piece.uv[1]) * tex_h).max(1.0)]
+                    } else {
+                        [0.0; 2]
+                    };
+                    if sheets_with_body {
+                        let p = &piece.panel;
+                        sheets.push(rustvr_avatar::Sheet { srv: srv.clone(), center: p.center, half_x: p.right * p.width * 0.5, half_y: p.up * p.height * 0.5, uv: piece.uv, opacity: piece.opacity, soft });
+                    } else {
+                        layers.world_panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive: false, soft });
+                    }
                 }
                 if menu_mode {
                     // A menu nobody described, whole: over the world as the game drew it (its
@@ -1400,6 +1476,7 @@ impl Session {
                         hud_shown = true;
                     }
             }
+        self.body.set_sheets(sheets);
         if !hud_shown {
             self.hud.reset();
         }
@@ -1411,7 +1488,6 @@ impl Session {
         if let Some(p) = layout.runtime_menu {
             layers.panels.push(PanelLayer::whole(p, self.menu.srv()));
         }
-        let dom = s.dominant();
         // The gun's own laser (the game's attachment, fitted and on), or the runtime's laser sight
         // from the muzzle when that's turned on: drawn with the body, in its depth.
         let gun_laser = out.weapon.as_ref().filter(|_| !menu_mode).and_then(|w| w.laser.or(s.interaction.laser_sight.then_some(w.muzzle)).map(|o| (w, o)));
@@ -1424,9 +1500,9 @@ impl Session {
             rustvr_avatar::LaserBeam { from: origin, to: origin + w.aim_dir * hit.unwrap_or(30.0), hit: hit.is_some() }
         });
         self.body.set_laser(&self.gpu, laser);
-        let pointable = self.menu_pieces.iter().any(|p| p.flags & HUDE_POINT != 0);
+        let pointable = self.menu_pieces.iter().chain(&self.held.pieces).any(|p| p.flags & HUDE_POINT != 0);
         if layout.game_menu.is_some() || layout.runtime_menu.is_some() || (menu_mode && pointable) {
-            let hand = &frame.hands[dom];
+            let hand = &frame.hands[self.pointer];
             if hand.connected != 0 {
                 let o = Vec3::from_array(hand.aim.pos);
                 let d = quat(hand.aim.rot) * Vec3::Z;

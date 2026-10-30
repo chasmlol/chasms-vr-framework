@@ -437,7 +437,9 @@ impl Mechanics {
         self.recenter_seq = self.recenter_seq.wrapping_add(1);
     }
 
-    fn press(&mut self, a: Action) {
+    /// One press of `a` for the game (the runtime's own gestures press them too: a page turned by
+    /// hand).
+    pub fn press(&mut self, a: Action) {
         self.presses[a as usize] = self.presses[a as usize].wrapping_add(1);
     }
 

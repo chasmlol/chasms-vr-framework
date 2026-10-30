@@ -379,6 +379,9 @@ pub struct Ui {
     pub menu_text_deg: f32,
     pub menu_opacity: f32,
     pub menu_scroll: f32,
+    /// A menu held in the hands (a book's pages, a map: `held_menus.rs`) is as big as one at this
+    /// distance (metres): its text `menu_text_deg` there, bigger brought nearer, as a book's is.
+    pub held_distance: f32,
 }
 
 
@@ -522,6 +525,7 @@ impl Default for Ui {
             menu_text_deg: 1.5,
             menu_opacity: 0.94,
             menu_scroll: 10.0,
+            held_distance: 0.45,
         }
     }
 }
