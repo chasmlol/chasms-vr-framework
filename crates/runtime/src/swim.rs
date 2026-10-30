@@ -17,11 +17,13 @@
 //! * The hands holding the water make one stroke together: their velocities' sum over two (one
 //!   hand alone pulls half as hard). A breaststroke's sweeps out and in cancel in it, leaving its
 //!   pull back (a hand's own way, the sweep out, hid the pull in playtest 8). The stroke pulls only
-//!   while it goes on away from where it started (or turned back), once 15 cm from there:
+//!   while it goes on away from where it started (or turned back), once 10 cm from there:
 //!   squeezing the grip a little before the reach ends, or letting it go a little after the hands
 //!   start back, slips, as the hands go back over their own stroke. (Without that, those hands
 //!   moving forward threw the swimmer backwards: playtest 7.)
-//! * A stroke never takes the glide's speed unless it's a stroke back against it, of 25 cm or more
+//! * Light strokes swim well: the pull's pace grows with the hands' speed less and less (to the 0.4th
+//!   power), so they needn't push hard (playtest 10).
+//! * A stroke never takes the glide's speed unless it's a stroke back against it, of 20 cm or more
 //!   (that's how to stop): the sweep out of the next breaststroke goes a little forward, and slowed
 //!   the swimmer at every stroke (playtest 9). Otherwise a pull speeds the glide up to its pace
 //!   along it and turns it its way, as a swimmer's streamlined body follows the stroke, so uneven
@@ -51,19 +53,20 @@ use crate::rig::WorldMap;
 const VELOCITY_TAU: f32 = 0.03;
 /// A hand catches the water with the grip squeezed past `CATCH[0]`, and lets go below `CATCH[1]`.
 const CATCH: [f32; 2] = [0.6, 0.35];
-/// A pull carries the swimmer this many of the game's full swim speeds for each m/s of the hands'
-/// (about four times as fast as the hands, at the game's 2 m/s): at the surface a relaxed
-/// breaststroke (the hands wide out, back and in over most of a second) swims about 2.3 times the
-/// game's speed, a firm one 3 times, however the grip is timed; one firm stroke from still carries
-/// the swimmer about 17 m.
-const PULL: f32 = 2.0;
+/// A pull with the hands at 1 m/s carries the swimmer this many of the game's full swim speeds, and
+/// its pace grows with the hands' speed to the `PULL_CURVE` power: hands at 0.3 m/s still carry
+/// them 1.9 game speeds, at 2 m/s 4. At the surface a light breaststroke (the hands a little out
+/// and back) swims about 1.7 times the game's speed, a relaxed one (wide out, back and in over most
+/// of a second) 2.6 times, a firm one 3 times, however the grip is timed.
+const PULL: f32 = 3.0;
+const PULL_CURVE: f32 = 0.4;
 /// A stroke pulls once the hands are this far (m) from the point of the stroke they're furthest
-/// from: a grip squeezed while the reach is still ending, or a breaststroke's sweep out going a
-/// little forward, moves them less than that.
-const STROKE_FROM: f32 = 0.15;
+/// from: a grip squeezed while the reach is still ending moves them less than that.
+const STROKE_FROM: f32 = 0.1;
 /// A stroke back against the glide (more than 120 degrees from it, while gliding faster than
-/// `GLIDING` m/s) counts only from this far (m), and slows the swimmer.
-const AGAINST_FROM: f32 = 0.25;
+/// `GLIDING` m/s) counts only from this far (m), and slows the swimmer: a breaststroke's sweep out,
+/// going a little forward, goes less far than that.
+const AGAINST_FROM: f32 = 0.2;
 const GLIDING: f32 = 1.0;
 /// A stroke's points are kept this far apart (m), and no more of them than this.
 const STROKE_STEP: f32 = 0.01;
@@ -260,9 +263,10 @@ impl Swim {
             }
             let from = self.stroke.iter().copied().max_by(|a, b| a.distance_squared(at).total_cmp(&b.distance_squared(at))).unwrap_or(at);
             let gone = at - from;
-            // It carries the swimmer the other way, at `PULL` times its pace. (At the surface its
-            // rise goes into the surface.)
-            let mut to = -both * PULL * full * inp.ease.clamp(0.25, 4.0);
+            // It carries the swimmer the other way, at a pace that grows with its speed less and
+            // less. (At the surface its rise goes into the surface.)
+            let hands = both.length();
+            let mut to = -both.normalize_or_zero() * PULL * hands.powf(PULL_CURVE) * full * inp.ease.clamp(0.25, 4.0);
             if at_surface {
                 to.y = to.y.min(0.0);
             }
