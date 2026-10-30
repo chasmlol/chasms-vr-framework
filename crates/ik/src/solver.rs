@@ -16,6 +16,10 @@ use crate::{BodyOutput, BodyParams, Calibration, Pose, Saddle, Side, StraightArm
 /// In a saddle the chest turns with the head this far at most either way (radians): looking
 /// round from a horse's back turns the shoulders a little, the hips stay with the mount.
 const SADDLE_TWIST: f32 = 50.0 * std::f32::consts::PI / 180.0;
+/// The centre of mass is this share of the way from the hips joint to the head joint (a standing
+/// body's is about 56% of its height up, a little above the hips joint, and the trunk above
+/// carries it with it as it leans; est., against motion capture's steps).
+const COM_UP_THE_SPINE: f32 = 0.3;
 /// Smoothing of the centre-of-mass and head velocities the stepping logic reads (est.).
 const VELOCITY_TAU: f32 = 0.1;
 /// An untracked hand eases from where it was lost to hanging at the side (est.).
@@ -264,14 +268,11 @@ impl BodySolver {
             let mut chain = chain_at(state.pitch);
 
             // ---- feet ----
-            let mut com = chain.hips() + head_joint;
-            let mut weight = 2.0;
-            for palm in palms.iter().flatten() {
-                // VRIK's centre of mass: pelvis and head 1 each, hands 0.2.
-                com += *palm * 0.2;
-                weight += 0.2;
-            }
-            let com = com / weight;
+            // The centre of mass: most of a body's mass is in its trunk and legs, so it sits a little
+            // above the hips and moves with the trunk; the head and the arms (some 8% and 10% of
+            // the mass, Winter's tables) hardly move it. (VRIK weights the head as the pelvis,
+            // which has a body step whenever it looks down or reaches.)
+            let com = chain.hips().lerp(head_joint, COM_UP_THE_SPINE);
             if dt > 0.0 {
                 state.com_vel = state.com_vel.lerp((com - state.com) / dt, velocity_a);
             }
@@ -280,7 +281,8 @@ impl BodySolver {
                 let [l, r] = hip_joints(&chain);
                 (l + r) * 0.5
             });
-            let feet_input = FeetInput { com, com_vel: state.com_vel, root_yaw, locomotion, seated_hips };
+            let hips_yaw = chain.yaw[0];
+            let feet_input = FeetInput { com, com_vel: state.com_vel, root_yaw, locomotion, seated_hips, hips: hip_joints(&chain), hips_yaw };
             // Floating, the feet are kept under the body, where they'll stand again.
             if input.swim.is_some() {
                 state.feet = Feet::new(p, skel, chain.hips(), root_yaw);

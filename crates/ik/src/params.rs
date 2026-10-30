@@ -97,9 +97,15 @@ pub struct BodyParams {
     // ---- legs ----
     /// Distance between the feet when standing (VRIK footDistance 0.3).
     pub foot_spacing: f32,
-    /// A foot steps when the predicted centre of mass is this far from its spot (VRIK 0.4)...
+    /// A foot this far from its place under the body steps whatever the balance (VRIK steps at
+    /// 0.4 m, which has feet stepping when real feet stay planted: people stand with their feet
+    /// apart and staggered and sway over them; this is only a safety net, est.).
     pub step_threshold: f32,
-    /// ...or when the root has turned this far from the foot (VRIK 60°).
+    /// A foot steps once its ankle is further than this share of the leg's length from under its
+    /// hip joint (the leg leaning some 35°; est.).
+    pub step_reach: f32,
+    /// A foot steps once the hips have twisted this far from it (the hip turns some 45° each way
+    /// in standing; VRIK steps at 60° of root turn).
     pub step_angle_deg: f32,
     /// Step duration range (VRIK step speed 3–4.5 per second): urgent steps are faster.
     pub step_time_min: f32,
@@ -108,8 +114,12 @@ pub struct BodyParams {
     pub leg_cross_guard: f32,
     /// Peak foot lift during a step (est.; FRIK lifts up to about 13 cm, UE's Locomotor 6 cm).
     pub step_height: f32,
+    /// The feet stay planted while the centre of mass is over them: within this much of the outline
+    /// round both feet, heels to toes (est.).
+    pub support_margin: f32,
     /// Once the body has been still for `settle_delay`, a foot further than this from its spot
-    /// steps under the body (est.; VRIK leaves feet wherever the last balance step put them).
+    /// steps under the body (est.; VRIK leaves feet wherever the last balance step put them, and
+    /// people at rest stand as their feet are unless they're far out of place).
     pub settle_distance: f32,
     pub settle_delay: f32,
     /// Stick locomotion walks once faster than this and stops below `gait_stop_speed` (FRIK 35
@@ -186,14 +196,16 @@ impl Default for BodyParams {
             arm_tracking_loss: 2.25,
 
             foot_spacing: 0.3,
-            step_threshold: 0.4,
-            step_angle_deg: 60.0,
+            step_threshold: 0.8,
+            step_reach: 0.55,
+            step_angle_deg: 50.0,
             step_time_min: 0.22,
             step_time_max: 0.33,
             leg_cross_guard: 0.25,
             step_height: 0.08,
-            settle_distance: 0.08,
-            settle_delay: 0.3,
+            support_margin: 0.03,
+            settle_distance: 0.15,
+            settle_delay: 1.0,
             gait_start_speed: 0.5,
             gait_stop_speed: 0.29,
             gait_step_time_min: 0.28,
