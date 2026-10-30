@@ -16,7 +16,7 @@ use rustvr_protocol::*;
 use crate::anim;
 use crate::arenas;
 use crate::brain::{self, Brain, Mode, Sight, Stance, Threat, Tier};
-use crate::ragdoll::{Balance, Dummies, Happened, ItemSpec};
+use crate::ragdoll::{self, Balance, Dummies, Happened, ItemSpec};
 
 /// The training dummies' ids (as the game knows them) and where they stand.
 pub const DUMMY_ID: u32 = 7001;
@@ -192,7 +192,7 @@ impl People {
             p.pose = t.pose;
             p.doing = f.brain.doing(now);
             // Its arms: stiff while it swings, stiffer while it guards.
-            p.arms = [0, 1].map(|h| if t.attacking == Some(h) { (2.0, 0.0, 10.0) } else if t.guarding { (3.0, 1.0, 30.0) } else { (1.0, 1.0, 1.0) });
+            p.arms = [0, 1].map(|h| if t.attacking == Some(h) { ragdoll::ATTACK_ARM } else if t.guarding { ragdoll::GUARD_ARM } else { (1.0, 1.0, 1.0) });
             // It walks and turns.
             let walk = face * t.walk * dt;
             let mut at = at + walk;
@@ -276,7 +276,8 @@ impl People {
     pub fn items_for_runtime(&self) -> (ActorItems, Vec<(u32, Vec3, Quat)>) {
         let attacking = |k: usize| self.fighters.iter().any(|f| f.person == k && f.brain.swing.is_some_and(|s| s.hurting(self.dummies.time)));
         let blocking = |k: usize| self.fighters.iter().any(|f| f.person == k && f.brain.block > 0.3);
-        self.dummies.held_items(attacking, blocking)
+        let feinting = |k: usize| self.fighters.iter().any(|f| f.person == k && f.brain.feinting());
+        self.dummies.held_items(attacking, blocking, feinting)
     }
 
     /// What happened, for the game's side (sounds, blood); drained. The people cry out at it: a
@@ -302,8 +303,8 @@ impl People {
     }
 }
 
-/// The player as the fighters see them: the head, where they stand, and their weapons (each blade's
-/// ends and how fast its tip goes), from the runtime's objects.
-pub fn sight(head: Vec3, feet: Vec3, vel: Vec3, weapons: &[(Vec3, Vec3, Vec3)]) -> Sight {
-    Sight { head, feet, vel, threats: weapons.iter().map(|&(a, b, vel)| Threat { a, b, vel }).collect(), loose: Vec::new() }
+/// The player as the fighters see them: where they stand and how they move, and their weapons (each
+/// blade's ends and how fast its tip goes), from the runtime's objects.
+pub fn sight(feet: Vec3, vel: Vec3, weapons: &[(Vec3, Vec3, Vec3)]) -> Sight {
+    Sight { feet, vel, threats: weapons.iter().map(|&(a, b, vel)| Threat { a, b, vel }).collect(), loose: Vec::new() }
 }

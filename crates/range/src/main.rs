@@ -836,8 +836,8 @@ impl Game {
         self.adapter.tracking.last_view()
     }
 
-    /// What the fighters see of the player: the head and feet, how they move, and each of their
-    /// melee weapons' blades and how fast their tips go.
+    /// What the fighters see of the player: where they stand, and each of their melee weapons
+    /// (held or thrown) by its blades and how fast their tips go.
     fn sight(&self, f: &RtFrame) -> brain::Sight {
         let Some(v) = self.view_of(f) else { return brain::Sight::default() };
         let head = v.point(Vec3::from_array(f.hmd.pos));
@@ -855,7 +855,7 @@ impl Game {
                 weapons.push((p + q * base, tip, vel + ang.cross(tip - p)));
             }
         }
-        arena::sight(head, feet, Vec3::ZERO, &weapons)
+        arena::sight(feet, Vec3::ZERO, &weapons)
     }
 
     fn object_boxes(&self, v: &View) -> Vec<ObjBox> {

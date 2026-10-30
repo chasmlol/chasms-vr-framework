@@ -805,13 +805,6 @@
  */
 #define RVR_GRAB_SLIPPED (1 << 3)
 
-/**
- * Not the creature's body but a thing it holds ([`crate::ActorItems`]): `part` is that thing's
- * object id, `point` is in its object space, and the hand wrestles the creature for it (the game
- * lets go of it once the pull beats its grip, and the thing is then the player's).
- */
-#define RVR_GRAB_ITEM (1 << 4)
-
 
 
 #define RVR_MAX_HUD_ELEMENTS 48

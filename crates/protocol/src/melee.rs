@@ -14,8 +14,9 @@
 //!   its creatures' weapons and shields as its own objects ([`crate::OBJF_GAME_SIMULATED`], posed
 //!   in [`crate::GamePoses`]); while a creature holds one it's listed here, and the player's hands
 //!   and weapons meet it as something solid the creature moves: they block it, parry it and push
-//!   it ([`crate::GamePush`] on the object), and a hand that takes it wrestles its holder for it
-//!   ([`crate::GRAB_ITEM`]). Its blades, while it swings, are judged against the player's body.
+//!   it ([`crate::GamePush`] on the object), and a hand takes it as any of the game's things
+//!   (its holder dragged after it: the game lets go when the pull wins). Its blades, while it
+//!   swings, are judged against the player's body.
 //! * [`MeleeRules`] (game -> runtime, when it changes): the game's own numbers for the player: how
 //!   strong they are, their stamina (when the game keeps one), whether they may slow time, imbue,
 //!   climb.
@@ -215,10 +216,9 @@ pub struct ActorItem {
     pub flags: u32, // AI_*
     /// How it moves (world, m/s and rad/s): a hit's speed is the blade's against what it meets.
     pub vel: [f32; 3],
-    /// How hard its holder grips it (N): a hand wrenching it harder than this takes it.
-    pub grip: f32,
-    pub ang_vel: [f32; 3],
     pub _p0: f32,
+    pub ang_vel: [f32; 3],
+    pub _p1: f32,
 }
 
 #[repr(C)]

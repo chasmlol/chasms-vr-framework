@@ -56,8 +56,8 @@ const LOOSE_TURN_DAMPER: f32 = 0.1;
 const GROUND_TURN_SPRING: f32 = 0.1;
 /// Swinging, its arms' pins (spring x2, damper x0, force x10); guarding (spring x3, damper x1,
 /// force x30).
-const ATTACK_ARM: (f32, f32, f32) = (2.0, 0.0, 10.0);
-const GUARD_ARM: (f32, f32, f32) = (3.0, 1.0, 30.0);
+pub const ATTACK_ARM: (f32, f32, f32) = (2.0, 0.0, 10.0);
+pub const GUARD_ARM: (f32, f32, f32) = (3.0, 1.0, 30.0);
 /// Down long enough and still enough, it gets up (slower than 1 m/s for 0.5 s), its pins ramping
 /// back over 3 s.
 const STILL_SPEED: f32 = 1.0;
@@ -206,7 +206,6 @@ pub struct Wound {
     pub normal: V3,
     pub kind: u32,
     pub size: f32,
-    pub since: f64,
 }
 
 pub struct Person {
@@ -318,7 +317,6 @@ pub struct Dummies {
     owed: f32,
     pub time: f64,
     pub happened: Vec<Happened>,
-    statics: Vec<(V3, V3)>,
 }
 
 /// The turn `q` as a rotation vector, the short way round.
@@ -350,7 +348,7 @@ impl Dummies {
             let h = (*hi - *lo) * 0.5;
             w.insert_collider(ColliderBuilder::cuboid(h.x, h.y, h.z).translation(to_v(c)).friction(0.8), None);
         }
-        Dummies { world: w, people: Vec::new(), items: Vec::new(), held: Vec::new(), released: [0; 2], owed: 0.0, time: 0.0, happened: Vec::new(), statics: world.to_vec() }
+        Dummies { world: w, people: Vec::new(), items: Vec::new(), held: Vec::new(), released: [0; 2], owed: 0.0, time: 0.0, happened: Vec::new() }
     }
 
     /// A person standing at `foot` facing `face`, with id `id` and each part covered by `armour`
@@ -630,7 +628,7 @@ impl Dummies {
                 .collect();
             let mut torques = vec![V3::ZERO; p.parts.len()];
             let mut forces = vec![V3::ZERO; p.parts.len()];
-            for (i, part) in p.parts.iter().enumerate() {
+            for i in 0..p.parts.len() {
                 let cut = p.severed & (1 << i) != 0;
                 let (pos, rot, vel, ang) = poses[i];
                 // The arms pin harder while it swings or guards.
@@ -1046,7 +1044,7 @@ impl Dummies {
         let at = on + normal * q.radius;
         let (lo, hi) = if kind == DMG_PIERCE { (0.06, 0.12) } else { (0.1, 0.18) };
         let size = lo + (hi - lo) * intensity.clamp(0.0, 1.0);
-        p.wounds.push(Wound { part, at, normal, kind, size, since: self.time });
+        p.wounds.push(Wound { part, at, normal, kind, size });
         if p.wounds.len() > 24 {
             p.wounds.remove(0);
         }
@@ -1094,7 +1092,7 @@ impl Dummies {
     }
 
     /// What the creatures hold, for the runtime: each item where it is now, and how it moves.
-    pub fn held_items(&self, attacking: impl Fn(usize) -> bool, blocking: impl Fn(usize) -> bool) -> (ActorItems, Vec<(u32, V3, Q)>) {
+    pub fn held_items(&self, attacking: impl Fn(usize) -> bool, blocking: impl Fn(usize) -> bool, feinting: impl Fn(usize) -> bool) -> (ActorItems, Vec<(u32, V3, Q)>) {
         let mut t: ActorItems = bytemuck::Zeroable::zeroed();
         let mut poses = Vec::new();
         for item in &self.items {
@@ -1112,7 +1110,10 @@ impl Dummies {
                 id: item.id,
                 actor: self.people[who].id,
                 hand: hand as u32,
-                flags: if attacking(who) && !item.shield { AI_ATTACKING } else { 0 } | if blocking(who) { AI_BLOCKING } else { 0 } | if item.shield { AI_SHIELD } else { 0 },
+                flags: if attacking(who) && !item.shield { AI_ATTACKING } else { 0 }
+                    | if blocking(who) { AI_BLOCKING } else { 0 }
+                    | if item.shield { AI_SHIELD } else { 0 }
+                    | if feinting(who) && !item.shield { AI_FEINT } else { 0 },
                 vel: from_v(rb.linvel()).to_array(),
                 ang_vel: from_v(rb.angvel()).to_array(),
                 ..Default::default()
@@ -1145,18 +1146,9 @@ impl Dummies {
         from_pose(self.world.bodies[self.items[k].body].position())
     }
 
-    pub fn item_velocity(&self, k: usize) -> (V3, V3) {
-        let rb = &self.world.bodies[self.items[k].body];
-        (from_v(rb.linvel()), from_v(rb.angvel()))
-    }
-
     /// Where person `k`'s part `part` is (world).
     pub fn part_pose(&self, k: usize, part: usize) -> (V3, Q) {
         from_pose(self.world.bodies[self.people[k].parts[part].body].position())
-    }
-
-    pub fn part_velocity(&self, k: usize, part: usize) -> V3 {
-        from_v(self.world.bodies[self.people[k].parts[part].body].linvel())
     }
 
     /// Person `k`'s part `part`'s capsule (world ends, radius).
@@ -1170,17 +1162,8 @@ impl Dummies {
         self.people[k].parts.get(part).map_or(PART_TORSO, |q| q.kind)
     }
 
-    pub fn part_material(&self, k: usize, part: usize) -> u32 {
-        self.people[k].parts.get(part).map_or(MAT_FLESH, |q| q.material)
-    }
-
     pub fn find(&self, id: u32) -> Option<usize> {
         self.people.iter().position(|p| p.id == id)
-    }
-
-    /// The range's static boxes, for brains that look for a way.
-    pub fn statics(&self) -> &[(V3, V3)] {
-        &self.statics
     }
 
     /// Every part as a box round its capsule (the range's unit cube scaled), with its colour, its

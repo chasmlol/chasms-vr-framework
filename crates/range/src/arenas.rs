@@ -16,7 +16,7 @@
 //! The areas are fixed in the room (clear of the firing lane and its rails, the targets and the
 //! crates), so the scenarios that shoot down the lane don't see them.
 
-use glam::{Quat, Vec3};
+use glam::Vec3;
 
 /// The melee rack: a table at your left hand, behind the throwables' table.
 pub const RACK: (Vec3, Vec3) = (Vec3::new(-3.3, 0.0, -0.6), Vec3::new(-1.3, 0.85, 0.12));
@@ -60,11 +60,6 @@ pub fn furniture() -> Vec<(Vec3, Vec3, [u8; 4])> {
     vec![(RACK.0, RACK.1, wood), (ARENA_TABLE.0, ARENA_TABLE.1, wood), (BENCH_TABLE.0, BENCH_TABLE.1, wood), (CLIMB_BLOCK.0, CLIMB_BLOCK.1, stone), (POST.0, POST.1, [140, 104, 66, 255])]
 }
 
-/// Whether `p` (world) is in the arena (its floor, any height).
-pub fn in_arena(p: Vec3) -> bool {
-    p.x >= ARENA.0.x && p.x <= ARENA.1.x && p.z >= ARENA.0.z && p.z <= ARENA.1.z
-}
-
 /// The floor's height under `p` (the climbing block's top on it, else 0).
 pub fn floor_under(p: Vec3, radius: f32) -> f32 {
     let (lo, hi) = CLIMB_BLOCK;
@@ -89,8 +84,3 @@ pub fn mantle(p: Vec3) -> Option<Vec3> {
     Some(inside)
 }
 
-/// Facing the player's start in the arena from `at`.
-pub fn facing(at: Vec3, to: Vec3) -> Quat {
-    let d = to - at;
-    Quat::from_rotation_y(d.x.atan2(d.z))
-}

@@ -89,7 +89,7 @@ pub fn hit(people: &mut crate::arena::People, ev: &CombatEvent, weapons: &MeleeW
     let intensity = rustvr_melee::intensity(ev.speed);
     if ev.damage > 0.0 {
         d.wound(k, part, point, ev.what, intensity);
-        out.push(Bled { actor: ev.actor, point, dir, strength: intensity, kind: ev.what });
+        out.push(Bled { point, dir, strength: intensity });
     }
     tracing::info!(
         "range: {:#x} part {part} ({body:?}) hit by {:#x} at {:.1} m/s: {damage:.1} of its health ({:.0} left), push level {level}{}",
@@ -133,11 +133,9 @@ pub fn wound(people: &mut crate::arena::People, ev: &CombatEvent) {
 /// Where blood comes from a hit (for the range's own effects).
 #[derive(Clone, Copy, Debug)]
 pub struct Bled {
-    pub actor: u32,
     pub point: Vec3,
     pub dir: Vec3,
     pub strength: f32,
-    pub kind: u32,
 }
 
 /// The range's blood: the runtime's own look (its built-in splat), a person's worth.

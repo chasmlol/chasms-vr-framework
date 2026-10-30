@@ -6924,6 +6924,8 @@ impl Rig {
                 Holder::Pulled { .. } => flags |= OS_PULLED,
                 Holder::Stuck { .. } => flags |= OS_STUCK,
                 Holder::Gone if self.breaking.broken.contains(id) => flags |= OS_BROKEN,
+                // (A melee weapon in flight: thrown, as a throwable's says.)
+                Holder::Free if self.melee.thrown.contains_key(id) => flags |= OS_THROWN,
                 Holder::Stowed(_) => flags |= OS_STOWED,
                 Holder::Nocked { .. } => flags |= OS_IN_WEAPON,
                 Holder::InBowl { grinder: false, .. } => flags |= OS_IN_RECEPTACLE,

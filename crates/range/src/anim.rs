@@ -107,11 +107,6 @@ impl Pose {
         })
     }
 
-    /// The same pose, blended `k` (0..1) of the way to `other`.
-    pub fn lerp(&self, other: &Pose, k: f32) -> Pose {
-        Pose { turn: std::array::from_fn(|i| self.turn[i].slerp(other.turn[i], k).normalize()), pelvis: self.pelvis.lerp(other.pelvis, k) }
-    }
-
     /// Where a joint ends up (person space) under this pose: `p` on part `part`.
     pub fn point(&self, part: usize, p: Vec3) -> Vec3 {
         let mut chain = vec![part];

@@ -315,7 +315,6 @@ pub struct Threat {
 
 #[derive(Clone, Debug, Default)]
 pub struct Sight {
-    pub head: Vec3,
     pub feet: Vec3,
     pub vel: Vec3,
     pub threats: Vec<Threat>,
@@ -544,7 +543,8 @@ impl Brain {
         };
         for t in &sight.threats {
             let speed = t.vel.length();
-            if t.b.distance(chest) > DEFEND || speed < 1.0 {
+            let (near, _) = closest(t.a, t.b, chest, chest);
+            if t.a.lerp(t.b, near).distance(chest) > DEFEND || speed < 1.0 {
                 continue;
             }
             // On course: its tip's way passes near the body within half a second.
@@ -755,7 +755,7 @@ impl Brain {
             arm(&mut pose, hand, key);
         }
         let face_to = if look.length() > 0.1 { Some(look) } else { None };
-        Thought { pose, walk, face_to, attacking: attacking_hand, hurting: self.swing.is_some_and(|s| s.hurting(now)), guarding: self.block > 0.3 }
+        Thought { pose, walk, face_to, attacking: attacking_hand, guarding: self.block > 0.3 }
     }
 
     /// The hand that swings: dual wield alternates; otherwise the weapon hand.
@@ -779,9 +779,8 @@ pub struct Thought {
     /// How it walks (its own frame, m/s), and where it would face (world, flat).
     pub walk: Vec3,
     pub face_to: Option<Vec3>,
-    /// Which hand swings, whether its weapon can hurt now (the damage window), whether it guards.
+    /// Which hand swings, and whether it guards.
     pub attacking: Option<usize>,
-    pub hurting: bool,
     pub guarding: bool,
 }
 
