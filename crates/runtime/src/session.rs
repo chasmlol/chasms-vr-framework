@@ -746,7 +746,7 @@ impl Session {
             // The gravity gloves' whoosh follows the object to the hand.
             for h in 0..2 {
                 match (self.rig_out.pulled[h], self.glove_loops[h], &self.audio) {
-                    (Some(p), None, Some(a)) => self.glove_loops[h] = Some(a.start_loop(rustvr_audio::Sound::GloveTravel, p)),
+                    (Some(p), None, Some(a)) => self.glove_loops[h] = Some(a.start_event_loop(rustvr_audio::Event::GloveTravel, rustvr_audio::Sound::GloveTravel, p)),
                     (Some(p), Some(id), Some(a)) => a.move_loop(id, p),
                     (None, Some(id), Some(a)) => {
                         a.stop_loop(id);
@@ -1206,12 +1206,21 @@ impl Session {
     /// The sound for one feedback cue: the object's own from the game's sound pack (its set, or
     /// the pack's defaults), else the runtime's synthesised one. A shot also plays its tail and
     /// its casing landing (the pack's; the runtime has none of its own), and none of it when the
-    /// game plays its own gunshots; reloading sounds likewise when the game plays its own.
+    /// game plays its own gunshots; reloading sounds likewise when the game plays its own, and the
+    /// player's things going into and out of the inventory. A thing drawn from a slot sounds like
+    /// a thing of its kind ([`Rig::drawn_sound`]).
     fn play_cue(&mut self, fb: &feedback::Feedback) {
         use rustvr_audio::Event as E;
         let Some((event, fallback)) = event_of(fb.cue) else { return };
-        let (set, flags) = fb.object.and_then(|id| self.object_sounds.get(&id)).copied().unwrap_or_default();
-        if !runtime_plays(event, flags | self.sound_pack.flags, self.settings.current.sound.shots) {
+        let (set, flags) = fb
+            .object
+            .and_then(|id| self.object_sounds.get(&id).copied().or_else(|| self.rig.drawn_sound(id).map(|s| (rustvr_audio::SetKey::of(s), 0))))
+            .unwrap_or_default();
+        let flags = flags | self.sound_pack.flags;
+        if !runtime_plays(event, flags, self.settings.current.sound.shots) {
+            return;
+        }
+        if matches!(fb.cue, feedback::Cue::PocketIn | feedback::Cue::PocketOut) && flags & SND_GAME_INVENTORY != 0 {
             return;
         }
         let shot = event == E::Fire;
@@ -1829,6 +1838,8 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::Release => (E::Release, S::Release),
         C::HolsterIn => (E::HolsterIn, S::HolsterIn),
         C::HolsterOut => (E::HolsterOut, S::HolsterOut),
+        C::PocketIn => (E::HolsterIn, S::HolsterIn),
+        C::PocketOut => (E::HolsterOut, S::HolsterOut),
         C::MagEject => (E::MagOut, S::MagEject),
         C::MagSeat => (E::MagIn, S::MagSeat),
         C::SlideBack => (E::BoltBack, S::SlideBack),

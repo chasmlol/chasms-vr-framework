@@ -844,6 +844,13 @@
  */
 #define RVR_SND_GAME_HANDLING (1 << 1)
 
+/**
+ * The game plays its own sounds of the player's things going into and out of its inventory (a
+ * thing drawn from one of the body's slots, put back in one, a thing lying about stowed in one):
+ * the runtime plays none of those.
+ */
+#define RVR_SND_GAME_INVENTORY (1 << 2)
+
 #define RVR_OFF_BODY 65536
 
 #define RVR_OFF_OBJECTS 69632

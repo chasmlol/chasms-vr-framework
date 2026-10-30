@@ -138,6 +138,9 @@ pub struct InvItem {
     /// isn't handed out).
     pub model: [u8; 48],
     pub _p3: [u32; 2],
+    /// The sound set of a thing of its kind in the game's sound pack (`crate::sound`; UTF-8,
+    /// NUL-terminated, empty for the pack's defaults): what the one drawn from a slot sounds like.
+    pub sound: [u8; 16],
 }
 
 /// A slot on the body as it's set up.
@@ -241,6 +244,10 @@ impl InvItem {
     pub fn model(&self) -> &str {
         crate::name_str(&self.model)
     }
+
+    pub fn sound(&self) -> &str {
+        crate::name_str(&self.sound)
+    }
 }
 
 /// What a slot gives now, and where it is.
@@ -311,7 +318,7 @@ pub const OFF_SLOT_EDITS: usize = (OFF_BODY_SLOTS + size_of::<BodySlots>()).next
 
 const _: () = {
     assert!(size_of::<InvCategory>() == 32);
-    assert!(size_of::<InvItem>() == 192);
+    assert!(size_of::<InvItem>() == 208);
     assert!(size_of::<SlotDesc>() == 80);
     assert!(size_of::<SlotNow>() == 32);
     assert!(OFF_INVENTORY.is_multiple_of(64));

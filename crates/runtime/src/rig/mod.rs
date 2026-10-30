@@ -2473,7 +2473,7 @@ impl Rig {
                 self.debug.pocket_returns += 1;
                 tracing::info!("rig: {id:#x} put back (in slot {pocket:?})");
                 self.pocket_events.push(PocketEvent::PutBack(pocket.unwrap_or(d.slot), d.key));
-                self.emit(Cue::HolsterIn, Some(i), None, palm, 1.0);
+                self.emit(Cue::PocketIn, Some(i), None, palm, 1.0);
                 return;
             }
         }
@@ -2486,7 +2486,7 @@ impl Rig {
                 .or_else(|| self.pocket_zones.iter().position(|z| self.anchor.contains(&z.put, palm_t)).map(|k| SLOT_COUNT_BODY + k))
         {
             self.stow(id, slot as u32);
-            self.emit(Cue::HolsterIn, Some(i), Some(id), palm, 1.0);
+            self.emit(Cue::PocketIn, Some(i), Some(id), palm, 1.0);
             return;
         }
         // Into a holster or pouch the hand is in, let go of gently (a swing past it throws instead).
@@ -2652,6 +2652,14 @@ impl Rig {
         self.placing
     }
 
+    /// The sound set of a thing drawn from a slot (or shown at one), as the game's inventory has a
+    /// thing of its kind sound ([`InvItem::sound`]).
+    pub fn drawn_sound(&self, id: u32) -> Option<&str> {
+        let o = self.objects.get(&id)?;
+        let item = o.drawn.map(|d| d.item).or(o.shown)?;
+        self.inventory.items().iter().find(|i| i.id == item).map(|i| i.sound()).filter(|s| !s.is_empty())
+    }
+
     /// How many of each stack are out of the slots (in hands, or let go and not yet taken back).
     pub fn drawn_out(&self) -> HashMap<u32, u32> {
         let mut out = HashMap::new();
@@ -2767,7 +2775,7 @@ impl Rig {
         // Held just where it came out: the hand stays where it is, the fingers close on it.
         self.take(id, i, false);
         self.debug.pocket_draws += 1;
-        self.emit(Cue::HolsterOut, Some(i), Some(id), palm, 1.0);
+        self.emit(Cue::PocketOut, Some(i), Some(id), palm, 1.0);
         tracing::info!("rig: {} ({} of them) drawn from slot {k} ({name}) into the {} hand as {id:#x}", item.name(), item.count, if i == 0 { "left" } else { "right" });
     }
 
@@ -2792,7 +2800,8 @@ impl Rig {
             }
             self.pocket_events.push(PocketEvent::Edit(k));
             let p = self.map.point(now_at);
-            self.emit(Cue::GloveLock, Some(i), None, p, 1.0);
+            // (Felt, not heard: the editor opens with a sound of its own, the game's.)
+            self.emit(Cue::Use, Some(i), None, p, 1.0);
             tracing::info!("rig: the grip held in slot {k}: its editor");
         }
     }

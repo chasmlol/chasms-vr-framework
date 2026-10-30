@@ -20,6 +20,10 @@ pub enum Cue {
     Release,
     HolsterIn,
     HolsterOut,
+    /// One of the player's things drawn from a slot of the body, and one put back in a slot (or a
+    /// thing lying about stowed in one): into and out of the game's inventory.
+    PocketIn,
+    PocketOut,
     MagEject,
     MagSeat,
     SlideBack,
@@ -88,6 +92,8 @@ impl Cue {
             Cue::Release => "release",
             Cue::HolsterIn => "holster_in",
             Cue::HolsterOut => "holster_out",
+            Cue::PocketIn => "pocket_in",
+            Cue::PocketOut => "pocket_out",
             Cue::Pouch => "pouch",
             Cue::MagEject => "mag_eject",
             Cue::MagSeat => "mag_seat",
@@ -155,8 +161,8 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
     Some(match cue {
         Cue::Grab => (0.03, 160.0, 0.55),
         Cue::Release => (0.02, 120.0, 0.3),
-        Cue::HolsterIn => (0.05, 120.0, 0.6),
-        Cue::HolsterOut => (0.03, 160.0, 0.5),
+        Cue::HolsterIn | Cue::PocketIn => (0.05, 120.0, 0.6),
+        Cue::HolsterOut | Cue::PocketOut => (0.03, 160.0, 0.5),
         Cue::MagEject => (0.04, 100.0, 0.6),
         Cue::MagSeat => (0.06, 90.0, 0.9),
         Cue::SlideBack => (0.03, 200.0, 0.7),

@@ -11,7 +11,8 @@
 //! Some sounds the game already makes itself: a game that fires the runtime's shots through its
 //! own weapon code usually plays the gunshot too. [`SND_GAME_SHOTS`] (for every object, or per
 //! object in [`ObjectSound::flags`]) tells the runtime not to play those, so nothing is heard
-//! twice; [`SND_GAME_HANDLING`] does the same for reloading and handling sounds.
+//! twice; [`SND_GAME_HANDLING`] does the same for reloading and handling sounds, and
+//! [`SND_GAME_INVENTORY`] for the player's things going into and out of the inventory.
 //!
 //! The region is additive: it lies past every other region, and an adapter that never writes it
 //! leaves the runtime on its own sounds.
@@ -68,6 +69,10 @@ pub const SND_GAME_SHOTS: u32 = 1 << 0;
 /// The game plays its own reloading and handling sounds (magazine out and in, the bolt, a dry
 /// fire): the runtime plays none of those.
 pub const SND_GAME_HANDLING: u32 = 1 << 1;
+/// The game plays its own sounds of the player's things going into and out of its inventory (a
+/// thing drawn from one of the body's slots, put back in one, a thing lying about stowed in one):
+/// the runtime plays none of those.
+pub const SND_GAME_INVENTORY: u32 = 1 << 2;
 
 impl SoundPack {
     /// A pack in `dir` (absolute; empty for none), no flags, no objects.
