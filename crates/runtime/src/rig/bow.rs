@@ -22,6 +22,9 @@ use rustvr_protocol::*;
 
 /// How near the string's nock point an arrow's nock must come to go on (metres).
 pub const NOCK_REACH: f32 = 0.09;
+/// From this near the string (metres), an arrow in the hand turns to lie along the bow, all the
+/// way by [`NOCK_REACH`]: the Longbow's rotation blend starts as near.
+pub const ALIGN_REACH: f32 = 0.15;
 /// An arrow goes onto the string over this long (s).
 pub const NOCK_TIME: f64 = 0.12;
 /// The bow turns to the string hand over this long as the hand takes the string (s).
@@ -159,9 +162,13 @@ pub fn noise(seed: u64) -> f32 {
     (x >> 40) as f32 / (1u64 << 24) as f32
 }
 
-/// How an arrow out of the quiver sits in the hand (its pose from the controller's grip pose):
-/// along the fist's axis, its nock between the index finger and the thumb ([`PINCH`]), its point
-/// out past them, ready to bring to the string.
-pub fn held_arrow(d: &ObjectDesc) -> (Vec3, Quat) {
-    (PINCH - Vec3::from_array(d.mag_well), Quat::IDENTITY)
+/// How an arrow out of the quiver sits in the hand (its pose from the controller's grip pose): its
+/// nock between the index finger and the thumb ([`PINCH`]), pointing where the controller points
+/// (`aim`: the controller's aim pose turned into its grip pose), the way an archer holds an arrow
+/// by the nock and the Longbow puts it in the hand (its nock at the hand, its shaft out ahead of
+/// the fist). So it points down into a quiver as it's taken, and lies level, out ahead along the
+/// forearm, as the arm comes down to the string. (Along the fist's axis it stood up out of the
+/// fist like a dagger.)
+pub fn held_arrow(d: &ObjectDesc, aim: Quat) -> (Vec3, Quat) {
+    (PINCH - aim * Vec3::from_array(d.mag_well), aim)
 }

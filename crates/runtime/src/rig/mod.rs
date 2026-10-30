@@ -2149,7 +2149,10 @@ impl Rig {
                 let game = b.flags & OBJF_GAME_AMMO != 0;
                 match self.arrow_template(b.ammo_type) {
                     Some(t) if !game || t.rounds > self.arrows_out(t.id) => {
-                        let id = self.spawn_mag(&t, 1, palm, grip_rot);
+                        // (Out of the quiver already as it's held, so it doesn't swing into the
+                        // hand.)
+                        let (p, q) = compose((palm, grip_rot), bow::held_arrow(&t, self.aim_in_grip(i)));
+                        let id = self.spawn_mag(&t, 1, p, q);
                         self.debug.quiver_draws += 1;
                         self.take(id, i, true);
                         self.emit(Cue::Quiver, Some(i), Some(bid), palm, 1.0);
@@ -2165,10 +2168,11 @@ impl Rig {
     /// Hand `i` takes the string of the bow the other hand holds, by the arrow resting on it: it
     /// draws it from here.
     fn take_string(&mut self, i: usize, bid: u32) {
+        let aim = self.aim_in_grip(i);
         let Some(arrow) = self.objects.get(&bid).and_then(|b| b.bow?.nocked) else { return };
         let Some(a) = self.objects.get_mut(&arrow) else { return };
         // (Held as it comes out of the quiver once it's off the string.)
-        let (p, q) = bow::held_arrow(&a.desc);
+        let (p, q) = bow::held_arrow(&a.desc, aim);
         a.attach = Attach::Fixed(p, q);
         a.handled = true;
         let now = self.now;
@@ -2185,6 +2189,12 @@ impl Rig {
         let c = h.collider;
         self.physics.set_groups(c, groups_none());
         self.emit(Cue::Grab, Some(i), Some(bid), at, 0.5);
+    }
+
+    /// Where hand `i`'s controller points (its aim pose), turned into its grip pose.
+    fn aim_in_grip(&self, i: usize) -> Quat {
+        let h = &self.hands.as_ref().unwrap()[i];
+        (h.target.1.inverse() * h.aim_rot).normalize()
     }
 
     /// Where hand `i`'s fingers pinch an arrow's nock and the string, from its controller (world).
@@ -2265,8 +2275,9 @@ impl Rig {
             let rot = held_round_rot();
             (Attach::Fixed(HELD_ROUND_BASE - rot * v3(d.mag_well), rot), On::Free)
         } else if snap && d.kind == OBJ_ARROW {
-            // An arrow from the quiver: along the fist, its nock between the index and the thumb.
-            let (p, q) = bow::held_arrow(&d);
+            // An arrow from the quiver: its nock between the index and the thumb, pointing where
+            // the controller points.
+            let (p, q) = bow::held_arrow(&d, self.aim_in_grip(i));
             (Attach::Fixed(p, q), On::Free)
         } else if snap && d.kind == OBJ_MAGAZINE {
             // A fresh magazine sits in the fist along the grip pose's +Z (the fist's axis, little
@@ -3456,6 +3467,39 @@ impl Rig {
         (g - rot * pivot, rot)
     }
 
+    /// Where arrow `id`, in hand `hand` at `alone` (where the hand alone puts it, world), goes as
+    /// its nock nears the string of a bow the other hand holds: turned about its nock, still in the
+    /// fingers, to lie along the bow as it will on the string, from none at [`bow::ALIGN_REACH`] to
+    /// all of it at [`bow::NOCK_REACH`], where it goes on. So it arrives at the string already lined
+    /// up, as the Longbow's does, and going on only slides it the last few centimetres. None: no
+    /// bow near.
+    fn arrow_target(&self, id: u32, hand: usize, alone: (Vec3, Quat)) -> Option<(Vec3, Quat)> {
+        let a = self.objects.get(&id).filter(|a| a.desc.kind == OBJ_ARROW)?;
+        let bh = hand ^ 1;
+        let h = &self.hands.as_ref()?[bh];
+        let bid = h.holding.filter(|_| h.on == On::Grip)?;
+        let b = self.objects.get(&bid)?;
+        if b.bow.is_none_or(|st| st.nocked.is_some()) || b.desc.ammo_type != a.desc.ammo_type {
+            return None;
+        }
+        let (bp, bq) = self.physics.pose(b.body);
+        let string = bp + bq * bow::nock(&b.desc, 0.0);
+        let well = v3(a.desc.mag_well);
+        let nock = alone.0 + alone.1 * well;
+        let wpm = self.map.world_per_meter;
+        let near = smooth(((bow::ALIGN_REACH * wpm - nock.distance(string)) / ((bow::ALIGN_REACH - bow::NOCK_REACH) * wpm)) as f64);
+        // (Only an arrow pointing the bow's way, as one must to go on: one pointing back at the
+        // archer isn't spun round.)
+        let along = (bq * (bow::rest(&b.desc, bh) - bow::nock(&b.desc, 0.0))).normalize_or(bq * Vec3::Z);
+        let k = near * smooth((((alone.1 * Vec3::Z).dot(bq * Vec3::Z) + 0.3) / 0.5) as f64);
+        if k <= 0.0 {
+            return None;
+        }
+        let lined = (Quat::from_rotation_arc(alone.1 * Vec3::Z, along) * alone.1).normalize();
+        let rot = alone.1.slerp(lined, k).normalize();
+        Some((nock - rot * well, rot))
+    }
+
     // ---- throwables -----------------------------------------------------------------------------------
     /// The buttons on a hand holding a grenade: `arm` (A or a trigger pull) arms it one-handed,
     /// where that's how it arms (the button scheme, no pin, or the other hand busy with a gun);
@@ -4034,8 +4078,15 @@ impl Rig {
                         Attach::Gun => self.gun_target(*id, hand, s, dt),
                         Attach::Fixed(p, q) => {
                             let alone = compose(self.hands.as_ref().unwrap()[hand].target, (p, q));
-                            // A bow turns to the hand drawing its string.
-                            if self.objects[id].bow.is_some() { self.bow_target(*id, hand, inverse((p, q)).0, alone, inp) } else { self.two_handed(*id, hand, inverse((p, q)).0, alone, dt) }
+                            // A bow turns to the hand drawing its string, and an arrow nearing a
+                            // bow's string turns to lie along the bow.
+                            if self.objects[id].bow.is_some() {
+                                self.bow_target(*id, hand, inverse((p, q)).0, alone, inp)
+                            } else if let Some(t) = self.arrow_target(*id, hand, alone) {
+                                t
+                            } else {
+                                self.two_handed(*id, hand, inverse((p, q)).0, alone, dt)
+                            }
                         }
                     };
                     let o = &self.objects[id];
