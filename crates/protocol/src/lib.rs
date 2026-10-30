@@ -487,6 +487,10 @@ pub enum Action {
     GestureMouth = 34,
     /// An open hand swept across the eyes (Metro: the gas mask wiped).
     GestureWipe = 35,
+    /// The free hand turned the page of what the other holds open (`hud::HELD_PAGES`): onwards
+    /// (swept leftwards across it), or back.
+    PageNext = 36,
+    PagePrev = 37,
     /// Adapter-defined actions, picked from the radial menu.
     Custom0 = 40,
     Custom1 = 41,
@@ -538,6 +542,8 @@ impl Action {
         Action::Inventory,
         Action::GestureMouth,
         Action::GestureWipe,
+        Action::PageNext,
+        Action::PagePrev,
         Action::Custom0,
         Action::Custom1,
         Action::Custom2,
@@ -590,6 +596,8 @@ impl Action {
             Action::Inventory => "inventory",
             Action::GestureMouth => "gesture_mouth",
             Action::GestureWipe => "gesture_wipe",
+            Action::PageNext => "page_next",
+            Action::PagePrev => "page_prev",
             Action::Custom0 => "custom0",
             Action::Custom1 => "custom1",
             Action::Custom2 => "custom2",

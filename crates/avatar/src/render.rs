@@ -228,6 +228,61 @@ float3 fogged(float3 c, float3 pv) {
     return lerp(c, fc, g);
 }
 
+// A sheet of the game's UI on something in the hands (a book's pages, a map): a quad of part of
+// `sheet_tex`, in the player's depth (a finger in front of a page covers it, the fingers behind a
+// map are hidden by it), hidden behind what the game drew in front of it. Seen from behind, it isn't
+// there (a page's back is the cover). Sampled over its footprint as the compositor samples a panel,
+// so small text doesn't shimmer.
+cbuffer Sheet : register(b5) {
+    float4 sheet_center;
+    float4 sheet_x;      // half its width, along it
+    float4 sheet_y;      // half its height, up it
+    float4 sheet_uv;     // the part of the texture on it: u0, v0, u1, v1
+    float4 sheet_params; // x: opacity; yz: its edges fade over this part of its half-width and half-height
+};
+Texture2D sheet_tex : register(t15);
+struct SheetOut {
+    float4 pos : SV_Position;
+    float2 uv : TEXCOORD0;
+    float2 local : TEXCOORD1;
+    float view_z : TEXCOORD2;
+    float facing : TEXCOORD3;
+};
+
+SheetOut VSSheet(uint id : SV_VertexID) {
+    float2 c = float2(id & 1, id >> 1);
+    float2 s = c * 2 - 1;
+    float3 p = sheet_center.xyz + sheet_x.xyz * s.x - sheet_y.xyz * s.y;
+    SheetOut o;
+    o.pos = mul(view_proj, float4(p, 1));
+    o.uv = lerp(sheet_uv.xy, sheet_uv.zw, c);
+    o.local = s;
+    o.view_z = dot(view_z.xyz, p) + view_z.w;
+    o.facing = dot(cross(sheet_y.xyz, sheet_x.xyz), eye_pos.xyz - p);
+    return o;
+}
+
+float4 PSSheet(SheetOut i) : SV_Target {
+    if (i.facing < 0) discard;
+    if (behind_game(i.pos, i.view_z)) discard;
+    uint w, h;
+    sheet_tex.GetDimensions(w, h);
+    float2 dx = ddx(i.uv), dy = ddy(i.uv);
+    float2 size = float2(w, h);
+    float n = clamp(ceil(max(length(dx * size), length(dy * size))), 1, 4);
+    float4 t = 0;
+    [loop] for (float a = 0; a < n; a++) {
+        [loop] for (float b = 0; b < n; b++) {
+            t += sheet_tex.SampleLevel(clamp_samp, i.uv + dx * ((a + 0.5) / n - 0.5) + dy * ((b + 0.5) / n - 0.5), 0);
+        }
+    }
+    t *= sheet_params.x / (n * n);
+    if (sheet_params.y > 0) t *= smoothstep(0, sheet_params.y, 1 - abs(i.local.x)) * smoothstep(0, sheet_params.z, 1 - abs(i.local.y));
+    // (Where it's clear, nothing: what's behind it shows, and it keeps out of the depth.)
+    if (t.a < 0.02) discard;
+    return t;
+}
+
 // A gun's laser, as Metro 2033 Redux draws its own (`weapons\attaches\weapon_laser`): the beam
 // is `static34\fx\fx_laser2_red`, two crossed planes 10 cm wide along it, texture `fx\fx_laser1`
 // (its first quarter across them) under `effects\fx_laser` (added light, faded where a plane is
@@ -676,6 +731,17 @@ struct LaserCb {
     color: [f32; 4],
     mode: [f32; 4],
     inv_vp: [f32; 16],
+}
+
+/// A sheet's place and look (the shader's `Sheet`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SheetCb {
+    center: [f32; 4],
+    x: [f32; 4],
+    y: [f32; 4],
+    uv: [f32; 4],
+    params: [f32; 4],
 }
 
 /// The laser's light (HDR): Metro's red (the beam mesh's vertex colours are pure red).
@@ -1279,6 +1345,10 @@ pub struct Renderer {
     through_lens: Program,
     lens_cb: ConstantBuffer<[f32; 4]>,
     premultiplied: ID3D11BlendState,
+    /// Sheets of a texture on what the hands hold ([`Renderer::set_sheets`]), and their pass.
+    sheets: Vec<crate::Sheet>,
+    sheet_program: Program,
+    sheet_cb: ConstantBuffer<SheetCb>,
 }
 
 impl Renderer {
@@ -1329,7 +1399,16 @@ impl Renderer {
             through_lens: Program::new(gpu, THROUGH_LENS, "avatar_lens", &[])?,
             lens_cb: ConstantBuffer::new(gpu)?,
             premultiplied: pipeline::blend_state(gpu, Blend::Premultiplied)?,
+            sheets: Vec::new(),
+            sheet_program: Program::with_entries(gpu, &source, "avatar", "VSSheet", "PSSheet", &[])?,
+            sheet_cb: ConstantBuffer::new(gpu)?,
         })
+    }
+
+    /// The sheets on what the hands hold from now on (a book's pages: see [`crate::Sheet`]), drawn
+    /// with the player in its depth after what it holds.
+    pub fn set_sheets(&mut self, sheets: Vec<crate::Sheet>) {
+        self.sheets = sheets;
     }
 
     /// The held gun's laser from now on (None: none): drawn with the player.
@@ -1562,6 +1641,12 @@ impl Renderer {
                 }
                 self.bind_common(ctx, game_depth.as_ref(), width, height);
             }
+        }
+
+        // The sheets on what the hands hold (a book's pages), in the same depth: after it, so the
+        // pages lie over the book, and a hand in front of them covers them.
+        if !self.sheets.is_empty() && !self.in_frame {
+            self.draw_sheets(ctx);
         }
 
         let mut ghost_ready = [false; 2];
@@ -1877,6 +1962,38 @@ impl Renderer {
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             ctx.VSSetShaderResources(1, Some(&[None]));
             ctx.PSSetShaderResources(13, Some(&[None, None]));
+        }
+    }
+
+    /// The sheets ([`Renderer::set_sheets`]), premultiplied over what's there, each in the depth
+    /// where it shows.
+    fn draw_sheets(&self, ctx: &ID3D11DeviceContext) {
+        self.sheet_program.bind(ctx);
+        unsafe {
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            ctx.OMSetBlendState(&self.premultiplied, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(&self.depth_write, 0);
+            ctx.RSSetState(&self.two_sided);
+            ctx.VSSetConstantBuffers(5, Some(&[Some(self.sheet_cb.buf.clone())]));
+            ctx.PSSetConstantBuffers(5, Some(&[Some(self.sheet_cb.buf.clone())]));
+        }
+        for s in &self.sheets {
+            let cb = SheetCb {
+                center: s.center.extend(1.0).to_array(),
+                x: s.half_x.extend(0.0).to_array(),
+                y: s.half_y.extend(0.0).to_array(),
+                uv: s.uv,
+                params: [s.opacity, s.soft[0], s.soft[1], 0.0],
+            };
+            self.sheet_cb.update(ctx, &cb);
+            unsafe {
+                ctx.PSSetShaderResources(15, Some(&[Some(s.srv.clone())]));
+                ctx.Draw(4, 0);
+            }
+        }
+        unsafe {
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.PSSetShaderResources(15, Some(&[None]));
         }
     }
 

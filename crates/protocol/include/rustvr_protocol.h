@@ -626,6 +626,39 @@
  */
 #define RVR_ANCHOR_POPUP 3
 
+/**
+ * On a thing in the hands (its [`HudLayout::held`]): a book's pages on the book, a map held like
+ * paper. It goes where the hands take it, every frame, and it's drawn with the body (a hand in
+ * front of a page covers it; the fingers behind a sheet don't show through it).
+ */
+#define RVR_ANCHOR_HELD 4
+
+/**
+ * On the thing's broad face, the one turned to the eyes as it appears (a book's cover): its middle
+ * on the face's, upright along the face's longer side, a few millimetres out from it.
+ */
+#define RVR_HELD_FACE (1 << 0)
+
+/**
+ * Held by its edge like a sheet of paper: the hand at the middle of its foot, the sheet up from it
+ * turned to the eyes. The other hand's grip near its far side spreads it between the two (as wide
+ * as they're apart, within reason): pulling them apart makes it bigger.
+ */
+#define RVR_HELD_SHEET (1 << 1)
+
+/**
+ * Its pages turn by hand: the free hand sweeping across them past the middle (or the trigger
+ * pinched at a page's edge and pulled across) presses [`crate::Action::PageNext`] (sweeping
+ * leftwards) or [`crate::Action::PagePrev`].
+ */
+#define RVR_HELD_PAGES (1 << 2)
+
+/**
+ * The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on
+ * it, its button down, as the hand moves (a map's pan), until the grip opens.
+ */
+#define RVR_HELD_DRAG (1 << 3)
+
 #define RVR_SIDE_RIGHT 0
 
 #define RVR_SIDE_LEFT 1
@@ -868,6 +901,20 @@
  * drawn, for the game to take into the player's inventory (and drop from the table).
  */
 #define RVR_OBJF_LOOT (1 << 11)
+
+/**
+ * It opens in the hands (a book, a note): while one hand holds it, the other hand's grip on it
+ * doesn't take it but opens it, and the next grip shuts it. Each is one more of its state's
+ * `shots`, for the game to open what's inside it (its menu, on it: `hud::ANCHOR_HELD`) or shut it
+ * if it's open; the game says which by whether its menu is up.
+ */
+#define RVR_OBJF_OPENS (1 << 12)
+
+/**
+ * Kept on the body: let go anywhere but a slot, it glides back to the slot it was drawn from (a
+ * map to its place on the belt), as a holstered gun does.
+ */
+#define RVR_OBJF_KEPT (1 << 13)
 
 /**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
