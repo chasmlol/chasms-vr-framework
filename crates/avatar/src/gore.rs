@@ -159,8 +159,8 @@ float3 g_tv(float3 v) { return mul((float3x3)g_world, v); }
 float3 g_lit(float3 p, float3 n, float3 base, float wet) {
     if (g_info.y > 0) return base;
     float3 v = normalize(eye_pos.xyz - p);
-    float gloss = lerp(6, 70, wet);
-    float mask = 0.15 + 0.75 * wet;
+    float gloss = lerp(6, 80, wet);
+    float mask = 0.08 + 0.45 * wet;
     float3 d = 0, s = 0;
     if (g_info.x > 0) {
         uint count = (uint)envc.w;
@@ -339,7 +339,7 @@ CapOut VSCap(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float r = c.radius * length(g_tv(float3(1, 0, 0)));
     float2 xy = float2(cos(phi), sin(phi)) * rr;
     // A low dome, its rim a little inside the stump.
-    float3 p = g_tw(c.center) + (a * xy.x + b * xy.y) * r * 1.05 + o * r * (0.35 * lift - 0.12);
+    float3 p = g_tw(c.center) + (a * xy.x + b * xy.y) * r * 0.95 + o * r * (0.22 * lift - 0.1);
     CapOut co;
     co.pos = mul(view_proj, float4(p, 1));
     co.world = p;
@@ -351,8 +351,9 @@ CapOut VSCap(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
 
 float4 PSCap(CapOut i) : SV_Target {
     if (behind_game(i.pos, i.view_z)) discard;
-    float3 base = g_tex.x > 0 ? g_tex0.Sample(samp, i.uv).rgb : g_color.rgb;
-    float3 col = g_fog(g_lit(i.world, normalize(i.n), base, 0.8), i.world);
+    // (The game's flesh, darkened with the blood over it.)
+    float3 base = (g_tex.x > 0 ? g_tex0.Sample(samp, i.uv).rgb : g_color.rgb) * float3(0.75, 0.55, 0.52);
+    float3 col = g_fog(g_lit(i.world, normalize(i.n), base, 0.45), i.world);
     return float4(m_display_to_linear(col), 1);
 }
 "#;

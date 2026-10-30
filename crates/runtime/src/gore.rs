@@ -43,8 +43,8 @@ pub const MAX_RUNNERS: usize = 96;
 /// Ray casts against the world a frame, shared by every drop in the air.
 pub const PROBES: usize = 160;
 /// Splats kept on the body and on each held thing.
-const MAX_BODY_SPLATS: usize = 24;
-const MAX_HELD_SPLATS: usize = 20;
+const MAX_BODY_SPLATS: usize = 20;
+const MAX_HELD_SPLATS: usize = 28;
 
 const GRAVITY: f32 = 9.81;
 /// A heartbeat (s): the stumps' pulses.
@@ -504,17 +504,18 @@ impl Gore {
                 if kind == DMG_PIERCE {
                     // From the point back as deep as it went.
                     let back = (a - b).normalize_or_zero();
-                    let n = ((depth / 0.03) as usize).clamp(1, 5);
+                    let n = ((depth / 0.025) as usize).clamp(1, 6);
                     for j in 0..n {
-                        add(b + back * (j as f32 * 0.03), 0.02);
+                        add(b + back * (j as f32 * 0.025), 0.03);
                     }
                 } else {
-                    // Along the edge either side of where it met, the more the harder.
+                    // Along the edge as far as the body it went through, either side of where it
+                    // met (a blade is bloodied as far as it went in).
                     let along = (b - a) / len;
-                    let n = (2.0 + 4.0 * s) as usize;
+                    let n = ((depth * 2.0 / 0.025) as usize).clamp(3, 10);
                     for j in 0..n {
-                        let off = (j as f32 - (n as f32 - 1.0) * 0.5) * 0.035;
-                        add(on + along * off, 0.018 + 0.01 * s);
+                        let off = (j as f32 - (n as f32 - 1.0) * 0.5) * 0.025;
+                        add(on + along * off, 0.03 + 0.012 * s.min(1.0));
                     }
                 }
             }

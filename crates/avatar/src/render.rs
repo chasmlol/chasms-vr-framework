@@ -178,7 +178,8 @@ float blood_at(float3 p, out float wet) {
         float2 uv = float2(dot(d, a), dot(d, bb)) / r * 0.5 + 0.5;
         uint tile = k % (tiles * tiles);
         float m = splat_info.y > 0 ? splat_tex.SampleLevel(clamp_samp, (uv + float2(tile % tiles, tile / tiles)) / tiles, 0).a : 1;
-        float bk = saturate(m * 1.6) * saturate((1 - q) * 4);
+        // A film of it in the middle, the splat's ragged shape towards its edge.
+        float bk = saturate(max(m * 1.6, (0.6 - q) * 2.5)) * saturate((1 - q) * 4);
         b = max(b, bk);
         wet = max(wet, bk * splat_nrm[k].w);
     }
