@@ -72,6 +72,9 @@ pub enum Cue {
     /// An air gun's pump stroke (pressure building), and its trigger without the pressure to fire.
     Pump,
     AirHiss,
+    /// A hand held back by the weight of a body it holds (a creature, `rig::creatures`): a low,
+    /// steady rumble, harder the further the body holds it back (felt, not heard).
+    Strain,
 }
 
 impl Cue {
@@ -80,6 +83,7 @@ impl Cue {
         match self {
             Cue::Grab => "grab",
             Cue::Release => "release",
+            Cue::Strain => "strain",
             Cue::HolsterIn => "holster_in",
             Cue::HolsterOut => "holster_out",
             Cue::Pouch => "pouch",
@@ -196,6 +200,7 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::BoltForward | Cue::PumpForward => (0.045, 140.0, 0.85),
         Cue::Pump => (0.04, 90.0, 0.6),
         Cue::AirHiss => (0.03, 320.0, 0.25),
+        Cue::Strain => (0.05, 55.0, (0.15 + 0.6 * i).min(0.8)),
     })
 }
 

@@ -32,6 +32,11 @@ const THROAT_TORSO: f32 = 0.1;
 const THIN: f32 = 0.07;
 /// Capsules of the creature this near the hand (metres) are what its fingers close on.
 pub const GRASP_NEAR: f32 = 0.12;
+/// A hand held back further than this from its controller (metres) feels the body's weight: a
+/// strain every so often (seconds), full at [`STRAIN_FULL`] metres.
+pub const STRAIN_FROM: f32 = 0.04;
+pub const STRAIN_EVERY: f64 = 0.05;
+pub const STRAIN_FULL: f32 = 0.3;
 
 /// What the game says about one creature's body ([`ActorBody`]), and its parts' kinds.
 #[derive(Clone, Debug, Default)]
@@ -119,6 +124,8 @@ pub struct Hold {
     pub since: f64,
     /// Pulled past its reach since then.
     pub slipping: Option<f64>,
+    /// When the strain was last felt.
+    pub strained: f64,
 }
 
 /// How hard a hand squeezing `squeeze` (0..1) grips past its hold, with the grip closing at `press`.

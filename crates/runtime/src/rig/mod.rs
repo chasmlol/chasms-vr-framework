@@ -3585,7 +3585,7 @@ impl Rig {
         let throat = creatures::on_throat(kind, a, b, on);
         self.grab_serial += 1;
         let inv = inverse(frame);
-        let hold = creatures::Hold { actor, part, hand: compose(inv, at), point: inv.0 + inv.1 * on, throat, serial: self.grab_serial, since: self.now, slipping: None };
+        let hold = creatures::Hold { actor, part, hand: compose(inv, at), point: inv.0 + inv.1 * on, throat, serial: self.grab_serial, since: self.now, slipping: None, strained: 0.0 };
         self.grabs[i] = CreatureGrab {
             serial: hold.serial,
             flags: GRAB_HELD | if throat { GRAB_THROAT } else { 0 },
@@ -3657,8 +3657,14 @@ impl Rig {
             let apart = h.target.0.distance(at.0);
             h.blocked = apart > BLOCKED;
             let slipping = (apart > creatures::REACH * map.world_per_meter).then(|| hold.slipping.unwrap_or(now));
+            // The body's weight, felt: the further it holds the hand back, the harder.
+            let strain = (apart > creatures::STRAIN_FROM * map.world_per_meter && now - hold.strained >= creatures::STRAIN_EVERY)
+                .then(|| ((apart / map.world_per_meter - creatures::STRAIN_FROM) / (creatures::STRAIN_FULL - creatures::STRAIN_FROM)).clamp(0.0, 1.0));
             if let Some(c) = h.creature.as_mut() {
                 c.slipping = slipping;
+                if strain.is_some() {
+                    c.strained = now;
+                }
             }
             self.physics.set_pose(h.body, at.0, at.1);
             self.physics.set_velocity(h.body, Vec3::ZERO, Vec3::ZERO);
@@ -3677,6 +3683,9 @@ impl Rig {
                 ang_vel: (map.rot(Quat::IDENTITY) * h.ang_t).to_array(),
                 _p0: 0.0,
             };
+            if let Some(k) = strain {
+                self.emit(Cue::Strain, Some(i), None, at.0, k);
+            }
             if slipping.is_some_and(|t| now - t > creatures::SLIP_TIME) {
                 self.let_go_creature(i, None, s.grab_transition);
             }
