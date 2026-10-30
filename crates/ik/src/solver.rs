@@ -277,7 +277,10 @@ impl BodySolver {
             };
             let learned_chest = learned.filter(|_| p.prior_chest > 0.0).map(|l| l.chest_yaw);
             let torso_yaw = state.torso.update(p, dt, s, eyes, head_joint, head_yaw, palms, tracked, learned_chest);
-            let root_yaw = state.root.update(p, dt, torso_yaw, moving);
+            // The feet and hips trail the chest past a dead zone; the prior's hips, as far as it's
+            // trusted, say where the chest's twist leaves them.
+            let toward = learned.filter(|_| tracked.is_none() && p.prior_hips > 0.0).map_or(torso_yaw, |l| torso_yaw + wrap_angle(l.hips_yaw - torso_yaw) * p.prior_hips);
+            let root_yaw = state.root.update(p, dt, toward, moving);
             // In water the body floats, leaning into the way it swims (`swim`).
             state.swim.update(dt, input.swim.as_ref(), torso_yaw);
             let floating = state.swim.weight;
