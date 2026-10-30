@@ -153,13 +153,13 @@ bool behind_game(float4 svpos, float z) {
 
 // Blood on the player and what the hands hold (gore.rs): spheres where it got on them, the game's
 // splat laid across each.
-cbuffer Splats : register(b4) {
+cbuffer Splats : register(b6) {
     float4 splat_pos[48];   // tracking space; w: radius
     float4 splat_nrm[48];   // the surface's normal there; w: wet
     float4 splat_info;      // x: how many, y: the splat texture is bound, z: its atlas
     float4 splat_color;     // the blood's colour (display range)
 };
-Texture2D splat_tex : register(t13);
+Texture2D splat_tex : register(t15);
 
 // How much blood covers p (0..1), and how wet it is.
 float blood_at(float3 p, out float wet) {
@@ -1849,8 +1849,8 @@ impl Renderer {
             ctx.PSSetShaderResources(1, Some(&[game_depth.cloned()]));
             ctx.PSSetShaderResources(5, Some(&[Some(self.lut_srv.clone()), self.atlas.clone()]));
             if let Some(g) = self.gore.as_ref() {
-                ctx.PSSetConstantBuffers(4, Some(&[Some(g.splat_cb.buf.clone())]));
-                ctx.PSSetShaderResources(13, Some(&[g.splat_tex.clone()]));
+                ctx.PSSetConstantBuffers(6, Some(&[Some(g.splat_cb.buf.clone())]));
+                ctx.PSSetShaderResources(15, Some(&[g.splat_tex.clone()]));
             }
             ctx.OMSetBlendState(&self.opaque_blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
             ctx.OMSetDepthStencilState(&self.depth_write, 0);

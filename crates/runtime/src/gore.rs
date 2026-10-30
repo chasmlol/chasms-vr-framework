@@ -175,6 +175,7 @@ struct StumpTime {
 pub struct GoreStats {
     pub drops: usize,
     pub decals: usize,
+    pub pools: usize,
     pub runners: usize,
     pub probes: usize,
     pub severs: u32,
@@ -366,7 +367,7 @@ impl Gore {
         if now - self.logged > 5.0 && (self.stats.drops > 0 || !self.decals.is_empty()) {
             self.logged = now;
             let s = &self.stats;
-            tracing::info!("gore: {} drops, {} decals, {} runs, {} probes this frame, {} wounds and {} limbs so far, {} splats on the player", s.drops, s.decals, s.runners, s.probes, s.wounds, s.severs, self.out_splats.len());
+            tracing::info!("gore: {} drops, {} decals ({} pools), {} runs, {} probes this frame, {} wounds and {} limbs so far, {} splats on the player", s.drops, s.decals, s.pools, s.runners, s.probes, s.wounds, s.severs, self.out_splats.len());
         }
     }
 
@@ -383,9 +384,11 @@ impl Gore {
         self.spray(at, out, 28.0, (1.5, 4.5), (0.0015, 0.0045), n, n, ev.blood, vel * 0.3);
         self.spray(at, -out, 35.0, (0.8, 2.5), (0.0015, 0.004), n / 3, n / 3, ev.blood, vel * 0.3);
         if ev.object != 0 {
-            let push = Vec3::from_array(ev.push).normalize_or_zero() * ev.push_speed.clamp(0.0, 6.0) * 0.35;
-            let lift = if ev.limb & 0xFF == LIMB_HEAD { Vec3::Y * 1.2 } else { Vec3::ZERO };
-            let kick = (vel * 0.5 + out * 2.5 + push + lift).clamp_length_max(7.0);
+            // (Half the part's speed, and pushed off the cut; the blade's way
+            // carries it on, a head a little up.)
+            let push = Vec3::from_array(ev.push).normalize_or_zero() * ev.push_speed.clamp(0.0, 8.0) * 0.18;
+            let lift = if ev.limb & 0xFF == LIMB_HEAD { Vec3::Y * 0.6 } else { Vec3::ZERO };
+            let kick = (vel * 0.5 + out * 1.2 + push + lift).clamp_length_max(3.5);
             self.pieces.push(Piece {
                 object: ev.object,
                 cap: Vec3::from_array(ev.cap),
@@ -473,7 +476,9 @@ impl Gore {
             self.splat_body(inp, if h == 0 { Joint::LeftHand as usize } else { Joint::RightHand as usize }, inp.map.inv_point(point), 0.035, out, inp.now);
             return;
         }
-        let Some((wp, wq)) = rig.object_world_pose(ev.object) else { return };
+        // (In the weapon's own space as the combat judged the blow: where the hand swung it, which a
+        // fast swing's body lags behind.)
+        let Some((wp, wq)) = rig.swing_pose(ev.object) else { return };
         let inv = wq.inverse();
         let depth = part.map_or(0.08, |(a, i)| a.parts[i].radius * 1.4);
         let blades = inp.combat.blades(ev.object);
@@ -559,7 +564,7 @@ impl Gore {
                     let n = self.count(rate * width);
                     for _ in 0..n {
                         let off = cone(out, 80.0, self.rand(), self.rand()) * s.radius * 0.8;
-                        self.spray(at + off, out, 50.0, (0.05, 0.35), (0.0015, 0.0035), 1, 0, b.blood, Vec3::ZERO);
+                        self.spray(at + off, out, 50.0, (0.05, 0.35), (0.0025, 0.005), 1, 0, b.blood, Vec3::ZERO);
                     }
                 } else if t < STUMP_DRIPS {
                     let n = self.count(0.8);
@@ -739,7 +744,7 @@ impl Gore {
             }
             let d = self.drops[i];
             gone[i] = true;
-            if let (true, Some((wp, wq))) = (self.liquid(d.blood), rig.object_world_pose(id)) {
+            if let (true, Some((wp, wq))) = (self.liquid(d.blood), rig.swing_pose(id)) {
                 let inv = wq.inverse();
                 let list = self.held_splats.entry(id).or_default();
                 if list.len() >= MAX_HELD_SPLATS {
@@ -788,15 +793,17 @@ impl Gore {
             p.wet = 1.0;
             return;
         }
-        let r = (size * (2.2 + 0.5 * speed)).clamp(0.006, 0.09) * if dust { 1.5 } else { 1.0 };
-        // Close to a splat already there: it only wets that one and adds to it.
+        // (A drop spreads as it hits: a few times its size, more the faster it lands.)
+        let r = (size * (5.0 + 0.9 * speed)).clamp(0.01, 0.1) * if dust { 1.5 } else { 1.0 };
+        // Close to a splat already there: it wets that one and adds to it.
         let roll = self.rand();
-        if let Some(s) = self.decals.iter_mut().rev().take(200).find(|s| s.tex == DECAL_SPLAT && s.blood == blood && s.center.distance(at) < s.hv * 0.55 && s.normal.dot(normal) > 0.8) {
+        if let Some(s) = self.decals.iter_mut().rev().take(250).find(|s| matches!(s.tex, DECAL_SPLAT | DECAL_SPLATTER) && s.blood == blood && s.center.distance(at) < (s.hv + r) * 0.6 && s.normal.dot(normal) > 0.8) {
             s.wet = 1.0;
-            s.hu = (s.hu + r * 0.15).min(0.12);
-            s.hv = (s.hv + r * 0.15).min(0.12);
+            let grow = |x: f32| (x * x + 0.25 * r * r).sqrt().min(0.16);
+            s.hu = grow(s.hu);
+            s.hv = grow(s.hv);
             s.volume += volume;
-            if floor && !dust && s.volume > 4e-8 && roll < 0.5 {
+            if floor && !dust && s.volume > 7e-8 && roll < 0.5 {
                 // Enough lands here: it's a pool now.
                 let v = s.volume;
                 let c = s.center;
@@ -975,6 +982,7 @@ impl Gore {
         self.out_splats.truncate(draw::MAX_SPLATS);
         self.stats.drops = self.drops.len();
         self.stats.decals = self.decals.len();
+        self.stats.pools = self.decals.iter().filter(|d| d.tex == DECAL_STAIN).count();
         self.stats.runners = self.runners.len();
     }
 

@@ -141,16 +141,16 @@ pub(crate) const HLSL: &str = r#"
 struct GDrop { float3 pos; float size; float3 vel; float alpha; uint blood; float mist; float2 _p; };
 struct GDecal { float3 center; uint tile; float3 u; float wet; float3 v; uint tex; float3 n; uint blood; };
 struct GCap { float3 center; float radius; float3 outv; uint blood; };
-cbuffer Gore : register(b5) {
+cbuffer Gore : register(b7) {
     float4x4 g_world;   // world -> tracking (this eye's picture of the world)
     float4 g_info;      // x: the game's lights, y: unlit (it glows), z: dust, w: the first instance
-    float4 g_tex;       // x: the texture is there, y: its atlas (tiles a side), z: its red is its shape, w: a drop's stretch (s)
+    float4 g_tex;       // x: the texture is there, y: its atlas (tiles a side), z: its shape (0 its alpha, 1 its red, 2 its alpha in the blood's colour), w: a drop's stretch (s)
     float4 g_color;     // the blood's colour (the game's texture's, display range)
 };
-StructuredBuffer<GDrop> g_drops : register(t7);
-StructuredBuffer<GDecal> g_decals : register(t8);
-StructuredBuffer<GCap> g_caps : register(t9);
-Texture2D g_tex0 : register(t10);
+StructuredBuffer<GDrop> g_drops : register(t16);
+StructuredBuffer<GDecal> g_decals : register(t17);
+StructuredBuffer<GCap> g_caps : register(t18);
+Texture2D g_tex0 : register(t19);
 
 float3 g_tw(float3 p) { return mul(g_world, float4(p, 1)).xyz; }
 float3 g_tv(float3 v) { return mul((float3x3)g_world, v); }
@@ -245,8 +245,10 @@ float4 PSDecal(DecalOut i) : SV_Target {
     uint tile = (uint)i.info.y;
     uv = (uv + float2(tile % tiles, (tile / tiles) % tiles)) / tiles;
     float4 t = g_tex0.Sample(clamp_samp, uv);
-    float a = g_tex.z > 0 ? saturate(t.r * 4) : t.a;
-    float3 base = g_tex.z > 0 ? g_color.rgb : t.rgb;
+    // (A run's streak is the arena's drips, red on black; a splatter is the dungeons' streaks, in
+    // this blood's colour; a splat or a stain is the texture as it is.)
+    float a = g_tex.z > 0.5 && g_tex.z < 1.5 ? saturate(t.r * 4) : t.a;
+    float3 base = g_tex.z > 0.5 ? g_color.rgb * (g_tex.z > 1.5 ? 0.75 + 0.5 * saturate(dot(t.rgb, 3)) : 1) : t.rgb;
     float wet = g_info.z > 0 ? 0 : i.info.x;
     base = g_dry(base, wet);
     // (Fading out at the box's depth, and on surfaces at a slant.)
@@ -278,7 +280,8 @@ DropOut VSDrop(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float3 side = normalize(cross(f, along));
     uint q = G_QUAD[vid % 6];
     float2 c = float2((q & 1) ? 1 : -1, (q & 2) ? 1 : -1);
-    float r = d.size * (d.mist > 0 ? 3.0 : 1.4);
+    // (Drawn a little bigger than they are: a drop of blood catches the light.)
+    float r = d.size * (d.mist > 0 ? 5.0 : 2.2);
     float len = r + speed * g_tex.w;
     float3 w = p + side * c.x * r + along * c.y * len;
     DropOut o;
@@ -561,7 +564,7 @@ impl GoreGpu {
         let cb = GoreCb {
             world: self.world.to_cols_array(),
             info: [shading as u32 as f32, b.is_some_and(|b| b.glow) as u32 as f32, b.is_some_and(|b| b.dust) as u32 as f32, first as f32],
-            tex: [tex as u32 as f32, atlas as f32, (kind == DECAL_DRIP) as u32 as f32, 0.02],
+            tex: [tex as u32 as f32, atlas as f32, match kind { DECAL_DRIP => 1.0, DECAL_SPLATTER => 2.0, _ => 0.0 }, 0.02],
             color: [color[0], color[1], color[2], 1.0],
         };
         self.cb.update(&gpu.ctx, &cb);
@@ -583,8 +586,8 @@ impl GoreGpu {
         unsafe {
             ctx.IASetInputLayout(None);
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            ctx.VSSetConstantBuffers(5, Some(&[Some(self.cb.buf.clone())]));
-            ctx.PSSetConstantBuffers(5, Some(&[Some(self.cb.buf.clone())]));
+            ctx.VSSetConstantBuffers(7, Some(&[Some(self.cb.buf.clone())]));
+            ctx.PSSetConstantBuffers(7, Some(&[Some(self.cb.buf.clone())]));
             ctx.RSSetState(two_sided);
         }
     }
@@ -604,17 +607,17 @@ impl GoreGpu {
                 ctx.OMSetDepthStencilState(&self.no_depth, 0);
                 ctx.VSSetShader(&self.decal.vs, None);
                 ctx.PSSetShader(&self.decal.ps, None);
-                ctx.VSSetShaderResources(8, Some(&[self.decals.srv.clone()]));
+                ctx.VSSetShaderResources(17, Some(&[self.decals.srv.clone()]));
             }
             for (blood, kind, first, count) in self.decal_groups.clone() {
                 let Some(b) = self.bloods.get(blood as usize).cloned() else { continue };
                 let (name, kind) = Self::decal_texture(&b, kind);
                 let Some((srv, color)) = self.texture(gpu, name).map(|l| (l.tex.linear.clone(), l.color)) else { continue };
-                // (A run's streak is its blood's colour: the splat's.)
-                let color = if kind == DECAL_DRIP { self.texture(gpu, &b.splat).map_or(color, |l| l.color) } else { color };
+                // (A run's streak and a splatter are their blood's colour: the splat's.)
+                let color = if matches!(kind, DECAL_DRIP | DECAL_SPLATTER) { self.texture(gpu, &b.splat).map_or(color, |l| l.color) } else { color };
                 self.constants(gpu, blood, first, true, color, kind, shading);
                 unsafe {
-                    ctx.PSSetShaderResources(10, Some(&[Some(srv)]));
+                    ctx.PSSetShaderResources(19, Some(&[Some(srv)]));
                     ctx.DrawInstanced(36, count as u32, 0, 0);
                 }
             }
@@ -626,7 +629,7 @@ impl GoreGpu {
                 ctx.OMSetDepthStencilState(depth_write, 0);
                 ctx.VSSetShader(&self.cap.vs, None);
                 ctx.PSSetShader(&self.cap.ps, None);
-                ctx.VSSetShaderResources(9, Some(&[self.caps.srv.clone()]));
+                ctx.VSSetShaderResources(18, Some(&[self.caps.srv.clone()]));
             }
             for (blood, first, count) in self.cap_groups.clone() {
                 let Some(b) = self.bloods.get(blood as usize).cloned() else { continue };
@@ -634,14 +637,14 @@ impl GoreGpu {
                 let splat = self.texture(gpu, &b.splat).map_or([0.35, 0.02, 0.02], |l| l.color);
                 self.constants(gpu, blood, first, flesh.is_some(), flesh.as_ref().map_or(splat, |f| f.1), u32::MAX, shading);
                 unsafe {
-                    ctx.PSSetShaderResources(10, Some(&[flesh.map(|f| f.0)]));
+                    ctx.PSSetShaderResources(19, Some(&[flesh.map(|f| f.0)]));
                     ctx.DrawInstanced((CAP_RINGS * CAP_SEGS * 6) as u32, count as u32, 0, 0);
                 }
             }
         }
         unsafe {
-            ctx.VSSetShaderResources(8, Some(&[None, None]));
-            ctx.PSSetShaderResources(10, Some(&[None]));
+            ctx.VSSetShaderResources(17, Some(&[None, None]));
+            ctx.PSSetShaderResources(19, Some(&[None]));
         }
     }
 
@@ -657,7 +660,7 @@ impl GoreGpu {
             ctx.OMSetDepthStencilState(depth_test, 0);
             ctx.VSSetShader(&self.drop.vs, None);
             ctx.PSSetShader(&self.drop.ps, None);
-            ctx.VSSetShaderResources(7, Some(&[self.drops.srv.clone()]));
+            ctx.VSSetShaderResources(16, Some(&[self.drops.srv.clone()]));
         }
         for (blood, mist, first, count) in self.drop_groups.clone() {
             let Some(b) = self.bloods.get(blood as usize).cloned() else { continue };
@@ -667,13 +670,13 @@ impl GoreGpu {
             let splat = self.texture(gpu, &b.splat).map_or([0.35, 0.02, 0.02], |l| l.color);
             self.constants(gpu, blood, first, tex.is_some(), tex.as_ref().map_or(splat, |t| t.1), u32::MAX, shading);
             unsafe {
-                ctx.PSSetShaderResources(10, Some(&[tex.map(|t| t.0)]));
+                ctx.PSSetShaderResources(19, Some(&[tex.map(|t| t.0)]));
                 ctx.DrawInstanced(6, count as u32, 0, 0);
             }
         }
         unsafe {
-            ctx.VSSetShaderResources(7, Some(&[None]));
-            ctx.PSSetShaderResources(10, Some(&[None]));
+            ctx.VSSetShaderResources(16, Some(&[None]));
+            ctx.PSSetShaderResources(19, Some(&[None]));
         }
     }
 }
