@@ -12,7 +12,7 @@
 //! | hints | a row just above the subtitles (6 degrees under gaze) |
 //! | prompts | the caption strip's right end |
 //! | ammo | on the held gun's left side, facing you (Half-Life: Alyx); hidden with no gun |
-//! | status | on the back of the off-hand wrist, shown while you look at it |
+//! | status | over the inside of the off-hand wrist, shown while its palm is turned up and you look at it |
 //! | overlay | fixed to the face, over the whole view (damage, fades) |
 //! | centre and the rest | the flat screen, lazily following the head |
 //! | hidden | not drawn (the crosshair: the gun's sights aim) |
@@ -20,8 +20,8 @@
 //! | compass | low in front of the body, lazily following its turn |
 //! | target | over the foe it's about |
 //!
-//! Several status pieces stack up the forearm from the wrist, the first the size the settings say
-//! and the others to its scale; several hints stack upwards.
+//! Several status pieces stack upwards from the wrist, the first the size the settings say and the
+//! others to its scale; several hints stack upwards.
 //!
 //! Everything that follows the head does so lazily: it stays put while the head turns less than
 //! the dead zone (20 degrees), then glides back in front (0.15 s) and stops. It never rolls.
@@ -84,6 +84,9 @@ pub struct Attach {
     pub gun: Option<(Mat4, Vec3, Vec3)>,
     /// The off hand's controller grip pose.
     pub off_hand: Option<(Vec3, Quat)>,
+    /// The off hand is the left: its grip's +X is out of its palm (a right hand's is out of its
+    /// back).
+    pub off_left: bool,
     /// Where the card of the thing in a hand goes (over it, eased), and how strongly it shows.
     pub held: Option<(Vec3, f32)>,
     /// Tracking space -> the game's world (for the things pieces float over).
@@ -379,16 +382,21 @@ impl HudPlacer {
                     (facing_eye(c, head_pos, w, h), 1.0)
                 }),
                 HUD_STATUS => at.off_hand.map(|(p, q)| {
-                    // On the back of the wrist (a little up the forearm from the grip), and the next
-                    // further up it.
+                    // Over the inside of the wrist while the palm is turned up and looked at (a
+                    // deliberate glance at the wrist, so a hand passing the eyes doesn't bring it
+                    // up), each piece on the one before it as the eye sees them.
+                    let palm = q * if at.off_left { Vec3::X } else { Vec3::NEG_X };
                     let unit = status_unit.unwrap_or(1.0) * scale;
                     let (w, h) = (du * aspect * unit, dv * unit);
-                    let c = p + q * Vec3::new(0.0, 0.035, -0.09 - status_stack - h * 0.5);
+                    let wrist = p + palm * 0.05 + q * Vec3::new(0.0, 0.0, -0.07);
+                    let to = (wrist - head_pos).normalize_or(Vec3::Z);
+                    let up = (Vec3::Y - to * to.y).normalize_or(Vec3::Y);
+                    let c = wrist + up * (status_stack + h * 0.5);
                     status_stack += h + 0.008;
-                    let to = (c - head_pos).normalize_or(Vec3::Z);
                     let off = to.angle_between(fwd).to_degrees();
-                    let opacity = 1.0 - ((off - 30.0) / 15.0).clamp(0.0, 1.0);
-                    (facing_eye(c, head_pos, w, h), opacity)
+                    let looked = 1.0 - ((off - 30.0) / 15.0).clamp(0.0, 1.0);
+                    let turned = ((palm.y - 0.55) / 0.25).clamp(0.0, 1.0);
+                    (facing_eye(c, head_pos, w, h), looked * turned)
                 }),
                 HUD_OVERLAY => {
                     let mut panel = Panel::facing(head_pos + fwd * 1.0, yaw, pitch, 2.0 * 1.0 * 1.25f32 * du, aspect);
@@ -583,21 +591,26 @@ mod tests {
     }
 
     #[test]
-    fn ammo_goes_on_the_gun_and_status_shows_only_when_looked_at() {
+    fn ammo_goes_on_the_gun_and_status_shows_only_on_a_wrist_turned_up_and_looked_at() {
         let s = Settings::default();
         let mut h = HudPlacer::default();
         let head = Vec3::new(0.0, 1.6, 0.0);
         let l = metro();
         let gun = Mat4::from_translation(Vec3::new(0.15, 1.35, 0.35));
         let sight = Vec3::new(0.15, 1.40, 0.30);
-        let wrist_ahead = (Vec3::new(-0.05, 1.45, 0.35), Quat::IDENTITY);
-        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), held: None, map: None };
+        // (A left hand's palm is its grip's +X: turned up, +X is up.)
+        let palm_up = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let wrist_ahead = (Vec3::new(-0.05, 1.45, 0.35), palm_up);
+        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), off_left: true, held: None, map: None };
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
         let ammo = p.iter().find(|p| p.role == HUD_AMMO).unwrap();
         assert!(ammo.panel.center.distance(sight) < 0.15 && ammo.panel.center.x < sight.x, "{:?}", ammo.panel.center);
         assert!((ammo.panel.width - s.ui.ammo_width).abs() < 1e-4);
-        assert!(p.iter().any(|p| p.role == HUD_STATUS), "a wrist held up in front is shown");
-        let wrist_down = (Vec3::new(-0.25, 0.9, 0.1), Quat::IDENTITY);
+        assert!(p.iter().any(|p| p.role == HUD_STATUS), "a wrist held up in front, palm up, is shown");
+        let at = Attach { off_hand: Some((wrist_ahead.0, Quat::IDENTITY)), ..at };
+        let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
+        assert!(!p.iter().any(|p| p.role == HUD_STATUS), "with its palm to the side it isn't");
+        let wrist_down = (Vec3::new(-0.25, 0.9, 0.1), palm_up);
         let at = Attach { off_hand: Some(wrist_down), ..at };
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
         assert!(!p.iter().any(|p| p.role == HUD_STATUS), "a hand at the side isn't");

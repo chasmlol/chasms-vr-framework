@@ -1414,6 +1414,7 @@ impl Session {
                         let at = crate::hud::Attach {
                             gun,
                             off_hand: (off.connected != 0).then(|| (Vec3::from_array(off.grip.pos), quat(off.grip.rot))),
+                            off_left: dom == 1,
                             held: self.card.map(|(p, opacity)| (p.center, opacity)),
                             map: self.map_now,
                         };

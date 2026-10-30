@@ -315,7 +315,7 @@ describes its HUD (`HudLayout`: rectangles of the HUD texture and their roles) a
 | Hints | a row just above the subtitles |
 | Prompts | the caption strip's right end |
 | Ammo | on the held gun's left side, facing the eye; hidden with no gun |
-| Status | on the back of the off-hand wrist, shown while you look at it |
+| Status | over the inside of the off-hand wrist, shown while its palm is turned up (within about 40 degrees of straight up, fading out by 57) and you look at it; several stack upwards |
 | Overlay | fixed to the face over the whole view (damage, fades) |
 | Gaze | under where the head looks, eased after it (0.18 s), just in front of the thing it's about (`HudLayout::gaze`), as big to the eye at any distance (what looking there does: "Open Door", a name) |
 | Compass | low in front of the body (26 degrees under the horizon), lazily following its turn |
