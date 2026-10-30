@@ -13,6 +13,7 @@
 //! | `models/<key>.rvm` | [`Model`], postcard-encoded |
 //! | `textures/<key>.rvt` | [`Texture`], postcard-encoded |
 //! | `recoil/<key>.rvk` | [`Recoil`] of the gun `<key>`, postcard-encoded |
+//! | `morphs/<key>.rvf` | [`FaceMorphs`] of the model `<key>` (a head and its parts), postcard-encoded |
 //!
 //! Space: model positions are in the game's own model space, converted to left-handed metres with
 //! X right, Y up and Z forward (the same convention as the RustVR protocol). Viewmodels (first-person
@@ -125,6 +126,10 @@ pub enum Shader {
     /// Gamebryo's skin (Oblivion's `SkinShader`): as [`Shader::GamebryoLit`] with each light's
     /// grazing rim, half its colour times (1 − N·V)³.
     GamebryoSkin,
+    /// Gamebryo's hair (Oblivion's `HairShader`): lit as [`Shader::GamebryoSkin`], its base texture
+    /// tinted by the hair's colour where [`Vertex::ao`] (the vertex colour's green, its mask) says:
+    /// `base · 2 · (0.5 + ao · (tint − 0.5))`. The tint is the wearer's, not the model's.
+    GamebryoHair,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -418,6 +423,75 @@ pub fn load_recoil(dir: &Path, key: &str) -> Result<Recoil> {
     let r: Recoil = postcard::from_bytes(&read(&path)?).with_context(|| format!("decoding {}", path.display()))?;
     anyhow::ensure!(r.version == FORMAT_VERSION, "{}: format {} (want {FORMAT_VERSION})", path.display(), r.version);
     Ok(r)
+}
+
+// ---- faces --------------------------------------------------------------------------------------
+
+/// A model's face morphs: FaceGen's statistical face space, as Oblivion, Fallout 3 and New Vegas
+/// make their heads (a head, and the parts made to its shape: its ears, eyes, mouth, teeth, hair).
+/// A face is a point in that space, its coordinates ([`FaceCoords`]); each coordinate moves every
+/// vertex of the mesh by its morph times the coordinate, and, for a model with texture morphs, its
+/// base texture's colour the same way. Written by an extractor from the game's own `.egm` and `.egt`
+/// as `morphs/<model key>.rvf`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FaceMorphs {
+    pub version: u32,
+    pub source: String,
+    /// The model's mesh the geometry morphs move (a FaceGen model has one).
+    pub mesh: u32,
+    /// Each morph's move of every vertex of that mesh at a coordinate of 1 (model space, metres):
+    /// the symmetric morphs, and the asymmetric ones.
+    pub symmetric: Vec<Vec<[f32; 3]>>,
+    pub asymmetric: Vec<Vec<[f32; 3]>>,
+    /// The texture morphs of the mesh's base texture, when the game has them.
+    pub texture: Option<TextureMorphs>,
+}
+
+/// The texture morphs of a face's base texture (FaceGen's `.egt`), at their own size (the base
+/// texture may be another; both lie over the same texture coordinates).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TextureMorphs {
+    pub width: u32,
+    pub height: u32,
+    /// The symmetric morphs.
+    pub symmetric: Vec<TextureMorph>,
+}
+
+/// One texture morph: a coordinate of 1 moves each texel's colour by `scale · delta / 255` (in the
+/// texture's own 0..1 values).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct TextureMorph {
+    pub scale: f32,
+    /// The red, green and blue planes, `width · height` each, rows from the top of the texture.
+    pub delta: Vec<i8>,
+}
+
+/// Where a face is in FaceGen's space: its symmetric and asymmetric geometry coordinates and its
+/// symmetric texture coordinates (any number of each; the missing ones are 0).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FaceCoords {
+    pub geometry_symmetric: Vec<f32>,
+    pub geometry_asymmetric: Vec<f32>,
+    pub texture_symmetric: Vec<f32>,
+}
+
+pub const MORPHS_EXT: &str = "rvf";
+
+pub fn save_morphs(dir: &Path, key: &str, morphs: &FaceMorphs) -> Result<()> {
+    write(&dir.join("morphs").join(format!("{key}.{MORPHS_EXT}")), &postcard::to_stdvec(morphs)?)
+}
+
+/// The model's face morphs, if the extractor wrote any.
+pub fn load_morphs(dir: &Path, key: &str) -> Result<FaceMorphs> {
+    let path = dir.join("morphs").join(format!("{key}.{MORPHS_EXT}"));
+    let m: FaceMorphs = postcard::from_bytes(&read(&path)?).with_context(|| format!("decoding {}", path.display()))?;
+    anyhow::ensure!(m.version == FORMAT_VERSION, "{}: format {} (want {FORMAT_VERSION})", path.display(), m.version);
+    Ok(m)
+}
+
+/// The model has face morphs in the cache.
+pub fn has_morphs(dir: &Path, key: &str) -> bool {
+    dir.join("morphs").join(format!("{key}.{MORPHS_EXT}")).is_file()
 }
 
 pub fn save_index(dir: &Path, index: &Index) -> Result<()> {
