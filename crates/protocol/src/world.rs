@@ -514,6 +514,18 @@ pub const OBJF_OPENS: u32 = 1 << 15;
 /// Kept on the body: let go anywhere but a slot, it glides back to the slot it was drawn from (a
 /// map to its place on the belt), as a holstered gun does.
 pub const OBJF_KEPT: u32 = 1 << 16;
+/// With [`OBJF_RUNTIME_DRAWS`], a prop the runtime draws always, not only once a hand has had it: a
+/// piece of a game's model the runtime split off (a pestle out of its mortar's model), or a thing
+/// whose game model the game hides while the runtime draws its pieces.
+pub const OBJF_DRAWN_ALWAYS: u32 = 1 << 17;
+/// A sheet: a prop, a thin box (thin along its Y), that is drawn as the game's card anchored on it
+/// ([`crate::Card`]), lying on its +Y face (the card's top towards the box's +Z, its left towards
+/// −X), the back of it, on −Y, the card's first piece alone (its paper). A page of the game's own,
+/// lying on a table or held; the hands go through it while it lies loose. A fingertip tapping its
+/// face (the index finger of an empty hand, down on it and lifted off) is a touch: each adds one to
+/// its state's `shots`, `slide` and `fuse` saying where the last one came down, across the card (0
+/// its left edge .. 1 its right) and down it (0 its top .. 1 its foot).
+pub const OBJF_SHEET: u32 = 1 << 18;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 
@@ -711,7 +723,8 @@ pub struct ObjectState {
     /// Weapons: rounds fired so far (each increase is one shot from the muzzle). Grenades: times it
     /// went off (each increase is one explosion at `pose`, for the game to make). Things that open
     /// ([`OBJF_OPENS`]): times the other hand opened or shut it. Things drawn from a slot
-    /// ([`OS_INVENTORY`]): times used (each increase is one use, for the game to do).
+    /// ([`OS_INVENTORY`]): times used (each increase is one use, for the game to do). Sheets
+    /// ([`OBJF_SHEET`]): the touches on its face so far.
     pub shots: u32,
     /// Weapons: which chambers hold a live round and which a spent case (see
     /// [`CHAMBER_SPENT_SHIFT`]); `chambered & CHAMBER_LIVE_MASK != 0`: a round is chambered. (A gun
@@ -722,13 +735,15 @@ pub struct ObjectState {
     /// (`action_angle`). Valves ([`OBJ_VALVE`]): how far it's turned about its axis, radians
     /// (anticlockwise looking down +Z; `ang_vel` is how fast, along the axis), or slid along it,
     /// metres ([`JOINT_SLIDE`]; `lin_vel` how fast). A valve with a hand on it is [`OS_HELD_LEFT`] /
-    /// [`OS_HELD_RIGHT`].
+    /// [`OS_HELD_RIGHT`]. Sheets: how far
+    /// across its card the last touch was (0 .. 1).
     pub slide: f32,
     /// Which [`ObjectDesc`] to draw it with (itself, or the template it was spawned from).
     pub desc: u32,
     /// Grenades: seconds left on a burning fuse the runtime times ([`OS_ARMED`]), else 0. Air guns
     /// ([`WPN_PNEUMATIC`]): the pressure, 0 empty .. 1 full. Bolt actions: how far the bolt's handle
-    /// is lifted, 0 down .. 1 up (`action_angle`).
+    /// is lifted, 0 down .. 1 up (`action_angle`). Sheets: how far down its card the last touch was
+    /// (0 .. 1).
     pub fuse: f32,
 }
 /// The runtime is moving it: draw it at `pose`.
@@ -775,6 +790,9 @@ pub const OS_STOWED: u32 = 1 << 17;
 /// read, put on a weapon) adds one to `shots`; let go and free, it's the game's to drop where it
 /// comes to rest. The game says when it has taken it back ([`crate::Inventory::taken`]).
 pub const OS_INVENTORY: u32 = 1 << 18;
+/// In a bowl ([`crate::Receptacle`]): `parent` is the bowl, `fuse` how far it's ground (0 .. 1),
+/// `slide` the size to draw it at (1: its own; shrunk to fit the bowl, and as it's ground).
+pub const OS_IN_RECEPTACLE: u32 = 1 << 19;
 
 pub const SLOT_HIP_RIGHT: u32 = 0;
 pub const SLOT_HIP_LEFT: u32 = 1;

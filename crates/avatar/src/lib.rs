@@ -646,6 +646,66 @@ impl HeldModel {
         }
         render::HeldModel::strap(gpu, meshes)
     }
+
+    /// A sheet ([`rustvr_protocol::OBJF_SHEET`]): a page on the +Y face of a thin box (`centre`,
+    /// `half`: its collision, object space), its face the texture `face` (its sRGB-decoding and its
+    /// raw view: a card the runtime paints) with its top towards +Z, and its back on -Y the part `uv`
+    /// of the cache's texture `back` (the page's paper, the other side of it). Shaded as Gamebryo
+    /// shades the game's own things (matte, no highlight, as paper is), the card's clear parts cut
+    /// out.
+    pub fn sheet(gpu: &Gpu, face: (ID3D11ShaderResourceView, ID3D11ShaderResourceView), back: Option<(asset::Texture, [f32; 4])>, centre: glam::Vec3, half: glam::Vec3) -> Result<HeldModel> {
+        // A hair over the box, so the page isn't lost in a table it lies on.
+        const OVER: f32 = 0.0005;
+        let placeholder = Arc::new(asset::Texture { version: 0, source: "sheet face".into(), width: 1, height: 1, format: asset::TexFormat::Rgba8, mips: vec![vec![0; 4]], faces: 1 });
+        let quad = |y: f32, uv: [f32; 4]| -> Vec<asset::Vertex> {
+            let n = if y > 0.0 { [0.0, 1.0, 0.0] } else { [0.0, -1.0, 0.0] };
+            [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)]
+                .map(|(x, z): (f32, f32)| asset::Vertex {
+                    pos: (centre + glam::Vec3::new(x * half.x, y, z * half.z)).to_array(),
+                    normal: n,
+                    // Across with +X, down the card with -Z.
+                    uv: [uv[0] + (x + 1.0) * 0.5 * (uv[2] - uv[0]), uv[1] + (1.0 - z) * 0.5 * (uv[3] - uv[1])],
+                    bones: [0; 4],
+                    weights: [255, 0, 0, 0],
+                    ao: 255,
+                })
+                .to_vec()
+        };
+        let paper = || SourceMaterial {
+            class: metro::Class::GamebryoLit,
+            params: [0.0; 4],
+            color: [0.0; 4],
+            alpha_test: true,
+            emissive: 0.0,
+            fresnel: false,
+            bump: None,
+            detail: None,
+            env: None,
+            face: None,
+            face_detail: None,
+            hair_tint: None,
+        };
+        let mesh = |name: &str, vertices: Vec<asset::Vertex>, texture: Arc<asset::Texture>| SourceMesh {
+            name: name.into(),
+            vertices,
+            // (Wound to face along its normal when it's loaded.)
+            indices: vec![0, 1, 2, 0, 2, 3],
+            texture: Some(texture),
+            tint: [1.0; 3],
+            material: Some(paper()),
+            depth_slack: 0.0,
+            centres: Vec::new(),
+        };
+        let mut meshes = vec![mesh("sheet face", quad(half.y + OVER, [0.0, 0.0, 1.0, 1.0]), placeholder.clone())];
+        if let Some((t, uv)) = back {
+            meshes.push(mesh("sheet back", quad(-half.y - OVER, uv), Arc::new(t)));
+        }
+        let meshes = meshes.into_iter().enumerate().map(|(k, m)| {
+            let name = m.name.clone();
+            (m, HeldMeshInfo { part: 0, source: k, name, special: false })
+        });
+        render::HeldModel::with_views(gpu, meshes.collect(), &[(placeholder, render::GpuTex { srgb: face.0, linear: face.1 })])
+    }
 }
 
 /// A model as the renderer takes it: a skeleton and meshes, with their textures.

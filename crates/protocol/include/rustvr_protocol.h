@@ -1079,6 +1079,46 @@
  */
 #define RVR_ITEM_QUEST (1 << 2)
 
+#define RVR_MAX_RECEPTACLES 8
+
+/**
+ * The objects that may go into one bowl now, at most.
+ */
+#define RVR_MAX_ACCEPTS 40
+
+/**
+ * What's in it is ground by its grinder.
+ */
+#define RVR_REC_GRIND (1 << 0)
+
+/**
+ * (Two to a bench, say: what it would make, and a page of what to make.)
+ */
+#define RVR_MAX_CARDS 8
+
+#define RVR_MAX_CARD_PIECES 24
+
+/**
+ * A piece of the game's art: the part `uv` of the texture `asset`, stretched over `rect`.
+ */
+#define RVR_PIECE_IMAGE 1
+
+/**
+ * A line of the game's text: `text` in the font `asset`, `color`, from `rect`'s top left (its
+ * width the wrap width; 0: no wrap).
+ */
+#define RVR_PIECE_TEXT 2
+
+/**
+ * Text: centred across `rect` (else from its left).
+ */
+#define RVR_PIECEF_CENTRE (1 << 0)
+
+/**
+ * Text: to `rect`'s right edge.
+ */
+#define RVR_PIECEF_RIGHT (1 << 1)
+
 /**
  * The [`SoundPack`] region.
  */
@@ -1361,6 +1401,24 @@
 #define RVR_OBJF_KEPT (1 << 16)
 
 /**
+ * With [`OBJF_RUNTIME_DRAWS`], a prop the runtime draws always, not only once a hand has had it: a
+ * piece of a game's model the runtime split off (a pestle out of its mortar's model), or a thing
+ * whose game model the game hides while the runtime draws its pieces.
+ */
+#define RVR_OBJF_DRAWN_ALWAYS (1 << 17)
+
+/**
+ * A sheet: a prop, a thin box (thin along its Y), that is drawn as the game's card anchored on it
+ * ([`crate::Card`]), lying on its +Y face (the card's top towards the box's +Z, its left towards
+ * −X), the back of it, on −Y, the card's first piece alone (its paper). A page of the game's own,
+ * lying on a table or held; the hands go through it while it lies loose. A fingertip tapping its
+ * face (the index finger of an empty hand, down on it and lifted off) is a touch: each adds one to
+ * its state's `shots`, `slide` and `fuse` saying where the last one came down, across the card (0
+ * its left edge .. 1 its right) and down it (0 its top .. 1 its foot).
+ */
+#define RVR_OBJF_SHEET (1 << 18)
+
+/**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
  */
 #define RVR_GAME_HANDBACK 0.15
@@ -1629,6 +1687,12 @@
  * comes to rest. The game says when it has taken it back ([`crate::Inventory::taken`]).
  */
 #define RVR_OS_INVENTORY (1 << 18)
+
+/**
+ * In a bowl ([`crate::Receptacle`]): `parent` is the bowl, `fuse` how far it's ground (0 .. 1),
+ * `slide` the size to draw it at (1: its own; shrunk to fit the bowl, and as it's ground).
+ */
+#define RVR_OS_IN_RECEPTACLE (1 << 19)
 
 #define RVR_SLOT_HIP_RIGHT 0
 

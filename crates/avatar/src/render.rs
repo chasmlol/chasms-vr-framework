@@ -1404,16 +1404,22 @@ impl HeldModel {
     /// special draw takes it instead (see [`crate::SpecialDraw`]), and for one that bends, each
     /// vertex's offset at full bend (position, normal; see [`crate::HeldDraw::bend`]).
     pub(crate) fn new(gpu: &Gpu, meshes: Vec<HeldSource>) -> Result<HeldModel> {
-        Self::build(gpu, meshes, false)
+        Self::build(gpu, meshes, false, &[])
+    }
+
+    /// As [`HeldModel::new`], the textures in `given` drawn from the views given with them instead
+    /// of uploaded: a texture the runtime paints itself (a sheet's card).
+    pub(crate) fn with_views(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>, given: &[(Arc<asset::Texture>, GpuTex)]) -> Result<HeldModel> {
+        Self::build(gpu, meshes.into_iter().map(|(m, i)| (m, i, None)).collect(), false, given)
     }
 
     /// As [`HeldModel::new`], but each vertex keeps its own bones (as weighted), a part for each
     /// bone: the mesh bends between the parts' places (a strap, its every cross-section a part).
     pub(crate) fn strap(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>) -> Result<HeldModel> {
-        Self::build(gpu, meshes.into_iter().map(|(m, i)| (m, i, None)).collect(), true)
+        Self::build(gpu, meshes.into_iter().map(|(m, i)| (m, i, None)).collect(), true, &[])
     }
 
-    fn build(gpu: &Gpu, meshes: Vec<HeldSource>, own_bones: bool) -> Result<HeldModel> {
+    fn build(gpu: &Gpu, meshes: Vec<HeldSource>, own_bones: bool, given: &[(Arc<asset::Texture>, GpuTex)]) -> Result<HeldModel> {
         let parts = if own_bones {
             let weighted = |v: &asset::Vertex| (0..4).filter(|&k| v.weights[k] > 0).map(|k| v.bones[k] as usize + 1).max().unwrap_or(1);
             meshes.iter().flat_map(|(m, ..)| m.vertices.iter().map(weighted)).max().unwrap_or(0)
@@ -1421,7 +1427,7 @@ impl HeldModel {
             meshes.iter().map(|(_, i, _)| i.part + 1).max().unwrap_or(0)
         };
         anyhow::ensure!(parts <= MAX_BONES, "{parts} parts (at most {MAX_BONES})");
-        let mut uploaded: HashMap<*const asset::Texture, Option<GpuTex>> = HashMap::new();
+        let mut uploaded: HashMap<*const asset::Texture, Option<GpuTex>> = given.iter().map(|(t, v)| (Arc::as_ptr(t), Some(v.clone()))).collect();
         let mut upload = |t: &Arc<asset::Texture>, what: &str| {
             uploaded
                 .entry(Arc::as_ptr(t))

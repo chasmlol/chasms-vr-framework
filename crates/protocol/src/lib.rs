@@ -45,10 +45,12 @@
 //! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
 //! | [`OFF_INVENTORY`] .. [`OFF_SLOT_EDITS`] | the player's things and the body's slots (see [`inventory`]) | both | seqlock |
 //! | [`OFF_POCKETS`] .. [`OFF_POCKETS_END`] | the creatures' pockets and what the hands do in them: see [`pockets`] | both | seqlock, ring |
+//! | [`OFF_STATIONS`], [`OFF_CARDS`] | [`Receptacles`]: bowls the hands make things in (see [`stations`]); [`Cards`]: cards made of a game's own interface (see [`cards`]) | adapter -> runtime | seqlock |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
 //! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, the
-//! inventory with the body's slots, and the creatures' pockets (a new one goes after the last).
+//! inventory with the body's slots, the creatures' pockets, the bowls and the cards (a new one goes
+//! after the last).
 //! Every region is listed in address order in `LAYOUT`, which the build checks: none overlaps the
 //! next, and all lie inside [`MAPPING_BYTES`].
 //!
@@ -80,6 +82,8 @@ pub mod grab;
 pub mod hud;
 pub mod inventory;
 pub mod items;
+pub mod stations;
+pub mod cards;
 pub mod sound;
 pub mod world;
 pub mod lighting;
@@ -96,6 +100,8 @@ pub use grab::*;
 pub use hud::*;
 pub use inventory::*;
 pub use items::*;
+pub use stations::*;
+pub use cards::*;
 pub use sound::*;
 pub use world::*;
 pub use lighting::*;
@@ -1014,6 +1020,8 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_SLOT_EDITS, size_of::<SlotEdits>()),
     (OFF_POCKETS, size_of::<Pockets>()),
     (OFF_POCKET_EVENTS, size_of::<PocketEvents>()),
+    (OFF_STATIONS, size_of::<Receptacles>()),
+    (OFF_CARDS, size_of::<Cards>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

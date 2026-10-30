@@ -121,6 +121,13 @@ pub enum Cue {
     PocketWatched,
     /// A thing let go into a pocket.
     PocketPlant,
+    /// A grinder worked in its bowl ([`super::receptacle`]): its texture while it grinds (felt, the
+    /// harder the faster), and each stroke's pulse. Felt only: the game sounds its own grinding.
+    Grind,
+    GrindStroke,
+    /// A fingertip coming down on a sheet's face ([`super::sheet`]): a tap, felt only (the game
+    /// sounds what the touch does).
+    Touch,
 }
 
 impl Cue {
@@ -195,6 +202,9 @@ impl Cue {
             Cue::PocketCaught => "pocket_caught",
             Cue::PocketWatched => "pocket_watched",
             Cue::PocketPlant => "pocket_plant",
+            Cue::Grind => "grind",
+            Cue::GrindStroke => "grind_stroke",
+            Cue::Touch => "touch",
         }
     }
 }
@@ -304,6 +314,11 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::PocketCaught => (0.18, 60.0, 1.0),
         Cue::PocketWatched => (0.05, 45.0, 0.3 + 0.5 * i),
         Cue::PocketPlant => (0.04, 100.0, 0.5),
+        // A low, rough buzz: stone on stone with something crunching between.
+        Cue::Grind => (0.05, 65.0, (0.12 + 0.35 * i).min(0.5)),
+        Cue::GrindStroke => (0.03, 90.0, 0.45),
+        // A fingertip on paper: a light, short tap.
+        Cue::Touch => (0.012, 220.0, 0.3),
     })
 
 }

@@ -126,6 +126,12 @@ pub struct Session {
     /// game's own card, as pictures of it.
     item_cards: [crate::item_card::ItemCard; 2],
     held_cards: crate::held_cards::HeldCards,
+    /// The game's cards of its own interface beside its objects, and this frame's (panel, how
+    /// strongly, the object).
+    game_cards: crate::game_cards::GameCards,
+    game_card_panels: Vec<(panels::Panel, f32, u32)>,
+    /// The bowls the hands make things in (see `Rig::set_receptacles`).
+    receptacles: Box<Receptacles>,
     /// OBS's window in the headset (over the left wrist, or pinned with F9): only the headset.
     obs: crate::obs_view::ObsView,
     /// The mirror the player or the game's character creator has up (`crate::mirror`), and whether
@@ -317,6 +323,9 @@ impl Session {
             menu: RuntimeMenu::new(&gpu)?,
             item_cards: [crate::item_card::ItemCard::new(&gpu)?, crate::item_card::ItemCard::new(&gpu)?],
             held_cards: Default::default(),
+            game_cards: crate::game_cards::GameCards::new(&gpu)?,
+            game_card_panels: Vec::new(),
+            receptacles: bytemuck::zeroed_box(),
             obs: crate::obs_view::ObsView::default(),
             mirror: crate::mirror::Mirror::default(),
             menu_beside_said: false,
@@ -827,6 +836,10 @@ impl Session {
             if self.link.read_game_hulls_into(&mut self.game_hulls) {
                 self.rig.set_game_hulls(&self.game_hulls);
             }
+            // The bowls the hands make things in.
+            if self.link.read_receptacles_into(&mut self.receptacles) {
+                self.rig.set_receptacles(&self.receptacles);
+            }
             if self.link.read_game_poses_into(&mut self.game_poses) {
                 self.rig.set_game_poses(&self.game_poses);
             }
@@ -1017,6 +1030,9 @@ impl Session {
             // Where a drawn arrow points, when the player asks for it.
             let head = (Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot));
             self.bow_mark = self.crosshair.update(&self.gpu, self.settings.current.archery.crosshair, &self.rig, &self.bows, self.map_now.as_ref(), head, frame.dt);
+            // The game's own cards beside its objects.
+            self.game_cards.read(&self.link);
+            self.game_card_panels = self.game_cards.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
             // The body the game makes up, when it changes.
             self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
@@ -1080,6 +1096,7 @@ impl Session {
             self.link.write_creature_grabs(&self.creature_grabs);
             self.link.write_object_states(&self.states);
             let drawn = self.rig.drawn_descs();
+            self.held_objects.sheets(&self.gpu, &self.game_cards.faces(), &self.objects);
             self.held_objects.update(&self.objects, &drawn, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
             self.held_objects.clear();
@@ -1377,7 +1394,8 @@ impl Session {
             }
             if std::mem::take(&mut self.menu.measure_height) {
                 let eye = frame.hmd.pos[1];
-                if (1.0..2.3).contains(&eye) {
+                // (Eyes under 1.35 m are a grown-up sitting: the slider sets a height that low.)
+                if (1.35..2.3).contains(&eye) {
                     let height = eye + 0.11;
                     self.settings.current.body.height = height;
                     self.save_settings();
@@ -1892,6 +1910,11 @@ impl Session {
         }
         if let (Some((p, opacity)), Some(srv)) = (self.bow_mark.filter(|_| !menu_mode), self.crosshair.srv()) {
             layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, srv) });
+        }
+        for &(p, opacity, id) in self.game_card_panels.iter().filter(|_| !menu_mode) {
+            if let Some(srv) = self.game_cards.srv(id) {
+                layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, srv) });
+            }
         }
         if let Some(p) = layout.runtime_menu {
             layers.panels.push(PanelLayer::whole(p, self.menu.srv()));
@@ -2416,6 +2439,10 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audi
         C::KnifeStick => (E::KnifeStick, S::Impact),
         // (The game plays its own eating and drinking as it's used.)
         C::ExplosionRumble | C::Strain | C::Stop | C::Hold | C::Use => return None,
+        // The game sounds its own grinding (the bowl's strokes).
+        C::Grind | C::GrindStroke => return None,
+        // And what a touch on its page does.
+        C::Touch => return None,
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

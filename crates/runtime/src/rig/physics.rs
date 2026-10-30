@@ -26,6 +26,18 @@ pub fn groups_free() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
 }
 
+/// A sheet ([`rustvr_protocol::OBJF_SHEET`]) lying free: as any free object, but the hands and
+/// their fingers go through it. A fingertip on its face touches it ([`super::sheet`]); pushed, a
+/// page on a table would only be squeezed between the hand and the table.
+pub fn groups_sheet() -> InteractionGroups {
+    InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
+}
+
+/// What a free object of `d` touches: a sheet as a sheet, anything else as [`groups_free`].
+pub fn groups_free_of(d: &ObjectDesc) -> InteractionGroups {
+    if d.flags & OBJF_SHEET != 0 { groups_sheet() } else { groups_free() }
+}
+
 /// A part of one of the game's creatures, followed (`Rig::follow_actors`): the hands, what they
 /// hold and loose objects meet it (and push the creature, through the game).
 pub fn groups_actor() -> InteractionGroups {
@@ -87,6 +99,12 @@ pub fn groups_finger(hand: usize) -> InteractionGroups {
 /// One of the game's own props while the game moves it (`OBJF_GAME_SIMULATED`): it touches the
 /// world and loose objects, while the hands, fingers and what they hold go through it and push it
 /// instead (`Rig::game_pushes`).
+/// A game's bowl it moves itself ([`super::receptacle`]): as its other props, and what the hands
+/// hold meets it too (a pestle grinds against its floor and walls rather than passing through them).
+pub fn groups_game_bowl() -> InteractionGroups {
+    InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
+}
+
 pub fn groups_game_prop() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT, InteractionTestMode::And)
 }
@@ -220,7 +238,7 @@ impl Physics {
             .ccd_enabled(true)
             .linear_damping(0.05)
             .angular_damping(0.2);
-        let c = object_collider(d, hulls).collision_groups(groups_free());
+        let c = object_collider(d, hulls).collision_groups(groups_free_of(d));
         self.world.insert(body, c)
     }
 
@@ -233,6 +251,36 @@ impl Physics {
         col.set_position_wrt_parent(to_pose(V3::ZERO, Q::IDENTITY));
         col.set_mass(mass.max(0.02));
         true
+    }
+
+    /// Gives an object's collider the shape of boxes (each its centre, rotation and half extents,
+    /// object space) and `mass`: a bowl's floor and wall ([`super::receptacle::Bowl::parts`]).
+    pub fn set_boxes(&mut self, c: ColliderHandle, boxes: &[(V3, Q, V3)], mass: f32) -> bool {
+        let shapes: Vec<_> = boxes.iter().map(|&(p, q, h)| (to_pose(p, q), SharedShape::cuboid(h.x.max(0.001), h.y.max(0.001), h.z.max(0.001)))).collect();
+        let Some(col) = self.world.colliders.get_mut(c).filter(|_| !shapes.is_empty()) else { return false };
+        col.set_shape(SharedShape::compound(shapes));
+        col.set_translation_wrt_parent(Vector::ZERO);
+        col.set_mass(mass.max(0.02));
+        true
+    }
+
+    /// Gives an object's collider the shape of a ball, `radius` about `centre` (object space).
+    pub fn set_ball(&mut self, c: ColliderHandle, centre: V3, radius: f32) {
+        if let Some(col) = self.world.colliders.get_mut(c) {
+            col.set_shape(SharedShape::ball(radius.max(0.001)));
+            col.set_translation_wrt_parent(to_v(centre));
+        }
+    }
+
+    /// Gives an object's collider back the shape its description gives it (`hulls`: its convex
+    /// parts, for [`SHAPE_HULL`]).
+    pub fn set_object_shape(&mut self, c: ColliderHandle, d: &ObjectDesc, hulls: &[Vec<V3>]) {
+        let built = object_collider(d, hulls).build();
+        if let Some(col) = self.world.colliders.get_mut(c) {
+            col.set_shape(built.shared_shape().clone());
+            col.set_position_wrt_parent(*built.position());
+            col.set_mass(d.mass.max(0.02));
+        }
     }
 
     /// A hand: a light dynamic palm box with no gravity, driven by velocity. `palm`: the box in the

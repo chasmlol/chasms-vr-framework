@@ -540,6 +540,28 @@ impl Adapter {
         }
     }
 
+    /// The bowls the hands make things in (see [`Receptacles`]): when they change.
+    pub fn write_receptacles(&self, table: &Receptacles) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_receptacles(table);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Cards of the game's own interface beside its objects (see [`Cards`]): when they change.
+    pub fn write_cards(&self, cards: &Cards) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_cards(cards);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// What the things offered are, for the cards beside them (see [`ItemInfos`]): when they
     /// change.
     pub fn write_item_infos(&self, infos: &ItemInfos) -> bool {
