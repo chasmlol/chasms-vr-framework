@@ -363,6 +363,9 @@ struct Hand {
     pocket: Option<InPocket>,
     heartbeat: f64,
     aware: f32,
+    /// What it was on in the pockets when the game was last told ([`Rig::felt`]), and since when.
+    felt: [u32; 4],
+    felt_since: f64,
     /// Let go while the game decided on the thing it took out of a pocket: let go once it has.
     let_go: bool,
 }
@@ -1690,6 +1693,8 @@ impl Rig {
                 pocket: None,
                 heartbeat: 0.0,
                 aware: 0.0,
+                felt: [0; 4],
+                felt_since: 0.0,
                 let_go: false,
             }
         };
@@ -1769,6 +1774,25 @@ impl Rig {
             Pocketed::Inside { pocket, actor, .. } => Some((actor, pocket)),
             _ => None,
         }
+    }
+
+    /// What hand `i` is on in the pockets: the creature, the pocket, the thing its fingers are on and
+    /// that thing's template (0s where there's none: out of the pockets, holding a thing, or in a
+    /// pocket with nothing to feel).
+    fn felt(&self, i: usize) -> [u32; 4] {
+        let Some((actor, pocket)) = self.in_pocket(i) else { return [0; 4] };
+        let h = &self.hands.as_ref().unwrap()[i];
+        let open = self.pocket(pocket).filter(|pk| pk.flags & POCKET_SHUT == 0);
+        let thing = h.pocket.filter(|_| h.holding.is_none()).zip(open).and_then(|(p, pk)| pk.items().get(p.index).copied());
+        thing.map_or([actor, pocket, 0, 0], |t| [actor, pocket, t.id, t.object])
+    }
+
+    /// The thing a hand's fingers are on in a pocket (its template) and where that hand is (world):
+    /// the latest hand to come on one, for the card of it.
+    pub fn feeling(&self) -> Option<(u32, Vec3)> {
+        let hands = self.hands.as_ref()?;
+        let i = (0..2).filter(|&i| hands[i].felt[3] != 0).max_by(|&a, &b| hands[a].felt_since.total_cmp(&hands[b].felt_since))?;
+        Some((hands[i].felt[3], self.physics.pose(hands[i].body).0))
     }
 
     /// The pocket nearest hand `i` and where its middle is from the drawn hand (world metres), for
@@ -1913,6 +1937,16 @@ impl Rig {
                 self.hands.as_mut().unwrap()[i].heartbeat = now + pockets::HEARTBEAT;
             }
             self.hands.as_mut().unwrap()[i].aware = aware;
+            // What it's on, told to the game as it changes: the game shows its card of the thing the
+            // fingers are on, before they close on it.
+            let felt = self.felt(i);
+            if felt != self.hands.as_ref().unwrap()[i].felt {
+                let [actor, pocket, item, object] = felt;
+                self.pocket_event(PocketEvent { kind: PE_FEEL, actor, pocket, item, object, hand: i as u32, pos: palm.to_array(), ..Default::default() });
+                let h = &mut self.hands.as_mut().unwrap()[i];
+                h.felt = felt;
+                h.felt_since = now;
+            }
         }
         // The creatures' pickpocketing closes once no hand has been near their pockets a moment.
         let near: Vec<u32> = self

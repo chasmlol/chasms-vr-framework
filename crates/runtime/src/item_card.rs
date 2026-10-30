@@ -1,7 +1,7 @@
-//! A card beside a thing in the hand (or flying to it): what the game says it is
-//! ([`ItemInfos`]): its name and how many, its numbers as the game words them (damage, armour,
-//! weight, value...), and whether taking it is stealing. It floats just over the thing, turned to
-//! the eyes, follows it, and fades in as it's taken and out as it's let go.
+//! A card beside a thing in the hand (or flying to it, or under the fingers in a pocket): what the
+//! game says it is ([`ItemInfos`]): its name and how many, its numbers as the game words them
+//! (damage, armour, weight, value...), and whether taking it is stealing. It floats just over the
+//! thing, turned to the eyes, follows it, and fades in as it's taken and out as it's let go.
 
 use anyhow::Result;
 use glam::Vec3;
@@ -25,6 +25,8 @@ const TOWARDS: f32 = 0.04;
 const FADE_IN: f32 = 0.12;
 const FADE_OUT: f32 = 0.2;
 const FOLLOW: f32 = 0.04;
+/// How far over a hand in a pocket its top is, for the card of the thing under its fingers.
+const FELT_TOP: f32 = 0.05;
 
 pub struct ItemCard {
     ctx: egui::Context,
@@ -41,9 +43,10 @@ pub struct ItemCard {
 
 /// The thing to show a card for: one a hand holds or pulls that the game says what it is (itself, or
 /// the template it's a copy of: a thing out of a pocket): the one shown already while a hand still
-/// has it, else one held, else one flying in. Where it is (tracking space) and how far its top is
+/// has it, else one held, else the one a hand's fingers are on in a pocket (`felt`: its template,
+/// and where the hand is), else one flying in. Where it is (tracking space) and how far its top is
 /// over its middle.
-pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, infos: &ItemInfos, map: Option<&WorldMap>) -> Option<(u32, Vec3, f32)> {
+pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, infos: &ItemInfos, map: Option<&WorldMap>, felt: Option<(u32, Vec3)>) -> Option<(u32, Vec3, f32)> {
     let states = &states.states[..(states.count as usize).min(MAX_OBJECTS)];
     let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
     let place = |s: &ObjectState| -> Option<(u32, Vec3, f32)> {
@@ -63,7 +66,16 @@ pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, in
     {
         return Some(p);
     }
-    states.iter().filter(held).find_map(place).or_else(|| states.iter().filter(pulled).find_map(place))
+    // (A hand in a pocket: the card over the hand, as over a thing its size.)
+    let felt = || felt.filter(|(t, _)| infos.get(*t).is_some()).map(|(t, at)| (t, at, FELT_TOP));
+    states.iter().filter(held).find_map(place).or_else(felt).or_else(|| states.iter().filter(pulled).find_map(place))
+}
+
+/// What the game says a thing is: the thing shown, by its own card or its template's; or a template
+/// (a thing felt in a pocket).
+fn info_for<'a>(infos: &'a ItemInfos, states: &ObjectStates, id: u32) -> Option<&'a ItemInfo> {
+    let states = &states.states[..(states.count as usize).min(MAX_OBJECTS)];
+    states.iter().find(|s| s.id == id).map_or_else(|| infos.get(id), |s| info_of(infos, s))
 }
 
 /// What the game says a thing is: its own card, or its template's.
@@ -109,8 +121,8 @@ impl ItemCard {
 
     /// This frame's card: where it goes and how strongly it shows (None: not shown). `head`: the
     /// eyes' middle (tracking space).
-    pub fn update(&mut self, gpu: &Gpu, states: &ObjectStates, objects: &ObjectTable, map: Option<&WorldMap>, head: Vec3, dt: f32) -> Result<Option<(Panel, f32)>> {
-        let now = pick(self.shown, states, objects, &self.infos, map);
+    pub fn update(&mut self, gpu: &Gpu, states: &ObjectStates, objects: &ObjectTable, map: Option<&WorldMap>, felt: Option<(u32, Vec3)>, head: Vec3, dt: f32) -> Result<Option<(Panel, f32)>> {
+        let now = pick(self.shown, states, objects, &self.infos, map, felt);
         match now {
             Some((id, at, top)) => {
                 if self.shown != Some(id) {
@@ -122,8 +134,7 @@ impl ItemCard {
                 let k = 1.0 - (-dt / FOLLOW).exp();
                 self.at = Some(self.at.map_or(want, |a| a.lerp(want, k)));
                 self.opacity = (self.opacity + dt / FADE_IN).min(1.0);
-                let s = states.states[..(states.count as usize).min(MAX_OBJECTS)].iter().find(|s| s.id == id).unwrap();
-                let info = *info_of(&self.infos, s).unwrap();
+                let info = *info_for(&self.infos, states, id).unwrap();
                 if self.painted.is_none_or(|p| bytemuck::bytes_of(&p) != bytemuck::bytes_of(&info)) {
                     self.paint(gpu, &info)?;
                     self.painted = Some(info);
@@ -235,16 +246,16 @@ mod tests {
         let (mut states, objects, infos) = tables();
         let map = WorldMap::IDENTITY;
         // Held (3) beats pulled (2); the held one without a name (4) has none.
-        let (id, at, top) = pick(None, &states, &objects, &infos, Some(&map)).unwrap();
+        let (id, at, top) = pick(None, &states, &objects, &infos, Some(&map), None).unwrap();
         assert_eq!(id, 3);
         assert_eq!(at, Vec3::new(3.0, 1.0, 0.0));
         assert!((top - 0.1).abs() < 1e-6);
         // Shown already and still pulled: it stays.
-        assert_eq!(pick(Some(2), &states, &objects, &infos, Some(&map)).unwrap().0, 2);
+        assert_eq!(pick(Some(2), &states, &objects, &infos, Some(&map), None).unwrap().0, 2);
         // Nothing held: the one flying in.
         states.states[2].flags = 0;
-        assert_eq!(pick(Some(3), &states, &objects, &infos, Some(&map)).unwrap().0, 2);
+        assert_eq!(pick(Some(3), &states, &objects, &infos, Some(&map), None).unwrap().0, 2);
         states.states[1].flags = 0;
-        assert!(pick(None, &states, &objects, &infos, Some(&map)).is_none());
+        assert!(pick(None, &states, &objects, &infos, Some(&map), None).is_none());
     }
 }

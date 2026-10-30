@@ -13,8 +13,8 @@
 //!   its creature is of the player; and the game's answers to the attempts ([`PocketOutcome`]).
 //! * [`PocketEvents`] (runtime -> game, a ring): a hand going into a creature's pockets and coming
 //!   away (the game's pickpocketing of it opening and closing), a thing pulled out of one (the
-//!   attempt), a thing let go in one (planting), and what became of a thing taken (put in a body
-//!   slot, or let go in the world).
+//!   attempt), a thing let go in one (planting), what became of a thing taken (put in a body
+//!   slot, or let go in the world), and which thing the fingers are on (for the game's card of it).
 //!
 //! All positions are world space, metres, the protocol's axes.
 
@@ -170,6 +170,10 @@ pub const PE_PLANT: u32 = 4;
 pub const PE_DROP: u32 = 5;
 /// A taken thing (`object`) put in a body slot: the player keeps it (it's theirs already).
 pub const PE_STOW: u32 = 6;
+/// What `hand` is on in the pockets changed: it's in `pocket` of `actor` (0: in none), its
+/// fingers on thing `item`, whose template is `object` (0: on nothing, as in an empty or shut
+/// pocket, or holding a thing). The game shows its card of the thing the fingers are on.
+pub const PE_FEEL: u32 = 7;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]

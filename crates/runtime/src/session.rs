@@ -710,9 +710,11 @@ impl Session {
                 self.link.push_pocket_event(&ev);
             }
             self.rig.write_states(&mut self.states);
-            // What the thing in a hand is, on a card beside it.
+            // What the thing in a hand is (or the thing its fingers are on in a pocket), on a card
+            // beside it.
             self.item_card.read(&self.link);
-            self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
+            let felt = self.rig.feeling().map(|(t, palm)| (t, rig_map.inv_point(palm)));
+            self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), felt, Vec3::from_array(frame.hmd.pos), frame.dt)?;
             // The body the game makes up, when it changes.
             self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
