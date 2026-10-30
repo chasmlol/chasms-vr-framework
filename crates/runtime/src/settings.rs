@@ -67,7 +67,7 @@ pub struct Riding {
 
 impl Default for Riding {
     fn default() -> Self {
-        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_dead: 0.05, rein_travel: 0.10, rein_pull: 0.15, cruise: 0.7, spur_fade: 8.0, flick: true, coast: 2.5, stride_haptics: true }
+        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_dead: 0.05, rein_travel: 0.30, rein_pull: 0.15, cruise: 0.7, spur_fade: 8.0, flick: true, coast: 2.5, stride_haptics: true }
     }
 }
 

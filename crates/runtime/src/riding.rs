@@ -16,11 +16,14 @@
 //!   in the rider's own frame (tracking space turned to the mount as it was when the reins were
 //!   taken, so the view turning with the mount in steps never moves them):
 //!   - one rein pulled back further than the other, or both moved to one side (laid on the neck,
-//!     or a rein opened out), turns the mount that way, finely, measured against the mount itself
-//!     (not from where the reins were taken: hands centred over its mane and level go straight,
-//!     wherever they were when they took the reins): the hands' middle across from the mane past
-//!     [`NECK_DEAD`], one ahead of the other past [`LEVEL_DEAD`]; gently at first, as hard as the
-//!     game turns it at `rein_travel` past that, smoothed over [`STEER_SMOOTH`];
+//!     or a rein opened out), turns the mount that way, finely, measured against the rider and the
+//!     mount (not from where the reins were taken: hands centred before the rider's body and level
+//!     go straight, wherever they were when they took the reins): the hands' middle across from
+//!     the rider's middle past [`NECK_DEAD`] (the rider's middle: where the head sits across the
+//!     mount, over [`CENTRE_FOLLOW`], so a glance round doesn't move it), one ahead of the other
+//!     past [`LEVEL_DEAD`]; as the square of the way past that, all of it at `rein_travel` (hands
+//!     well out to a side: a few centimetres turn it a degree or two a second), smoothed over
+//!     [`STEER_SMOOTH`];
 //!   - its speed is a share of its full gallop, and fluid: a flick of the reins (a hand snapped
 //!     down and stopped, either or both: the whip of Rival Stars and DovaVR's stroke) or the
 //!     trigger of a hand on a rein (a squeeze of the heels) spurs it, as hard as it's done (the
@@ -59,12 +62,16 @@ use crate::settings::Settings;
 
 /// A hand takes a rein this close to where the game's rider holds it (metres).
 const REIN_REACH: f32 = 0.15;
-/// Steering is measured against the mount: the hands' middle this far across from its mane, or one
-/// hand this far ahead of the other, doesn't steer (metres: hands held naturally over the withers
-/// are this near centred and level). Smoothed over `STEER_SMOOTH` (seconds).
+/// Steering is measured against the rider and the mount: the hands' middle this far across from the
+/// rider's middle, or one hand this far ahead of the other, doesn't steer (metres: hands held
+/// naturally before the body are this near centred and level). The rider's middle across the mount
+/// follows where the head sits over `CENTRE_FOLLOW` (seconds), and never more than `CENTRE_MOST`
+/// from the mane (metres). Smoothed over `STEER_SMOOTH` (seconds).
 pub const NECK_DEAD: f32 = 0.03;
 pub const LEVEL_DEAD: f32 = 0.025;
-pub const STEER_SMOOTH: f32 = 0.08;
+pub const CENTRE_FOLLOW: f32 = 10.0;
+pub const CENTRE_MOST: f32 = 0.15;
+pub const STEER_SMOOTH: f32 = 0.12;
 /// A rein's rest is what a pull is measured from (where the hand took it up): a hand within
 /// `STEER_DEAD` of it carries it along `REST_FOLLOW` slowly (seconds to close most of the way), so
 /// a resting hand's drift is taken up and a deliberate move (a few tenths of a second) isn't.
@@ -181,8 +188,10 @@ pub struct Riding {
     flick: [Option<(f64, f32, f32)>; 2],
     /// A rein hand's trigger squeezed since, and how deep yet.
     squeeze: [Option<(f64, f32)>; 2],
-    /// The reins' steering, smoothed.
+    /// The reins' steering, smoothed; the rider's middle across the mount from its mane (metres),
+    /// while the reins are held.
     steer: f32,
+    centre: Option<f32>,
     grip_was: [bool; 2],
     trig_was: [bool; 2],
     /// The trigger held since, and whether this hold already asked to get off.
@@ -352,13 +361,22 @@ impl Riding {
         let mane = (reins[0] + reins[1]) * 0.5;
         let across = Vec3::new(reins[1].x - reins[0].x, 0.0, reins[1].z - reins[0].z).normalize_or(Vec3::X);
         let ahead = across.cross(Vec3::Y);
-        let on_mount = |h: usize| ((pos(h) - mane).dot(across), (pos(h) - mane).dot(ahead));
-        // A move past a dead zone as a share of a full turn: gently at first, all of it
-        // `rein_travel` past the dead zone.
+        // (The rider's middle: where the head sits across the mount, slowly.)
+        let head = (Vec3::from_array(f.hmd.pos) - mane).dot(across).clamp(-CENTRE_MOST, CENTRE_MOST);
+        let centre = if held.is_empty() {
+            None
+        } else {
+            Some(self.centre.map_or(head, |c| c + (head - c) * (1.0 - (-dt / CENTRE_FOLLOW).exp())))
+        };
+        self.centre = centre;
+        let centre = centre.unwrap_or(0.0);
+        let on_mount = |h: usize| ((pos(h) - mane).dot(across) - centre, (pos(h) - mane).dot(ahead));
+        // A move past a dead zone as a share of a full turn: its square (a little turns it a
+        // little), all of it `rein_travel` past the dead zone.
         let travel = s.rein_travel.max(0.03);
         let share = |d: f32, dead: f32| {
             let x = ((d.abs() - dead) / travel).clamp(0.0, 1.0);
-            d.signum() * (0.5 * x + 0.5 * x * x)
+            d.signum() * x * x
         };
         let (rein_steer, pull) = match (on_side(0), on_side(1)) {
             (Some(lh), Some(rh)) => {
@@ -554,7 +572,7 @@ impl Riding {
             Some(r) => {
                 let m = turn * (pos(h) - r.rest);
                 let (x, z) = on_mount(h);
-                format!("{} hand ({} rein) {:+.2} across the mane {:+.2} ahead, {:+.2} back from its rest", side_name(h), side_name(r.side), x, z, -m.z)
+                format!("{} hand ({} rein) {:+.2} across from the rider's middle {:+.2} ahead of the mane, {:+.2} back from its rest", side_name(h), side_name(r.side), x, z, -m.z)
             }
             None => format!("{} hand free", side_name(h)),
         };
@@ -566,9 +584,10 @@ impl Riding {
                 }
             }
             tracing::info!(
-                "riding: reins: {}, {}; pull {:.2} (slows from {:.2}, hardest at {:.2}){} -> gait {} speed {:.2} (surge {:.2}, settling at {:.2}) steer {:+.2}{}",
+                "riding: reins: {}, {}; the rider's middle {:+.2} across the mane; pull {:.2} (slows from {:.2}, hardest at {:.2}){} -> gait {} speed {:.2} (surge {:.2}, settling at {:.2}) steer {:+.2}{}",
                 hand(0),
                 hand(1),
+                centre,
                 pull,
                 dead_zone,
                 s.rein_pull.max(dead_zone + 0.03),
