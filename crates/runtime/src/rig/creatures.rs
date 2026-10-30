@@ -30,6 +30,9 @@ const THROAT_TORSO: f32 = 0.1;
 /// A capsule thinner than this (metres) is held in the fist (an arm, a neck); thicker, with the
 /// fingers spread over it (a torso, a head).
 const THIN: f32 = 0.07;
+/// A throat is this thick (metres): the fingers close round the neck, not the head's capsule
+/// (which runs on up through the crown, as wide as the skull).
+pub const THROAT_RADIUS: f32 = 0.055;
 /// Capsules of the creature this near the hand (metres) are what its fingers close on.
 pub const GRASP_NEAR: f32 = 0.12;
 /// A hand held back further than this from its controller (metres) feels the body's weight: a
@@ -89,6 +92,16 @@ pub fn surface(a: Vec3, b: Vec3, radius: f32, p: Vec3) -> (Vec3, Vec3) {
 }
 
 /// Whether a hold at `p` (world) on a part of `kind` from `a` to `b` is on the throat.
+/// The neck of a part of `kind` from `a` to `b`, if it has one: the stretch of it a throat hold is
+/// on.
+pub fn neck(kind: u32, a: Vec3, b: Vec3) -> Option<(Vec3, Vec3)> {
+    match kind {
+        PART_HEAD => Some((a, a.lerp(b, THROAT_SHARE))),
+        PART_TORSO => Some((b - (b - a).normalize_or_zero() * THROAT_TORSO, b)),
+        _ => None,
+    }
+}
+
 pub fn on_throat(kind: u32, a: Vec3, b: Vec3, p: Vec3) -> bool {
     let ab = b - a;
     let len = ab.length();

@@ -4535,9 +4535,15 @@ impl Rig {
             // torso's capsules at the throat).
             let (hp, _) = self.physics.pose(h.body);
             let mut g = rustvr_avatar::Grasp { fingers: rustvr_avatar::grasp::ALL_FINGERS, ..Default::default() };
-            for (&(actor, _), &(a, b, radius)) in &self.actor_parts {
-                if actor == c.actor && creatures::surface(a, b, radius, hp).0.distance(hp) < creatures::GRASP_NEAR {
-                    g.solids.push(rustvr_avatar::Solid::Capsule { a, b, radius });
+            for (&(actor, part), &(a, b, radius)) in &self.actor_parts {
+                if actor != c.actor || creatures::surface(a, b, radius, hp).0.distance(hp) >= creatures::GRASP_NEAR {
+                    continue;
+                }
+                // On the throat, round the neck itself.
+                let kind = self.bodies.get(&actor).and_then(|b| b.parts.get(part)).map_or(PART_TORSO, |p| p.kind);
+                match creatures::neck(kind, a, b).filter(|_| c.throat) {
+                    Some((na, nb)) => g.solids.push(rustvr_avatar::Solid::Capsule { a: na, b: nb, radius: creatures::THROAT_RADIUS * self.map.world_per_meter }),
+                    None => g.solids.push(rustvr_avatar::Solid::Capsule { a, b, radius }),
                 }
             }
             return Some(((c.actor, On::Free), g));
