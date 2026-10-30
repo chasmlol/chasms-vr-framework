@@ -3301,6 +3301,19 @@ impl Rig {
         }
     }
 
+    /// A loose object set moving `dv` faster (m/s, world), on the next step: a push of its own mass
+    /// times that, at its centre (a severed limb leaving the body). False if it isn't loose yet.
+    pub fn kick(&mut self, id: u32, dv: Vec3) -> bool {
+        let Some(o) = self.objects.get(&id).filter(|o| matches!(o.holder, Holder::Free)) else { return false };
+        if !dv.is_finite() {
+            return false;
+        }
+        let (p, q) = self.physics.pose(o.body);
+        let at = p + q * v3(o.desc.center);
+        self.pushes.push(Push::One { id, impulse: dv * o.desc.mass.max(0.01), at });
+        true
+    }
+
     fn apply_pushes(&mut self) {
         for push in std::mem::take(&mut self.pushes) {
             match push {

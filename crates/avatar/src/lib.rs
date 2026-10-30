@@ -44,6 +44,7 @@
 pub mod collimator;
 pub mod fit;
 pub mod gamebryo;
+pub mod gore;
 pub mod grasp;
 pub mod held;
 pub mod metro;
@@ -254,6 +255,11 @@ impl Avatar {
     /// Draws the body into `target` (an sRGB view of one eye's image, `width` x `height`) as seen
     /// from `eye` with `fov`. With `depth`, the body is hidden behind the game's geometry;
     /// without, it's drawn on top.
+    /// The blood to draw into the next eye ([`gore`]): `None` for none.
+    pub fn set_gore(&mut self, gpu: &Gpu, frame: Option<&gore::GoreFrame>) {
+        self.renderer.set_gore(gpu, frame);
+    }
+
     pub fn draw(
         &mut self,
         gpu: &Gpu,

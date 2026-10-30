@@ -136,6 +136,8 @@ pub struct Session {
     pub rig: Rig,
     pub rig_out: RigOutput,
     combat: crate::combat::Combat,
+    /// Blood and limbs cut off (crate::gore).
+    gore: crate::gore::Gore,
     /// Hands whose trigger casts a spell this frame (`crate::combat`).
     spell_hands: [bool; 2],
     objects: Box<ObjectTable>,
@@ -283,6 +285,7 @@ impl Session {
             rig: Rig::default(),
             rig_out: RigOutput::default(),
             combat: crate::combat::Combat::default(),
+            gore: crate::gore::Gore::default(),
             spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
             states: bytemuck::zeroed_box(),
@@ -714,6 +717,10 @@ impl Session {
             for ev in &combat {
                 self.link.push_combat_event(ev);
             }
+            // Gore: the blood the hits and the stumps spill, the limbs the game says were cut off.
+            let gore_events = self.gore.read(&self.link);
+            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, combat: &self.combat, now, dt: frame.dt, paused: rig_paused };
+            self.gore.update(&mut self.rig, &gore_input, &gore_events);
             // Blades that went in and stay in.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);
@@ -1530,6 +1537,13 @@ impl Session {
             });
             held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
             let held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
+            // The blood, where this eye's picture has the world.
+            let gore = (draw_body && !framework && self.gore.active()).then(|| {
+                let mut f = self.gore.frame();
+                f.world_to_tracking = eye_map.as_ref().or(map_now.as_ref()).map_or(glam::Mat4::IDENTITY, |m| m.matrix().inverse());
+                f
+            });
+            body.set_gore(&self.gpu, gore.as_ref());
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
                 if framework {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {

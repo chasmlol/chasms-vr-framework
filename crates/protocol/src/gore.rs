@@ -35,24 +35,30 @@ pub const BLOOD_DUST: u32 = 1 << 1;
 pub const BLOOD_GLOW: u32 = 1 << 2;
 
 /// One kind of blood, from the game's art. A texture is named `<game>/<asset key>` (the asset
-/// cache's `textures` under the game's folder); empty: the kind has none of that.
+/// cache's `textures` under the game's folder); empty: the kind has none of that (the splat's
+/// stands in for a missing decal, a plain drop of its colour for a missing particle).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Blood {
     pub flags: u32, // BLOOD_*
     /// How much a body holds, against a person's (1): a rat's less, a troll's more.
     pub amount: f32,
-    /// How thick it is (1: blood): thicker runs slower and drips less.
+    /// How thick it is (1: blood): thicker runs slower.
     pub viscosity: f32,
-    pub _p0: f32,
+    /// The splat texture is an atlas of `atlas` x `atlas` splats (a drop takes one).
+    pub atlas: u32,
     /// A drop landing: the game's blood decal (its alpha the shape).
     pub splat: [u8; 48],
-    /// A pool, and a big splash: a stain or splatter.
+    /// A fast drop landing at a slant, a heavy spray: a splatter with its streaks along the way.
+    pub splatter: [u8; 48],
+    /// A pool.
     pub stain: [u8; 48],
-    /// What a run leaves down a wall: a drip.
+    /// What runs down a wall leaves (its red the streak).
     pub drip: [u8; 48],
-    /// A drop in the air: the game's blood particle.
+    /// A drop in the air: the game's blood particle (a drop drawn out along its fall).
     pub drop: [u8; 48],
+    /// Fine mist in the air.
+    pub mist: [u8; 48],
     /// A stump's cut face: the game's flesh.
     pub flesh: [u8; 48],
 }
@@ -212,7 +218,7 @@ pub const OFF_GORE_EVENTS: usize = (OFF_GORE_BODIES + size_of::<GoreBodies>()).n
 pub const OFF_GORE_END: usize = OFF_GORE_EVENTS + size_of::<GoreEvents>();
 
 const _: () = {
-    assert!(size_of::<Blood>() == 16 + 48 * 5);
+    assert!(size_of::<Blood>() == 16 + 48 * 7);
     assert!(size_of::<Stump>() == 32);
     assert!(size_of::<GoreBody>() == 16 + 32 * MAX_STUMPS);
     assert!(size_of::<GoreEvent>() == 112);
