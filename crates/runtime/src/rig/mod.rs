@@ -702,6 +702,9 @@ pub struct Rig {
     pushes: Vec<Push>,
     /// What each hand's fingers close on this frame (tracking space).
     grasps: [Option<rustvr_avatar::Grasp>; 2],
+    /// Hands turning a held book's pages (its grip on them): they take nothing, and their gloves
+    /// pull nothing.
+    page_hands: [bool; 2],
 }
 
 impl Default for Rig {
@@ -730,6 +733,7 @@ impl Default for Rig {
             kicks: HashMap::new(),
             pushes: Vec::new(),
             grasps: [None, None],
+            page_hands: [false; 2],
         }
     }
 }
@@ -1380,7 +1384,9 @@ impl Rig {
                 self.hand_input(i, inp, &zones, dom);
             }
             for i in 0..2 {
-                self.gloves(i, inp);
+                if !self.page_hands[i] {
+                    self.gloves(i, inp);
+                }
             }
             self.weapons(inp, dom);
             self.throwables();
@@ -1715,6 +1721,14 @@ impl Rig {
 
     // ---- what an empty hand would grab ------------------------------------------------------------
     fn update_hover(&mut self, i: usize, s: &Settings, zones: &[Zone; SLOT_COUNT_BODY], ammo: &[Zone; 2]) {
+        if self.page_hands[i] {
+            // (Its grip is on a held book's pages: it takes nothing, not even the book.)
+            if self.hands.as_ref().unwrap()[i].glove != Glove::Idle {
+                self.set_glove(i, Glove::Idle);
+            }
+            self.hands.as_mut().unwrap()[i].hover = Hover::None;
+            return;
+        }
         let hands = self.hands.as_ref().unwrap();
         let h = &hands[i];
         if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.valve.is_some() {
@@ -2098,6 +2112,12 @@ impl Rig {
             self.take(id, i, true);
         }
         free && empty
+    }
+
+    /// The hands turning a held book's pages (their grip on them), from now on: they take nothing,
+    /// and their gloves pull nothing, until they're done.
+    pub fn set_page_hands(&mut self, hands: [bool; 2]) {
+        self.page_hands = hands;
     }
 
     /// Object `id`, held by the other hand, into hand `i`'s palm (a sheet spread between both hands,

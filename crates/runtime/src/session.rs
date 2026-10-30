@@ -841,6 +841,8 @@ impl Session {
                     tracing::info!("runtime: the free hand turned a page: {}", a.name());
                     self.mech.press(a);
                 }
+                // (A hand on a book's pages to turn them takes nothing, from the rig's next step.)
+                self.rig.set_page_hands(held.page_hands);
                 if let Some((uv, down)) = held.cursor {
                     cursor = Some(Cursor { uv, down });
                 }
@@ -856,6 +858,7 @@ impl Session {
             } else {
                 self.held = Default::default();
                 self.held_menus = Default::default();
+                self.rig.set_page_hands([false; 2]);
             }
             // What the thing in a hand is, on a card beside it.
             self.item_card.read(&self.link);

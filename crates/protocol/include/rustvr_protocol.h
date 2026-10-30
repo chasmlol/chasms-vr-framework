@@ -657,8 +657,8 @@
 #define RVR_HELD_SHEET (1 << 1)
 
 /**
- * Its pages turn by hand: the free hand's fingertip swiped across them (or the trigger pinched at
- * a page's edge and pulled across the middle), presses [`crate::Action::PageNext`] (leftwards) or
+ * Its pages turn by hand: the free hand's grip near them, moved across them (a page every few
+ * centimetres), presses [`crate::Action::PageNext`] (leftwards) or
  * [`crate::Action::PagePrev`].
  */
 #define RVR_HELD_PAGES (1 << 2)

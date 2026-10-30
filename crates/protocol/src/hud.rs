@@ -102,8 +102,8 @@ pub const HELD_FACE: u32 = 1 << 0;
 /// hand's grip near either side spreads it between the two (the points of it the hands took stay in
 /// them, within reason): pulling them apart makes it bigger.
 pub const HELD_SHEET: u32 = 1 << 1;
-/// Its pages turn by hand: the free hand's fingertip swiped across them (or the trigger pinched at
-/// a page's edge and pulled across the middle), presses [`crate::Action::PageNext`] (leftwards) or
+/// Its pages turn by hand: the free hand's grip near them, moved across them (a page every few
+/// centimetres), presses [`crate::Action::PageNext`] (leftwards) or
 /// [`crate::Action::PagePrev`].
 pub const HELD_PAGES: u32 = 1 << 2;
 /// The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on

@@ -23,12 +23,9 @@
 //!   (Casiez et al., CHI 2012): smoothed hard while the hand is nearly still (its tremor, the rig
 //!   settling the book in it: text that shakes can't be read) and less and less as it moves, so they
 //!   keep up with a deliberate move. Spread between both hands a sheet follows them exactly.
-//! - **Pages** (`HELD_PAGES`): the free hand's fingertip swiped across the pages, on them or a few
-//!   centimetres off (barely a flick: its own speed across them), or the trigger pinched at a page's
-//!   edge and pulled across the middle, turns a page: leftwards onwards, back the other way. The
-//!   fingertip has to slow (or leave the pages) before it swipes again, and the way back is shut
-//!   for a moment after the swipe's stroke ends, so the finger coming straight back doesn't turn it
-//!   back, but a swipe back after a pause does.
+//! - **Pages** (`HELD_PAGES`): the free hand's grip anywhere near the pages holds them, and moving
+//!   it across them turns them, a page for every few centimetres (leftwards onwards, rightwards
+//!   back), as many as it goes. Near them its grip takes nothing else, not even the book.
 //! - **Pressing** (every held menu): the free hand's index fingertip pushed onto a piece presses the
 //!   game's button there (its cursor at the fingertip, its button down, until the finger comes back
 //!   off), and near it the cursor follows the fingertip, so the game lights what's under it. There's
@@ -82,6 +79,9 @@ pub struct HeldOut {
     pub cursor: Option<(Vec2, bool)>,
     /// Ticks in the hands: which, seconds, frequency, amplitude.
     pub haptics: Vec<(usize, f32, f32, f32)>,
+    /// The hands on a held book's pages to turn them (near them, or gripping them): their grip takes
+    /// nothing else, not even the book.
+    pub page_hands: [bool; 2],
 }
 
 /// How far out from a thing's face its pages lie (metres): clear of the model, close enough that
@@ -92,22 +92,18 @@ const NEAR_PAGE: f32 = 0.12;
 /// Pages facing the eyes lie this far out in front of their thing (metres): clear of the fingers
 /// round its cover.
 const FACING_LIFT: f32 = 0.03;
-/// A swipe is the free hand's fingertip this fast across the pages (metres a second: hardly a
-/// flick at all), more across them than in or out, within this far in front of them or behind
-/// (metres) and out past their edges by this share of their size; it swipes again once it's slowed
-/// below this share of that, or left them. None counts this long after the pages appear (the hands
-/// are still settling the book). The fingertip's speed eases at this rate (seconds).
-const SWIPE_SPEED: f32 = 0.15;
-const SWIPE_ACROSS: f32 = 0.5;
-const SWIPE_NEAR: f32 = 0.1;
-const SWIPE_MARGIN: f32 = 0.25;
-const SWIPE_REARM: f32 = 0.5;
-const SWIPE_SETTLE: f64 = 0.3;
+/// The free hand's grip holds the pages within this far in front of them or behind (metres) and out
+/// past their edges by this share of their size, and turns one for each this far (metres) it then
+/// moves across them.
+const TURN_NEAR: f32 = 0.25;
+const TURN_MARGIN: f32 = 0.5;
+const TURN_STEP: f32 = 0.05;
+/// How quickly the fingertip's speed (what tells a press from a brush across) follows it (seconds).
 const TIP_EASE: f32 = 0.03;
 /// A fingertip presses a piece this near it (metres in front: the finger's skin on it), comes off
 /// it this far out, and is over it (the cursor following it) within this far in front. A fingertip
 /// sweeping across faster than this (metres a second), or more across than into it, isn't pressing
-/// (a swipe brushing the pages).
+/// (a hand brushing the pages).
 const POKE_ON: f32 = 0.01;
 const POKE_OFF: f32 = 0.025;
 const POKE_NEAR: f32 = 0.06;
@@ -115,14 +111,6 @@ const POKE_SIDEWAYS: f32 = 0.35;
 /// A sheet in the hands lies this far in front of them (metres, towards the eyes): a hand's depth,
 /// so the fingers holding it stay behind it.
 const SHEET_LIFT: f32 = 0.08;
-/// A pinch pulled across ends this far past the middle (a share of the half width), within this
-/// long (seconds). The way back is shut this long after the finger that turned a page has slowed (the
-/// finger coming back straight after a swipe is its return, not a swipe: a pause and it's a swipe
-/// back); the same way, this long after a turn.
-const PULL_TO: f32 = 0.08;
-const PULL_TIME: f64 = 1.2;
-const BACK_AFTER: f64 = 0.45;
-const AGAIN_AFTER: f64 = 0.2;
 /// A hand this far behind a sheet (metres) can still take hold of it (it lies in front of the hand
 /// holding it).
 const GRIP_BEHIND: f32 = 0.14;
@@ -162,34 +150,24 @@ struct Lie {
     hold: Option<Hold>,
     at: Vec2,
     other_at: Vec2,
-    /// When it appeared.
-    since: f64,
     /// Metres per group unit (the HUD texture's height).
     unit: f32,
     /// In one hand, where it's held and its right and up, steadied.
     steady: [Option<Steady>; 3],
-    /// A pinch pulled across, under way: where on the pages it started (a share of the half width
-    /// from the middle) and when.
-    sweep: Option<(f32, f64)>,
-    /// The fingertip has slowed since its last swipe (or left the pages).
-    armed: bool,
+    /// The free hand's grip holding the pages: where the hand was when it took them, or last turned
+    /// one.
+    turning: Option<Vec3>,
     /// The free hand's fingertip last frame and when, and its speed (eased).
     tip_last: Option<(Vec3, f64)>,
     tip_vel: Vec3,
-    /// The last turn: which way, when, and when the fingertip's stroke (the swipe that turned it, or a
-    /// return after it that didn't) last went on.
-    turned: Option<(Action, f64, f64)>,
-    /// The free hand's grip and trigger last frame.
+    /// The free hand's grip last frame.
     gripped: bool,
-    pinched: bool,
     /// Dragging: where on the HUD texture the cursor is.
     drag: Option<Vec2>,
     /// A fingertip pressing it: where (the HUD texture's part); and how far in front it was last
     /// frame.
     poke: Option<Vec2>,
     tip_z: Option<f32>,
-    /// When a swipe that didn't count was last logged.
-    told: f64,
 }
 
 /// The held menus' places, kept between frames.
@@ -334,20 +312,15 @@ impl HeldMenus {
                         hold: None,
                         at: Vec2::ZERO,
                         other_at: Vec2::ZERO,
-                        since: now,
                         unit: natural,
                         steady: [None; 3],
-                        sweep: None,
-                        armed: true,
+                        turning: None,
                         tip_last: None,
                         tip_vel: Vec3::ZERO,
-                        turned: None,
                         gripped: false,
-                        pinched: false,
                         drag: None,
                         poke: None,
                         tip_z: None,
-                        told: 0.0,
                     });
                     self.lies.len() - 1
                 }
@@ -385,7 +358,6 @@ impl HeldMenus {
             let normal = up.cross(right);
             let unit = lie.unit;
             let half_w = (fp[2] - fp[0]) * 0.5;
-            let mid_x = (fp[0] + fp[2]) * 0.5;
             let mut pieces = Vec::new();
             for e in layout.entries().iter().filter(|e| e.group == n) {
                 let (w, h) = piece_size(e, aspect);
@@ -405,13 +377,12 @@ impl HeldMenus {
                 (Vec2::new(d.dot(right), d.dot(up)) / unit, d.dot(normal))
             });
             let over = |xy: Vec2| xy.x > fp[0] - half_w * 0.15 && xy.x < fp[2] + half_w * 0.15 && xy.y > fp[1] - (fp[3] - fp[1]) * 0.2 && xy.y < fp[3] + (fp[3] - fp[1]) * 0.2;
-            let near = on.filter(|&(xy, z)| z > -0.03 && z < NEAR_PAGE && over(xy));
             // (A hand taking hold of a sheet may be a little behind it: paper is taken from both sides.)
             let on_it = on.filter(|&(xy, z)| z > -GRIP_BEHIND && z < NEAR_PAGE && over(xy));
             let grip = hands[free].squeeze > 0.6;
-            let pinch = hands[free].trigger > 0.6;
-            // Spreading a sheet: the free hand's grip near either side.
-            if held.flags & HELD_SHEET != 0 && grip && !lie.gripped && lie.drag.is_none() {
+            // Spreading a sheet: the free hand's grip near either side (not pages': their grip turns
+            // them).
+            if held.flags & HELD_SHEET != 0 && held.flags & HELD_PAGES == 0 && grip && !lie.gripped && lie.drag.is_none() {
                 if let Some((xy, _)) = on_it.filter(|(xy, _)| (xy.x - fp[0]).abs() < half_w * FAR_SIDE || (xy.x - fp[2]).abs() < half_w * FAR_SIDE) {
                     lie.hold = Some(Hold::Both);
                     lie.other_at = xy;
@@ -447,8 +418,8 @@ impl HeldMenus {
                     }
                 }
             }
-            // The fingertip's own speed (tracking space), a little eased: what swipes the pages, and
-            // tells a press (into the page) from a swipe (across it).
+            // The fingertip's own speed (tracking space), a little eased: what tells a press (into
+            // the page) from a hand brushing across it.
             let tip_at = hands[free].tip;
             match (tip_at, lie.tip_last) {
                 (Some(p), Some((p0, t0))) if now > t0 => {
@@ -462,11 +433,10 @@ impl HeldMenus {
                 let d = p - origin;
                 (p, Vec2::new(d.dot(right), d.dot(up)) / unit, d.dot(normal))
             });
-            let tip_across = lie.tip_vel.dot(right);
             // Pressing what's on it with a finger: the free hand's index fingertip pushed onto it
             // from in front presses the game's button there until it comes back off; near it, the
             // game's cursor follows the fingertip. (Not while that hand drags it, has it by a side
-            // or grips, nor a fingertip sweeping across it: a swipe that brushes the pages.)
+            // or grips, nor a fingertip sweeping across it: a hand that brushes the pages.)
             if lie.drag.is_none() && !matches!(lie.hold, Some(Hold::Both)) && !grip {
                 let under = |p: Vec3| pieces.iter().find_map(|pc| pc.hit(p + normal * 0.3, -normal).map(|(_, uv)| uv));
                 let v = lie.tip_vel;
@@ -503,78 +473,36 @@ impl HeldMenus {
             } else {
                 lie.tip_z = None;
             }
-            // Turning pages: the fingertip swiped across them (right to left onwards), or a pinch at
-            // an edge pulled across the middle.
-            if held.flags & HELD_PAGES != 0 && lie.drag.is_none() {
+            // Turning pages: the free hand's grip anywhere near them holds them, and moving it across
+            // them turns them, a page for every few centimetres it goes (leftwards onwards, rightwards
+            // back). Near them, its grip takes nothing else (`out.page_hands`).
+            if held.flags & HELD_PAGES != 0 {
                 let (w, h) = (fp[2] - fp[0], fp[3] - fp[1]);
-                let by = tip.is_some_and(|(_, xy, z)| {
-                    z.abs() < SWIPE_NEAR
-                        && xy.x > fp[0] - w * SWIPE_MARGIN
-                        && xy.x < fp[2] + w * SWIPE_MARGIN
-                        && xy.y > fp[1] - h * SWIPE_MARGIN
-                        && xy.y < fp[3] + h * SWIPE_MARGIN
+                let by = on.is_some_and(|(xy, z)| {
+                    z.abs() < TURN_NEAR && xy.x > fp[0] - w * TURN_MARGIN && xy.x < fp[2] + w * TURN_MARGIN && xy.y > fp[1] - h * TURN_MARGIN && xy.y < fp[3] + h * TURN_MARGIN
                 });
-                if tip_across.abs() < SWIPE_SPEED * SWIPE_REARM || !by {
-                    lie.armed = true;
-                } else if let (false, Some((a, t, _))) = (lie.armed, lie.turned) {
-                    // (Still the stroke that turned it, or its return: the way back is shut from
-                    // when it ends.)
-                    lie.turned = Some((a, t, now));
+                let empty = !things.iter().any(|t| t.hand == free) && !matches!(lie.hold, Some(Hold::Both));
+                let hand = hands[free].grip.map(|(p, _)| p);
+                if !grip {
+                    lie.turning = None;
+                } else if lie.turning.is_none() && !lie.gripped && by && empty {
+                    tracing::info!("held menus: {:#x}'s pages held by the free hand's grip", g.id);
+                    lie.turning = hand;
+                    out.haptics.push((free, 0.015, 160.0, 0.3));
                 }
-                // (A hand holding something or taking hold isn't swiping.)
-                let empty = !grip && !things.iter().any(|t| t.hand == free) && !matches!(lie.hold, Some(Hold::Both));
-                let fast = tip_across.abs() > SWIPE_SPEED;
-                let swipe = (empty && by && lie.armed && now - lie.since > SWIPE_SETTLE && fast && tip_across.abs() > lie.tip_vel.length() * SWIPE_ACROSS)
-                    .then_some(if tip_across < 0.0 { Action::PageNext } else { Action::PagePrev });
-                if fast && by && swipe.is_none() && now - lie.told > 0.25 {
-                    // (What stopped a fingertip fast enough on the pages, for tuning from the log.)
-                    lie.told = now;
-                    tracing::info!(
-                        "held menus: a swipe at {:.2} m/s didn't count: {}{}{}{}",
-                        tip_across.abs(),
-                        if empty { "" } else { "the hand holds or grips; " },
-                        if lie.armed { "" } else { "not slowed since the last; " },
-                        if now - lie.since > SWIPE_SETTLE { "" } else { "the pages just appeared; " },
-                        if tip_across.abs() > lie.tip_vel.length() * SWIPE_ACROSS { "" } else { "more in or out than across" },
-                    );
-                }
-                let pulled = match near {
-                    Some((xy, _)) => {
-                        let x = (xy.x - mid_x) / half_w.max(1e-4);
-                        if pinch && !lie.pinched {
-                            lie.sweep = Some((x, now));
-                        }
-                        lie.sweep.filter(|&(_, t0)| now - t0 < PULL_TIME).and_then(|(x0, _)| {
-                            if x0 > 0.0 && x < -PULL_TO { Some(Action::PageNext) } else if x0 < 0.0 && x > PULL_TO { Some(Action::PagePrev) } else { None }
-                        })
-                    }
-                    None => {
-                        lie.sweep = None;
-                        None
-                    }
-                };
-                if let Some(a) = swipe.or(pulled) {
-                    let shut = lie.turned.is_some_and(|(b, t, end)| if a == b { now - t < AGAIN_AFTER } else { now - end < BACK_AFTER });
-                    if shut {
-                        let again = lie.turned.is_some_and(|(b, _, _)| b == a);
-                        tracing::info!("held menus: a swipe at {:.2} m/s didn't count: {}", tip_across.abs(), if again { "too soon after the last" } else { "the way back is shut just after a turn" });
-                    } else {
-                        tracing::info!("held menus: {:#x}'s page turned by the free hand: {}", g.id, if swipe.is_some() { format!("a swipe at {:.2} m/s", tip_across.abs()) } else { "a pinch pulled across".into() });
+                if let (Some(at), Some(p)) = (lie.turning, hand) {
+                    let across = (p - at).dot(right);
+                    if across.abs() > TURN_STEP {
+                        let a = if across < 0.0 { Action::PageNext } else { Action::PagePrev };
+                        tracing::info!("held menus: {:#x}'s page turned by the free hand's grip: {}", g.id, a.name());
                         out.presses.push(a);
                         out.haptics.push((free, 0.02, 120.0, 0.45));
-                        lie.turned = Some((a, now, now));
-                        if lie.poke.take().is_some() {
-                            // (A fingertip that pressed as it began to swipe lets go off everything:
-                            // a swipe is no click.)
-                            out.cursor = Some((Vec2::ZERO, false));
-                        }
+                        lie.turning = Some(p);
                     }
-                    lie.sweep = None;
-                    lie.armed = false;
                 }
+                out.page_hands[free] = lie.turning.is_some() || (by && empty && !grip);
             }
             lie.gripped = grip;
-            lie.pinched = pinch;
             out.pieces.extend(pieces);
         }
         if now - self.logged > 2.0 && !out.pieces.is_empty() {
