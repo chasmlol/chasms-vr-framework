@@ -1067,6 +1067,10 @@ impl Session {
                 self.melee_weapons_seq = self.combat.weapons.seq;
                 self.rig.set_melee_weapons(&self.combat.weapons);
             }
+            // Climbing: as the settings have it, unless the game says.
+            let rules = &self.combat.rules;
+            let climbing = if rules.flags & RULES_SAYS_CLIMB != 0 { rules.flags & RULES_CLIMB != 0 } else { self.settings.current.melee.climbing };
+            self.rig.set_climbing_allowed(climbing);
             let game_strength = if self.combat.rules.strength > 0.0 { self.combat.rules.strength } else { 1.0 };
             self.rig.set_melee_strength(game_strength * self.powers.strength());
             self.combat.imbues = self.powers.imbues.keys().filter_map(|&id| self.powers.imbue_of(id).map(|i| (id, i))).collect();

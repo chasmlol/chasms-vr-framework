@@ -9,7 +9,8 @@
 //!   when they're all down for good, the next wave comes, harder.
 //! * `bench`: the far left: dummies to stab and skewer (two one behind the other), others in
 //!   leather, chainmail and plate, and a wooden post.
-//! * `climb`: the far right corner: a block taller than you to climb onto with the hands.
+//! * `climb`: the far right corner: a block as tall as you to climb onto with the hands: grip its
+//!   top edge, pull yourself up, push down on it, and let go to step up onto it.
 //!
 //! The areas are fixed in the room (clear of the firing lane and its rails, the targets and the
 //! crates), so the scenarios that shoot down the lane don't see them.
@@ -23,7 +24,7 @@ pub const ARENA: (Vec3, Vec3) = (Vec3::new(3.4, 0.0, 10.2), Vec3::new(9.6, 0.0, 
 /// The bench: left of the lane, past the crate.
 pub const BENCH: (Vec3, Vec3) = (Vec3::new(-9.6, 0.0, 15.2), Vec3::new(-3.4, 0.0, 24.6));
 /// The block to climb (min, max).
-pub const CLIMB_BLOCK: (Vec3, Vec3) = (Vec3::new(7.4, 0.0, 21.4), Vec3::new(9.9, 2.6, 24.9));
+pub const CLIMB_BLOCK: (Vec3, Vec3) = (Vec3::new(7.4, 0.0, 21.4), Vec3::new(9.9, 2.0, 24.9));
 /// A table of weapons at the arena's start, at your left (min, max).
 pub const ARENA_TABLE: (Vec3, Vec3) = (Vec3::new(4.6, 0.0, 11.0), Vec3::new(5.8, 0.85, 12.2));
 /// A wooden post on the bench, to chop and stab (min, max).
@@ -37,7 +38,7 @@ pub fn starts() -> [(&'static str, Vec3, f32); 5] {
         ("rack", Vec3::new(-2.2, 0.0, 0.62), std::f32::consts::PI),
         ("arena", Vec3::new(6.0, 0.0, 10.8), 0.0),
         ("bench", Vec3::new(-6.4, 0.0, 17.2), 0.0),
-        ("climb", Vec3::new(8.6, 0.0, 19.6), 0.0),
+        ("climb", Vec3::new(8.6, 0.0, 20.95), 0.0),
     ]
 }
 
@@ -64,6 +65,23 @@ pub fn floor_under(p: Vec3, radius: f32) -> f32 {
     let (lo, hi) = CLIMB_BLOCK;
     let on = p.x + radius > lo.x && p.x - radius < hi.x && p.z + radius > lo.z && p.z - radius < hi.z;
     if on && p.y >= hi.y - 0.3 { hi.y } else { 0.0 }
+}
+
+/// Feet this far below a top, and this near its edge outside it, step up onto it when the hands
+/// let go of a climb (m).
+const MANTLE_BELOW: f32 = 1.0;
+const MANTLE_OUT: f32 = 0.5;
+
+/// Where feet at `p` step up to when the hands let go of a climb: onto the block's top, just in
+/// from its edge, if they're near enough below it.
+pub fn mantle(p: Vec3) -> Option<Vec3> {
+    let (lo, hi) = CLIMB_BLOCK;
+    let near = p.x > lo.x - MANTLE_OUT && p.x < hi.x + MANTLE_OUT && p.z > lo.z - MANTLE_OUT && p.z < hi.z + MANTLE_OUT;
+    if !near || p.y < hi.y - MANTLE_BELOW || p.y > hi.y + 0.05 {
+        return None;
+    }
+    let inside = Vec3::new(p.x.clamp(lo.x + 0.3, hi.x - 0.3), hi.y, p.z.clamp(lo.z + 0.3, hi.z - 0.3));
+    Some(inside)
 }
 
 /// Facing the player's start in the arena from `at`.

@@ -103,6 +103,8 @@ struct Game {
     time: f64,
     feet: Vec3,
     vel_y: f32,
+    /// The hands were climbing last frame (`RtMelee`).
+    climbed: bool,
     crouched: bool,
     eye_h: f32,
     yaw: f32,
@@ -325,6 +327,7 @@ impl Game {
             time: 0.0,
             feet: Vec3::ZERO,
             vel_y: 0.0,
+            climbed: false,
             crouched: false,
             eye_h: STAND_EYE,
             yaw: 0.0,
@@ -507,20 +510,38 @@ impl Game {
         let fwd = Vec3::new(s, 0.0, c);
         let right = Vec3::new(c, 0.0, -s);
         let speed = if held(it, Action::Sprint) { SPRINT_SPEED } else { WALK_SPEED } * if self.crouched { 0.5 } else { 1.0 };
-        let mv = (right * it.move_xy[0] + fwd * it.move_xy[1]) * speed * dt;
-        self.feet += mv;
+        // Climbing (the runtime's `RtMelee`): the arms move the player, without walking or gravity;
+        // let go near a top, they step up onto it.
+        let climbing = self.rt_melee.flags & RTM_CLIMBING != 0;
+        if climbing {
+            self.feet += Vec3::from_array(self.rt_melee.climb) * dt;
+            self.vel_y = 0.0;
+        } else {
+            if self.climbed
+                && let Some(top) = arenas::mantle(self.feet)
+            {
+                tracing::info!("range: steps up onto the block at {top:.2}");
+                self.feet = top;
+            }
+            let mv = (right * it.move_xy[0] + fwd * it.move_xy[1]) * speed * dt;
+            self.feet += mv;
+        }
+        self.climbed = climbing;
         self.feet.x = self.feet.x.clamp(content::ROOM_MIN.x, content::ROOM_MAX.x);
         self.feet.z = self.feet.z.clamp(content::ROOM_MIN.z, content::ROOM_MAX.z);
-        // Jump and gravity.
+        // Jump and gravity, down to the floor (or the block's top) under the feet.
+        let floor = arenas::floor_under(self.feet, 0.25);
         let jump = held(it, Action::Jump);
-        if jump && !self.jump_was_held && self.feet.y <= 0.0 {
+        if jump && !self.jump_was_held && self.feet.y <= floor && !climbing {
             self.vel_y = 4.0;
             self.stats[rs::JUMPS] += 1;
         }
         self.jump_was_held = jump;
-        self.vel_y -= 9.81 * dt;
-        self.feet.y = (self.feet.y + self.vel_y * dt).max(0.0);
-        if self.feet.y == 0.0 {
+        if !climbing {
+            self.vel_y -= 9.81 * dt;
+        }
+        self.feet.y = (self.feet.y + self.vel_y * dt).max(floor);
+        if self.feet.y <= floor {
             self.vel_y = 0.0;
         }
         if pressed(presses, Action::Crouch) {

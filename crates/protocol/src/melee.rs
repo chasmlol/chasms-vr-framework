@@ -310,7 +310,7 @@ pub struct RtMelee {
     pub time_scale: f32,
     /// The slowing meter (0..1).
     pub focus: f32,
-    /// While climbing: how the arms move the player (world, m/s).
+    /// While climbing: how the arms move the player (world, the world's units a second).
     pub climb: [f32; 3],
     /// The stamina swings have spent so far (the game's units, a running total: the game takes
     /// what it went up by), and the runtime's own meter (0..1) when it keeps one.

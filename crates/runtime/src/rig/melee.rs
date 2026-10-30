@@ -70,10 +70,16 @@ pub struct MeleeRig {
     pub slides: [Option<Slide>; 2],
     /// The game's creatures' weapons and shields this frame (their object ids).
     pub creature_items: std::collections::HashSet<u32>,
-    /// Each hand holding the world to climb: where it holds it (world); and how the arms move the
-    /// player this frame.
-    pub climbs: [Option<Vec3>; 2],
+    /// Each hand holding the world to climb: where it holds it (the hand's pose, world); how the
+    /// arms move the player this frame (world units a second); where the player was last frame
+    /// (the tracking origin, world); and whether climbing's allowed (`climbing`).
+    pub climbs: [Option<(Vec3, Quat)>; 2],
     pub climb: Vec3,
+    pub climb_from: Option<Vec3>,
+    pub climb_allowed: bool,
+    /// The climbing body's velocity (m/s), and the player's as the game moved them, averaged.
+    pub climb_v: Vec3,
+    pub climb_seen: Vec3,
     /// Weapons thrown and still flying or tumbling, by id.
     pub thrown: std::collections::HashMap<u32, Thrown>,
 }

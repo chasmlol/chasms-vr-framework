@@ -793,6 +793,12 @@ impl Physics {
         len < 1e-4 || self.ray_world(from, d, len).is_none()
     }
 
+    /// The point of the static world nearest `p`, within `max`.
+    pub fn nearest_world(&self, p: V3, max: f32) -> Option<V3> {
+        let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD, InteractionTestMode::And));
+        self.world.project_point(to_v(p), max, true, filter).map(|(_, proj)| from_v(proj.point))
+    }
+
     /// First static-world hit along a ray, as a distance.
     pub fn ray_world(&self, origin: V3, dir: V3, max: f32) -> Option<f32> {
         let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));

@@ -29,6 +29,7 @@ pub mod valve;
 pub mod kick;
 pub mod melee;
 pub mod breaking;
+pub mod climbing;
 pub mod physics;
 pub mod pickpocket;
 pub mod pockets;
@@ -2038,6 +2039,7 @@ impl Rig {
             }
             self.fly_melee(dt);
         }
+        self.climb(inp, dt);
         self.drive(inp, dt, &zones);
         self.place_fingers(inp);
         self.apply_pushes();
@@ -3176,6 +3178,13 @@ impl Rig {
         let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
         match hover {
             Hover::None => {
+                // The world, where it has an edge to close on: the hand holds it, to climb.
+                if let Some(g) = self.climb_grip(i) {
+                    self.melee.climbs[i] = Some(g);
+                    tracing::info!("rig: hand {i} holds the world at {:.2} to climb", g.0);
+                    self.emit(Cue::Grab, Some(i), None, palm, 0.6);
+                    return;
+                }
                 // A locked gravity-glove target is handled by the gloves.
                 match self.hands.as_ref().unwrap()[i].glove {
                     Glove::Hover(id) => {
@@ -3650,6 +3659,10 @@ impl Rig {
         let s = &inp.settings.interaction;
         let (palm, _) = self.hands.as_ref().unwrap()[i].target;
         let palm_t = self.hands.as_ref().unwrap()[i].grip_t.0;
+        // A hand holding the world lets go of it.
+        if self.melee.climbs[i].take().is_some() {
+            return;
+        }
         // Support grip / handle / pin / glove lock end with the grip.
         {
             let h = &mut self.hands.as_mut().unwrap()[i];
@@ -6219,7 +6232,15 @@ impl Rig {
         let now = self.now;
         let hands = self.hands.as_mut().unwrap();
         let holding = [hands[0].holding, hands[1].holding];
+        let climbs = self.melee.climbs;
         for (i, h) in hands.iter_mut().enumerate() {
+            // Holding the world to climb: it stays where it took hold.
+            if let Some((p, q)) = climbs[i] {
+                self.physics.set_pose(h.body, p, q);
+                self.physics.set_velocity(h.body, Vec3::ZERO, Vec3::ZERO);
+                h.reach_from = None;
+                continue;
+            }
             // (A thumb or index lifted off the controls stands up only a little: its capsule stays
             // straight, which would only catch on what the hand rests against.)
             let fingers = rustvr_ik::FingerInput::from_hand(&inp.frame.hands[i], inp.frame.fingers[i]);
