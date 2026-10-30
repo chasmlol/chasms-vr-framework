@@ -13,6 +13,10 @@ use bytemuck::{Pod, Zeroable};
 pub const OFF_AVATAR: usize = crate::OFF_COMBAT_END.next_multiple_of(64);
 pub const MAX_AVATAR_PARTS: usize = 24;
 pub const MAX_AVATAR_SWAPS: usize = 32;
+/// After a part's name: the body under what's worn (a race's skin on a slot an armour covers),
+/// drawn only where nothing worn is in front of it, so an opening between rigid plates (a cuff the
+/// hand has bent out of) shows the arm inside, not the armour's hollow.
+pub const UNDER: &str = ":under";
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -25,7 +29,8 @@ pub struct AvatarDesc {
     pub scale: f32,
     /// The skeleton every part is skinned to, `<game>/<key>` (UTF-8, NUL-terminated).
     pub skeleton: [u8; 32],
-    /// The parts, `<game>/<key>`, each skinned to the skeleton's bones in its order.
+    /// The parts, `<game>/<key>` (or `<game>/<key>:under`, [`UNDER`]), each skinned to the skeleton's
+    /// bones in its order.
     pub parts: [[u8; 32]; MAX_AVATAR_PARTS],
     /// Texture swaps: (the key a part's mesh names, the key drawn instead).
     pub swaps: [[[u8; 16]; 2]; MAX_AVATAR_SWAPS],

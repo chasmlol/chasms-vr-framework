@@ -5,9 +5,11 @@
 //! frame in tracking space, so a player standing in the reference pose has exactly these
 //! rotations.
 //!
-//! The poses here (T-pose, arms down, looking down, holding a gun, reaching forward, crouching) are built
-//! directly from a simple proportioned skeleton, with a two-bone solve for the limbs. They exist
-//! for previews and tests that need a body without the full IK solver.
+//! The poses here (T-pose, arms down, looking down, holding a gun, reaching forward, crouching, and
+//! the armour preview's sweep: arms raised and crossed, elbows bent, forearms out with the wrists
+//! turned and bent, a squat) are built directly from a simple proportioned skeleton, with a
+//! two-bone solve for the limbs. They exist for previews and tests that need a body without the
+//! full IK solver.
 
 use glam::{Mat3, Quat, Vec3};
 use rustvr_protocol::{Fingers, HAND_TRACKED, HandState, JOINT_COUNT, Joint, Pose};
@@ -90,6 +92,12 @@ pub fn fist() -> Fingers {
     Fingers { curl: [1.0; 5], splay: 0.0, _pad: [0.0; 2] }
 }
 
+/// Pointing, as a hand on a controller with the index finger off the trigger: the index straight,
+/// the others curled round the grip, the thumb over them.
+pub fn pointing() -> Fingers {
+    Fingers { curl: [0.6, 0.0, 1.0, 1.0, 1.0], splay: 0.0, _pad: [0.0; 2] }
+}
+
 /// Firing hand on a pistol grip: index finger along the trigger, the rest wrapped round.
 pub fn trigger_grip() -> Fingers {
     Fingers { curl: [0.65, 0.35, 0.85, 0.9, 0.9], splay: 0.0, _pad: [0.0; 2] }
@@ -163,6 +171,86 @@ pub fn crouch(height: f32) -> [Pose; JOINT_COUNT] {
     }
     let chest = b.pos(Joint::UpperChest) - reference_position(Joint::UpperChest, b.height);
     b.gun_hands(chest);
+    b.joints
+}
+
+/// Both arms straight up over the head, palms facing each other.
+pub fn arms_raised(height: f32) -> [Pose; JOINT_COUNT] {
+    let mut b = Builder::new(height);
+    b.spine([0.0, 0.0, 0.0, 0.0, NECK_LEAN, -NECK_LEAN]);
+    b.legs_straight();
+    for (side, x) in [(0, -1.0f32), (1, 1.0)] {
+        let shoulder = b.pos(arm(side, 1));
+        let wrist = shoulder + Vec3::new(x * 0.06, 0.52, 0.04) * b.k;
+        b.arm(side, wrist, frame(Vec3::Y, Vec3::new(0.0, 0.0, -1.0)), Vec3::new(x, 0.0, 0.2));
+    }
+    b.joints
+}
+
+/// Arms folded across the chest, each hand on the other shoulder (the right arm over the left).
+pub fn arms_crossed(height: f32) -> [Pose; JOINT_COUNT] {
+    let mut b = Builder::new(height);
+    b.spine([0.0, 0.0, 0.0, 0.0, NECK_LEAN, -NECK_LEAN]);
+    b.legs_straight();
+    for (side, x, out) in [(0, -1.0f32, 0.09f32), (1, 1.0, 0.15)] {
+        let other = b.pos(arm(1 - side, 1));
+        let wrist = other + Vec3::new(x * 0.05, -0.07, out) * b.k;
+        // Fingers over the far shoulder, thumb up, the palm on it.
+        let fingers = Vec3::new(-x, 0.25, -0.35).normalize();
+        b.arm(side, wrist, frame(fingers, Vec3::Y), Vec3::new(x * 0.6, -1.0, 0.1));
+    }
+    b.joints
+}
+
+/// Elbows bent as far as they go, the upper arms hanging, the hands up at the shoulders (a curl),
+/// palms facing back towards the shoulders.
+pub fn elbows_bent(height: f32) -> [Pose; JOINT_COUNT] {
+    let mut b = Builder::new(height);
+    b.spine([0.0, 0.0, 0.0, 0.0, NECK_LEAN, -NECK_LEAN]);
+    b.legs_straight();
+    for (side, x) in [(0, -1.0f32), (1, 1.0)] {
+        let shoulder = b.pos(arm(side, 1));
+        let wrist = shoulder + Vec3::new(x * 0.01, -0.07, 0.11) * b.k;
+        b.arm(side, wrist, frame(Vec3::new(0.0, 0.85, -0.5).normalize(), Vec3::new(-x, 0.0, 0.0)), Vec3::new(x * 0.1, -1.0, 0.25));
+    }
+    b.joints
+}
+
+/// The forearms held out in front, elbows at the sides bent square, the hands turned from
+/// thumbs-up by `roll` degrees about the forearm (positive turns the palms up) and bent at the wrist
+/// by `bend` degrees (positive towards the palm).
+pub fn forearms_out(height: f32, roll: f32, bend: f32) -> [Pose; JOINT_COUNT] {
+    let mut b = Builder::new(height);
+    b.spine([0.0, 0.0, 0.0, 0.0, NECK_LEAN + 10.0, -NECK_LEAN + 14.0]);
+    b.legs_straight();
+    for (side, x) in [(0, -1.0f32), (1, 1.0)] {
+        let shoulder = b.pos(arm(side, 1));
+        let wrist = shoulder + Vec3::new(-x * 0.05, -0.27, 0.25) * b.k;
+        // Thumbs up, palms facing in; turned about the fingers' line, bent about the thumb's.
+        // (The palm is the hand frame's +X on the right hand, -X on the left.)
+        let neutral = frame(Vec3::Z, Vec3::Y);
+        let turn = Quat::from_rotation_y(-x * roll.to_radians());
+        let bend = Quat::from_rotation_z(-x * bend.to_radians());
+        b.arm(side, wrist, neutral * turn * bend, Vec3::new(x * 0.4, -1.0, -0.2));
+    }
+    b.joints
+}
+
+/// Crouched as deep as the knees go, heels down, the hands on the knees.
+pub fn squat(height: f32) -> [Pose; JOINT_COUNT] {
+    let mut b = Builder::new(height);
+    let drop = 0.52 * b.k;
+    b.hips_offset = Vec3::new(0.0, -drop, -0.16 * b.k);
+    b.spine([30.0, 6.0, 4.0, 2.0, -18.0, -16.0]);
+    for (side, x) in [(0, -1.0f32), (1, 1.0)] {
+        let ankle = Vec3::new(x * 0.16, 0.08, 0.04) * b.k;
+        b.leg(side, ankle, Vec3::new(x * 0.45, 0.0, 1.0), frame(Vec3::new(x * 0.2, 0.0, 1.0).normalize(), Vec3::Y));
+    }
+    for (side, x) in [(0, -1.0f32), (1, 1.0)] {
+        let knee = b.pos(LEGS[side][1]);
+        let wrist = knee + Vec3::new(x * 0.02, 0.06, 0.02) * b.k;
+        b.arm(side, wrist, frame(Vec3::new(0.0, -0.4, 1.0).normalize(), Vec3::new(-x, 0.0, 0.0)), Vec3::new(x, -0.3, -0.4));
+    }
     b.joints
 }
 

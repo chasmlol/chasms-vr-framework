@@ -34,7 +34,7 @@ See [docs/DESIGN.md](docs/DESIGN.md) for how it fits together.
 | `crates/xrsim` | `rustvr-xrsim`: an emulated headset (an OpenXR runtime) for playtesting any VR app without one ([docs/XRSIM.md](docs/XRSIM.md)) |
 | `crates/asset` | The format of `local_assets/` |
 | `crates/ik` | Full-body IK from the head and hands |
-| `crates/avatar` | Draws the player's body and hands: over the game's picture, or inside the game's frame by its adapter |
+| `crates/avatar` | Draws the player's body and hands: over the game's picture, or inside the game's frame by its adapter. Joints keep their volume (centres of rotation), and a game's armour moves as plates where its marks say ([docs/ARMOUR.md](docs/ARMOUR.md); `rustvr-armour` previews them) |
 | `crates/audio` | Spatial interaction sounds: a game's own (its sound pack), or procedural ones |
 | `content/rigs` | How the hands hold each game's guns, measured on its models ([docs/RIGGING.md](docs/RIGGING.md)) |
 

@@ -24,6 +24,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod armour;
 pub mod rigs;
 
 pub const MODEL_EXT: &str = "rvm";

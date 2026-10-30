@@ -10,6 +10,12 @@
 //!   are recognised. Without one (or if it fails to load) a built-in mannequin is drawn instead.
 //! * **Visibility:** hands only, hands and arms, or the full body. In first person the head (and
 //!   everything under it) collapses onto the neck so the wearer never sees inside it.
+//! * **Joints that keep their volume:** every vertex on two or more bones is skinned about its
+//!   optimised centre of rotation ([`cor`]), so elbows don't pinch and wrists don't twist into a
+//!   ribbon.
+//! * **Armour:** a game's marks ([`rustvr_asset::armour`]) make parts of its armour rigid plates,
+//!   each riding one bone or several with shares ([`armour`], [`compose`], `docs/ARMOUR.md`);
+//!   `rustvr-armour` previews them through a sweep of poses.
 //! * **Ghost hands:** where a physics hand is held back by the world, a translucent hand shows
 //!   where the controller really is.
 //! * **Held poses:** a hand holding a gun the game has its own hand pose for ([`HeldHand`], from
@@ -41,7 +47,9 @@
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+pub mod armour;
 pub mod collimator;
+pub mod cor;
 pub mod facegen;
 pub mod fit;
 pub mod gamebryo;
@@ -70,7 +78,7 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11RenderTargetView, ID3D11ShaderR
 pub use grasp::{Grasp, Solid};
 pub use held::{HeldHand, held_hands};
 pub use render::HeldModel;
-pub use rig::{GameHand, bind_joints, finger_reach, game_hand};
+pub use rig::{GameHand, bind_joints, finger_reach, game_hand, rest_pose};
 
 /// Each finger's joint curls (thumb .. little; 0 straight .. 1 a fist's) the hand `side` of a model
 /// with `bones` (None: the built-in mannequin) closes to on `grasp`, its hand joint at `hand` (the
@@ -159,12 +167,38 @@ pub enum AvatarSource {
     /// body, and optionally first-person arms (`hands`) for the hands and arms views and the ghost
     /// hands.
     Model { dir: PathBuf, body: String, hands: Option<String> },
-    /// A model given directly, with the textures its meshes and materials name (by key).
-    Built { model: asset::Model, textures: HashMap<String, asset::Texture> },
+    /// A model given directly, with the textures its meshes and materials name (by key), and how
+    /// it's skinned beyond its weights (None: worked out from them).
+    Built { model: asset::Model, textures: HashMap<String, asset::Texture>, skinning: Option<Skin> },
     /// A body put together from a game's parts ([`compose`]): as [`AvatarSource::Built`] (its
     /// textures shared with the parts' cache), with what each mesh draws beside its material (a
-    /// face's textures, the hair's tint), by mesh.
-    Composed { model: asset::Model, textures: HashMap<String, Arc<asset::Texture>>, extras: Vec<MeshExtras> },
+    /// face's textures, the hair's tint), by mesh, and how it's skinned beyond its weights.
+    Composed { model: asset::Model, textures: HashMap<String, Arc<asset::Texture>>, extras: Vec<MeshExtras>, skinning: Option<Skin> },
+}
+
+/// How a model is skinned beyond its weights.
+#[derive(Clone, Debug, Default)]
+pub struct Skin {
+    /// Each vertex's centre of rotation.
+    pub centres: Centres,
+    /// Bones that are copies of others bound in another pose (copy, of): see `armour.rs`.
+    pub copies: Vec<(usize, usize)>,
+}
+
+/// Each mesh's vertices' centres of rotation (`cor.rs`): `[x, y, z, w]`, w 0 for a vertex skinned
+/// by linear blending, else 1 plus its plate's layer (`armour.rs`) for one turned about (x, y, z);
+/// the body under what's worn (see [`compose`]) 0.25 or 0.75 for the same.
+pub type Centres = Vec<Vec<[f32; 4]>>;
+
+/// How a body put together by [`compose`] is skinned.
+#[derive(Clone, Copy)]
+pub enum Skinning<'a> {
+    /// The game's weights, blended linearly (as the game skins them).
+    Linear,
+    /// The game's weights, with joints that keep their volume (`cor.rs`).
+    Centres,
+    /// That, and the plates the marks give each piece (`armour.rs`).
+    Marked(&'a asset::armour::ArmourFile),
 }
 
 /// What a mesh of a body put together from a game's parts draws beside its model's material.
@@ -216,13 +250,18 @@ impl Avatar {
     fn characters(gpu: &Gpu, source: AvatarSource) -> Result<(render::Character, Option<render::Character>)> {
         let (body, arms) = match source {
             AvatarSource::Procedural => (None, None),
-            AvatarSource::Built { model, textures } => {
+            AvatarSource::Built { model, textures, skinning } => {
                 let textures: HashMap<String, Arc<asset::Texture>> = textures.into_iter().map(|(k, t)| (k, Arc::new(t))).collect();
-                let body = render::Character::new(gpu, from_model(model, |key| textures.get(key).cloned()));
+                let (centres, copies) = skinning.map_or((None, Vec::new()), |s| (Some(s.centres), s.copies));
+                let mut source = from_model(model, centres, |key| textures.get(key).cloned());
+                source.copies = copies;
+                let body = render::Character::new(gpu, source);
                 (body.map_err(|e| tracing::warn!("avatar: {e:#}; drawing the mannequin instead")).ok(), None)
             }
-            AvatarSource::Composed { model, textures, extras } => {
-                let source = from_model_with(model, extras, |key| textures.get(key).cloned());
+            AvatarSource::Composed { model, textures, extras, skinning } => {
+                let (centres, copies) = skinning.map_or((None, Vec::new()), |s| (Some(s.centres), s.copies));
+                let mut source = from_model_with(model, extras, centres, |key| textures.get(key).cloned());
+                source.copies = copies;
                 let body = render::Character::new(gpu, source);
                 (body.map_err(|e| tracing::warn!("avatar: {e:#}; drawing the mannequin instead")).ok(), None)
             }
@@ -561,7 +600,7 @@ impl HeldModel {
             anyhow::ensure!(p.indices.iter().all(|&i| (i as usize) < vertices.len()), "{}: a part of mesh {} indexes past its vertices", model.source, p.mesh);
             let mesh = asset::Mesh { texture: m.texture.clone(), vertices, indices: p.indices.clone(), name: m.name.clone(), material: m.material.clone() };
             let one = asset::Model { source: model.source.clone(), meshes: vec![mesh], ..Default::default() };
-            let Some(source) = from_model(one, &mut texture).meshes.pop() else { continue };
+            let Some(source) = from_model(one, None, &mut texture).meshes.pop() else { continue };
             // Shaders not reproduced here, and the whole of a collimator (its reticle, the lens's
             // reflection, pane and refraction, which the game draws in that order: `collimator`).
             let special = game_materials && (metro::Class::of(m.material.shader).is_none() || collimator::takes(model, p.mesh));
@@ -601,7 +640,7 @@ impl HeldModel {
         let mut meshes = Vec::new();
         for (i, m) in model.meshes.iter().enumerate() {
             let one = asset::Model { source: model.source.clone(), meshes: vec![m.clone()], ..Default::default() };
-            let Some(mut source) = from_model(one, &mut texture).meshes.pop() else { continue };
+            let Some(mut source) = from_model(one, None, &mut texture).meshes.pop() else { continue };
             source.depth_slack = depth_slack;
             meshes.push((source, HeldMeshInfo { part: 0, source: i, name: m.name.clone(), special: false }));
         }
@@ -613,6 +652,8 @@ impl HeldModel {
 pub(crate) struct Source {
     pub bones: Vec<asset::Bone>,
     pub meshes: Vec<SourceMesh>,
+    /// Bones that copy others ([`Skin::copies`]).
+    pub copies: Vec<(usize, usize)>,
 }
 
 pub(crate) struct SourceMesh {
@@ -627,6 +668,8 @@ pub(crate) struct SourceMesh {
     /// How far behind the game's surface it may be before it's hidden (metres, on top of the
     /// body's own allowance): 0 but for a strap lying on the game's model.
     pub depth_slack: f32,
+    /// Its vertices' centres of rotation ([`Centres`]); empty: not worked out yet.
+    pub centres: Vec<[f32; 4]>,
 }
 
 pub(crate) struct SourceMaterial {
@@ -648,6 +691,11 @@ pub(crate) struct SourceMaterial {
     pub hair_tint: Option<[f32; 3]>,
 }
 
+/// How far inside its own skin the body under what's worn is drawn (metres, along its normals): more
+/// than the vanilla gloves' fingers and hands are slimmer than the bare hand (up to 3.5 mm and,
+/// but for a few corners, 6 mm), so its outline never shows round theirs.
+const UNDER_INSET: f32 = 0.005;
+
 /// A body put together from a game's parts (see [`rustvr_protocol::AvatarDesc`]): the skeleton
 /// model's bones, and the meshes of every part (each skinned to those bones in their order), from
 /// the asset cache folder `dir`, with the texture swaps applied (a part's texture or bump map
@@ -656,10 +704,16 @@ pub(crate) struct SourceMaterial {
 /// bones' names, as the game itself does ([`rebind`]); a part with bones the skeleton hasn't is left
 /// out.
 ///
+/// `skinning` says how it's skinned: with [`Skinning::Marked`], each part the marks name (by
+/// the model path the cache's index gives its key) gets its plates. A part named with
+/// [`rustvr_protocol::UNDER`] after its key is the body under what's worn: it goes after the others,
+/// its joints rounded on its own (the bare body's), and the renderer draws it a little away from the
+/// eye, so it shows only where nothing worn is in front of it.
+///
 /// With a `face` ([`rustvr_protocol::FaceDesc`]), the parts with face morphs in the cache (a FaceGen
 /// head and the parts made to it: `morphs/<key>.rvf`) are moved to it first ([`facegen`]), the head
 /// gets its texture morphs and detail map, and the hair its tint.
-pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &[(String, String)], face: Option<&facegen::Face>) -> Result<AvatarSource> {
+pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &[(String, String)], face: Option<&facegen::Face>, skinning: Skinning) -> Result<AvatarSource> {
     let skel = cached::model(dir, skeleton).with_context(|| format!("the skeleton {skeleton}"))?;
     // (A swap to a texture the cache doesn't have keeps the part's own.)
     let have = |key: &str| dir.join("textures").join(format!("{key}.{}", asset::TEXTURE_EXT)).is_file();
@@ -668,10 +722,23 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             *k = to.clone();
         }
     };
+    // The parts' names, for their marks.
+    let names: HashMap<String, String> = match skinning {
+        Skinning::Marked(_) => asset::load_index(dir).map(|i| i.items.into_iter().map(|i| (i.key, i.name)).collect()).unwrap_or_default(),
+        _ => HashMap::new(),
+    };
     let mut model = asset::Model { version: asset::FORMAT_VERSION, source: format!("{skeleton} with {} parts", parts.len()), bones: skel.bones.clone(), ..Default::default() };
     let mut extras: Vec<MeshExtras> = Vec::new();
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for key in parts {
+    let mut plates: Vec<armour::Plate> = Vec::new();
+    let rest = rig::rest_pose(&model.bones);
+    // (What's worn first, then the body under it, from this mesh on.)
+    let (worn, under): (Vec<&String>, Vec<&String>) = parts.iter().partition(|k| !k.ends_with(rustvr_protocol::UNDER));
+    let mut first_under = usize::MAX;
+    for (key, is_under) in worn.into_iter().map(|k| (k.as_str(), false)).chain(under.into_iter().map(|k| (k.trim_end_matches(rustvr_protocol::UNDER), true))) {
+        if is_under && first_under == usize::MAX {
+            first_under = model.meshes.len();
+        }
         let part = match cached::model(dir, key) {
             Ok(p) => (*p).clone(),
             Err(e) => {
@@ -707,8 +774,21 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             hi[k] = hi[k].max(part.bounds_max[k]);
         }
         // An eye: a bone of its own at its centre, on the bone it rides, so it turns as one.
-        if let Some(side) = face.and_then(|f| f.eyes.iter().position(|e| e.as_deref() == Some(key.as_str()))) {
+        if let Some(side) = face.and_then(|f| f.eyes.iter().position(|e| e.as_deref() == Some(key))) {
             eye_bone(&mut model.bones, &mut part, side);
+        }
+        if let (Skinning::Marked(marks), Some(name), false) = (skinning, names.get(key), is_under)
+            && let Some(piece) = marks.piece(name)
+        {
+            let mut marked = armour::plates(piece, &part, &rest);
+            armour::cut_seams(&mut part, &mut marked.plates);
+            for p in &marked.problems {
+                tracing::warn!("avatar: {name}: {p}");
+            }
+            let list: Vec<String> = marked.plates.iter().map(|p| format!("{} ({}) on {}", p.name, p.side.name(), armour::riders(p, &part.bones))).collect();
+            tracing::info!("avatar: {name} ({}): {} plates: {}", piece.name, marked.plates.len(), list.join("; "));
+            let first = model.meshes.len();
+            plates.extend(marked.plates.into_iter().map(|p| armour::Plate { mesh: p.mesh + first, ..p }));
         }
         for (i, mut m) in part.meshes.into_iter().enumerate() {
             swap(&mut m.texture);
@@ -740,6 +820,73 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
     }
     anyhow::ensure!(!model.meshes.is_empty(), "no part of the body could be loaded");
     (model.bounds_min, model.bounds_max) = (lo, hi);
+    // How each vertex is skinned: the soft ones about their centres (found from the game's own
+    // weights), then each plate's as one piece.
+    let mut centres: Centres = model.meshes.iter().map(|m| vec![[0.0; 4]; m.vertices.len()]).collect();
+    let first_under = first_under.min(model.meshes.len());
+    if !matches!(skinning, Skinning::Linear) {
+        // (What's worn and the body under it each on its own: the body under it, as bare, mustn't
+        // change how the armour bends.)
+        for range in [0..first_under, first_under..model.meshes.len()] {
+            let meshes: Vec<(&[asset::Vertex], &[u32])> = model.meshes[range.clone()].iter().map(|m| (m.vertices.as_slice(), m.indices.as_slice())).collect();
+            for (out, found) in centres[range].iter_mut().zip(cor::centres(&meshes)) {
+                for (c, f) in out.iter_mut().zip(found) {
+                    if let Some(p) = f {
+                        *c = [p.x, p.y, p.z, 1.0];
+                    }
+                }
+            }
+        }
+    }
+    // The body under what's worn is flagged as such: 0.25 for a vertex blended linearly, 0.75 for
+    // one turned about its centre. It's drawn a little inside its own skin, so its outline stays
+    // within the armour's: a glove's fingers are often the bare hand's own, and others are a few
+    // millimetres slimmer than it, where the bare hand's edge showed round every glove's.
+    for c in centres[first_under..].iter_mut().flatten() {
+        c[3] = if c[3] < 0.5 { 0.25 } else { 0.75 };
+    }
+    for m in &mut model.meshes[first_under..] {
+        for v in &mut m.vertices {
+            v.pos = (glam::Vec3::from_array(v.pos) - glam::Vec3::from_array(v.normal) * UNDER_INSET).to_array();
+        }
+    }
+    // Plates are shaped at rest, so they ride their riders bound at rest: a copy of each rider
+    // that moves between its bind pose and rest (an arm's bones), the copy below it.
+    let mut copies: Vec<(usize, usize)> = Vec::new();
+    // (The skeleton's bones, as `rest` has them: the eyes' own bones come after.)
+    let skeleton_bones = rest.len();
+    for p in &mut plates {
+        for k in 0..4 {
+            let b = p.bones[k] as usize;
+            if p.weights[k] == 0 || b >= skeleton_bones || Mat4::from_cols_array(&model.bones[b].model_matrix).abs_diff_eq(rest[b], 1e-5) {
+                continue;
+            }
+            let copy = match copies.iter().find(|c| c.1 == b) {
+                Some(c) => c.0,
+                None => {
+                    let original = &model.bones[b];
+                    let (_, rot, pos) = rest[b].to_scale_rotation_translation();
+                    let bone = asset::Bone { name: format!("{} at rest", original.name), parent: b as i32, local_pos: pos.to_array(), local_rot: rot.to_array(), model_matrix: rest[b].to_cols_array() };
+                    model.bones.push(bone);
+                    copies.push((model.bones.len() - 1, b));
+                    model.bones.len() - 1
+                }
+            };
+            match u8::try_from(copy) {
+                Ok(c) => p.bones[k] = c,
+                Err(_) => tracing::warn!("avatar: past 256 bones: the plate {} rides {} as bound", p.name, model.bones[b].name),
+            }
+        }
+    }
+    for p in &plates {
+        let mesh = &mut model.meshes[p.mesh];
+        for (&i, &(pos, normal)) in p.vertices.iter().zip(&p.shape) {
+            let v = &mut mesh.vertices[i as usize];
+            (v.bones, v.weights) = (p.bones, p.weights);
+            (v.pos, v.normal) = (pos.to_array(), normal.to_array());
+            centres[p.mesh][i as usize] = [p.pivot.x, p.pivot.y, p.pivot.z, 1.0 + p.layer as f32];
+        }
+    }
     let mut textures = HashMap::new();
     for (m, x) in model.meshes.iter().zip(&extras) {
         for key in [&m.texture, &m.material.bump, &m.material.detail, &m.material.env].into_iter().chain(x.face_detail.as_ref()) {
@@ -754,7 +901,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             }
         }
     }
-    Ok(AvatarSource::Composed { model, textures, extras })
+    Ok(AvatarSource::Composed { model, textures, extras, skinning: Some(Skin { centres, copies }) })
 }
 
 /// What [`compose`] loads from an asset cache folder, kept as loaded: a character creator puts the
@@ -896,7 +1043,7 @@ fn is_eye_overlay(mesh_name: &str) -> bool {
 fn load_model(dir: &std::path::Path, key: &str) -> Result<Source> {
     let model = asset::load_model(dir, key)?;
     let mut cache: HashMap<String, Option<Arc<asset::Texture>>> = HashMap::new();
-    Ok(from_model(model, |key| {
+    Ok(from_model(model, None, |key| {
         cache
             .entry(key.to_string())
             .or_insert_with(|| asset::load_texture(dir, key).map_err(|e| tracing::warn!("avatar: texture {key}: {e:#}")).ok().map(Arc::new))
@@ -904,21 +1051,24 @@ fn load_model(dir: &std::path::Path, key: &str) -> Result<Source> {
     }))
 }
 
-/// A model with its textures looked up by key.
-fn from_model(model: asset::Model, texture: impl FnMut(&str) -> Option<Arc<asset::Texture>>) -> Source {
+/// A model with its textures looked up by key, and its vertices' centres of rotation (None: not
+/// worked out yet).
+fn from_model(model: asset::Model, centres: Option<Centres>, texture: impl FnMut(&str) -> Option<Arc<asset::Texture>>) -> Source {
     let n = model.meshes.len();
-    from_model_with(model, vec![MeshExtras::default(); n], texture)
+    from_model_with(model, vec![MeshExtras::default(); n], centres, texture)
 }
 
 /// [`from_model`], with what each mesh draws beside its material ([`MeshExtras`], by mesh).
-fn from_model_with(model: asset::Model, extras: Vec<MeshExtras>, mut texture: impl FnMut(&str) -> Option<Arc<asset::Texture>>) -> Source {
+fn from_model_with(model: asset::Model, extras: Vec<MeshExtras>, centres: Option<Centres>, mut texture: impl FnMut(&str) -> Option<Arc<asset::Texture>>) -> Source {
     let mut get = |key: &str| if key.is_empty() { None } else { texture(key) };
+    let mut centres = centres.map(Vec::into_iter);
     let meshes = model
         .meshes
         .into_iter()
         .zip(extras.into_iter().chain(std::iter::repeat_with(MeshExtras::default)))
-        .filter(|(m, _)| !m.indices.is_empty() && !is_eye_overlay(&m.name))
-        .map(|(m, x)| {
+        .map(|(m, x)| (centres.as_mut().and_then(|c| c.next()).unwrap_or_default(), m, x))
+        .filter(|(_, m, _)| !m.indices.is_empty() && !is_eye_overlay(&m.name))
+        .map(|(centres, m, x)| {
             let texture = get(&m.texture);
             let material = metro::Class::of(m.material.shader).and_then(|class| {
                 let mat = &m.material;
@@ -946,8 +1096,8 @@ fn from_model_with(model: asset::Model, extras: Vec<MeshExtras>, mut texture: im
                     hair_tint: x.hair_tint,
                 })
             });
-            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material, depth_slack: 0.0 }
+            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material, depth_slack: 0.0, centres }
         })
         .collect();
-    Source { bones: model.bones, meshes }
+    Source { bones: model.bones, meshes, copies: Vec::new() }
 }

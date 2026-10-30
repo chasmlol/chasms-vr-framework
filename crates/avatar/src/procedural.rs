@@ -175,9 +175,9 @@ pub fn mannequin() -> Source {
 
     let meshes = [("body", body, BODY), ("joints", joints, JOINTS), ("hands", hands, HANDS)]
         .into_iter()
-        .map(|(name, m, tint)| SourceMesh { name: name.into(), vertices: m.vertices, indices: m.indices, texture: None, tint, material: None, depth_slack: 0.0 })
+        .map(|(name, m, tint)| SourceMesh { name: name.into(), vertices: m.vertices, indices: m.indices, texture: None, tint, material: None, depth_slack: 0.0, centres: Vec::new() })
         .collect();
-    Source { bones, meshes }
+    Source { bones, meshes, copies: Vec::new() }
 }
 
 /// A bind-pose bone at `pos` with frame `rot` (the rig only reads the model-space matrix).

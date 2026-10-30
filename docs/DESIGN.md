@@ -60,12 +60,17 @@ Supporting crates:
   game's geometry using its depth: over the game's picture in the runtime, or, SkyCraft's way,
   inside the game's own frame by an adapter that sets `GS_DRAWS_BODY` (the runtime posts the posed
   player as `RtPlayerDraw`; Metro's adapter draws it into Metro's HDR scene before its post chain).
+  Every joint keeps its volume (skinned about optimised centres of rotation), and a game's armour
+  is made of rigid plates where its marks say ([ARMOUR.md](ARMOUR.md)).
 - Metro's `metro-assets` (in the chasms-vr-metro repository) reads Metro 2033 Redux's archives
   (`metro-extract`): models, textures, recoil, and its sound pack (`sounds.bin`, §6c).
   Local test content only, never committed.
 - `content/rigs/<game>.toml`: how the hands hold each of a game's guns, measured on its models
   (ours, so committed; `rustvr_asset::rigs` reads them). [RIGGING.md](RIGGING.md) says how to rig
   a gun.
+- `content/armour/<game>.toml` (in the game adapter's repository): which parts of the game's armour
+  are rigid plates and what each rides (ours, hand-written per piece; `rustvr_asset::armour` reads
+  them). [ARMOUR.md](ARMOUR.md) says how to mark a game's armour.
 
 ## 3. Spaces
 

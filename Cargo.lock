@@ -1613,6 +1613,7 @@ dependencies = [
  "rustvr-gpu",
  "rustvr-protocol",
  "tracing",
+ "tracing-subscriber",
  "windows",
 ]
 

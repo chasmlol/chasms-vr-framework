@@ -2,8 +2,10 @@
 //! model, `metro.rs`, or the runtime's), the game-depth test and the ghost hands.
 //!
 //! Each frame the rig is posed once per model and its skinning matrices go into a constant buffer
-//! (a palette of up to 256 bones as 3x4 rows, plus a visibility half-space per bone). The vertex
-//! shader blends four bones per vertex. Each mesh is one draw: its index buffer holds the whole
+//! (a palette of up to 256 bones as 3x4 rows, plus a visibility half-space per bone, and each
+//! matrix as a rotation and a stretch). The vertex shader blends four bones per vertex: linearly,
+//! or turning about the vertex's centre of rotation so its joint keeps its volume (`cor.rs`); a
+//! plate's vertices all turn about its pivot, as one piece (`armour.rs`). Each mesh is one draw: its index buffer holds the whole
 //! mesh and, after it, the triangles the arms view and the hands view can show, so those views
 //! don't even run the rest of the body through the vertex shader.
 
@@ -59,6 +61,8 @@ cbuffer Frame : register(b0) {
 cbuffer Bones : register(b1) {
     float4 bone_rows[MAX_BONES * 3];   // bind model space -> tracking space, 3x4 rows
     float4 vis_planes[MAX_BONES];      // visible where dot(xyz, bind position) + w >= 0
+    float4 bone_turn[MAX_BONES];       // each matrix's rotation (a quaternion, xyzw) ...
+    float4 bone_stretch[MAX_BONES * 2]; // ... and the rest of it (symmetric: xx yy zz, xy xz yz)
 };
 cbuffer Material : register(b2) {
     float4 tint;
@@ -110,6 +114,7 @@ struct VSIn {
     uint4 bones : BLENDINDICES;
     float4 weights : BLENDWEIGHT;
     float4 ao : COLOR0;        // x: the game's baked vertex AO
+    float4 centre : TEXCOORD1; // its centre of rotation, w: 0 blended linearly, else 1 + its plate's layer (the body under what's worn 0.25, 0.75)
 };
 struct VSOut {
     float4 pos : SV_Position;
@@ -121,24 +126,78 @@ struct VSOut {
     float ao : TEXCOORD5;
 };
 
+float3x3 q_matrix(float4 q) {
+    float3 a = q.xyz * 2;
+    float xx = q.x * a.x, yy = q.y * a.y, zz = q.z * a.z, xy = q.x * a.y, xz = q.x * a.z, yz = q.y * a.z;
+    float wx = q.w * a.x, wy = q.w * a.y, wz = q.w * a.z;
+    return float3x3(1 - yy - zz, xy - wz, xz + wy, xy + wz, 1 - xx - zz, yz - wx, xz - wy, yz + wx, 1 - xx - yy);
+}
+
+// A vertex skinned by the palette ROWS (3x4 rows), TURN and STRETCH (each matrix as a rotation and
+// the rest of it): linear blending (centre.w 0), or turned by the blend of its bones' rotations
+// about its centre, the centre going where linear blending takes it (cor.rs). The normal turns
+// with it; neither is scaled to unit length here.
+#define SKINNING(NAME, ROWS, TURN, STRETCH) \
+void NAME(VSIn i, float4 w, out float3 pos, out float3 nrm) { \
+    float4 r0 = 0, r1 = 0, r2 = 0; \
+    [unroll] for (int k = 0; k < 4; k++) { \
+        uint b = i.bones[k]; \
+        r0 += ROWS[b * 3 + 0] * w[k]; \
+        r1 += ROWS[b * 3 + 1] * w[k]; \
+        r2 += ROWS[b * 3 + 2] * w[k]; \
+    } \
+    if (i.centre.w < 0.5) { \
+        float4 p = float4(i.pos, 1); \
+        pos = float3(dot(r0, p), dot(r1, p), dot(r2, p)); \
+        nrm = float3(dot(r0.xyz, i.normal), dot(r1.xyz, i.normal), dot(r2.xyz, i.normal)); \
+        return; \
+    } \
+    float4 q0 = TURN[i.bones[0]], q = 0; \
+    float3 sd = 0, so = 0; \
+    [unroll] for (int j = 0; j < 4; j++) { \
+        uint b = i.bones[j]; \
+        float4 qk = TURN[b]; \
+        q += (dot(qk, q0) < 0 ? -qk : qk) * w[j]; \
+        sd += STRETCH[b * 2 + 0].xyz * w[j]; \
+        so += STRETCH[b * 2 + 1].xyz * w[j]; \
+    } \
+    float3x3 R = q_matrix(q * rsqrt(max(dot(q, q), 1e-12))); \
+    float3x3 S = float3x3(sd.x, so.x, so.y, so.x, sd.y, so.z, so.y, so.z, sd.z); \
+    float4 c = float4(i.centre.xyz, 1); \
+    pos = mul(R, mul(S, i.pos - i.centre.xyz)) + float3(dot(r0, c), dot(r1, c), dot(r2, c)); \
+    nrm = mul(R, i.normal); \
+}
+SKINNING(skinned, bone_rows, bone_turn, bone_stretch)
+
+// Metres a plate's layer comes towards the eye for its depth: overlapping plates nearer than this
+// to one another draw the higher layer's over the lower's (they slide over, they don't clip).
+#define LAYER_DEPTH 0.0025
+// Metres the body under what's worn goes away from the eye for its depth: it shows only where
+// nothing worn is in front of it nearer than this (an opening between rigid plates), never through
+// armour it comes up against.
+#define UNDER_DEPTH 0.01
+
 VSOut VSMain(VSIn i) {
     float4 w = i.weights / max(dot(i.weights, 1), 1e-5);
-    float4 r0 = 0, r1 = 0, r2 = 0;
     float vis = 0;
     [unroll] for (int k = 0; k < 4; k++) {
         uint b = i.bones[k];
-        r0 += bone_rows[b * 3 + 0] * w[k];
-        r1 += bone_rows[b * 3 + 1] * w[k];
-        r2 += bone_rows[b * 3 + 2] * w[k];
         vis += w[k] * (dot(vis_planes[b].xyz, i.pos) + vis_planes[b].w);
     }
-    float4 p = float4(i.pos, 1);
-    float3 world = float3(dot(r0, p), dot(r1, p), dot(r2, p));
+    float3 world, n;
+    skinned(i, w, world, n);
     VSOut o;
-    o.pos = mul(view_proj, float4(world, 1));
+    // A plate on a layer is drawn a little nearer the eye along its line of sight (the same pixel),
+    // where it faces the eye: so where it meets a lower layer's, it's the one that shows.
+    // The body under what's worn goes the other way, behind whatever is near it.
+    float3 seen = world;
+    float layer = i.centre.w - 1;
+    float3 to_eye = eye_pos.xyz - world;
+    if (frac(i.centre.w) > 0.1) seen -= to_eye * (UNDER_DEPTH * rsqrt(max(dot(to_eye, to_eye), 1e-8)));
+    else if (layer > 0.5 && dot(n, to_eye) > 0) seen += to_eye * (layer * LAYER_DEPTH * rsqrt(max(dot(to_eye, to_eye), 1e-8)));
+    o.pos = mul(view_proj, float4(seen, 1));
     o.world = world;
     // Unit length, as the game's vertex normals are (the rig's matrices scale the body).
-    float3 n = float3(dot(r0.xyz, i.normal), dot(r1.xyz, i.normal), dot(r2.xyz, i.normal));
     o.normal = n * rsqrt(max(dot(n, n), 1e-12));
     o.uv = i.uv;
     o.view_z = dot(view_z.xyz, world) + view_z.w;
@@ -695,7 +754,10 @@ float4 PSGhost(VSOut i) : SV_Target {
 cbuffer BonesThen : register(b4) {
     float4 was_rows[MAX_BONES * 3];   // where the bones were in the game's pictures, 3x4 rows
     float4 was_vis[MAX_BONES];
+    float4 was_turn[MAX_BONES];
+    float4 was_stretch[MAX_BONES * 2];
 };
+SKINNING(skinned_then, was_rows, was_turn, was_stretch)
 cbuffer Sources : register(b5) {
     float4x4 src_view_proj[2];   // tracking space -> each picture's clip space
     float4 src_view_z[2];        // its view z = dot(xyz, p) + w
@@ -728,21 +790,15 @@ struct VSRepOut {
 // (where its colour is in them).
 VSRepOut VSReproject(VSIn i) {
     float4 w = i.weights / max(dot(i.weights, 1), 1e-5);
-    float4 r0 = 0, r1 = 0, r2 = 0, t0 = 0, t1 = 0, t2 = 0;
     float vis = 0;
     [unroll] for (int k = 0; k < 4; k++) {
         uint b = i.bones[k];
-        r0 += bone_rows[b * 3 + 0] * w[k];
-        r1 += bone_rows[b * 3 + 1] * w[k];
-        r2 += bone_rows[b * 3 + 2] * w[k];
-        t0 += was_rows[b * 3 + 0] * w[k];
-        t1 += was_rows[b * 3 + 1] * w[k];
-        t2 += was_rows[b * 3 + 2] * w[k];
         vis += w[k] * (dot(vis_planes[b].xyz, i.pos) + vis_planes[b].w);
     }
-    float4 p = float4(i.pos, 1);
-    float3 now = float3(dot(r0, p), dot(r1, p), dot(r2, p));
-    float4 was = float4(dot(t0, p), dot(t1, p), dot(t2, p), 1);
+    float3 now, then, n;
+    skinned(i, w, now, n);
+    skinned_then(i, w, then, n);
+    float4 was = float4(then, 1);
     VSRepOut o;
     o.pos = mul(view_proj, float4(now, 1));
     o.uv = i.uv;
@@ -855,6 +911,8 @@ struct Vertex {
     weights: [u8; 4],
     /// x: the game's baked vertex AO (255: none).
     ao: [u8; 4],
+    /// Its centre of rotation ([`crate::Centres`]).
+    centre: [f32; 4],
 }
 
 #[repr(C)]
@@ -929,6 +987,13 @@ const PLAIN: [f32; 3] = [0.62, 0.66, 0.74];
 struct BonesCb {
     rows: [[[f32; 4]; 3]; MAX_BONES],
     vis: [[f32; 4]; MAX_BONES],
+    turn: [[f32; 4]; MAX_BONES],
+    stretch: [[[f32; 4]; 2]; MAX_BONES],
+}
+
+/// A symmetric matrix as the shader's `bone_stretch` holds it: (xx, yy, zz), (xy, xz, yz).
+fn stretch_rows(s: &Mat3) -> [[f32; 4]; 2] {
+    [[s.x_axis.x, s.y_axis.y, s.z_axis.z, 0.0], [s.y_axis.x, s.z_axis.x, s.z_axis.y, 0.0]]
 }
 
 #[repr(C)]
@@ -1079,8 +1144,9 @@ pub struct Character {
     ghost_cbs: [ConstantBuffer<BonesCb>; 2],
     /// The hand poses the last [`Character::pose`] drew, for re-rooting the ghosts.
     drawn_hands: [Option<Pose>; 2],
-    /// The skin on the CPU (bind positions and weights) and the bones' names, for measuring.
-    cpu: Vec<Vec<asset::Vertex>>,
+    /// The skin on the CPU (bind positions, weights and centres) and the bones' names, for
+    /// measuring.
+    cpu: Vec<Vec<(asset::Vertex, [f32; 4])>>,
     bone_names: Vec<String>,
     /// Where the eyes look, when they look at something (tracking space; [`crate::Avatar::set_gaze`]).
     pub(crate) gaze: Option<Vec3>,
@@ -1108,8 +1174,16 @@ impl Character {
             }
             fix_winding(m);
         }
+        // The centres of rotation, unless they came with the model.
+        if source.meshes.iter().any(|m| m.centres.len() != m.vertices.len()) {
+            let lists: Vec<(&[asset::Vertex], &[u32])> = source.meshes.iter().map(|m| (m.vertices.as_slice(), m.indices.as_slice())).collect();
+            let found = crate::cor::centres(&lists);
+            for (m, f) in source.meshes.iter_mut().zip(found) {
+                m.centres = f.into_iter().map(|c| c.map_or([0.0; 4], |p| [p.x, p.y, p.z, 1.0])).collect();
+            }
+        }
         let vertex_lists: Vec<&[asset::Vertex]> = source.meshes.iter().map(|m| m.vertices.as_slice()).collect();
-        let rig = Rig::new(&source.bones, &vertex_lists)?;
+        let rig = Rig::with_copies(&source.bones, &vertex_lists, &source.copies)?;
         let vis = SHOWS.map(|s| rig.visibility(s));
 
         let mut meshes = Vec::new();
@@ -1137,7 +1211,7 @@ impl Character {
             }
             meshes.push(gpu_mesh(gpu, m, &indices, ranges, &mut upload)?);
         }
-        let cpu = source.meshes.iter().map(|m| m.vertices.clone()).collect();
+        let cpu = source.meshes.iter().map(|m| m.vertices.iter().copied().zip(m.centres.iter().copied()).collect()).collect();
         let bone_names = source.bones.iter().map(|b| b.name.clone()).collect();
         Ok(Character {
             cpu,
@@ -1167,20 +1241,14 @@ impl Character {
         }
     }
 
-    /// Every vertex of the posed skin (tracking space), with the name of its heaviest bone.
+    /// Every vertex of the posed skin (tracking space), with the name of its heaviest bone: skinned
+    /// as the shader skins it.
     fn skin(&self) -> Vec<(Vec3, &str)> {
         let mut out = Vec::new();
         for mesh in &self.cpu {
-            for v in mesh {
-                let total: f32 = v.weights.iter().map(|&w| w as f32).sum::<f32>().max(1.0);
-                let mut m = Mat4::ZERO;
-                for k in 0..4 {
-                    if v.weights[k] > 0 {
-                        m += self.posed.skin[v.bones[k] as usize] * (v.weights[k] as f32 / total);
-                    }
-                }
+            for (v, centre) in mesh {
                 let heaviest = (0..4).max_by_key(|&k| v.weights[k]).unwrap_or(0);
-                out.push((m.transform_point3(Vec3::from_array(v.pos)), self.bone_names[v.bones[heaviest] as usize].as_str()));
+                out.push((skin_point(&self.posed, v, *centre), self.bone_names[v.bones[heaviest] as usize].as_str()));
             }
         }
         out
@@ -1211,19 +1279,52 @@ impl Character {
         true
     }
 
+    /// `moved` is rigid: it turns the bones' rotations and leaves their stretches.
     fn fill_palette(&mut self, moved: Mat4, show: Show) {
         let vis = &self.vis[show_index(show)];
+        let (_, turn, _) = moved.to_scale_rotation_translation();
         for (b, skin) in self.posed.skin.iter().enumerate() {
             let m = moved * *skin;
             self.palette.rows[b] = [m.row(0).to_array(), m.row(1).to_array(), m.row(2).to_array()];
             self.palette.vis[b] = vis[b];
+            self.palette.turn[b] = (turn * self.posed.turn[b]).normalize().to_array();
+            self.palette.stretch[b] = stretch_rows(&self.posed.stretch[b]);
         }
     }
 }
 
-/// A mesh's vertices as the GPU takes them.
+/// A mesh's vertices as the GPU takes them, each with its centre of rotation.
 fn gpu_vertices(m: &crate::SourceMesh) -> Vec<Vertex> {
-    m.vertices.iter().map(|v| Vertex { pos: v.pos, normal: v.normal, uv: v.uv, bones: v.bones, weights: v.weights, ao: [v.ao, 0, 0, 0] }).collect()
+    m.vertices
+        .iter()
+        .enumerate()
+        .map(|(i, v)| Vertex { pos: v.pos, normal: v.normal, uv: v.uv, bones: v.bones, weights: v.weights, ao: [v.ao, 0, 0, 0], centre: m.centres.get(i).copied().unwrap_or([0.0; 4]) })
+        .collect()
+}
+
+/// A vertex skinned on the CPU, as the shader's `skinned` does.
+pub(crate) fn skin_point(posed: &Posed, v: &asset::Vertex, centre: [f32; 4]) -> Vec3 {
+    let total: f32 = v.weights.iter().map(|&w| w as f32).sum::<f32>().max(1.0);
+    let w: [f32; 4] = std::array::from_fn(|k| v.weights[k] as f32 / total);
+    let p = Vec3::from_array(v.pos);
+    let mut m = Mat4::ZERO;
+    for k in 0..4 {
+        m += posed.skin[v.bones[k] as usize] * w[k];
+    }
+    if centre[3] < 0.5 {
+        return m.transform_point3(p);
+    }
+    let q0 = Vec4::from(posed.turn[v.bones[0] as usize]);
+    let (mut q, mut s) = (Vec4::ZERO, Mat3::ZERO);
+    for k in 0..4 {
+        let b = v.bones[k] as usize;
+        let qk = Vec4::from(posed.turn[b]);
+        q += if qk.dot(q0) < 0.0 { -qk } else { qk } * w[k];
+        s += posed.stretch[b] * w[k];
+    }
+    let r = Quat::from_vec4(q.normalize_or(Vec4::W));
+    let c = Vec3::new(centre[0], centre[1], centre[2]);
+    r * (s * (p - c)) + m.transform_point3(c)
 }
 
 /// One mesh on the GPU: its vertices, `indices` (the views' `ranges` in them), its base texture
@@ -1387,6 +1488,9 @@ impl HeldModel {
             };
             palette.rows[p] = [m.row(0).to_array(), m.row(1).to_array(), m.row(2).to_array()];
             palette.vis[p] = vis;
+            // (A held part's vertices are on it alone, skinned by its matrix: these aren't used.)
+            palette.turn[p] = Quat::IDENTITY.to_array();
+            palette.stretch[p] = stretch_rows(&Mat3::IDENTITY);
         }
         cb.update(ctx, &palette);
     }
@@ -1568,6 +1672,8 @@ pub struct Renderer {
     atlas: Option<ID3D11ShaderResourceView>,
     two_sided: ID3D11RasterizerState,
     cull_back: ID3D11RasterizerState,
+    /// The back faces alone, a little further off than they are (see [`Renderer::draw_shaded`]).
+    back_faces: ID3D11RasterizerState,
     depth_write: ID3D11DepthStencilState,
     depth_test: ID3D11DepthStencilState,
     opaque_blend: ID3D11BlendState,
@@ -1615,6 +1721,7 @@ impl Renderer {
             element(b"BLENDINDICES\0", 0, DXGI_FORMAT_R8G8B8A8_UINT, 32),
             element(b"BLENDWEIGHT\0", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 36),
             element(b"COLOR\0", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 40),
+            element(b"TEXCOORD\0", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 44),
         ];
         let source = format!("{}{}{SHADER}", metro::HLSL, crate::gamebryo::HLSL);
         let (lut, lut_srv) = lut_texture(gpu)?;
@@ -1636,6 +1743,7 @@ impl Renderer {
             atlas: None,
             two_sided: pipeline::raster_state(gpu, false, false)?,
             cull_back: pipeline::raster_state(gpu, true, false)?,
+            back_faces: back_faces(gpu)?,
             depth_write: pipeline::depth_state(gpu, true, true)?,
             depth_test: pipeline::depth_state(gpu, true, false)?,
             opaque_blend: pipeline::blend_state(gpu, Blend::Opaque)?,
@@ -2236,26 +2344,35 @@ impl Renderer {
         }
         // (0: the runtime's own look, 1: Metro's, 2: Gamebryo's.)
         let mut bound: Option<u32> = None;
-        for &m in meshes {
-            let metro = metro_of(m, shading);
-            if metro.is_some_and(|mm| mm.class.forward()) {
-                continue;
-            }
-            let program = match metro {
-                None => 0,
-                Some(mm) if mm.class.gamebryo() => 2,
-                Some(_) => 1,
-            };
-            if bound != Some(program) {
-                match program {
-                    0 => self.opaque.bind(ctx),
-                    1 => self.metro.bind(ctx),
-                    _ => self.gamebryo.bind(ctx),
+        // The front faces first, then the back faces a little further off: a game draws only front
+        // faces, and makes a plate seen from both sides (Oblivion's pauldrons and tassets) two
+        // surfaces in one place facing apart, so where they coincide the front one shows; the back
+        // faces are still drawn where nothing is in front of them (the inside of a sleeve or a
+        // neck, seen through where it's cut).
+        for state in [&self.cull_back, &self.back_faces] {
+            unsafe { ctx.RSSetState(state) };
+            for &m in meshes {
+                let metro = metro_of(m, shading);
+                if metro.is_some_and(|mm| mm.class.forward()) {
+                    continue;
                 }
-                bound = Some(program);
+                let program = match metro {
+                    None => 0,
+                    Some(mm) if mm.class.gamebryo() => 2,
+                    Some(_) => 1,
+                };
+                if bound != Some(program) {
+                    match program {
+                        0 => self.opaque.bind(ctx),
+                        1 => self.metro.bind(ctx),
+                        _ => self.gamebryo.bind(ctx),
+                    }
+                    bound = Some(program);
+                }
+                draw_mesh(ctx, m, range);
             }
-            draw_mesh(ctx, m, range);
         }
+        unsafe { ctx.RSSetState(&self.two_sided) };
         if meshes.iter().any(|m| metro_of(m, shading).is_some_and(|mm| mm.class.forward())) {
             self.metro_glass.bind(ctx);
             unsafe {
@@ -2385,6 +2502,26 @@ impl Renderer {
             }
         }
     }
+}
+
+/// Back faces only (front faces culled), pushed a little further off in depth than they are, so a
+/// front face in the same place is in front of them.
+fn back_faces(gpu: &Gpu) -> Result<ID3D11RasterizerState> {
+    let desc = D3D11_RASTERIZER_DESC {
+        FillMode: D3D11_FILL_SOLID,
+        CullMode: D3D11_CULL_FRONT,
+        FrontCounterClockwise: false.into(),
+        DepthBias: 64,
+        DepthBiasClamp: 0.0,
+        SlopeScaledDepthBias: 2.0,
+        DepthClipEnable: true.into(),
+        ScissorEnable: false.into(),
+        MultisampleEnable: false.into(),
+        AntialiasedLineEnable: false.into(),
+    };
+    let mut s = None;
+    unsafe { gpu.device.CreateRasterizerState(&desc, Some(&mut s))? };
+    s.context("a rasterizer state")
 }
 
 /// The model that draws `show`: the first-person arms model (if any) in the arms and hands

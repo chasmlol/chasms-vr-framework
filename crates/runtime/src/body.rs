@@ -421,8 +421,23 @@ impl PlayerBody {
         let (tx, rx) = std::sync::mpsc::channel();
         let dir = rustvr_asset::default_root().join(&game);
         std::thread::spawn(move || {
+            // The armour's plates, as the game's marks say (`rustvr_asset::armour`); without marks
+            // everything is soft, its joints keeping their volume.
+            let marks = rustvr_asset::armour::load(&game, &dir).map_err(|e| tracing::warn!("runtime: the game's armour marks: {e:#}")).ok();
+            match (&marks, rustvr_asset::armour::path(&game)) {
+                (Some(m), Some(p)) => tracing::info!("runtime: armour marks for {} pieces from {}", m.pieces.len(), p.display()),
+                _ => tracing::info!("runtime: no armour marks for {game}: every piece soft"),
+            }
+            let mut skinning = marks.as_ref().map_or(rustvr_avatar::Skinning::Centres, rustvr_avatar::Skinning::Marked);
+            // (`RUSTVR_SKINNING=linear` or `centres`: the game's own skinning, or no plates, to
+            // compare against.)
+            match std::env::var("RUSTVR_SKINNING").as_deref() {
+                Ok("linear") => skinning = rustvr_avatar::Skinning::Linear,
+                Ok("centres") => skinning = rustvr_avatar::Skinning::Centres,
+                _ => {}
+            }
             let t = std::time::Instant::now();
-            let built = rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps, face.as_ref());
+            let built = rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps, face.as_ref(), skinning);
             tracing::debug!("runtime: the game's body put together in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
             let _ = tx.send(built);
         });
