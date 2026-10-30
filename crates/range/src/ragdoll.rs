@@ -7,8 +7,12 @@
 //! x0.5, damper x0.1), gravity is back and it falls; a few seconds later it stands back up.
 //!
 //! The range is the game here: the runtime gets the dummies as its creatures every frame (capsules
-//! on their parts, [`Actors`]), and they're pushed by what the player's hands do to them (the
-//! runtime's [`GamePushes`] naming a part) and hit by its blows ([`CombatEvent`]).
+//! on their parts, [`Actors`], and their bodies, [`ActorBodies`]), and they're pushed by what the
+//! player's hands do to them (the runtime's [`GamePushes`] naming a part), hit by its blows
+//! ([`CombatEvent`]) and held by its hands ([`CreatureGrabs`]): the point a hand has is pulled to
+//! where the hand would have it by a stiff spring, as for the player's hand on a creature
+//! (5000 N/m), no harder than the hand pulls. A standing dummy lifted by its head or torso is destabilised, as when its
+//! hips leave the ground; a held one can't get up; let go, the part takes the throw.
 
 use glam::{Mat4, Quat, Vec3};
 use rapier3d::prelude::*;
@@ -51,6 +55,14 @@ const HIT_IMPULSE: f32 = 9.0;
 const PUSH_MAX: f32 = 60.0;
 /// The physics' fixed step.
 const STEP: f32 = 1.0 / 120.0;
+/// A hand's hold: the spring pulling the point it has to where the hand would have it (N/m, and
+/// N s/m on the point's speed).
+const GRAB_SPRING: f32 = 5000.0;
+const GRAB_DAMPER: f32 = 100.0;
+/// A standing dummy lifted by its head or torso this far above its stance (metres) is destabilised.
+const LIFT: f32 = 0.12;
+/// A person's mass (kg; the parts' masses add up to it).
+const PERSON_KG: f32 = 75.0;
 
 /// One part: a capsule from `a` to `b` (the person's space, standing, feet at the origin, facing
 /// +Z), its radius, mass, kind and material, and the part it hangs from (with the joint's point and
@@ -127,9 +139,23 @@ struct Person {
     state: State,
 }
 
+/// A hand holding a part: the point it has (the part's body's own space), where the hand would have
+/// it, and how hard it pulls.
+#[derive(Clone, Copy, Debug)]
+struct Held {
+    id: u32,
+    part: usize,
+    local: V3,
+    target: V3,
+    force: f32,
+}
+
 pub struct Dummies {
     world: PhysicsWorld,
     people: Vec<Person>,
+    /// What the hands hold this frame, and the grabs they last let go of (each hand's serial).
+    held: Vec<Held>,
+    released: [u32; 2],
     /// Time not yet stepped.
     owed: f32,
     time: f64,
@@ -184,7 +210,7 @@ impl Dummies {
             }
             people.push(Person { id: first_id + k as u32, at: (foot, face), parts, state: State::Standing });
         }
-        Dummies { world: w, people, owed: 0.0, time: 0.0 }
+        Dummies { world: w, people, held: Vec::new(), released: [0; 2], owed: 0.0, time: 0.0 }
     }
 
     /// One frame of `dt` seconds: the pins, then the physics at its fixed step.
@@ -194,9 +220,82 @@ impl Dummies {
             self.owed -= STEP;
             self.time += STEP as f64;
             self.pin();
+            self.hold();
             self.world.integration_parameters.dt = STEP;
             self.world.step();
         }
+    }
+
+    /// The runtime's hands on the dummies: each held point pulled to where its hand would have it
+    /// (applied every step with the pins); a standing dummy lifted by its head or torso goes down; a
+    /// held one stays down; a part let go of takes the hand's throw.
+    pub fn grab(&mut self, grabs: &CreatureGrabs) {
+        self.held.clear();
+        for (hand, g) in grabs.grabs.iter().enumerate() {
+            let Some(p) = self.people.iter().position(|p| p.id == g.actor) else { continue };
+            let Some(part) = self.people[p].parts.get(g.part as usize) else { continue };
+            // The point is in the part's frame as the runtime has it: its capsule's start, turned as
+            // its body is (see `bodies`).
+            let local = part.a + V3::from_array(g.point);
+            if g.flags & GRAB_HELD != 0 {
+                self.held.push(Held { id: g.actor, part: g.part as usize, local, target: V3::from_array(g.target), force: g.force });
+                continue;
+            }
+            if g.serial != 0 && self.released[hand] != g.serial {
+                self.released[hand] = g.serial;
+                let (pos, rot) = from_pose(self.world.bodies[part.body].position());
+                let throw = V3::from_array(g.vel);
+                if g.flags & GRAB_SLIPPED == 0 && throw.length() > 0.3 {
+                    self.speed_up(g.actor, g.part as usize, pos + rot * local, throw.normalize(), throw.length());
+                }
+            }
+        }
+        let now = self.time;
+        for h in &self.held {
+            let Some(p) = self.people.iter_mut().find(|p| p.id == h.id) else { continue };
+            let part = &p.parts[h.part];
+            let (pos, rot) = from_pose(self.world.bodies[part.body].position());
+            let lifted = (h.target - (pos + rot * h.local)).y > LIFT && matches!(part.kind, PART_HEAD | PART_TORSO);
+            p.state = match p.state {
+                State::Standing if lifted => State::Down(now),
+                // (Held, it stays down.)
+                State::Down(_) => State::Down(now),
+                s => s,
+            };
+        }
+    }
+
+    /// The held points pulled where the hands would have them (each physics step).
+    fn hold(&mut self) {
+        for h in &self.held {
+            let Some(p) = self.people.iter().find(|p| p.id == h.id) else { continue };
+            let rb = &mut self.world.bodies[p.parts[h.part].body];
+            let (pos, rot) = from_pose(rb.position());
+            let at = pos + rot * h.local;
+            let vel = from_v(rb.velocity_at_point(to_v(at)));
+            let f = (GRAB_SPRING * (h.target - at) - GRAB_DAMPER * vel).clamp_length_max(h.force);
+            rb.add_force_at_point(to_v(f), to_v(at), true);
+        }
+    }
+
+    /// The bodies of the people (beside [`Dummies::actors`], in its order): each part's rotation,
+    /// speed and mass, and whether it's down.
+    pub fn bodies(&self) -> ActorBodies {
+        let mut t: ActorBodies = bytemuck::Zeroable::zeroed();
+        for (k, p) in self.people.iter().take(MAX_ACTORS).enumerate() {
+            let b = &mut t.bodies[k];
+            b.id = p.id;
+            b.flags = BODY_GRABBABLE | BODY_CONSCIOUS | if matches!(p.state, State::Down(_)) { BODY_RAGDOLL } else { 0 };
+            b.mass = PERSON_KG;
+            for (i, part) in p.parts.iter().take(MAX_ACTOR_PARTS).enumerate() {
+                let rb = &self.world.bodies[part.body];
+                let (_, rot) = from_pose(rb.position());
+                b.parts[i] = PartBody { rot: rot.to_array(), vel: from_v(rb.linvel()).to_array(), mass: rb.mass() };
+            }
+        }
+        t.count = self.people.len().min(MAX_ACTORS) as u32;
+        t.strength = 1.0;
+        t
     }
 
     /// Each part pulled towards its stance, as hard as the person's state allows.
