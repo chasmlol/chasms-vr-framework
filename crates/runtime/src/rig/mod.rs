@@ -1304,15 +1304,15 @@ impl Rig {
         Some(bq.inverse() * (at - bp) / self.map.world_per_meter.max(1e-6))
     }
 
-    /// The bowl `id` would go into if let go of at `at` (world; `above`: how far over the rim its
-    /// mouth still takes it): one that takes it and has room for it.
-    fn bowl_for(&self, id: u32, at: Vec3, above: f32) -> Option<u32> {
+    /// The bowl `id` would go into if let go of at `at` (world; `above`, `slack`: how far over the
+    /// rim and out past it its mouth still takes it): one that takes it and has room for it.
+    fn bowl_for(&self, id: u32, at: Vec3, above: f32, slack: f32) -> Option<u32> {
         self.bowls.values().find_map(|r| {
             if r.id == id || !r.accepts().contains(&id) || self.contents(r.id).len() >= r.capacity as usize {
                 return None;
             }
             let local = self.in_bowl_space(r.id, at)?;
-            Bowl::of(r).in_mouth(local, above).then_some(r.id)
+            Bowl::of(r).in_mouth(local, above, slack).then_some(r.id)
         })
     }
 
@@ -1409,7 +1409,7 @@ impl Rig {
             .map(|(id, o)| (*id, self.physics.pose(o.body).0))
             .collect();
         for (id, at) in falling {
-            if let Some(bowl) = self.bowl_for(id, at, 0.0) {
+            if let Some(bowl) = self.bowl_for(id, at, 0.0, 0.0) {
                 self.into_bowl(id, bowl);
             }
         }
@@ -2094,6 +2094,13 @@ impl Rig {
                 if o.desc.flags & OBJF_GRABBABLE == 0 || !matches!(o.holder, Holder::Free | Holder::Pulled { .. } | Holder::Stuck { .. } | Holder::InBowl { .. }) {
                     continue;
                 }
+                // What's in a bowl is taken out by a hand reaching into it (above it, the hand is
+                // on the bowl's grinder or the bowl).
+                if let Holder::InBowl { bowl, grinder: false, .. } = o.holder
+                    && !self.bowls.get(&bowl).zip(self.in_bowl_space(bowl, palm)).is_some_and(|(r, p)| Bowl::of(r).in_mouth(p, 0.02, 0.0))
+                {
+                    continue;
+                }
                 let pulled = matches!(o.holder, Holder::Pulled { hand, .. } if hand == i);
                 // Something flying to this hand is caught from further away (from the palm).
                 let d = if pulled { self.physics.distance_to(o.collider, palm) } else { self.physics.distance_between(hand_c, o.collider) };
@@ -2642,7 +2649,7 @@ impl Rig {
         // tip over the mouth rests in it again.
         if hand_speed < BOWL_MAX_SPEED {
             let (p, q) = self.physics.pose(body);
-            if let Some(bowl) = self.bowl_for(id, p, receptacle::MOUTH_ABOVE) {
+            if let Some(bowl) = self.bowl_for(id, p, receptacle::MOUTH_ABOVE, receptacle::MOUTH_SLACK) {
                 self.into_bowl(id, bowl);
                 self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
                 return;
@@ -2650,7 +2657,7 @@ impl Rig {
             let home = self.bowls.values().find(|r| r.grinder == id).copied();
             if let Some(r) = home
                 && let Some(tip) = self.in_bowl_space(r.id, p + q * v3(r.tip) * self.map.world_per_meter)
-                && Bowl::of(&r).in_mouth(tip, receptacle::MOUTH_ABOVE * 0.5)
+                && Bowl::of(&r).in_mouth(tip, receptacle::MOUTH_ABOVE * 0.5, receptacle::MOUTH_SLACK)
             {
                 self.rest_grinder(id, r.id);
                 self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);

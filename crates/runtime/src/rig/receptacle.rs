@@ -31,8 +31,10 @@ pub const PRESS: f32 = 0.025;
 pub const MAX_SPEED: f32 = 0.8;
 /// Grinding (metres) that makes a stroke.
 pub const STROKE: f32 = 0.09;
-/// How far over the rim (metres) a thing let go over the mouth still goes in.
+/// How far over the rim (metres) a thing let go over the mouth still goes in, and how far outside
+/// the mouth its middle may be (let go over the rim, it tips in).
 pub const MOUTH_ABOVE: f32 = 0.3;
+pub const MOUTH_SLACK: f32 = 0.04;
 /// A thing fully ground is drawn this big (of its size in the bowl).
 pub const GROUND_SIZE: f32 = 0.45;
 
@@ -49,12 +51,12 @@ impl Bowl {
         Bowl { floor: Vec3::from_array(r.floor), radius: r.radius.max(0.01), depth: r.depth.max(0.005), wall: r.wall.max(0.003) }
     }
 
-    /// Whether a point (the bowl's object space) is in its mouth: within its radius of its axis,
-    /// from its floor up to `above` over its rim.
-    pub fn in_mouth(&self, p: Vec3, above: f32) -> bool {
+    /// Whether a point (the bowl's object space) is in its mouth: within its radius (and `slack`)
+    /// of its axis, from its floor up to `above` over its rim.
+    pub fn in_mouth(&self, p: Vec3, above: f32, slack: f32) -> bool {
         let d = p - self.floor;
         let across = Vec3::new(d.x, 0.0, d.z).length();
-        across <= self.radius && d.y >= -0.01 && d.y <= self.depth + above
+        across <= self.radius + slack && d.y >= -0.01 && d.y <= self.depth + above
     }
 
     /// Where the `k`th of `n` things in it lies (the middle of its bottom, on the floor): alone in
