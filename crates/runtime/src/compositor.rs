@@ -286,6 +286,14 @@ float4 PSQuad(VOut i) : SV_Target {
         float3 c = (color.rgb * thread + uv_rect.rgb * across * across * 0.35) * (1 + 1.5 * mote) * ends;
         return float4(c, thread * 0.5 * ends);
     }
+    if (mode == 6) {
+        // A volume of space (a body slot's): a sphere seen as light, faint in its middle and
+        // brightest at its rim, as a soap bubble is, its edge smoothed over a pixel.
+        float r = length(i.local);
+        if (r > 1) discard;
+        float g = (0.12 + 0.88 * pow(r, 8)) * saturate((1 - r) / max(fwidth(r), 1e-4));
+        return float4(color.rgb * g, 0);
+    }
     if (mode == 3) {
         float r = length(i.local);
         if (r > 1) discard;
@@ -420,6 +428,7 @@ const MODE_SOLID: f32 = 1.0;
 const MODE_DOT: f32 = 2.0;
 const MODE_GLOW: f32 = 4.0;
 const MODE_BEAM: f32 = 5.0;
+const MODE_BUBBLE: f32 = 6.0;
 const MODE_LENS: f32 = 3.0;
 
 /// One textured panel to draw.
@@ -459,6 +468,17 @@ pub struct LensLayer<'a> {
 /// behind it.
 #[derive(Clone, Copy, Debug)]
 pub struct Glow {
+    pub at: Vec3,
+    pub radius: f32,
+    /// Linear colour, any brightness.
+    pub color: Vec3,
+}
+
+/// A volume of space shown (a body slot's, while the slots' editor is open): a sphere of light,
+/// faint in its middle and brightest at its rim, added to what's behind it, so it shows over the
+/// drawn body a slot is partly inside.
+#[derive(Clone, Copy, Debug)]
+pub struct Bubble {
     pub at: Vec3,
     pub radius: f32,
     /// Linear colour, any brightness.
@@ -509,6 +529,7 @@ pub struct Layers<'a> {
     /// Controller grip poses to mark (when the game isn't drawing hands).
     pub markers: Vec<(Vec3, Quat)>,
     pub glows: Vec<Glow>,
+    pub bubbles: Vec<Bubble>,
     pub comfort: Comfort,
 }
 
@@ -760,6 +781,15 @@ impl Compositor {
         }
         for r in &layers.ribbons {
             self.draw_ribbon(gpu, &cb, eye_pos, r.a, r.b, r.width, r.color);
+        }
+        for b in &layers.bubbles {
+            let mut c = cb;
+            c.center = b.at.extend(1.0).to_array();
+            c.axis_x = (eye_rot * Vec3::X * b.radius).extend(0.0).to_array();
+            c.axis_y = (eye_rot * Vec3::Y * b.radius).extend(0.0).to_array();
+            c.color = b.color.extend(0.0).to_array();
+            c.params = [MODE_BUBBLE, 0.0, 1.0, 0.0];
+            self.draw_quad(gpu, &c, None);
         }
         if let Some(l) = &layers.laser {
             // A thread of light in a glow, fainter and fading out when it points at nothing.

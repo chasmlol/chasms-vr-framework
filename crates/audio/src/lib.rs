@@ -165,10 +165,14 @@ pub enum Event {
     KnifeThrow,
     /// A thrown knife sinking in.
     KnifeStick,
+    /// A bite of what's held at the mouth, and a gulp of a drink: a game's own chewing and
+    /// swallowing (the runtime has no sound of its own for them).
+    Bite,
+    Gulp,
 }
 
 impl Event {
-    pub const COUNT: usize = 32;
+    pub const COUNT: usize = 34;
     pub const ALL: [Event; Event::COUNT] = [
         Event::Grab,
         Event::Release,
@@ -202,6 +206,8 @@ impl Event {
         Event::Explosion,
         Event::KnifeThrow,
         Event::KnifeStick,
+        Event::Bite,
+        Event::Gulp,
     ];
 
     /// Its key in `sounds.toml`.
@@ -239,6 +245,8 @@ impl Event {
             Event::Explosion => "explosion",
             Event::KnifeThrow => "knife_throw",
             Event::KnifeStick => "knife_stick",
+            Event::Bite => "bite",
+            Event::Gulp => "gulp",
         }
     }
 
@@ -279,7 +287,7 @@ impl Event {
             Event::GrenadeThrow | Event::KnifeThrow => Sound::GloveFlick,
             Event::Explosion => Sound::ShotShotgun,
             Event::KnifeStick => Sound::Impact,
-            Event::FireTail | Event::Casing => return None,
+            Event::FireTail | Event::Casing | Event::Bite | Event::Gulp => return None,
         })
     }
 
@@ -310,6 +318,7 @@ impl Event {
             // A shot's tail and its casings keep the game's level relative to the shot.
             Event::FireTail => 0.25,
             Event::Casing => 0.2,
+            Event::Bite | Event::Gulp => 0.25,
         }
     }
 }
@@ -363,7 +372,7 @@ pub(crate) enum Command {
     Play { sound: Sound, pos: Vec3, intensity: f32 },
     /// A pack event, or `fallback` if the pack (for this set, or at all) has none.
     Event { event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32 },
-    StartLoop { id: u64, sound: Sound, pos: Vec3 },
+    StartLoop { id: u64, sound: Sound, event: Option<Event>, pos: Vec3 },
     MoveLoop { id: u64, pos: Vec3 },
     StopLoop { id: u64 },
 }
@@ -537,10 +546,19 @@ impl Audio {
     }
 
     /// A loop that follows a position until stopped (glove travel). Any sound can loop;
-    /// [`Sound::GloveTravel`] is the one made to. Loops are always synthesised.
+    /// [`Sound::GloveTravel`] is the one made to. Synthesised: with a pack loaded it plays nothing
+    /// (the pack's own loop is [`Audio::start_event_loop`]'s).
     pub fn start_loop(&self, s: Sound, pos: Vec3) -> LoopId {
         let id = self.next_loop.fetch_add(1, Ordering::Relaxed);
-        self.send(Command::StartLoop { id, sound: s, pos });
+        self.send(Command::StartLoop { id, sound: s, event: None, pos });
+        LoopId(id)
+    }
+
+    /// Starts a loop of the pack's sound for `event` (its first layer's clip, looped), or with no
+    /// pack the synthesised `fallback`; a pack without the event plays nothing, as its one-shots.
+    pub fn start_event_loop(&self, event: Event, fallback: Sound, pos: Vec3) -> LoopId {
+        let id = self.next_loop.fetch_add(1, Ordering::Relaxed);
+        self.send(Command::StartLoop { id, sound: fallback, event: Some(event), pos });
         LoopId(id)
     }
 

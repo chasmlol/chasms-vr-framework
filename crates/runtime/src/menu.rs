@@ -66,6 +66,8 @@ pub struct RuntimeMenu {
     pub measure_arms: bool,
     /// The mirror's button was pressed: call it up, or put it away.
     pub mirror: bool,
+    /// "Holsters" was pressed: the game's editor of the body's slots.
+    pub open_holsters: bool,
 }
 
 impl RuntimeMenu {
@@ -94,6 +96,7 @@ impl RuntimeMenu {
             measure_height: false,
             measure_arms: false,
             mirror: false,
+            open_holsters: false,
         })
     }
 
@@ -148,6 +151,7 @@ impl RuntimeMenu {
         let before = s.clone();
         let mut tab = self.tab;
         let mut recenter = false;
+        let mut holsters = false;
         let mut measure = (false, false, false);
         let mut save = false;
         let message = self.message.clone();
@@ -198,6 +202,14 @@ impl RuntimeMenu {
                     if r.clicked() {
                         save = true;
                     }
+                    // (The game's own editor of the body's slots, in its own menus.)
+                    if status.game.is_some() {
+                        let r = ui.add_sized([150.0, 40.0], egui::Button::new("Holsters"));
+                        rects.push(("holsters".into(), r.rect));
+                        if r.clicked() {
+                            holsters = true;
+                        }
+                    }
                 });
                 ui.label(egui::RichText::new(message.as_str()).weak());
             });
@@ -219,6 +231,11 @@ impl RuntimeMenu {
             self.recenter = true;
             self.message = "View will recenter when you resume".into();
         }
+        if holsters {
+            self.open_holsters = true;
+            self.message = "The holsters' editor opens in the game".into();
+        }
+
         if *s != before || save {
             self.changed = true;
             self.message = if save { "Saved".into() } else { "Changes apply immediately".into() };
@@ -477,6 +494,11 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
         ui.selectable_value(&mut h.grenade_arming, GrenadeArming::Button, "Trigger arms it");
     });
     ui.checkbox(&mut h.knife_assist, "Forgiving knife throws (they stick more)");
+    // The body's slots that hand out the player's things (the game's own editor sets them up).
+    let p = &mut s.holsters;
+    slider(ui, "Eating and drinking: hold at the mouth", &mut p.mouth_time, 0.15, 1.5, " s", 2);
+    slider(ui, "Reading a scroll: hold before the eyes", &mut p.read_time, 0.2, 2.0, " s", 2);
+    slider(ui, "Holsters' editor: grip held in a slot (0: off)", &mut p.edit_hold, 0.0, 3.0, " s", 1);
     ui.separator();
     let a = &mut s.archery;
     ui.horizontal(|ui| {

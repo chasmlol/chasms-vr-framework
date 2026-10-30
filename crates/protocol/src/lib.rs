@@ -43,10 +43,11 @@
 //! | [`OFF_GORE`] | the game's blood, its creatures' stumps, limbs cut off (see [`gore`]) | adapter -> runtime | seqlock, SPSC ring |
 //! | [`OFF_ACTOR_BODIES`], [`OFF_CREATURE_GRABS`] | [`ActorBodies`] (adapter -> runtime), [`CreatureGrabs`] (runtime -> adapter): see [`grab`] | | seqlock |
 //! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
+//! | [`OFF_INVENTORY`] .. [`OFF_SLOT_EDITS`] | the player's things and the body's slots (see [`inventory`]) | both | seqlock |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
-//! the item cards, the face, the magic, the ride, the gore, the creature grabs and the bows (a new
-//! one goes after the last). Every region is listed in address order in `LAYOUT`, which the build
+//! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, and the
+//! inventory with the body's slots (a new one goes after the last). Every region is listed in address order in `LAYOUT`, which the build
 //! checks: none overlaps the next, and all lie inside [`MAPPING_BYTES`].
 //!
 //! # Frames
@@ -75,6 +76,7 @@ pub mod combat;
 pub mod gore;
 pub mod grab;
 pub mod hud;
+pub mod inventory;
 pub mod items;
 pub mod sound;
 pub mod world;
@@ -89,6 +91,7 @@ pub use combat::*;
 pub use gore::*;
 pub use grab::*;
 pub use hud::*;
+pub use inventory::*;
 pub use items::*;
 pub use sound::*;
 pub use world::*;
@@ -100,7 +103,7 @@ pub use ride::*;
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
 pub const VERSION: u32 = 13;
 pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v13";
-pub const MAPPING_BYTES: usize = 0x0052_0000;
+pub const MAPPING_BYTES: usize = 0x0053_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;
@@ -1002,6 +1005,9 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_ACTOR_BODIES, size_of::<ActorBodies>()),
     (OFF_CREATURE_GRABS, size_of::<CreatureGrabs>()),
     (OFF_BOWS, size_of::<Bows>()),
+    (OFF_INVENTORY, size_of::<Inventory>()),
+    (OFF_BODY_SLOTS, size_of::<BodySlots>()),
+    (OFF_SLOT_EDITS, size_of::<SlotEdits>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

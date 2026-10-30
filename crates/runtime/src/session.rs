@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::backend::{Backend, HmdFrame};
-use crate::compositor::{Comfort, Compositor, Glow, Laser, Layers, LensLayer, PanelLayer};
+use crate::compositor::{Bubble, Comfort, Compositor, Glow, Laser, Layers, LensLayer, PanelLayer};
 use crate::mechanics::{Cursor, MechInput, MechOutput, Mechanics};
 use crate::menu::{RuntimeMenu, Status};
 use crate::panels::{self, PanelId};
@@ -239,6 +239,9 @@ pub struct Session {
     pub body: crate::body::PlayerBody,
     /// What the runtime draws of what the player holds (`OBJF_RUNTIME_DRAWS`).
     pub held_objects: crate::held_objects::HeldObjects,
+    /// The body's slots that hand out the player's things, between the rig, the settings and the
+    /// game's editor.
+    holsters: crate::holsters::HolsterLink,
     /// The runtime draws the body this frame.
     pub draws_body: bool,
     /// When to take the arm measurement's next pose (seconds, the frame clock), and the arms out to
@@ -388,6 +391,7 @@ impl Session {
             menu_trigger_was: false,
             body: crate::body::PlayerBody::default(),
             held_objects: Default::default(),
+            holsters: Default::default(),
             draws_body: false,
             calibrate_at: None,
             countdown_tick: -1,
@@ -868,6 +872,8 @@ impl Session {
             }
             let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
             let rig_paused = (menu_mode && !held_open) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
+            let game_name = name_str(&g.name).to_owned();
+            self.holsters.before(&self.link, &mut self.rig, &mut self.settings, &game_name, &self.gpu, &mut self.held_objects);
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
                 map: rig_map,
@@ -881,6 +887,7 @@ impl Session {
                 // (The span is grip to grip with the arms out: an arm each side of the shoulders.)
                 arm_length: ((self.body.arm_span() - 0.36) * 0.5).max(0.0),
             });
+            self.holsters.after(&self.link, &mut self.rig, &mut self.settings, &game_name);
             // One event, one frame: the pulse and the sound together. The same cue for the same
             // object twice in a frame (both hands' pulses for one shot, or for one seat) is one
             // sound, at the louder of the two.
@@ -902,7 +909,7 @@ impl Session {
             // The gravity gloves' whoosh follows the object to the hand.
             for h in 0..2 {
                 match (self.rig_out.pulled[h], self.glove_loops[h], &self.audio) {
-                    (Some(p), None, Some(a)) => self.glove_loops[h] = Some(a.start_loop(rustvr_audio::Sound::GloveTravel, p)),
+                    (Some(p), None, Some(a)) => self.glove_loops[h] = Some(a.start_event_loop(rustvr_audio::Event::GloveTravel, rustvr_audio::Sound::GloveTravel, p)),
                     (Some(p), Some(id), Some(a)) => a.move_loop(id, p),
                     (None, Some(id), Some(a)) => {
                         a.stop_loop(id);
@@ -1042,7 +1049,8 @@ impl Session {
             self.creature_grabs.grabs = *self.rig.creature_grabs();
             self.link.write_creature_grabs(&self.creature_grabs);
             self.link.write_object_states(&self.states);
-            self.held_objects.update(&self.objects, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
+            let drawn = self.rig.drawn_descs();
+            self.held_objects.update(&self.objects, &drawn, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
             self.held_objects.clear();
             self.card = None;
@@ -1328,7 +1336,11 @@ impl Session {
                 && let Err(e) = self.settings.save() {
                     tracing::warn!("runtime: saving settings: {e:#}");
                 }
+            if std::mem::take(&mut self.menu.open_holsters) {
+                self.holsters.request_editor(0);
+            }
             if std::mem::take(&mut self.menu.measure_arms) {
+
                 self.calibrate_at = Some(now + 3.0);
                 self.countdown_tick = -1;
                 self.calibrate_sides = None;
@@ -1488,6 +1500,7 @@ impl Session {
         self.rig_out = RigOutput::default();
         self.objects_seq = 0;
         self.held_objects.clear();
+        self.holsters.reset();
         self.hand_poses.count = 0;
         self.hand_poses_seq = 0;
         self.kicks.count = 0;
@@ -1527,18 +1540,27 @@ impl Session {
     /// The sound for one feedback cue: the object's own from the game's sound pack (its set, or
     /// the pack's defaults), else the runtime's synthesised one. A shot also plays its tail and
     /// its casing landing (the pack's; the runtime has none of its own), and none of it when the
-    /// game plays its own gunshots; reloading sounds likewise when the game plays its own.
+    /// game plays its own gunshots; reloading sounds likewise when the game plays its own, and the
+    /// player's things going into and out of the inventory. A thing drawn from a slot sounds like
+    /// a thing of its kind ([`Rig::drawn_sound`]).
     fn play_cue(&mut self, fb: &feedback::Feedback) {
         use rustvr_audio::Event as E;
         let Some((event, fallback)) = event_of(fb.cue) else { return };
-        let (set, flags) = fb.object.and_then(|id| self.object_sounds.get(&id)).copied().unwrap_or_default();
-        if !runtime_plays(event, flags | self.sound_pack.flags, self.settings.current.sound.shots) {
+        let (set, flags) = fb
+            .object
+            .and_then(|id| self.object_sounds.get(&id).copied().or_else(|| self.rig.drawn_sound(id).map(|s| (rustvr_audio::SetKey::of(s), 0))))
+            .unwrap_or_default();
+        let flags = flags | self.sound_pack.flags;
+        if !runtime_plays(event, flags, self.settings.current.sound.shots) {
+            return;
+        }
+        if matches!(fb.cue, feedback::Cue::PocketIn | feedback::Cue::PocketOut) && flags & SND_GAME_INVENTORY != 0 {
             return;
         }
         let shot = event == E::Fire;
         self.sounds_played += 1;
         let Some(a) = &self.audio else { return };
-        a.play_event(event, set, Some(fallback), fb.pos, fb.intensity);
+        a.play_event(event, set, fallback, fb.pos, fb.intensity);
         if shot {
             a.play_event(E::FireTail, set, None, fb.pos, fb.intensity);
             // The case lands on the floor under the gun.
@@ -1876,6 +1898,12 @@ impl Session {
             let flicker = 1.0 + 0.12 * (t * 23.0).sin() + 0.08 * (t * 37.0 + 1.3).sin();
             let color = Vec3::from_array(c.color).max(Vec3::splat(0.05));
             layers.glows.push(Glow { at: c.palm, radius: (0.03 + 0.06 * c.charge) * flicker, color: color * (0.6 + 1.6 * c.charge) });
+        }
+        // While the slots' editor is open, each slot of the player's things shows where it is and
+        // how far out it takes from, the one picked in the editor bright, the rest faint (in the
+        // laser's blue, the runtime's own marks' colour).
+        for (at, radius, picked) in self.rig.pocket_marks() {
+            layers.bubbles.push(Bubble { at, radius, color: Vec3::new(0.25, 0.75, 1.0) * if picked { 0.9 } else { 0.22 } });
         }
 
         // The player's body goes between the game's picture and the overlays, behind the game's
@@ -2297,15 +2325,20 @@ fn runtime_plays(event: rustvr_audio::Event, flags: u32, shots: bool) -> bool {
 }
 
 /// The sound pack event for a cue, and the runtime's own sound for it (None: the cue is felt, not
-/// heard).
-fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Sound)> {
+/// heard; an event without a sound of the runtime's own: heard only from a game's pack).
+fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audio::Sound>)> {
     use feedback::Cue as C;
     use rustvr_audio::{Event as E, Sound as S};
     Some(match c {
+        // (The game's own chewing and swallowing, bite by bite: the runtime has none of its own.)
+        C::Bite => return Some((E::Bite, None)),
+        C::Gulp => return Some((E::Gulp, None)),
         C::Grab => (E::Grab, S::Grab),
         C::Release => (E::Release, S::Release),
         C::HolsterIn => (E::HolsterIn, S::HolsterIn),
         C::HolsterOut => (E::HolsterOut, S::HolsterOut),
+        C::PocketIn => (E::HolsterIn, S::HolsterIn),
+        C::PocketOut => (E::HolsterOut, S::HolsterOut),
         C::MagEject => (E::MagOut, S::MagEject),
         C::MagSeat => (E::MagIn, S::MagSeat),
         C::SlideBack => (E::BoltBack, S::SlideBack),
@@ -2331,7 +2364,8 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::KnifeThrow => (E::KnifeThrow, S::GloveFlick),
         C::Explosion => (E::Explosion, S::ShotShotgun),
         C::KnifeStick => (E::KnifeStick, S::Impact),
-        C::ExplosionRumble | C::Strain | C::Stop => return None,
+        // (The game plays its own eating and drinking as it's used.)
+        C::ExplosionRumble | C::Strain | C::Stop | C::Hold | C::Use => return None,
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),
@@ -2346,6 +2380,7 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::BowNock => (E::ZoneTick, S::ZoneTick),
         C::BowCreak | C::BowStrain | C::BowRelease | C::StringSnap | C::BowSpring => return None,
     })
+    .map(|(e, s)| (e, Some(s)))
 }
 
 fn quat(a: [f32; 4]) -> Quat {
@@ -2387,10 +2422,10 @@ mod tests {
             let Some((event, fallback)) = event_of(c) else { continue };
             // The fallback is the runtime's own sound for that event (a shot keeps its kind).
             if event != E::Fire && c != C::Pouch {
-                assert_eq!(event.fallback(), Some(fallback), "{c:?}");
+                assert_eq!(event.fallback(), fallback, "{c:?}");
             }
         }
-        assert_eq!(event_of(C::ShotPistol), Some((E::Fire, rustvr_audio::Sound::ShotPistol)));
+        assert_eq!(event_of(C::ShotPistol), Some((E::Fire, Some(rustvr_audio::Sound::ShotPistol))));
     }
 }
 

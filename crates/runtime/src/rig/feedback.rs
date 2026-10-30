@@ -20,6 +20,10 @@ pub enum Cue {
     Release,
     HolsterIn,
     HolsterOut,
+    /// One of the player's things drawn from a slot of the body, and one put back in a slot (or a
+    /// thing lying about stowed in one): into and out of the game's inventory.
+    PocketIn,
+    PocketOut,
     MagEject,
     MagSeat,
     SlideBack,
@@ -93,6 +97,14 @@ pub enum Cue {
     /// Something worked on a hinge or a slide (a door, a lever, a drawer) coming against its stop,
     /// felt by how fast: the game's own part makes its own sound.
     Stop,
+    /// A bite felt on the way to eating what's held at the mouth, a gulp on the way to drinking it,
+    /// heard as the game's own chewing and swallowing where its sound pack has them; a pulse on the
+    /// way to reading a scroll or putting a poison on a blade; then the moment it's used. The
+    /// pulses and the use are felt only: the game plays its own eating, drinking and casting.
+    Bite,
+    Gulp,
+    Hold,
+    Use,
 }
 
 impl Cue {
@@ -104,6 +116,8 @@ impl Cue {
             Cue::Strain => "strain",
             Cue::HolsterIn => "holster_in",
             Cue::HolsterOut => "holster_out",
+            Cue::PocketIn => "pocket_in",
+            Cue::PocketOut => "pocket_out",
             Cue::Pouch => "pouch",
             Cue::MagEject => "mag_eject",
             Cue::MagSeat => "mag_seat",
@@ -153,6 +167,10 @@ impl Cue {
             Cue::StringSnap => "string_snap",
             Cue::BowSpring => "bow_spring",
             Cue::Stop => "stop",
+            Cue::Bite => "bite",
+            Cue::Gulp => "gulp",
+            Cue::Hold => "hold",
+            Cue::Use => "use",
         }
     }
 }
@@ -176,8 +194,8 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
     Some(match cue {
         Cue::Grab => (0.03, 160.0, 0.55),
         Cue::Release => (0.02, 120.0, 0.3),
-        Cue::HolsterIn => (0.05, 120.0, 0.6),
-        Cue::HolsterOut => (0.03, 160.0, 0.5),
+        Cue::HolsterIn | Cue::PocketIn => (0.05, 120.0, 0.6),
+        Cue::HolsterOut | Cue::PocketOut => (0.03, 160.0, 0.5),
         Cue::MagEject => (0.04, 100.0, 0.6),
         Cue::MagSeat => (0.06, 90.0, 0.9),
         Cue::SlideBack => (0.03, 200.0, 0.7),
@@ -248,7 +266,12 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
             }
             (0.02 + 0.03 * i, 90.0, (0.25 + 0.65 * i).min(1.0))
         }
+        // A bite is short and firm, a gulp low and soft; the use a long low thud.
+        Cue::Bite => (0.03, 120.0, 0.55),
+        Cue::Gulp | Cue::Hold => (0.05, 70.0, 0.4),
+        Cue::Use => (0.09, 80.0, 0.85),
     })
+
 }
 
 #[cfg(test)]

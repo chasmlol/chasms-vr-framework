@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -27,6 +28,7 @@ pub struct Settings {
     pub mirror: Mirror,
     pub archery: Archery,
     pub riding: Riding,
+    pub holsters: Holsters,
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.
@@ -96,6 +98,99 @@ impl Default for Mirror {
     fn default() -> Self {
         Mirror { distance: 1.2, width: 0.95, height: 2.0, lift: 0.02, gesture: true, game_world: true }
     }
+}
+
+/// The body's slots that hand out the player's things (the game's inventory, `rig::pockets`), and
+/// using them at the mouth, the eyes and the weapon.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Holsters {
+    /// Seconds a thing is held at the mouth before it's eaten or drunk (bites or gulps in the hand
+    /// on the way, so it's never by accident).
+    pub mouth_time: f32,
+    /// Seconds a scroll is held up in front of the eyes before it's read.
+    pub read_time: f32,
+    /// Seconds a thing is touched to the weapon in the other hand before it's put on it (a poison).
+    pub coat_time: f32,
+    /// Seconds a grip is held still in a slot to open the slots' editor on it (0: never).
+    pub edit_hold: f32,
+    /// Each game's slots (by its adapter's name), as the player set them up. A game with none here
+    /// has the game's own ([`rustvr_protocol::Inventory::defaults`]).
+    pub games: BTreeMap<String, Vec<BodySlot>>,
+}
+
+impl Default for Holsters {
+    fn default() -> Self {
+        Holsters { mouth_time: 0.5, read_time: 0.8, coat_time: 0.3, edit_hold: 1.5, games: BTreeMap::new() }
+    }
+}
+
+/// One slot on the body (see [`rustvr_protocol::SlotDesc`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BodySlot {
+    pub name: String,
+    /// Its middle, in the body anchor's frame from the eyes (x right, y up, z forward), metres, for
+    /// a player whose eyes are 1.7 m up (it scales with the player).
+    pub at: [f32; 3],
+    /// How big it is: a thing let go within this goes back in (metres).
+    pub radius: f32,
+    /// How much further out a hand still takes from it (metres).
+    pub reach: f32,
+    /// It counts only with the hand behind the head (over a shoulder).
+    pub behind: bool,
+    /// The game's categories it draws from (their names), first first.
+    pub categories: Vec<String>,
+    pub order: SlotOrder,
+    /// What the player has on comes out first (the equipped arrows).
+    pub equipped_first: bool,
+    pub empty: SlotEmpty,
+    /// The player's own order ([`SlotOrder::Own`]): the game's ids of what they last put back in
+    /// it, the latest first.
+    pub own: Vec<u32>,
+}
+
+impl Default for BodySlot {
+    fn default() -> Self {
+        BodySlot {
+            name: String::new(),
+            at: [0.19, -0.55, 0.0],
+            radius: 0.09,
+            reach: 0.04,
+            behind: false,
+            categories: Vec::new(),
+            order: SlotOrder::Value,
+            equipped_first: false,
+            empty: SlotEmpty::Tick,
+            own: Vec::new(),
+        }
+    }
+}
+
+/// The order a slot gives its things out in (`rustvr_protocol::RULE_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotOrder {
+    Healing,
+    Magicka,
+    Fatigue,
+    Value,
+    Heaviest,
+    Lightest,
+    Newest,
+    Name,
+    Most,
+    Strongest,
+    Own,
+}
+
+/// What reaching into an empty slot does (`rustvr_protocol::EMPTY_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotEmpty {
+    Tick,
+    Silent,
+    Any,
 }
 
 /// Which eye.

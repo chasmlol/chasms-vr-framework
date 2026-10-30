@@ -477,9 +477,18 @@ impl Mixer {
             }
             Command::Event { event, set, fallback, pos, intensity } => self.start_event(event, set, fallback, pos, intensity),
             // (A game's pack replaces the runtime's sounds: no synthesised loop with one loaded.)
-            Command::StartLoop { id, sound, pos } => {
-                if self.pack.is_none() {
-                    self.start(Source::Synth(sound), pos, 1.0, Some(id));
+            Command::StartLoop { id, sound, event, pos } => {
+                // A pack's own loop for the event, else (no pack) the synthesised one.
+                let pack = self.pack.clone();
+                match (pack.as_deref(), event) {
+                    (Some(p), Some(event)) => {
+                        if let Some(layer) = p.find(SetKey::NONE, event).and_then(|e| e.layers.first()) {
+                            let clip = layer.clips[layer.pick(&mut self.rng)];
+                            self.start(Source::Clip { pack: p.generation, clip, gain: layer.gain * p.gain, wait: 0 }, pos, 1.0, Some(id));
+                        }
+                    }
+                    (Some(_), None) => {}
+                    (None, _) => self.start(Source::Synth(sound), pos, 1.0, Some(id)),
                 }
             }
             Command::MoveLoop { id, pos } => {

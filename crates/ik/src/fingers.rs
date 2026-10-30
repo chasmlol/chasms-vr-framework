@@ -2,9 +2,12 @@
 //!
 //! Touch controllers report the trigger (analog plus capacitive touch), the grip (analog) and
 //! thumb contact on the face buttons, stick and thumbrest. That is enough for the poses players
-//! read: pointing (index off the trigger), thumbs up (thumb lifted), a fist (squeeze), and resting
-//! fingers on the controls. While holding something, the fingers wrap to its shape instead, except
-//! that a gun's trigger finger still follows the trigger.
+//! read: thumbs up (thumb lifted), a fist (squeeze), and resting fingers on the controls. The index
+//! rests as it does on the trigger whether it's there or not, curling only as the trigger is
+//! pulled: a player found it lifting off by itself when the finger left the trigger unnatural, and
+//! its pose jumping as the finger touched it, so the trigger's touch sensor doesn't move it. While
+//! holding something, the fingers wrap to its shape instead, except that a gun's trigger finger
+//! still follows the trigger.
 
 use rustvr_protocol::Fingers;
 
@@ -16,7 +19,8 @@ pub struct FingerInput {
     pub trigger: f32,
     /// Grip squeeze, 0..1.
     pub squeeze: f32,
-    /// The index finger is on the trigger.
+    /// The index finger is on the trigger (its touch sensor). The pose doesn't follow it: the index
+    /// rests as on the trigger either way.
     pub touch_trigger: bool,
     /// The thumb touches a face button, the stick or the thumbrest.
     pub touch_thumb: bool,
@@ -84,11 +88,9 @@ fn hold_pose(hold: HoldShape) -> Option<([f32; 5], f32)> {
     })
 }
 
-/// Index curl for a finger on (or off) a trigger: straight along the frame when off it, resting
-/// curled on it, fully curled at full pull.
-fn trigger_curl(input: &FingerInput, rest: f32, pulled: f32, off: f32) -> f32 {
-    let pull = unit(input.trigger);
-    if input.touch_trigger || pull > 0.05 { rest + (pulled - rest) * pull } else { off }
+/// Index curl for a finger resting on a trigger: relaxed, curling in as the trigger is pulled.
+fn trigger_curl(input: &FingerInput, rest: f32, pulled: f32) -> f32 {
+    rest + (pulled - rest) * unit(input.trigger)
 }
 
 /// The thumb's curl resting on a button, the stick or the thumbrest (a relaxed thumb), with the
@@ -98,10 +100,8 @@ const THUMB_REST: f32 = 0.12;
 const THUMB_FIST: f32 = 0.75;
 const THUMB_PRESS: f32 = 0.1;
 const THUMB_LIFTED: f32 = -0.5;
-/// The index's curl resting on the trigger (a relaxed finger) and lifted off it (below 0: its base
-/// stands it up away from the palm) (est., by eye).
+/// The index's curl resting on the trigger (a relaxed finger) (est., by eye).
 const INDEX_REST: f32 = 0.05;
-const INDEX_LIFTED: f32 = -0.25;
 
 /// Curl smoothing: a few frames, quick enough to read as 1:1 on the trigger and slow enough that
 /// a touch sensor flipping or a grab starting doesn't snap the fingers (est.).
@@ -166,15 +166,13 @@ impl FingerSolver {
         };
         if let Some((mut curl, splay)) = hold_pose(hold) {
             if hold == HoldShape::PistolGrip {
-                // Trigger discipline: the index lies straight along the frame until it touches
-                // the trigger.
-                curl[1] = trigger_curl(input, 0.35, 0.8, 0.1);
+                // The index rests on the trigger, curling as it's pulled.
+                curl[1] = trigger_curl(input, 0.35, 0.8);
             }
             return (curl, splay);
         }
-        // On the trigger is a relaxed finger, curling in as it's pulled; lifted off, it stands up a
-        // little.
-        let index = trigger_curl(input, INDEX_REST, 1.0, INDEX_LIFTED);
+        // A relaxed finger, as on the trigger, curling in as it's pulled.
+        let index = trigger_curl(input, INDEX_REST, 1.0);
         // The lower fingers close with the grip, the pinky a touch ahead of the middle finger.
         let grip = |lead: f32| (0.15 + 0.85 * squeeze * lead).min(1.0);
         let curl = [thumb, index, grip(1.0), grip(1.03), grip(1.06)];
@@ -202,9 +200,12 @@ mod tests {
         let open = settle(&mut f, &FingerInput::default(), HoldShape::None);
         assert!(open.curl.iter().all(|&c| c < 0.2), "{open:?}");
         assert!(open.splay > 0.3);
-        // Pointing: squeeze without touching the trigger.
+        // Squeezing without the trigger: the index stays relaxed, the others close.
         let point = settle(&mut f, &FingerInput { squeeze: 1.0, touch_thumb: true, ..Default::default() }, HoldShape::None);
         assert!(point.curl[1] < 0.1 && point.curl[2] > 0.95 && point.curl[0] > 0.5);
+        // On the trigger or off it, the index rests the same.
+        let touching = settle(&mut f, &FingerInput { squeeze: 1.0, touch_thumb: true, touch_trigger: true, ..Default::default() }, HoldShape::None);
+        assert_eq!(touching.curl[1], point.curl[1]);
         // Fist: everything pressed.
         let fist = FingerInput { trigger: 1.0, squeeze: 1.0, touch_trigger: true, touch_thumb: true, thumb_press: true, tracked: None };
         let fist = settle(&mut f, &fist, HoldShape::None);
@@ -221,7 +222,7 @@ mod tests {
         let resting = settle(&mut f, &FingerInput { squeeze: 1.0, touch_trigger: true, ..Default::default() }, HoldShape::PistolGrip);
         let pulled = FingerInput { trigger: 1.0, squeeze: 1.0, touch_trigger: true, ..Default::default() };
         let pulled = settle(&mut f, &pulled, HoldShape::PistolGrip);
-        assert!(off.curl[1] < resting.curl[1] && resting.curl[1] < pulled.curl[1]);
+        assert!(off.curl[1] == resting.curl[1] && resting.curl[1] < pulled.curl[1]);
         // The other fingers stay wrapped whatever the trigger does.
         assert!((off.curl[3] - pulled.curl[3]).abs() < 1e-3 && pulled.curl[3] > 0.8);
         // A foregrip ignores the trigger.

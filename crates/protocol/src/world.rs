@@ -307,7 +307,9 @@ pub struct ObjectDesc {
     /// How the hand holds it: the controller's grip-pose rotation in object space, with the grip
     /// pose's origin at `grip` (guns: on the pistol grip, so the barrel points where the hand
     /// does). All zero: the barrel follows the controller's aim ray. Throwables with one snap into
-    /// the hand that way (the left hand takes the mirror image).
+    /// the hand that way (the left hand takes the mirror image). A prop's is the right hand's: the
+    /// left holds it the same way round, its palm on the same side (turned half round the fist's
+    /// axis, +Z).
     pub grip_rot: [f32; 4],
     /// Two-handed guns: the support hand's controller grip rotation in weapon space while it holds
     /// the foregrip. All zero: palm up under the barrel.
@@ -383,7 +385,12 @@ pub struct ObjectDesc {
     /// `foregrip`.
     pub foregrip_line: [[f32; 3]; 2],
     pub foregrip_radius: f32,
-    pub _p_grips: [u32; 2],
+    /// As it arrives (or comes back with a new `spawn_seq`): the object it takes the place of, in
+    /// the hand that holds that one (0: none). A weapon drawn from one of the body's slots is the
+    /// runtime's copy of it ([`OS_INVENTORY`]); the game equips it, and its own weapon goes into
+    /// that hand by its grip, the copy gone.
+    pub replaces: u32,
+    pub _p_grips: u32,
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;
@@ -693,7 +700,8 @@ pub struct ObjectState {
     /// Holster slot (OS_HOLSTERED): see `SLOT_*`.
     pub slot: u32,
     /// The weapon a seated magazine is in (OS_IN_WEAPON), or what a stuck throwable is in
-    /// ([`OS_STUCK`]; 0: the world).
+    /// ([`OS_STUCK`]; 0: the world), or the inventory's stack a thing drawn from a slot is of
+    /// ([`OS_INVENTORY`]).
     pub parent: u32,
     pub pose: Pose,
     pub lin_vel: [f32; 3],
@@ -702,7 +710,8 @@ pub struct ObjectState {
     pub ang_vel: [f32; 3],
     /// Weapons: rounds fired so far (each increase is one shot from the muzzle). Grenades: times it
     /// went off (each increase is one explosion at `pose`, for the game to make). Things that open
-    /// ([`OBJF_OPENS`]): times the other hand opened or shut it.
+    /// ([`OBJF_OPENS`]): times the other hand opened or shut it. Things drawn from a slot
+    /// ([`OS_INVENTORY`]): times used (each increase is one use, for the game to do).
     pub shots: u32,
     /// Weapons: which chambers hold a live round and which a spent case (see
     /// [`CHAMBER_SPENT_SHIFT`]); `chambered & CHAMBER_LIVE_MASK != 0`: a round is chambered. (A gun
@@ -761,6 +770,11 @@ pub const OS_RUNTIME_DRAWN: u32 = 1 << 16;
 pub const RUNTIME_DRAW_TAIL: f32 = 0.15;
 /// A thing to take ([`OBJF_LOOT`]) put in a body slot (`slot`): the game takes it.
 pub const OS_STOWED: u32 = 1 << 17;
+/// Drawn from one of the body's slots: the runtime's copy of a thing in the player's inventory
+/// ([`crate::inventory`]), its [`crate::InvItem::id`] in `parent`. Each use of it (eaten, drunk,
+/// read, put on a weapon) adds one to `shots`; let go and free, it's the game's to drop where it
+/// comes to rest. The game says when it has taken it back ([`crate::Inventory::taken`]).
+pub const OS_INVENTORY: u32 = 1 << 18;
 
 pub const SLOT_HIP_RIGHT: u32 = 0;
 pub const SLOT_HIP_LEFT: u32 = 1;
