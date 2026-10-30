@@ -8,7 +8,8 @@
 //! saddle. A rein runs through the fist as a rider's does: in at the little finger, out over the
 //! index under the thumb, where the bight hangs from ([`FIST`]).
 //!
-//! Each strap is a rope ([`Rope`]): a chain of points carried from frame to frame, swinging under
+//! Each rein is a rope ([`Rope`]; the bight just hangs between the fists): a chain of points carried
+//! from frame to frame, swinging under
 //! gravity (and settling over [`SWING`]), each a fixed share of its length from the next, held at
 //! its ends (the bit and a hand, or where the rider holds it let go) and kept out of the neck. Its
 //! shape only ever moves on from the last frame's, so it can't jump. Out of the neck, above the
@@ -349,16 +350,12 @@ fn straps(r: &Riding, held: [Option<usize>; 2], hands: [(Vec3, Quat); 2], ropes:
     }
     match holding.as_slice() {
         [a, b] => {
+            // The bight just hangs between the fists by its slack (the reins slide through the
+            // hands, so it keeps it): laid on the neck as the reins are, it was pushed up over the
+            // neck's rounded end behind the withers, where there's no neck.
             let (a, b) = (out_of(*a), out_of(*b));
-            let fresh = |rope: &Rope| rope.x[0].distance(a) > TELEPORT || rope.x[rope.x.len() - 1].distance(b) > TELEPORT;
-            if ropes[2].as_ref().is_none_or(fresh) {
-                ropes[2] = Some(Rope::new(a, b, a.distance(b) + BIGHT, BIGHT_POINTS, 0.0));
-            }
-            let rope = ropes[2].as_mut().unwrap();
-            // (The reins slide through the hands: their bight keeps its slack.)
-            rope.length = a.distance(b) + BIGHT;
-            rope.step(a, b, [true, true], dt, neck, right);
-            out[2] = Some((rope.x.clone(), Vec3::Y, [false, false]));
+            ropes[2] = None;
+            out[2] = Some((hanging(a, b, a.distance(b) + BIGHT, BIGHT_POINTS), Vec3::Y, [false, false]));
         }
         _ => ropes[2] = None,
     }
