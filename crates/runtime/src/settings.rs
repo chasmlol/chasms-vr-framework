@@ -190,7 +190,7 @@ pub struct Input {
     pub crouch_threshold: f32,
     /// In a game's water, the arms swim (strokes push the player); the stick swims either way.
     pub arm_swimming: bool,
-    /// How much easier a stroke is: 2 swims at full speed with half the stroke (1: as designed).
+    /// How hard the water pushes back on a stroke: 2 is twice as hard (1: as designed).
     pub swim_ease: f32,
 }
 
