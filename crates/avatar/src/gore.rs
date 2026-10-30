@@ -88,8 +88,9 @@ pub struct GoreCap {
     pub blood: u32,
 }
 
-/// Blood on the player or what the hands hold (tracking space): inside `radius` of `pos`, wet as
-/// `wet` (0 dry, dark).
+/// Blood on the player or what the hands hold (tracking space): inside `radius` of `pos` (or of
+/// the line from `pos` to `end`, a streak where it ran down a blade), wet as `wet` (0 dry, dark),
+/// as much of it left as `left` (1 all, 0 worn away).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 pub struct GoreSplat {
@@ -98,6 +99,8 @@ pub struct GoreSplat {
     /// The surface's normal where it landed (the texture is laid across it).
     pub normal: [f32; 3],
     pub wet: f32,
+    pub end: [f32; 3],
+    pub left: f32,
 }
 
 /// One kind of blood's look: the game's textures (`<game>/<asset key>`; empty: none), as the
@@ -381,6 +384,8 @@ struct GoreCb {
 pub(crate) struct SplatCb {
     pub pos: [[f32; 4]; MAX_SPLATS],
     pub nrm: [[f32; 4]; MAX_SPLATS],
+    /// A streak's other end; w: how much of it is left.
+    pub end: [[f32; 4]; MAX_SPLATS],
     /// x: how many, y: the splat texture is bound, z: its atlas.
     pub info: [f32; 4],
     /// The blood's colour (display range).
@@ -548,6 +553,7 @@ impl GoreGpu {
         for (i, sp) in f.splats[..n].iter().enumerate() {
             s.pos[i] = [sp.pos[0], sp.pos[1], sp.pos[2], sp.radius];
             s.nrm[i] = [sp.normal[0], sp.normal[1], sp.normal[2], sp.wet];
+            s.end[i] = [sp.end[0], sp.end[1], sp.end[2], sp.left];
         }
         s.info = [n as f32, splat_tex.is_some() as u32 as f32, atlas as f32, 0.0];
         s.color = [color[0], color[1], color[2], 1.0];

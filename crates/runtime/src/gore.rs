@@ -64,6 +64,17 @@ const PIECE_FADE: f64 = 2.5;
 const DRY: f32 = 150.0;
 const POOL_DRY: f32 = 400.0;
 const HELD_DRY: f32 = 90.0;
+/// Then it stays dry a while and wears away (s, after blood last got there).
+const HELD_FADE_AFTER: f64 = 180.0;
+const HELD_FADE_FOR: f64 = 60.0;
+/// A held thing flicked or shaken harder than this throws its wet blood off (m/s², where the blood
+/// is: a shake is 40-150, the hand held still under 15).
+const FLICK: f32 = 45.0;
+/// How fast blood runs down a blade held upright, fresh (m/s), and the most runs on a blade at once
+/// and in all.
+const RUN_SPEED: f32 = 0.05;
+const RUNS_AT_ONCE: usize = 3;
+const MAX_RUNS: usize = 8;
 /// Projected decals reach this far either side of the surface they were put on (m): the world's
 /// collision and the game's drawn surface differ by a few centimetres.
 const DECAL_DEPTH: f32 = 0.07;
@@ -96,6 +107,8 @@ struct Drop {
     age: f32,
     /// Where it was last probed against the world.
     probed: Vec3,
+    /// The held thing it dripped or flew off (0: none): it doesn't land back on it.
+    from: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -160,10 +173,31 @@ struct Piece {
 #[derive(Clone, Copy, Debug)]
 struct Splat {
     at: Vec3,
+    /// A run down a blade is a streak from `at` to here (a splat's is `at`).
+    end: Vec3,
     normal: Vec3,
     radius: f32,
     wet: f32,
+    /// When blood last got there (it wears away some minutes after).
     born: f64,
+    /// A run still running: how much further it has blood for (m), signed along the blade's line
+    /// (towards its point positive); 0 when it's stopped or isn't a run.
+    run: f32,
+}
+
+impl Splat {
+    fn new(at: Vec3, normal: Vec3, radius: f32, born: f64) -> Splat {
+        Splat { at, end: at, normal, radius, wet: 1.0, born, run: 0.0 }
+    }
+
+    /// How much of it is left as it wears away (1 all, 0 gone).
+    fn left(&self, now: f64) -> f32 {
+        1.0 - ((now - self.born - HELD_FADE_AFTER) / HELD_FADE_FOR).clamp(0.0, 1.0) as f32
+    }
+
+    fn streak(&self) -> bool {
+        self.run != 0.0 || self.end != self.at
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -201,6 +235,10 @@ pub struct Gore {
     body_splats: Vec<(usize, Splat)>,
     held_splats: HashMap<u32, Vec<Splat>>,
     held_drip: HashMap<u32, f64>,
+    /// Each held thing's blade in its own space (its edge's line, from the combat while it's held),
+    /// and its poses the last two frames (for how hard it's flicked).
+    held_blade: HashMap<u32, (Vec3, Vec3)>,
+    held_poses: HashMap<u32, [(Vec3, Quat); 2]>,
     splat_blood: u32,
     rng: u64,
     pub stats: GoreStats,
@@ -234,6 +272,8 @@ impl Default for Gore {
             body_splats: Vec::new(),
             held_splats: HashMap::new(),
             held_drip: HashMap::new(),
+            held_blade: HashMap::new(),
+            held_poses: HashMap::new(),
             splat_blood: 0,
             rng: 0x9E37_79B9_7F4A_7C15,
             stats: GoreStats::default(),
@@ -327,7 +367,7 @@ impl Gore {
             let s = self.range(speed.0, speed.1) * if is_mist { 0.8 } else { 1.0 };
             let sz = if is_mist { self.range(0.0005, 0.0012) } else { self.range(size.0, size.1) };
             let life = if is_mist { self.range(0.2, 0.55) } else { 6.0 };
-            self.push_drop(Drop { pos: at, vel: base_vel + d * s, size: sz, blood, mist: is_mist, life, age: 0.0, probed: at });
+            self.push_drop(Drop { pos: at, vel: base_vel + d * s, size: sz, blood, mist: is_mist, life, age: 0.0, probed: at, from: 0 });
         }
     }
 
@@ -518,7 +558,7 @@ impl Gore {
             {
                 list.remove(i);
             }
-            list.push(Splat { at: inv * (at - wp), normal: inv * out, radius: r, wet: 1.0, born: inp.now });
+            list.push(Splat::new(inv * (at - wp), inv * out, r, inp.now));
         };
         match blade {
             Some(&(a, b, kind)) => {
@@ -564,6 +604,7 @@ impl Gore {
         if let Some((_, s)) = self.body_splats.iter_mut().find(|(k, s)| *k == joint && s.at.distance(at) < s.radius) {
             s.radius = (s.radius * s.radius + 0.3 * radius * radius).sqrt().min(0.07);
             s.wet = 1.0;
+            s.born = now;
             return;
         }
         if self.body_splats.len() >= MAX_BODY_SPLATS
@@ -571,7 +612,7 @@ impl Gore {
         {
             self.body_splats.remove(i);
         }
-        self.body_splats.push((joint, Splat { at, normal: inv * n, radius, wet: 1.0, born: now }));
+        self.body_splats.push((joint, Splat::new(at, inv * n, radius, now)));
     }
 
     fn stumps_bleed(&mut self, rig: &Rig, now: f64) {
@@ -686,36 +727,119 @@ impl Gore {
         self.wounds.retain(|w| now < w.until);
     }
 
-    /// Wet blades drip from their lowest bloody point.
+    /// Wet blades: blood runs down them as they tilt, drips from their lowest wet point, and flies
+    /// off when they're flicked or shaken. Blood on them and on the player dries, then wears away.
     fn blades_drip(&mut self, rig: &Rig, inp: &GoreInput, now: f64, dt: f32) {
+        let blood = self.splat_blood;
         let ids: Vec<u32> = self.held_splats.keys().copied().collect();
         for id in ids {
             let Some((wp, wq)) = rig.object_world_pose(id) else {
                 self.held_splats.remove(&id);
+                self.held_blade.remove(&id);
+                self.held_poses.remove(&id);
                 continue;
             };
+            // The blade's edge in its own space, while the combat has it (it's held).
+            if let Some((sp, sq)) = rig.swing_pose(id)
+                && let Some(&(a, b, _)) = inp.combat.blades(id).iter().max_by(|x, y| ((x.2 == DMG_SLASH) as u8, x.0.distance(x.1)).partial_cmp(&((y.2 == DMG_SLASH) as u8, y.0.distance(y.1))).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                let inv = sq.inverse();
+                self.held_blade.insert(id, (inv * (a - sp), inv * (b - sp)));
+            }
+            let blade = self.held_blade.get(&id).copied();
+            // (Its poses the last two frames; not yet two of its own on its first frames.)
+            let poses = self.held_poses.get(&id).copied().filter(|p| p[0] != p[1]);
+            let last = self.held_poses.get(&id).map_or((wp, wq), |p| p[0]);
+            self.held_poses.insert(id, [(wp, wq), last]);
+            let down = wq.inverse() * Vec3::NEG_Y;
+            let (spawn, pick) = (self.rand(), self.rand());
+            let (budget, width) = (self.range(0.06, 0.22), self.range(0.005, 0.008));
             let list = self.held_splats.get_mut(&id).unwrap();
             for s in list.iter_mut() {
                 s.wet = (s.wet - dt / HELD_DRY).max(0.0);
             }
-            list.retain(|s| now - s.born < 1200.0);
-            let Some(low) = list.iter().filter(|s| s.wet > 0.35).map(|s| (wp + wq * s.at, s.wet)).min_by(|a, b| a.0.y.total_cmp(&b.0.y)) else { continue };
+            list.retain(|s| now - s.born < HELD_FADE_AFTER + HELD_FADE_FOR);
+            // Down the blade: wet blood runs along it towards whichever end is lower, as a streak
+            // that leaves a film behind it, until it's spent its blood, reached the end, or dried.
+            if let Some((la, lb)) = blade {
+                let len = la.distance(lb).max(1e-3);
+                let u = (lb - la) / len;
+                let slope = down.dot(u);
+                for s in list.iter_mut().filter(|s| s.run != 0.0) {
+                    let along = slope * s.run.signum();
+                    if s.wet < 0.4 {
+                        s.run = 0.0;
+                    } else if along > 0.2 {
+                        let step = (RUN_SPEED * along * s.wet * dt).min(s.run.abs());
+                        let t = ((s.end - la).dot(u) + step * s.run.signum()).clamp(0.0, len);
+                        s.end = la + u * t;
+                        s.run -= step * s.run.signum();
+                        if t <= 0.0 || t >= len || s.run.abs() < 1e-4 {
+                            s.run = 0.0;
+                        }
+                    }
+                }
+                // A new run now and then from the wettest blood, while the blade's tilted.
+                let running = list.iter().filter(|s| s.run != 0.0).count();
+                let runs = list.iter().filter(|s| s.streak()).count();
+                if slope.abs() > 0.3 && running < RUNS_AT_ONCE && runs < MAX_RUNS && spawn < 0.8 * dt {
+                    let sources: Vec<usize> = (0..list.len()).filter(|&i| !list[i].streak() && list[i].wet > 0.6 && list[i].radius > 0.018).collect();
+                    if !sources.is_empty() {
+                        let src = list[sources[((pick * sources.len() as f32) as usize).min(sources.len() - 1)]];
+                        let dir = slope.signum();
+                        let t = ((src.at - la).dot(u) + dir * src.radius * 0.5).clamp(0.0, len);
+                        let at = la + u * t;
+                        if list.len() >= MAX_HELD_SPLATS
+                            && let Some(i) = list.iter().enumerate().min_by(|a, b| a.1.radius.total_cmp(&b.1.radius)).map(|(i, _)| i)
+                        {
+                            list.remove(i);
+                        }
+                        list.push(Splat { at, end: at, normal: src.normal, radius: width, wet: src.wet, born: now, run: dir * budget * src.wet });
+                    }
+                }
+            }
+            // Flicked or shaken: the blood where the blade moves hardest flies off with it.
+            let mut thrown = Vec::new();
+            if let Some([last, before]) = poses
+                && dt > 1e-4
+            {
+                for s in list.iter_mut().filter(|s| s.wet > 0.25) {
+                    let p = s.end;
+                    let (now_p, last_p, before_p) = (wp + wq * p, last.0 + last.1 * p, before.0 + before.1 * p);
+                    let v = (now_p - last_p) / dt;
+                    let acc = (v - (last_p - before_p) / dt).length() / dt;
+                    if acc > FLICK {
+                        thrown.push((now_p, v, (acc / FLICK - 1.0) * 25.0 * s.wet * (s.radius / 0.03).min(1.5)));
+                        s.wet = (s.wet - 0.15 * dt * acc / FLICK).max(0.0);
+                    }
+                }
+            }
+            // The lowest wet blood (a run's end, or a splat) drips, the wetter the oftener.
+            let low = list.iter().filter(|s| s.wet > 0.35).flat_map(|s| [(wp + wq * s.at, s.wet), (wp + wq * s.end, s.wet)]).min_by(|a, b| a.0.y.total_cmp(&b.0.y));
+            for (at, v, rate) in thrown {
+                for _ in 0..self.count(rate) {
+                    let spread = Vec3::new(self.range(-1.0, 1.0), self.range(-1.0, 1.0), self.range(-1.0, 1.0)) * 0.25;
+                    let (size, keep) = (self.range(0.0015, 0.003), self.range(0.8, 1.05));
+                    self.push_drop(Drop { pos: at, vel: v * keep + spread, size, blood, mist: false, life: 6.0, age: 0.0, probed: at, from: id });
+                }
+            }
+            let Some(low) = low else { continue };
             let next = *self.held_drip.entry(id).or_insert(now);
             if now >= next {
                 let gap = 0.35 + (1.0 - low.1) as f64 * 2.5;
                 let jitter = self.range(0.6, 1.4) as f64;
                 self.held_drip.insert(id, now + gap * jitter);
-                let blood = self.splat_blood;
                 let size = self.range(0.0018, 0.0032);
-                self.push_drop(Drop { pos: low.0 - Vec3::Y * 0.005, vel: Vec3::ZERO, size, blood, mist: false, life: 6.0, age: 0.0, probed: low.0 });
+                self.push_drop(Drop { pos: low.0 - Vec3::Y * 0.004, vel: Vec3::ZERO, size, blood, mist: false, life: 6.0, age: 0.0, probed: low.0, from: id });
             }
         }
-        // The body's splats dry too.
+        let held = &self.held_splats;
+        self.held_poses.retain(|id, _| held.contains_key(id));
+        // The body's splats dry and wear away too.
         for (_, s) in &mut self.body_splats {
             s.wet = (s.wet - dt / HELD_DRY).max(0.0);
         }
-        self.body_splats.retain(|(_, s)| now - s.born < 1200.0);
-        let _ = inp;
+        self.body_splats.retain(|(_, s)| now - s.born < HELD_FADE_AFTER + HELD_FADE_FOR);
     }
 
     /// The drops fly: gravity, drag, and what they meet.
@@ -769,8 +893,8 @@ impl Gore {
                 continue;
             }
             // (Where it meets the blade, on the blade: the blood a drop leaves there drips from
-            // there.)
-            if let Some((id, on)) = held.iter().find_map(|&(id, a, b)| {
+            // there. Not the blade it dripped from: it starts on it.)
+            if let Some((id, on)) = held.iter().filter(|h| h.0 != d.from).find_map(|&(id, a, b)| {
                 let (s, _) = crate::combat::closest_segments(a, b, d.pos, d.pos);
                 let on = a.lerp(b, s);
                 (on.distance(d.pos) < 0.02).then_some((id, on))
@@ -838,16 +962,17 @@ impl Gore {
                 let list = self.held_splats.entry(id).or_default();
                 // On blood already there it adds to it; else a splat of its own (the smallest goes
                 // for it when the blade's full).
-                if let Some(s) = list.iter_mut().find(|s| s.at.distance(at) < s.radius) {
+                if let Some(s) = list.iter_mut().find(|s| !s.streak() && s.at.distance(at) < s.radius) {
                     s.radius = (s.radius * s.radius + 0.3 * r * r).sqrt().min(0.05);
                     s.wet = 1.0;
+                    s.born = now;
                 } else {
                     if list.len() >= MAX_HELD_SPLATS
                         && let Some(i) = list.iter().enumerate().min_by(|a, b| a.1.radius.total_cmp(&b.1.radius)).map(|(i, _)| i)
                     {
                         list.remove(i);
                     }
-                    list.push(Splat { at, normal: inv * -d.vel.normalize_or(Vec3::Y), radius: r, wet: 1.0, born: now });
+                    list.push(Splat::new(at, inv * -d.vel.normalize_or(Vec3::Y), r, now));
                 }
             }
         }
@@ -1008,7 +1133,7 @@ impl Gore {
         self.runners.retain(|r| r.volume > 0.0);
         for (at, vel, blood) in fell {
             let size = self.range(0.002, 0.0035);
-            self.push_drop(Drop { pos: at, vel, size, blood, mist: false, life: 6.0, age: 0.0, probed: at });
+            self.push_drop(Drop { pos: at, vel, size, blood, mist: false, life: 6.0, age: 0.0, probed: at, from: 0 });
         }
     }
 
@@ -1069,14 +1194,16 @@ impl Gore {
                 continue;
             }
             let (jp, jq) = (Vec3::from_array(jt.pos), Quat::from_array(jt.rot).normalize());
-            self.out_splats.push(GoreSplat { pos: (jp + jq * s.at).to_array(), radius: s.radius, normal: (jq * s.normal).to_array(), wet: s.wet });
+            let at = (jp + jq * s.at).to_array();
+            self.out_splats.push(GoreSplat { pos: at, radius: s.radius, normal: (jq * s.normal).to_array(), wet: s.wet, end: at, left: s.left(inp.now) });
         }
         for (id, list) in &self.held_splats {
             let Some((wp, wq)) = rig.object_world_pose(*id) else { continue };
             for s in list {
                 let p = inp.map.inv_point(wp + wq * s.at);
+                let e = inp.map.inv_point(wp + wq * s.end);
                 let n = inp.map.inv_rot(wq) * s.normal;
-                self.out_splats.push(GoreSplat { pos: p.to_array(), radius: s.radius, normal: n.to_array(), wet: s.wet });
+                self.out_splats.push(GoreSplat { pos: p.to_array(), radius: s.radius, normal: n.to_array(), wet: s.wet, end: e.to_array(), left: s.left(inp.now) });
             }
         }
         self.out_splats.truncate(draw::MAX_SPLATS);

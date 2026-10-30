@@ -156,6 +156,7 @@ bool behind_game(float4 svpos, float z) {
 cbuffer Splats : register(b6) {
     float4 splat_pos[48];   // tracking space; w: radius
     float4 splat_nrm[48];   // the surface's normal there; w: wet
+    float4 splat_end[48];   // a streak's other end; w: how much of it is left (it wears away)
     float4 splat_info;      // x: how many, y: the splat texture is bound, z: its atlas
     float4 splat_color;     // the blood's colour (display range)
 };
@@ -168,7 +169,10 @@ float blood_at(float3 p, out float wet) {
     uint n = (uint)splat_info.x;
     uint tiles = (uint)max(splat_info.z, 1);
     for (uint k = 0; k < n; k++) {
-        float3 d = p - splat_pos[k].xyz;
+        // (A splat is round; a run down a blade is a streak, round about the line it ran.)
+        float3 a0 = splat_pos[k].xyz;
+        float3 ab = splat_end[k].xyz - a0;
+        float3 d = p - (a0 + ab * saturate(dot(p - a0, ab) / max(dot(ab, ab), 1e-8)));
         float r = splat_pos[k].w;
         float q = dot(d, d) / (r * r);
         if (q >= 1) continue;
@@ -179,7 +183,7 @@ float blood_at(float3 p, out float wet) {
         uint tile = k % (tiles * tiles);
         float m = splat_info.y > 0 ? splat_tex.SampleLevel(clamp_samp, (uv + float2(tile % tiles, tile / tiles)) / tiles, 0).a : 1;
         // A film of it in the middle, the splat's ragged shape towards its edge.
-        float bk = saturate(max(m * 1.6, (0.6 - q) * 2.5)) * saturate((1 - q) * 4);
+        float bk = saturate(max(m * 1.6, (0.6 - q) * 2.5)) * saturate((1 - q) * 4) * splat_end[k].w;
         b = max(b, bk);
         wet = max(wet, bk * splat_nrm[k].w);
     }
