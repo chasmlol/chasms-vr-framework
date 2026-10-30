@@ -529,6 +529,26 @@ impl Adapter {
         }
     }
 
+    /// The mount the player rides and the mounts near them (see [`Ride`]): every game frame.
+    pub fn write_ride(&self, ride: &Ride) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_ride(ride);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What the rider does with the mount (see [`RtRide`]): the gait, the steering, getting on
+    /// and off. None while there's no runtime, or it has never ridden.
+    pub fn read_rt_ride(&self) -> Option<RtRide> {
+        match &self.link {
+            Some(l) if self.connected => l.read_rt_ride(),
+            _ => None,
+        }
+    }
+
     /// The player's spells and magicka (see [`Spells`]): when they change.
     pub fn write_spells(&self, spells: &Spells) -> bool {
         match &self.link {
