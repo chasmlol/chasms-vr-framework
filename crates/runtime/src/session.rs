@@ -688,7 +688,14 @@ impl Session {
                 let at = |p: &Pose| map.point(Vec3::from_array(p.pos));
                 let line = |i: usize| {
                     let h = &self.rig_out.hands[i];
-                    format!("{:.3?} for the controller at {:.3?}{}", at(&h.pose), at(&frame.hands[i].grip), if h.flags & HAND_BLOCKED != 0 { " (blocked)" } else { "" })
+                    let touching = self.rig.held(i).is_some_and(|id| self.rig.touching(id));
+                    format!(
+                        "{:.3?} for the controller at {:.3?}{}{}",
+                        at(&h.pose),
+                        at(&frame.hands[i].grip),
+                        if h.flags & HAND_BLOCKED != 0 { " (blocked)" } else { "" },
+                        if touching { ", what it holds touching something" } else { "" }
+                    )
                 };
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
             }

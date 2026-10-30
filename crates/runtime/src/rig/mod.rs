@@ -4708,6 +4708,11 @@ impl Rig {
         self.objects.get(&weapon)?.weapon.as_ref()?.mag
     }
 
+    /// Thing `id` touches the world or a loose thing now (a held one stopped on it).
+    pub fn touching(&self, id: u32) -> bool {
+        self.objects.get(&id).is_some_and(|o| o.in_contact)
+    }
+
     pub fn is_free(&self, id: u32) -> bool {
         self.objects.get(&id).is_some_and(|o| o.holder == Holder::Free)
     }
