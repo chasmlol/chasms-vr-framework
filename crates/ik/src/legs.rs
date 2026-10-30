@@ -4,17 +4,25 @@
 //! planted feet; a foot out of reach rises onto its toes before the hips come down (VRIK plants
 //! the toes, not the ankles).
 
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
 
 use glam::{Quat, Vec3};
 
-use crate::arm::two_bone;
+use crate::arm::{eased_reach, two_bone};
 use crate::math::{flat, frame_yz, smoothing, wrap_angle, yaw_dir, UP};
 use crate::skeleton::Skeleton;
 use crate::BodyParams;
 
 /// The knee keeps a sliver of bend so its direction stays defined.
 const KNEE_MIN_FLEXION: f32 = 3.0 * PI / 180.0;
+/// The last stretch to a straight leg, a share of its reach: over it the knee straightens at a
+/// steady rate while the leg lengthens the little it takes (as an arm does into full reach). A
+/// two-bone knee near straight swings a long way for a millimetre of hip height, so a standing
+/// body's knees popped back and forth with every bob of the head.
+const LEG_EASE: f32 = 0.02;
+/// A stepping foot rises (and at the end comes down) over this share of the time it's in the
+/// air without travelling.
+const STEP_LIFT_OFF: f32 = 0.15;
 /// VRIK lets a new step start once the other foot is 80% through its own.
 const OVERLAP: f32 = 0.8;
 /// VRIK biases the tie-break towards the left foot by lowering its threshold to 90%.
@@ -43,7 +51,7 @@ struct Step {
     progress: f32,
     duration: f32,
     length: f32,
-    /// Down again where it was going: it stays there for the rest of the step.
+    /// Over where it was going: it only comes down onto it from there, and stays.
     landed: bool,
     /// A step to catch the centre of mass (see `balance_target`), rather than to the foot's place.
     balance: bool,
@@ -64,8 +72,9 @@ impl Foot {
     pub fn lift(&self, p: &BodyParams, scale: f32) -> f32 {
         match self.step {
             Some(s) => {
-                let height = p.step_height * scale * (s.length / (0.25 * scale)).clamp(0.3, 1.0);
-                (PI * (s.progress / OVERLAP).min(1.0)).sin() * height
+                let height = p.step_height * scale * (s.length / (0.25 * scale)).clamp(0.5, 1.0);
+                // (Rising from rest and settling to rest: no jolt at either end.)
+                0.5 * (1.0 - (TAU * (s.progress / OVERLAP).min(1.0)).cos()) * height
             }
             None => 0.0,
         }
@@ -327,17 +336,20 @@ fn outside_support(skel: &Skeleton, feet: &[Foot; 2], p: Vec3) -> f32 {
 }
 
 /// Moves a stepping foot along its step towards `target`, which re-tracks every frame until the
-/// foot is down: it travels while it's in the air (over the first `OVERLAP` of the step, as
-/// `Foot::lift` raises it) and stays where it lands. Returns true when the step is over.
+/// foot is over it: it travels while it's in the air (over the first `OVERLAP` of the step, as
+/// `Foot::lift` raises it), then comes straight down there and stays. Returns true when the step
+/// is over.
 fn advance(foot: &mut Foot, target: Vec3, yaw: f32) -> bool {
     let Some(step) = foot.step.as_mut() else { return false };
     if !step.landed {
         let t = (step.progress / OVERLAP).min(1.0);
-        // VRIK's InOutSine step interpolation.
-        let ease = 0.5 - 0.5 * (PI * t).cos();
+        // VRIK's InOutSine step interpolation, between the foot coming up off the floor and going
+        // down onto it (a foot lifts before it travels and lands straight down).
+        let travel = ((t - STEP_LIFT_OFF) / (1.0 - 2.0 * STEP_LIFT_OFF)).clamp(0.0, 1.0);
+        let ease = 0.5 - 0.5 * (PI * travel).cos();
         foot.pos = step.from.lerp(target, ease);
         foot.yaw = wrap_angle(step.from_yaw + wrap_angle(yaw - step.from_yaw) * ease);
-        step.landed = t >= 1.0;
+        step.landed = travel >= 1.0;
     }
     if step.progress >= 1.0 {
         foot.step = None;
@@ -426,8 +438,11 @@ pub fn solve_leg(p: &BodyParams, skel: &Skeleton, hip: Vec3, foot: &Foot, lift: 
     let knee_dir = (fwd + flat(hips_fwd).normalize_or(fwd)).normalize_or(fwd);
     let flex = [KNEE_MIN_FLEXION, p.knee_max_flexion_deg.to_radians()];
     // Feet stay planted: the leg stretches as far as it must (the hips have already come down
-    // as far as the spine allows).
-    let solved = two_bone(hip, ankle, [a, b], knee_dir, flex, f32::MAX);
+    // as far as the spine allows), and eases into its last stretch to straight.
+    let d = hip.distance(ankle);
+    let bend = eased_reach(d, reach, LEG_EASE * reach);
+    let k = if bend > 1e-6 { (d / bend).max(1.0) } else { 1.0 };
+    let solved = two_bone(hip, ankle, [a * k, b * k], knee_dir, flex, f32::MAX);
     let thigh_dir = (solved.elbow - hip).normalize_or(-UP);
     let upper = frame_yz(thigh_dir, knee_dir, fwd);
     let lower = frame_yz(solved.forearm, knee_dir, fwd);

@@ -210,7 +210,7 @@ pub fn two_bone(
 /// where the shoulder rests: `d`, until `ease` short of full reach; from there it eases (with the
 /// same slope at its start and none at its end) onto full reach, `ease` past it, and stays there.
 /// The shoulder goes the rest of the way.
-fn eased_reach(d: f32, length: f32, ease: f32) -> f32 {
+pub(crate) fn eased_reach(d: f32, length: f32, ease: f32) -> f32 {
     if ease > 0.0 && d > length - ease {
         let u = (d - (length - ease)).min(2.0 * ease);
         length - ease + u - u * u / (4.0 * ease)
