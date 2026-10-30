@@ -19,7 +19,8 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::{MAX_ACTOR_PARTS, MAX_ACTORS};
 
-pub const OFF_ACTOR_BODIES: usize = 0x0051_0000;
+/// After the gore's regions ([`crate::gore`]), the region before it.
+pub const OFF_ACTOR_BODIES: usize = crate::OFF_GORE_END.next_multiple_of(64);
 
 /// One part's body: [`crate::Actor::parts`]' part of the same index.
 #[repr(C)]
@@ -128,7 +129,7 @@ const _: () = {
     assert!(size_of::<PartBody>() == 32);
     assert!(size_of::<ActorBody>() == 16 + 32 * MAX_ACTOR_PARTS);
     assert!(size_of::<CreatureGrab>() == 96);
-    assert!(OFF_ACTOR_BODIES >= crate::OFF_ITEM_INFO + size_of::<crate::ItemInfos>());
+    assert!(OFF_ACTOR_BODIES >= crate::OFF_GORE_END);
     assert!(OFF_GRAB_END <= crate::OFF_HUD_LAYOUT);
 };
 

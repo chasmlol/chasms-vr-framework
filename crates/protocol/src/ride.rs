@@ -28,6 +28,7 @@ use crate::Pose;
 /// After the magic's regions ([`crate::magic`]), the region before it.
 pub const OFF_RIDE: usize = crate::OFF_MAGIC_END.next_multiple_of(64);
 pub const OFF_RT_RIDE: usize = (OFF_RIDE + size_of::<Ride>()).next_multiple_of(64);
+pub const OFF_RIDE_END: usize = OFF_RT_RIDE + size_of::<RtRide>();
 pub const MAX_MOUNTS: usize = 8;
 /// The most cross-sections of a mount's neck and head ([`Riding::neck`]).
 pub const NECK_SECTIONS: usize = 10;
@@ -239,6 +240,6 @@ const _: () = {
     assert!(size_of::<Riding>() == 32 + 32 + 16 * 12 + 32 + 16 + 16 + 48 * NECK_SECTIONS);
     assert!(size_of::<RtRide>() == 64);
     assert!(OFF_RIDE.is_multiple_of(64) && OFF_RT_RIDE.is_multiple_of(64));
-    assert!(OFF_RT_RIDE + size_of::<RtRide>() <= crate::OFF_HUD_LAYOUT);
-    assert!(OFF_RT_RIDE + size_of::<RtRide>() <= crate::OFF_GORE);
+    assert!(OFF_RIDE >= crate::OFF_MAGIC_END);
+    assert!(OFF_RIDE_END <= crate::OFF_HUD_LAYOUT);
 };

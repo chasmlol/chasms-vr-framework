@@ -8,7 +8,7 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 12
+#define RVR_VERSION 13
 
 #define RVR_MAPPING_BYTES 5373952
 
@@ -367,12 +367,6 @@
 
 #define RVR_HAPTIC_OFF_HAND 3
 
-/**
- * High in the free space before the HUD layout, clear of the regions that grow from the combat
- * tables.
- */
-#define RVR_OFF_BOWS 5341184
-
 #define RVR_MAX_BOWS 8
 
 #define RVR_BOW_SPRING_KEYS 16
@@ -610,8 +604,6 @@
  */
 #define RVR_CEF_BACK (1 << 5)
 
-#define RVR_OFF_GORE 5242880
-
 #define RVR_MAX_BLOODS 16
 
 
@@ -676,8 +668,6 @@
 #define RVR_GE_SEVER 1
 
 #define RVR_OFF_BLOODS RVR_OFF_GORE
-
-#define RVR_OFF_ACTOR_BODIES 5308416
 
 /**
  * The hands may take hold of it.
@@ -1928,7 +1918,11 @@ typedef uint32_t RVR_Joint;
 
 
 
+
+
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
+
+
 
 
 

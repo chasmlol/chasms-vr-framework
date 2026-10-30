@@ -20,7 +20,8 @@
 
 use bytemuck::{Pod, Zeroable};
 
-pub const OFF_GORE: usize = 0x0050_0000;
+/// After the ride's regions ([`crate::ride`]), the region before it.
+pub const OFF_GORE: usize = crate::OFF_RIDE_END.next_multiple_of(64);
 pub const MAX_BLOODS: usize = 16;
 pub const MAX_GORE_BODIES: usize = crate::MAX_ACTORS;
 pub const MAX_STUMPS: usize = 8;
@@ -222,7 +223,7 @@ const _: () = {
     assert!(size_of::<Stump>() == 32);
     assert!(size_of::<GoreBody>() == 16 + 32 * MAX_STUMPS);
     assert!(size_of::<GoreEvent>() == 112);
-    assert!(OFF_GORE >= crate::OFF_ITEM_INFO + size_of::<crate::ItemInfos>());
+    assert!(OFF_GORE >= crate::OFF_RIDE_END);
     assert!(OFF_GORE_END <= crate::OFF_HUD_LAYOUT);
 };
 

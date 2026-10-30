@@ -39,9 +39,15 @@
 //! | [`OFF_BODY`] .. [`OFF_KICKS`] | the player rig's regions: see [`world`] | both | seqlock, SPSC ring |
 //! | [`OFF_SOUNDS`] | [`SoundPack`]: the game's own sounds (see [`sound`]) | adapter -> runtime | seqlock |
 //! | [`OFF_CASTERS`], [`OFF_OVERLAYS`] | [`Casters`] (runtime -> adapter), [`Overlays`] (adapter -> runtime): see [`magic`] | | seqlock |
-//! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
-//! | [`OFF_GORE`] | the game's blood, its creatures' stumps, limbs cut off (see [`gore`]) | adapter -> runtime | seqlock, SPSC ring |
 //! | [`OFF_RIDE`], [`OFF_RT_RIDE`] | [`Ride`], [`RtRide`]: the mount the player rides (see [`ride`]) | both | seqlock |
+//! | [`OFF_GORE`] | the game's blood, its creatures' stumps, limbs cut off (see [`gore`]) | adapter -> runtime | seqlock, SPSC ring |
+//! | [`OFF_ACTOR_BODIES`], [`OFF_CREATURE_GRABS`] | [`ActorBodies`] (adapter -> runtime), [`CreatureGrabs`] (runtime -> adapter): see [`grab`] | | seqlock |
+//! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
+//!
+//! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
+//! the item cards, the face, the magic, the ride, the gore, the creature grabs and the bows (a new
+//! one goes after the last). Every region is listed in address order in `LAYOUT`, which the build
+//! checks: none overlaps the next, and all lie inside [`MAPPING_BYTES`].
 //!
 //! # Frames
 //!
@@ -92,8 +98,8 @@ pub use player::*;
 pub use ride::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 12;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v12";
+pub const VERSION: u32 = 13;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v13";
 pub const MAPPING_BYTES: usize = 0x0052_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
@@ -939,6 +945,59 @@ const _: () = {
     assert!(ACTION_COUNT <= 64);
     // Seqlocked structs are copied 4 bytes at a time, after their leading `seq` word.
     assert!(size_of::<RtFrame>().is_multiple_of(4) && size_of::<GameState>().is_multiple_of(4) && size_of::<Targets>().is_multiple_of(4));
+};
+
+// ---- the whole mapping --------------------------------------------------------------------------
+/// Every region of the mapping in address order, (offset, bytes): each ends before the next starts,
+/// and the last inside the mapping, as the build checks below. A region added goes here too.
+const LAYOUT: &[(usize, usize)] = &[
+    (OFF_HEADER, size_of::<Header>()),
+    (OFF_SUBMIT, size_of::<SubmitCtl>()),
+    (OFF_TARGETS, size_of::<Targets>()),
+    (OFF_RT_FRAME, size_of::<RtFrame>()),
+    (OFF_GAME_STATE, size_of::<GameState>()),
+    (OFF_SLOTS, SLOT_STRIDE * SLOT_COUNT),
+    (OFF_EVENTS, RING_DATA_OFF + EVENT_RING_ENTRIES * size_of::<Event>()),
+    (OFF_BODY, size_of::<RtBody>()),
+    (OFF_OBJECTS, size_of::<ObjectTable>()),
+    (OFF_OBJECT_STATES, size_of::<ObjectStates>()),
+    (OFF_HAND_POSES, size_of::<HandPoseTable>()),
+    (OFF_COLLISION, COLLISION_RING_BYTES),
+    (OFF_KICKS, size_of::<KickTable>()),
+    (OFF_SOUNDS, size_of::<SoundPack>()),
+    (OFF_GAME_LIGHTING, size_of::<GameLighting>()),
+    (OFF_PLAYER_DRAW, size_of::<RtPlayerDraw>()),
+    (OFF_GAME_POSES, size_of::<GamePoses>()),
+    (OFF_GAME_PUSHES, size_of::<GamePushes>()),
+    (OFF_GAME_HULLS, size_of::<GameHulls>()),
+    (OFF_ACTORS, size_of::<Actors>()),
+    (OFF_MELEE, size_of::<MeleeTable>()),
+    (OFF_SPELLS, size_of::<Spells>()),
+    (OFF_COMBAT_EVENTS, size_of::<CombatEvents>()),
+    (OFF_AVATAR, size_of::<AvatarDesc>()),
+    (OFF_ITEM_INFO, size_of::<ItemInfos>()),
+    (OFF_FACE, size_of::<FaceDesc>()),
+    (OFF_CASTERS, size_of::<Casters>()),
+    (OFF_OVERLAYS, size_of::<Overlays>()),
+    (OFF_RIDE, size_of::<Ride>()),
+    (OFF_RT_RIDE, size_of::<RtRide>()),
+    (OFF_BLOODS, size_of::<BloodTable>()),
+    (OFF_GORE_BODIES, size_of::<GoreBodies>()),
+    (OFF_GORE_EVENTS, size_of::<GoreEvents>()),
+    (OFF_ACTOR_BODIES, size_of::<ActorBodies>()),
+    (OFF_CREATURE_GRABS, size_of::<CreatureGrabs>()),
+    (OFF_BOWS, size_of::<Bows>()),
+    (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
+];
+
+const _: () = {
+    let mut i = 1;
+    while i < LAYOUT.len() {
+        assert!(LAYOUT[i - 1].0 + LAYOUT[i - 1].1 <= LAYOUT[i].0, "two regions of the mapping overlap");
+        i += 1;
+    }
+    let (last, bytes) = LAYOUT[LAYOUT.len() - 1];
+    assert!(last + bytes <= MAPPING_BYTES);
 };
 
 /// The test range's [`GameState::stats`] / [`GameState::stats_f`] layout. The runtime's headless

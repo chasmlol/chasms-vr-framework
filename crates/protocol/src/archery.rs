@@ -10,9 +10,8 @@
 
 use bytemuck::{Pod, Zeroable};
 
-/// High in the free space before the HUD layout, clear of the regions that grow from the combat
-/// tables.
-pub const OFF_BOWS: usize = 0x0051_8000;
+/// After the creature grabs' regions ([`crate::grab`]), the region before it.
+pub const OFF_BOWS: usize = crate::OFF_GRAB_END.next_multiple_of(64);
 pub const MAX_BOWS: usize = 8;
 pub const BOW_SPRING_KEYS: usize = 16;
 
@@ -64,6 +63,8 @@ pub struct Bows {
     pub bows: [BowDesc; MAX_BOWS],
 }
 
+pub const OFF_BOWS_END: usize = OFF_BOWS + size_of::<Bows>();
+
 impl BowDesc {
     /// The limbs' bend `t` seconds after a shot ([`BowDesc::spring`]).
     pub fn spring_at(&self, t: f32) -> f32 {
@@ -99,6 +100,6 @@ impl Bows {
 const _: () = {
     assert!(size_of::<BowDesc>() == 16 + 32 + 8 * BOW_SPRING_KEYS + 32 + 32);
     assert!(OFF_BOWS.is_multiple_of(64));
-    assert!(crate::OFF_ITEM_INFO + size_of::<crate::ItemInfos>() <= OFF_BOWS);
-    assert!(OFF_BOWS + size_of::<Bows>() <= crate::hud::OFF_HUD_LAYOUT);
+    assert!(crate::OFF_GRAB_END <= OFF_BOWS);
+    assert!(OFF_BOWS_END <= crate::hud::OFF_HUD_LAYOUT);
 };
