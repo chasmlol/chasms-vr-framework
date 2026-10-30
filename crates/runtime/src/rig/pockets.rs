@@ -16,7 +16,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use glam::{Quat, Vec3};
+use glam::{Mat3, Quat, Vec3};
 use rustvr_protocol::*;
 
 use super::zones::Zone;
@@ -260,6 +260,142 @@ pub fn object_desc(item: &InvItem, id: u32) -> ObjectDesc {
     d.half_extents = Vec3::from_array(item.half_extents).max(Vec3::splat(0.01)).to_array();
     d.mass = if item.mass.is_finite() { item.mass.clamp(0.02, 20.0) } else { 0.3 };
     set_name(&mut d.name, item.model());
+    d
+}
+
+/// The fist's hole: from the controller's grip (the axis a fist closes round) to the palm. A thing
+/// thicker than it lies against the palm, its own axis out from the grip by the difference.
+const FIST: f32 = 0.02;
+/// How much of a handle the fingers close round, either way of the hand's middle (half a hand's
+/// width).
+const HAND_HALF: f32 = 0.045;
+/// How far in from a flat thing's edge the fist's axis runs.
+const EDGE: f32 = 0.025;
+/// Where a bottle is held, up from its base: round its body, below the neck.
+const BOTTLE_AT: f32 = 0.35;
+/// A thing this many times longer than it's wide is held along its length; one this many times
+/// thinner than it's wide, by an edge.
+const LONG: f32 = 1.8;
+const FLAT: f32 = 0.45;
+/// A handle's thickness the fingers close round, at least and at most (metres, its radius).
+const RADIUS_MIN: f32 = 0.008;
+const RADIUS_MAX: f32 = 0.06;
+
+/// How the hand holds a thing drawn from a slot, made to be held that way as a weapon is by its
+/// hilt: the controller's grip pose on it for the right hand (model space; +Z along the fist from
+/// the little finger to the thumb, the palm on its +X side), and the part of it the fingers close
+/// round, its axis end to end and its thickness (`ObjectDesc::grip_line`, `grip_radius`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hold {
+    pub grip: Vec3,
+    pub rot: Quat,
+    pub line: (Vec3, Vec3),
+    pub radius: f32,
+}
+
+/// How a thing of model `points` (its vertices, model space: +Y up as it stands in the world) is
+/// held, by its kind (`flags`, `INV_*`) and its shape:
+/// - a bottle (a drink, a poison): upright round its body, a third of the way up, its mouth past the
+///   thumb;
+/// - a long thing (an arrow, a leek, a rolled scroll, a loaf): along the fist, by its narrowest
+///   place near its middle, the palm on its flat side;
+/// - a flat thing (a book, a plate, a cheese wheel): by an edge, along its long side, the rest of it
+///   out past the fingers;
+/// - anything else (an apple, a soul gem): in the fist, upright as it stands.
+///
+/// A thing thicker than a fist's hole lies against the palm, the fingers round it as far as they go.
+pub fn hold(points: &[Vec3], flags: u32) -> Option<Hold> {
+    let (lo, hi) = points.iter().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(l, h), p| (l.min(*p), h.max(*p)));
+    if points.is_empty() || !(hi - lo).is_finite() {
+        return None;
+    }
+    let size = (hi - lo).max(Vec3::splat(1e-3));
+    let mut axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    axes.sort_by(|a, b| size.dot(*b).total_cmp(&size.dot(*a)));
+    let [long, mid, short] = axes;
+    let ext = |a: Vec3| size.dot(a);
+    // (The palm on the thinner of the two sides across the fist: on a flask's face, a knife's.)
+    let thinner = |z: Vec3| axes.into_iter().filter(|a| *a != z).min_by(|a, b| ext(*a).total_cmp(&ext(*b))).unwrap();
+    if flags & (INV_DRINK | INV_COAT) != 0 {
+        return Some(round_axis(points, Vec3::Y, thinner(Vec3::Y), lo.y + BOTTLE_AT * size.y));
+    }
+    if ext(long) > LONG * ext(mid) {
+        // Its narrowest place within a sixth of its length of its middle.
+        let (a, b) = (lo.dot(long), hi.dot(long));
+        let middle = (a + b) * 0.5;
+        let t = (0..=8)
+            .map(|k| a + (b - a) * (1.0 / 3.0 + k as f32 / 24.0))
+            .filter_map(|t| Some((t, section(points, long, t)?.1)))
+            .min_by(|x, y| x.1.total_cmp(&y.1).then((x.0 - middle).abs().total_cmp(&(y.0 - middle).abs())))
+            .map_or(middle, |(t, _)| t);
+        return Some(round_axis(points, long, short, t));
+    }
+    if ext(short) < FLAT * ext(mid) {
+        // The fist along its long side, its axis a little in from the edge, the palm on the edge.
+        let at = hi.dot(mid) - EDGE.min(ext(mid) * 0.5);
+        let strip: Vec<Vec3> = points.iter().copied().filter(|p| (p.dot(mid) - at).abs() < EDGE).collect();
+        let (s_lo, s_hi) = strip.iter().fold((f32::MAX, f32::MIN), |(l, h), p| (l.min(p.dot(short)), h.max(p.dot(short))));
+        let (s_mid, radius) = if s_lo <= s_hi { ((s_lo + s_hi) * 0.5, (s_hi - s_lo) * 0.5) } else { (((lo + hi) * 0.5).dot(short), ext(short) * 0.5) };
+        let centre = long * ((lo + hi) * 0.5).dot(long) + mid * at + short * s_mid;
+        return Some(handle(centre, mid, long, radius, (lo.dot(long), hi.dot(long))));
+    }
+    Some(round_axis(points, Vec3::Y, thinner(Vec3::Y), ((lo + hi) * 0.5).y))
+}
+
+/// Held round its section across `axis` at `t` along it (the fist along `axis`, the palm on its
+/// `palm` side).
+fn round_axis(points: &[Vec3], axis: Vec3, palm: Vec3, t: f32) -> Hold {
+    let (lo, hi) = points.iter().fold((f32::MAX, f32::MIN), |(l, h), p| (l.min(p.dot(axis)), h.max(p.dot(axis))));
+    let (centre, radius) = section(points, axis, t).unwrap_or_else(|| {
+        let c = points.iter().fold(Vec3::ZERO, |a, p| a + *p) / points.len().max(1) as f32;
+        (c - axis * c.dot(axis) + axis * t, 0.02)
+    });
+    handle(centre, palm, axis, radius, (lo, hi))
+}
+
+/// A hold round a handle through `centre` along `axis` (the thing's extent along it `span`), the
+/// palm on its `palm` side.
+fn handle(centre: Vec3, palm: Vec3, axis: Vec3, radius: f32, span: (f32, f32)) -> Hold {
+    let radius = radius.clamp(RADIUS_MIN, RADIUS_MAX);
+    let rot = Quat::from_mat3(&Mat3::from_cols(palm, axis.cross(palm), axis)).normalize();
+    let t = centre.dot(axis);
+    let (a, b) = ((span.0 - t).max(-HAND_HALF).min(0.0), (span.1 - t).min(HAND_HALF).max(0.0));
+    Hold { grip: centre + palm * (radius - FIST).max(0.0), rot, line: (centre + axis * a, centre + axis * b), radius }
+}
+
+/// The section of `points` across model axis `axis` at `t` along it: its middle (on the plane)
+/// and how far it reaches out from there (its larger half-width), from the points near the plane
+/// (as near as there are enough of them: a round thing's vertices are in rings apart).
+fn section(points: &[Vec3], axis: Vec3, t: f32) -> Option<(Vec3, f32)> {
+    let (lo, hi) = points.iter().fold((f32::MAX, f32::MIN), |(l, h), p| (l.min(p.dot(axis)), h.max(p.dot(axis))));
+    let mut slab = ((hi - lo) * 0.06).max(0.005);
+    let near = loop {
+        let near: Vec<Vec3> = points.iter().copied().filter(|p| (p.dot(axis) - t).abs() <= slab).collect();
+        if near.len() >= 8 || slab > hi - lo {
+            break near;
+        }
+        slab *= 1.5;
+    };
+    if near.len() < 3 {
+        return None;
+    }
+    let mut centre = axis * t;
+    let mut radius: f32 = 0.0;
+    for a in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().filter(|a| *a != axis) {
+        let (l, h) = near.iter().fold((f32::MAX, f32::MIN), |(l, h), p| (l.min(p.dot(a)), h.max(p.dot(a))));
+        centre += a * (l + h) * 0.5;
+        radius = radius.max((h - l) * 0.5);
+    }
+    Some((centre, radius))
+}
+
+/// A thing drawn from a slot rigged with its hold: the hand goes on it there, and the fingers close
+/// round its handle.
+pub fn rigged(mut d: ObjectDesc, h: &Hold) -> ObjectDesc {
+    d.grip = h.grip.to_array();
+    d.grip_rot = h.rot.to_array();
+    d.grip_line = [h.line.0.to_array(), h.line.1.to_array()];
+    d.grip_radius = h.radius;
     d
 }
 

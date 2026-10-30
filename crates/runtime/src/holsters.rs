@@ -13,6 +13,19 @@ use crate::held_objects::HeldObjects;
 use crate::rig::{PocketEvent, Rig, pockets};
 use crate::settings::{BodySlot, SettingsStore, SlotOrder};
 
+/// How the hand holds a thing of `item`'s kind drawn from a slot, from its model's vertices
+/// ([`pockets::hold`]); None if its model can't be read.
+fn hold_of(item: &InvItem) -> Option<pockets::Hold> {
+    let (game, key) = rustvr_guns::desc::parse_model_name(item.model())?;
+    let model = rustvr_asset::load_model(&rustvr_asset::default_root().join(game), key).ok()?;
+    let points: Vec<glam::Vec3> = model.meshes.iter().flat_map(|m| m.vertices.iter().map(|v| glam::Vec3::from_array(v.pos))).collect();
+    let hold = pockets::hold(&points, item.flags);
+    if let Some(h) = &hold {
+        tracing::info!("holsters: {} ({}) held at {:.3?}, round {:.3} m", item.name(), item.model(), h.grip, h.radius);
+    }
+    hold
+}
+
 /// How many of what each slot gives first are loaded to draw ahead of being drawn.
 const PRELOAD: usize = 3;
 /// How long the player's own order of a slot is (the things last put back in it).
@@ -97,6 +110,9 @@ impl HolsterLink {
             for slot in self.slots(settings, game) {
                 for item in pockets::contents(&slot, &self.inventory, &out).into_iter().take(PRELOAD) {
                     descs.push(pockets::object_desc(item, item.id));
+                    if !rig.has_hold(item.model()) {
+                        rig.set_hold(item.model(), hold_of(item));
+                    }
                 }
             }
             held.sync_descs(gpu, &descs);

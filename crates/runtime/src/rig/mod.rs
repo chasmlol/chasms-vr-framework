@@ -727,6 +727,9 @@ pub struct Rig {
     placing: Option<usize>,
     /// The slot picked in the slots' editor, while it's open.
     editing: Option<usize>,
+    /// How the hand holds the things drawn from the slots, by model (None: its model couldn't be
+    /// read, so it's held as it came out).
+    holds: HashMap<String, Option<pockets::Hold>>,
     /// What the player did with the slots this frame, for the runtime to keep.
     pub pocket_events: Vec<PocketEvent>,
 }
@@ -776,6 +779,7 @@ impl Default for Rig {
             pocket_zones: Vec::new(),
             placing: None,
             editing: None,
+            holds: HashMap::new(),
             pocket_events: Vec::new(),
         }
     }
@@ -2352,7 +2356,13 @@ impl Rig {
 
     /// The handle `which` of a thing (`d`) for hand `i` ([`grips`]).
     fn handle_of(&self, d: &ObjectDesc, i: usize, which: On) -> Option<grips::Handle> {
-        let grip_rot = authored(d.grip_rot).map(|g| if i == 0 { mirror_grip(g) } else { g });
+        // (A prop has no handedness: the left hand holds it the same way round, its palm on the
+        // same side, the hold turned half round the fist's axis rather than mirrored.)
+        let grip_rot = authored(d.grip_rot).map(|g| match (i, d.kind) {
+            (1, _) => g,
+            (_, OBJ_PROP) => (g * Quat::from_rotation_z(std::f32::consts::PI)).normalize(),
+            _ => mirror_grip(g),
+        });
         match which {
             On::Grip => grips::grip(d, grip_rot),
             On::Foregrip => grips::foregrip(d, self.support_rot(d, i), grip_rot),
@@ -2650,6 +2660,16 @@ impl Rig {
         }
     }
 
+    /// Whether how the hand holds a thing of model `model` drawn from a slot is known yet.
+    pub fn has_hold(&self, model: &str) -> bool {
+        self.holds.contains_key(model)
+    }
+
+    /// How the hand holds a thing of model `model` drawn from a slot ([`pockets::hold`]).
+    pub fn set_hold(&mut self, model: &str, hold: Option<pockets::Hold>) {
+        self.holds.insert(model.to_owned(), hold);
+    }
+
     /// Slot `slot` is to be placed by hand (None: not any more): the next squeeze puts it there.
     pub fn place_pocket(&mut self, slot: Option<usize>) {
         self.placing = slot.filter(|&k| k < self.pockets.len());
@@ -2765,17 +2785,29 @@ impl Rig {
             return;
         };
         let name = slot.name.clone();
-        let wpm = self.map.world_per_meter;
-        let rot = (grip_rot * pockets::hold_rot(&item)).normalize();
-        // Its middle in the fist; a big thing's side against the palm, the rest of it out past the
-        // fingers.
-        let to_palm = grip_rot * if i == 1 { Vec3::X } else { Vec3::NEG_X };
-        let across = (rot.inverse() * to_palm).abs().dot(v3(item.half_extents));
-        let centre = palm - to_palm * ((across - 0.025) * wpm).max(0.0);
-        let pos = centre - rot * v3(item.center);
         let id = self.next_spawn;
         self.next_spawn = self.next_spawn.wrapping_add(1).max(SPAWN_BASE);
-        self.add(pockets::object_desc(&item, id), id, true, pos, rot);
+        let desc = pockets::object_desc(&item, id);
+        let (desc, pos, rot) = match self.holds.get(item.model()).copied().flatten() {
+            // Rigged: in the hand where it's made to be held, the fingers round its handle (the
+            // left hand the same way round, its palm on the same side: `handle_of`).
+            Some(h) => {
+                let held = if i == 1 { h.rot } else { (h.rot * Quat::from_rotation_z(std::f32::consts::PI)).normalize() };
+                let rot = (grip_rot * held.inverse()).normalize();
+                (pockets::rigged(desc, &h), palm - rot * h.grip, rot)
+            }
+            // Its middle in the fist; a big thing's side against the palm, the rest of it out past
+            // the fingers.
+            None => {
+                let wpm = self.map.world_per_meter;
+                let rot = (grip_rot * pockets::hold_rot(&item)).normalize();
+                let to_palm = grip_rot * if i == 1 { Vec3::X } else { Vec3::NEG_X };
+                let across = (rot.inverse() * to_palm).abs().dot(v3(item.half_extents));
+                let centre = palm - to_palm * ((across - 0.025) * wpm).max(0.0);
+                (desc, centre - rot * v3(item.center), rot)
+            }
+        };
+        self.add(desc, id, true, pos, rot);
         if let Some(o) = self.objects.get_mut(&id) {
             o.drawn = Some(pockets::Drawn::new(&item, k));
         }

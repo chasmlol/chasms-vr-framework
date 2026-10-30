@@ -306,7 +306,9 @@ pub struct ObjectDesc {
     /// How the hand holds it: the controller's grip-pose rotation in object space, with the grip
     /// pose's origin at `grip` (guns: on the pistol grip, so the barrel points where the hand
     /// does). All zero: the barrel follows the controller's aim ray. Throwables with one snap into
-    /// the hand that way (the left hand takes the mirror image).
+    /// the hand that way (the left hand takes the mirror image). A prop's is the right hand's: the
+    /// left holds it the same way round, its palm on the same side (turned half round the fist's
+    /// axis, +Z).
     pub grip_rot: [f32; 4],
     /// Two-handed guns: the support hand's controller grip rotation in weapon space while it holds
     /// the foregrip. All zero: palm up under the barrel.
