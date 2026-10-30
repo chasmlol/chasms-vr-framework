@@ -33,6 +33,9 @@ url = "http://127.0.0.1:8083/v1/audio/transcriptions"
 # The cloned voice: a server with Breeze TTS 2's API (m8's start-breeze.ps1), and its noise seed.
 server = "http://127.0.0.1:7860"
 seed = 42
+# Say each line as its note says ("[sneering]"): twice the work for Breeze, on a GPU the game is
+# already using; off, lines are said plainly (the note still makes the face) and come twice as fast.
+instruct = false
 
 [mic]
 # The microphone: the first whose name has this in it (Virtual Desktop's own), else the default.
@@ -74,6 +77,11 @@ pub struct Speech {
     pub server: String,
     #[serde(default = "seed")]
     pub seed: u64,
+    /// Say each line as its note says ("[sneering]"): Breeze's guidance, about twice the work,
+    /// on a GPU the game's rendering already has busy. Off (the default), lines are said plainly
+    /// (the note still makes the character's face), and come twice as fast.
+    #[serde(default)]
+    pub instruct: bool,
 }
 
 fn mic() -> m8::config::MicConfig {
@@ -112,6 +120,7 @@ impl VoiceConfig {
                 voice_server: self.voice.server.clone(),
                 voice_reference: None,
                 voice_seed: self.voice.seed,
+                voice_instruct: self.voice.instruct,
             },
             mic: self.mic.clone(),
             stt: self.stt.clone(),

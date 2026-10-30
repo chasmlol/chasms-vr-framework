@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// The mouth's frames a second (Oblivion's lip files are at 30).
 const LIPS_FPS: u32 = 30;
@@ -39,6 +40,9 @@ struct Voicing {
     samples: Vec<f32>,
     rate: u32,
     last: bool,
+    /// How loud the game's own voice for them is (the RMS of its clip's speech): every line of
+    /// theirs is made as loud, as the game plays its own lines.
+    level: Option<f32>,
 }
 
 /// A long sentence goes to the game a clause at a time, at the voice's own pauses: the game plays
@@ -46,8 +50,31 @@ struct Voicing {
 /// least this long (seconds; a line's first, sooner, as everything waits on it; the rest are
 /// ready while the one before plays), and a pause at least `PAUSE`.
 const CLAUSE: f32 = 2.0;
-const FIRST_CLAUSE: f32 = 1.0;
+const FIRST_CLAUSE: f32 = 0.8;
+/// With the game about to run out of what it has to say (within `RUNNING_OUT` seconds), the next
+/// clause goes at the first pause after this: a short clause now rather than a gap. (A voice made
+/// faster than it's said never gets there, and its clauses stay long.)
+const HURRIED_CLAUSE: f32 = 0.8;
+const RUNNING_OUT: f32 = 0.4;
 const PAUSE: f32 = 0.12;
+
+/// A clip's loudness while it speaks: the RMS of its 10 ms windows louder than a tenth of its
+/// loudest (its pauses left out).
+fn speech_level(samples: &[f32], rate: u32) -> Option<f32> {
+    let window = (rate / 100).max(1) as usize;
+    let rms: Vec<f32> = samples.chunks_exact(window).map(|w| (w.iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt()).collect();
+    let loud = rms.iter().copied().fold(0.0, f32::max);
+    let voiced: Vec<f32> = rms.into_iter().filter(|&r| r > loud * 0.1).collect();
+    (!voiced.is_empty() && loud > 0.0).then(|| (voiced.iter().map(|r| r * r).sum::<f32>() / voiced.len() as f32).sqrt())
+}
+
+/// A line made as loud as the game's own voice (`level`), its peaks kept under full scale.
+fn as_loud(samples: &[f32], rate: u32, level: Option<f32>) -> Vec<f32> {
+    let (Some(want), Some(have)) = (level, speech_level(samples, rate)) else { return samples.to_vec() };
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
+    let gain = (want / have).clamp(0.25, 8.0).min(0.97 / peak);
+    samples.iter().map(|s| s * gain).collect()
+}
 
 /// Where to cut the voice so far: the middle of its first pause after `clause` seconds (a pause:
 /// `PAUSE` of 10 ms windows all under a tenth of the voice's loudest), if there's one yet.
@@ -97,14 +124,19 @@ pub struct Scene {
     unvoiced: Mutex<std::collections::HashSet<String>>,
     /// Nothing of the line being voiced has gone to the game yet.
     fresh: std::sync::atomic::AtomicBool,
+    /// When the game will have said everything it's been given.
+    playing_until: Arc<Mutex<Instant>>,
+    /// Each voice's loudness, by its clip.
+    levels: Mutex<HashMap<PathBuf, Option<f32>>>,
 }
 
 impl Scene {
     pub fn new(link: Arc<Link>, first: VoiceScene, template: m8::site::PromptFile, transcriber: Transcriber) -> Arc<Scene> {
         let (jobs, queue) = mpsc::channel::<Job>();
         let stops = Arc::new(AtomicU64::new(0));
+        let playing_until = Arc::new(Mutex::new(Instant::now()));
         {
-            let (link, stops) = (link.clone(), stops.clone());
+            let (link, stops, playing_until) = (link.clone(), stops.clone(), playing_until.clone());
             let lines_dir = PathBuf::from(first.lines_dir());
             std::thread::spawn(move || {
                 // (numbered on from the clock, so no run's files share a name with an earlier run's:
@@ -122,6 +154,10 @@ impl Scene {
                             line += 1;
                             match write_line(&lines_dir, line, &voicing, &transcriber, &mut taken) {
                                 Ok((ms, said)) if epoch == stops.load(Ordering::SeqCst) => {
+                                    // (the game says it once it's said what it has: until then, plus its length)
+                                    let mut until = playing_until.lock().unwrap();
+                                    *until = (*until).max(Instant::now()) + std::time::Duration::from_millis(ms as u64);
+                                    drop(until);
                                     link.push_voice_line(&VoiceLine::new(VL_SAY, game_id(&voicing.speaker), line, ms, &voicing.how, &said));
                                 }
                                 Ok(_) => {}
@@ -154,6 +190,8 @@ impl Scene {
             addressed: AtomicU32::new(0),
             unvoiced: Mutex::new(Default::default()),
             fresh: std::sync::atomic::AtomicBool::new(true),
+            playing_until,
+            levels: Mutex::new(HashMap::new()),
         })
     }
 
@@ -232,7 +270,8 @@ fn write_line(dir: &std::path::Path, line: u32, voicing: &Voicing, transcriber: 
     let from = (*taken).min(all.len());
     let to = if voicing.last { all.len() } else { clause_end(&all, from, &words) };
     *taken = if voicing.last { 0 } else { to };
-    let said = all[from..to].join(" ");
+    // (a clause doesn't start with the dash or comma it was cut after)
+    let said = all[from..to].join(" ").trim_start_matches(['\u{2014}', '\u{2013}', '-', ',', ';', ' ']).to_string();
     // A sentence's tail with none of its words left: silence, or a sound the voice added that
     // the line hasn't got ("mm", "yeah"), unless what's heard is one of the sentence's last words
     // (its clauses ran ahead of the voice): nothing to say.
@@ -242,7 +281,7 @@ fn write_line(dir: &std::path::Path, line: u32, voicing: &Voicing, transcriber: 
     }
     let frames = m8::lips::frames(&voicing.samples, voicing.rate, &words, &said, LIPS_FPS as f32);
     std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join(format!("{line}.wav")), clips::wav_bytes(&voicing.samples, voicing.rate))?;
+    std::fs::write(dir.join(format!("{line}.wav")), clips::wav_bytes(&as_loud(&voicing.samples, voicing.rate, voicing.level), voicing.rate))?;
     std::fs::write(dir.join(format!("{line}.lips")), lips_bytes(LIPS_FPS, &frames))?;
     let ms = (voicing.samples.len() as u64 * 1000 / voicing.rate.max(1) as u64) as u32;
     println!("[voice] line {line}: {ms} ms, {} words timed (heard \"{heard}\")", words.len());
@@ -280,8 +319,9 @@ impl Game for Scene {
     }
 
     fn sentence(&self, speaker: &str, text: &str, how: &str) {
+        let level = self.state(speaker)["voice"].as_str().map(PathBuf::from).and_then(|clip| self.level_of(&clip));
         *self.voicing.lock().unwrap() =
-            Some(Voicing { speaker: speaker.to_string(), text: text.to_string(), how: how.to_string(), samples: Vec::new(), rate: 0, last: true });
+            Some(Voicing { speaker: speaker.to_string(), text: text.to_string(), how: how.to_string(), samples: Vec::new(), rate: 0, last: true, level });
     }
 
     fn audio(&self, _speaker: &str, samples: &[f32], rate: u32) {
@@ -289,11 +329,18 @@ impl Game for Scene {
         let Some(v) = voicing.as_mut() else { return };
         v.rate = rate;
         v.samples.extend_from_slice(samples);
-        let clause = if self.fresh.load(Ordering::SeqCst) { FIRST_CLAUSE } else { CLAUSE };
+        let running_out = self.playing_until.lock().unwrap().saturating_duration_since(Instant::now()).as_secs_f32() < RUNNING_OUT;
+        let clause = if self.fresh.load(Ordering::SeqCst) {
+            FIRST_CLAUSE
+        } else if running_out {
+            HURRIED_CLAUSE
+        } else {
+            CLAUSE
+        };
         if let Some(at) = pause_in(&v.samples, rate, clause) {
             self.fresh.store(false, Ordering::SeqCst);
             let rest = v.samples.split_off(at);
-            let clause = Voicing { speaker: v.speaker.clone(), text: v.text.clone(), how: v.how.clone(), samples: std::mem::replace(&mut v.samples, rest), rate, last: false };
+            let clause = Voicing { speaker: v.speaker.clone(), text: v.text.clone(), how: v.how.clone(), samples: std::mem::replace(&mut v.samples, rest), rate, last: false, level: v.level };
             let _ = self.jobs.send(Job::Sentence(clause, self.stops.load(Ordering::SeqCst)));
         }
     }
@@ -338,6 +385,17 @@ impl Game for Scene {
 }
 
 impl Scene {
+    /// A voice's loudness while it speaks, from its clip (read once).
+    fn level_of(&self, clip: &std::path::Path) -> Option<f32> {
+        let mut levels = self.levels.lock().unwrap();
+        *levels.entry(clip.to_path_buf()).or_insert_with(|| {
+            let wav = std::fs::read(clip).ok()?;
+            let rate = u32::from_le_bytes(wav.get(24..28)?.try_into().ok()?);
+            let samples: Vec<f32> = wav.get(44..)?.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+            speech_level(&samples, rate)
+        })
+    }
+
     /// Remembers who was listening when the player started talking, in case the adapter has let
     /// them go by the time the words are known.
     pub fn note_listener(&self) {
@@ -366,6 +424,17 @@ mod tests {
         assert_eq!(pause_in(&samples, rate, CLAUSE), None);
         // (a line's first clause goes at the first pause after a second: the breath at 1 s)
         assert!((pause_in(&samples, rate, FIRST_CLAUSE).unwrap() as f32 / rate as f32 - 1.06).abs() < 0.03);
+    }
+
+    #[test]
+    fn a_line_is_made_as_loud_as_the_games_own_voice() {
+        let rate = 16000;
+        let tone = |amp: f32| (0..rate as usize).map(|i| amp * (i as f32 * 0.05).sin()).collect::<Vec<f32>>();
+        let game = speech_level(&tone(0.4), rate).unwrap();
+        let ours = as_loud(&tone(0.1), rate, Some(game));
+        assert!((speech_level(&ours, rate).unwrap() / game - 1.0).abs() < 0.01);
+        // (its peaks stay under full scale, however quiet it was)
+        assert!(as_loud(&tone(0.01), rate, Some(0.9)).iter().all(|s| s.abs() <= 0.971));
     }
 
     #[test]

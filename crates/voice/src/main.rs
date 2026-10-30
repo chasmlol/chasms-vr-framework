@@ -87,7 +87,7 @@ fn main() -> Result<()> {
     // (Breeze takes minutes on its first start: the plugin waits for it, beating meanwhile)
     let voice = loop {
         match m8::speak::Voice::connect(&cfg.voice.server, cfg.voice.seed) {
-            Ok(voice) => break voice,
+            Ok(voice) => break voice.instructed(cfg.voice.instruct),
             Err(e) => {
                 println!("[voice] {e:#}; trying again");
                 let until = Instant::now() + Duration::from_secs(3);
