@@ -31,11 +31,38 @@ pub struct Settings {
 }
 
 /// Talking to the game's characters out loud: the voice plugin (`crate::voice`), with the
-/// servers and the LLM its own `voice.toml` names. Off unless the player turns it on.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+/// servers and the LLM its own `voice.toml` names. Off unless the player turns it on. The plugin
+/// reads these from this file too (the volume as it changes; the rest as it starts, and the
+/// runtime starts it again when they change).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Voice {
     pub enabled: bool,
+    /// The microphone: the input device with this name; empty, the headset's own (Virtual
+    /// Desktop's), else the system's default.
+    pub mic: String,
+    /// The characters' voices against the game's own (1: as loud as its voices for them).
+    pub volume: f32,
+    /// Lines said as their notes say ("[sneering]"): about twice the voice server's work.
+    pub act_out: bool,
+    /// Talking over someone cuts them off. For headphones: a headset's speakers are beside its
+    /// mic, and they'd be heard as you.
+    pub barge_in: bool,
+    /// A pause this long (seconds) ends what you're saying.
+    pub pause: f32,
+}
+
+impl Default for Voice {
+    fn default() -> Self {
+        Voice { enabled: false, mic: String::new(), volume: 1.5, act_out: true, barge_in: false, pause: 0.3 }
+    }
+}
+
+impl Voice {
+    /// What the plugin takes as it starts: a change starts it again.
+    pub fn plugin_key(&self) -> String {
+        format!("{}|{}|{}|{:.2}", self.mic, self.act_out, self.barge_in, self.pause)
+    }
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.

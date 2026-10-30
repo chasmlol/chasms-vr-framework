@@ -67,7 +67,12 @@ fn main() -> Result<()> {
     let memory = data_dir().join("voice").join(folder(first.game()));
     std::fs::create_dir_all(&memory)?;
     println!("[voice] {} (memory in {})", first.game(), memory.display());
-    let m8cfg = cfg.m8(memory.clone());
+    // RustVR's own Voice settings (its menu): the mic and how it listens as this starts (RustVR
+    // starts it again when they change), the voices' volume as it changes.
+    let settings = data_dir().join("settings.toml");
+    let rustvr = config::Rustvr::load(&settings);
+    println!("[voice] RustVR's settings: {rustvr:?}");
+    let m8cfg = cfg.m8(memory.clone(), &rustvr);
 
     // The characters' prompt: the framework's, kept in the memory folder so the brain page can
     // edit it (and the edit lasts).
@@ -82,12 +87,13 @@ fn main() -> Result<()> {
     let transcriber = m8::listen::Transcriber::new(&m8cfg);
     let scene = scene::Scene::new(link.clone(), first, template.clone(), transcriber.clone());
     scene.update(first);
+    scene.set_volume(rustvr.volume);
     let game: Arc<dyn Game> = scene.clone();
 
     // (Breeze takes minutes on its first start: the plugin waits for it, beating meanwhile)
     let voice = loop {
         match m8::speak::Voice::connect(&cfg.voice.server, cfg.voice.seed) {
-            Ok(voice) => break voice.instructed(cfg.voice.instruct),
+            Ok(voice) => break voice.instructed(rustvr.act_out),
             Err(e) => {
                 println!("[voice] {e:#}; trying again");
                 let until = Instant::now() + Duration::from_secs(3);
@@ -146,6 +152,7 @@ fn main() -> Result<()> {
             let (mut seq, mut read) = (link.voice_scene_seq(), 0u64);
             let mut latest = VoiceScene::zeroed();
             let mut runtime_seen = Instant::now();
+            let mut volume_read = Instant::now();
             loop {
                 link.heartbeat_voice();
                 let now = link.voice_scene_seq();
@@ -161,6 +168,10 @@ fn main() -> Result<()> {
                         _ => Input::Event { text: event.text().to_string(), react: event.flags & VEF_REACT != 0, about },
                     };
                     let _ = inputs.send(input);
+                }
+                if volume_read.elapsed() > Duration::from_secs(1) {
+                    volume_read = Instant::now();
+                    scene.set_volume(config::Rustvr::load(&settings).volume);
                 }
                 if link.runtime_alive() {
                     runtime_seen = Instant::now();

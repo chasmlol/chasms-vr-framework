@@ -33,21 +33,12 @@ url = "http://127.0.0.1:8083/v1/audio/transcriptions"
 # The cloned voice: a server with Breeze TTS 2's API (m8's start-breeze.ps1), and its noise seed.
 server = "http://127.0.0.1:7860"
 seed = 42
-# Say each line as its note says ("[sneering]"): twice the work for Breeze, on a GPU the game is
-# already using; off, lines are said plainly (the note still makes the face) and come twice as fast.
-instruct = true
 
 [mic]
-# The microphone: the first whose name has this in it (Virtual Desktop's own), else the default.
-device = "Virtual Desktop"
-# Talk over a character to cut them off. Off: a headset's speakers are beside its mic, and it
-# would hear them as you.
-barge_in = false
-# (with barge_in off) hear nothing while someone's talking.
-mute_while_speaking = true
-# Silero's sensitivity (0-1, higher needs clearer speech), and the pause that ends a sentence.
+# (Which mic, talking over them, the pause that ends what you say, acting lines out and the
+# voices' volume are RustVR's own settings: its menu's Voice tab.)
+# Silero's sensitivity (0-1, higher needs clearer speech).
 vad_threshold = 0.5
-end_of_speech_silence = 0.35
 
 [models]
 # Silero VAD (m8's models/silero_vad.onnx), which finds where speech starts and ends.
@@ -84,6 +75,36 @@ pub struct Speech {
     pub instruct: bool,
 }
 
+/// RustVR's own Voice settings, as its menu sets them (its `settings.toml`'s `[voice]`): the mic,
+/// how it listens, whether lines are acted out, the voices' volume. The same defaults as RustVR's.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+pub struct Rustvr {
+    pub mic: String,
+    pub volume: f32,
+    pub act_out: bool,
+    pub barge_in: bool,
+    pub pause: f32,
+}
+
+impl Default for Rustvr {
+    fn default() -> Self {
+        Rustvr { mic: String::new(), volume: 1.5, act_out: true, barge_in: false, pause: 0.3 }
+    }
+}
+
+impl Rustvr {
+    /// RustVR's settings file's (the defaults where it hasn't any).
+    pub fn load(settings: &Path) -> Rustvr {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct File {
+            voice: Rustvr,
+        }
+        std::fs::read_to_string(settings).ok().and_then(|text| toml::from_str::<File>(&text).ok()).map(|f| f.voice).unwrap_or_default()
+    }
+}
+
 fn mic() -> m8::config::MicConfig {
     toml::from_str("").expect("every mic setting has a default")
 }
@@ -115,8 +136,14 @@ impl VoiceConfig {
         Ok(cfg)
     }
 
-    /// m8's config for one game: its memory and logs in `memory`.
-    pub fn m8(&self, memory: PathBuf) -> m8::config::Config {
+    /// m8's config for one game: its memory and logs in `memory`, the mic as RustVR's settings
+    /// have it.
+    pub fn m8(&self, memory: PathBuf, rustvr: &Rustvr) -> m8::config::Config {
+        let mut mic = self.mic.clone();
+        mic.device = Some(if rustvr.mic.is_empty() { "Virtual Desktop".to_string() } else { rustvr.mic.clone() });
+        mic.barge_in = rustvr.barge_in;
+        mic.mute_while_speaking = !rustvr.barge_in;
+        mic.end_of_speech_silence = rustvr.pause;
         m8::config::Config {
             mate: m8::config::MateConfig {
                 name: "someone".to_string(),
@@ -124,9 +151,9 @@ impl VoiceConfig {
                 voice_server: self.voice.server.clone(),
                 voice_reference: None,
                 voice_seed: self.voice.seed,
-                voice_instruct: self.voice.instruct,
+                voice_instruct: rustvr.act_out,
             },
-            mic: self.mic.clone(),
+            mic,
             stt: self.stt.clone(),
             kev: self.kev.clone(),
             llm: self.llm.clone(),
@@ -145,10 +172,24 @@ mod tests {
     fn the_written_default_reads_back() {
         let cfg: VoiceConfig = toml::from_str(DEFAULT).unwrap();
         assert!(!cfg.kev.enabled, "Kev is off unless the player turns him on");
-        assert!(!cfg.mic.barge_in);
-        assert_eq!(cfg.mic.device.as_deref(), Some("Virtual Desktop"));
         assert_eq!(cfg.llm.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
         assert!(cfg.llm.api_key.is_none() && cfg.llm.extra.is_empty());
+    }
+
+    #[test]
+    fn rustvrs_own_voice_settings_are_read() {
+        let dir = std::env::temp_dir().join(format!("rustvr-voice-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.toml");
+        std::fs::write(&file, "[comfort]\nseated = true\n\n[voice]\nenabled = true\nmic = \"USB Mic\"\nvolume = 2.0\n").unwrap();
+        let rv = Rustvr::load(&file);
+        assert_eq!((rv.mic.as_str(), rv.volume, rv.act_out, rv.pause), ("USB Mic", 2.0, true, 0.3));
+        let cfg: VoiceConfig = toml::from_str(DEFAULT).unwrap();
+        let m8 = cfg.m8(dir.clone(), &rv);
+        assert_eq!(m8.mic.device.as_deref(), Some("USB Mic"));
+        assert!(m8.mate.voice_instruct && !m8.mic.barge_in && m8.mic.mute_while_speaking);
+        assert_eq!(Rustvr::load(&dir.join("none.toml")), Rustvr::default());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

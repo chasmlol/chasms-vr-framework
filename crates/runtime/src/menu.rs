@@ -18,6 +18,7 @@ const PIXELS_PER_POINT: f32 = 2.0;
 enum Tab {
     Comfort,
     Hands,
+    Voice,
     Body,
     Controls,
     Weapon,
@@ -167,6 +168,7 @@ impl RuntimeMenu {
                         (Tab::Help, "Help"),
                         (Tab::Comfort, "Comfort"),
                         (Tab::Hands, "Hands"),
+                        (Tab::Voice, "Voice"),
                         (Tab::Body, "Body"),
                         (Tab::Controls, "Controls"),
                         (Tab::Weapon, "Weapon"),
@@ -180,6 +182,7 @@ impl RuntimeMenu {
                 egui::ScrollArea::vertical().max_height(size.y - 190.0).show(ui, |ui| match tab {
                     Tab::Comfort => comfort(ui, s, &mut rects),
                     Tab::Hands => hands(ui, s, &mut rects),
+                    Tab::Voice => voice(ui, s, &mut rects),
                     Tab::Body => measure = body(ui, s, status, &mut rects),
                     Tab::Help => help(ui),
                     Tab::Controls => controls(ui, s),
@@ -495,8 +498,29 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
         ui.checkbox(&mut s.sound.shots, "Gunshot sounds");
         ui.checkbox(&mut s.sound.game_sounds, "The game's own sounds (off: RustVR's)");
     }
+}
+
+/// Talking to the game's characters out loud (`crate::voice`).
+fn voice(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rect)>) {
+    let v = &mut s.voice;
+    let r = ui.checkbox(&mut v.enabled, "Talk to the game's characters out loud");
+    rects.push(("voice:on".into(), r.rect));
+    ui.label("Look at someone a few steps away and talk. The servers and the LLM are in voice.toml, beside settings.toml.");
     ui.separator();
-    ui.checkbox(&mut s.voice.enabled, "Talk to the game's characters out loud (the servers in voice.toml)");
+    ui.label("Microphone");
+    let r = ui.selectable_value(&mut v.mic, String::new(), "The headset's own (Virtual Desktop), else the default");
+    rects.push(("voice:mic:default".into(), r.rect));
+    for name in crate::voice::microphones() {
+        let r = ui.selectable_value(&mut v.mic, name.clone(), name.as_str());
+        rects.push((format!("voice:mic:{name}"), r.rect));
+    }
+    ui.separator();
+    slider(ui, "Their voices' volume (1: as loud as the game's own)", &mut v.volume, 0.25, 3.0, "x", 2);
+    let r = ui.checkbox(&mut v.act_out, "They act out how a line is said (twice the voice server's work: slower answers)");
+    rects.push(("voice:act_out".into(), r.rect));
+    let r = ui.checkbox(&mut v.barge_in, "Talk over them to cut them off (with headphones: the headset's speakers would set it off)");
+    rects.push(("voice:barge_in".into(), r.rect));
+    slider(ui, "A pause this long ends what you're saying", &mut v.pause, 0.15, 1.0, " s", 2);
 }
 
 fn controls(ui: &mut egui::Ui, s: &mut Settings) {
