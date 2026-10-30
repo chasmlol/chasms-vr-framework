@@ -1343,6 +1343,13 @@
 #define RVR_RULES_CLIMB (1 << 4)
 
 /**
+ * Telekinesis in place of the gravity gloves is the game's to say ([`RULES_TELEKINESIS`]).
+ */
+#define RVR_RULES_SAYS_TELEKINESIS (1 << 5)
+
+#define RVR_RULES_TELEKINESIS (1 << 6)
+
+/**
  * Time is slowed: run the game's world at `time_scale`.
  */
 #define RVR_RTM_SLOW (1 << 0)

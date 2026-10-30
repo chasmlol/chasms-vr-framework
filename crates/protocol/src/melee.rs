@@ -254,6 +254,9 @@ pub const RULES_SLOW_TIME: u32 = 1 << 2;
 /// Climbing by the hands is the game's to allow ([`RULES_CLIMB`]).
 pub const RULES_SAYS_CLIMB: u32 = 1 << 3;
 pub const RULES_CLIMB: u32 = 1 << 4;
+/// Telekinesis in place of the gravity gloves is the game's to say ([`RULES_TELEKINESIS`]).
+pub const RULES_SAYS_TELEKINESIS: u32 = 1 << 5;
+pub const RULES_TELEKINESIS: u32 = 1 << 6;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

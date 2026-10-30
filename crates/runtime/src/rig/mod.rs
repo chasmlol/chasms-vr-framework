@@ -30,6 +30,7 @@ pub mod kick;
 pub mod melee;
 pub mod breaking;
 pub mod climbing;
+pub mod telekinesis;
 pub mod physics;
 pub mod pickpocket;
 pub mod pockets;
@@ -2018,7 +2019,10 @@ impl Rig {
             self.pocket_holds(inp);
             self.use_drawn(inp, dt);
             for i in 0..2 {
-                if !self.page_hands[i] {
+                if self.page_hands[i] {
+                } else if self.melee.tk_on {
+                    self.telekinesis(i, inp);
+                } else {
                     self.gloves(i, inp);
                 }
             }
@@ -2038,6 +2042,7 @@ impl Rig {
                 self.slide_melee(i, inp, dt);
             }
             self.fly_melee(dt);
+            self.tk_hold(inp, dt);
         }
         self.climb(inp, dt);
         self.drive(inp, dt, &zones);
@@ -3185,6 +3190,13 @@ impl Rig {
                     self.emit(Cue::Grab, Some(i), None, palm, 0.6);
                     return;
                 }
+                // Telekinesis catches what the hand marks.
+                if self.melee.tk_on {
+                    if let Glove::Hover(id) = self.hands.as_ref().unwrap()[i].glove {
+                        self.tk_catch(i, id);
+                    }
+                    return;
+                }
                 // A locked gravity-glove target is handled by the gloves.
                 match self.hands.as_ref().unwrap()[i].glove {
                     Glove::Hover(id) => {
@@ -3659,8 +3671,13 @@ impl Rig {
         let s = &inp.settings.interaction;
         let (palm, _) = self.hands.as_ref().unwrap()[i].target;
         let palm_t = self.hands.as_ref().unwrap()[i].grip_t.0;
-        // A hand holding the world lets go of it.
+        // A hand holding the world lets go of it; one holding a thing by telekinesis throws or
+        // drops it.
         if self.melee.climbs[i].take().is_some() {
+            return;
+        }
+        if self.melee.tk[i].is_some() {
+            self.tk_release(i);
             return;
         }
         // Support grip / handle / pin / glove lock end with the grip.
@@ -6702,7 +6719,7 @@ impl Rig {
             }
             // (A hand on a door or a lever too: its trigger, squeezed with the grip, would use what
             // the eyes are on, the game's Activate on the lever it's already pulling.)
-            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.creature.is_some() || h.valve.is_some();
+            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.creature.is_some() || h.valve.is_some() || self.melee.tk[i].is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if matches!(o.attach, Attach::Gun) => rustvr_ik::HoldShape::PistolGrip,
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::Foregrip,

@@ -47,8 +47,9 @@ pub struct Melee {
     pub stamina_refill: f32,
     /// Slowing time on the focus meter.
     pub slow_time: bool,
-    /// Telekinesis (point an open hand, grip, and the thing floats to it or held off) in
-    /// place of the gravity gloves.
+    /// Telekinesis (point an open hand, grip, and the thing floats held off it, pulled in or
+    /// pushed away) in place of the gravity gloves, for a game that doesn't say (off: the gloves
+    /// stay what a game gets unless it asks).
     pub telekinesis: bool,
     /// Climbing by the hands: a grip on the world holds the player there.
     pub climbing: bool,
@@ -56,7 +57,7 @@ pub struct Melee {
 
 impl Default for Melee {
     fn default() -> Self {
-        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: true, climbing: true }
+        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true }
     }
 }
 

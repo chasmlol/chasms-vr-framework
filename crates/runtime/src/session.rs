@@ -1071,6 +1071,10 @@ impl Session {
             let rules = &self.combat.rules;
             let climbing = if rules.flags & RULES_SAYS_CLIMB != 0 { rules.flags & RULES_CLIMB != 0 } else { self.settings.current.melee.climbing };
             self.rig.set_climbing_allowed(climbing);
+            let tk = if rules.flags & RULES_SAYS_TELEKINESIS != 0 { rules.flags & RULES_TELEKINESIS != 0 } else { self.settings.current.melee.telekinesis };
+            if tk != self.rig.telekinesis_on() {
+                self.rig.set_telekinesis(tk);
+            }
             let game_strength = if self.combat.rules.strength > 0.0 { self.combat.rules.strength } else { 1.0 };
             self.rig.set_melee_strength(game_strength * self.powers.strength());
             self.combat.imbues = self.powers.imbues.keys().filter_map(|&id| self.powers.imbue_of(id).map(|i| (id, i))).collect();

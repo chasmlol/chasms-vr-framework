@@ -600,6 +600,10 @@ impl Physics {
         self.world.bodies[b].set_dominance_group(if yielding { -1 } else { 0 });
     }
 
+    pub fn set_linear_damping(&mut self, b: RigidBodyHandle, d: f32) {
+        self.world.bodies[b].set_linear_damping(d);
+    }
+
     pub fn set_angular_damping(&mut self, b: RigidBodyHandle, d: f32) {
         self.world.bodies[b].set_angular_damping(d);
     }

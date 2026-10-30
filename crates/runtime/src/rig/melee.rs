@@ -80,6 +80,9 @@ pub struct MeleeRig {
     /// The climbing body's velocity (m/s), and the player's as the game moved them, averaged.
     pub climb_v: Vec3,
     pub climb_seen: Vec3,
+    /// What each hand holds by telekinesis, and whether telekinesis is on (`telekinesis`).
+    pub tk: [Option<super::telekinesis::Tk>; 2],
+    pub tk_on: bool,
     /// Weapons thrown and still flying or tumbling, by id.
     pub thrown: std::collections::HashMap<u32, Thrown>,
 }
@@ -513,6 +516,6 @@ impl Rig {
 }
 
 /// The way weapon `w`'s point goes (weapon space): along its first point's damager, else its +Z.
-fn point_of(w: &MeleeWeapon) -> Vec3 {
+pub(super) fn point_of(w: &MeleeWeapon) -> Vec3 {
     w.blades().iter().find(|b| b.kind == DMG_PIERCE).map_or(Vec3::Z, |b| (v3(b.b) - v3(b.a)).normalize_or(Vec3::Z))
 }
