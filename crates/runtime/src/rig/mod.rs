@@ -3450,9 +3450,12 @@ impl Rig {
         if ticks > 0 {
             st.ticked = st.draw;
         }
+        // At full draw a low strain now and then; drawn on past it, harder and more often the
+        // tighter it gets, until it's nearly a steady rumble.
+        let tight = bow::strain(st.draw, st.full);
         let strain = strength >= bow::STRAIN_AT && self.now >= st.next_strain;
         if strain {
-            st.next_strain = self.now + 0.1 + 0.4 * bow::noise(self.frame_index ^ id as u64) as f64;
+            st.next_strain = self.now + (0.1 + 0.4 * bow::noise(self.frame_index ^ id as u64) as f64) * (1.0 - 0.75 * tight as f64);
         }
         self.objects.get_mut(&id).unwrap().bow = Some(st);
         let at = g + rot * (bow::nock(&d, draw) - pivot);
@@ -3461,8 +3464,8 @@ impl Rig {
             self.emit(Cue::BowCreak, Some(hand), Some(id), at, strength);
         }
         if strain {
-            self.emit(Cue::BowStrain, Some(sh), Some(id), at, 1.0);
-            self.emit(Cue::BowStrain, Some(hand), Some(id), at, 0.8);
+            self.emit(Cue::BowStrain, Some(sh), Some(id), at, tight);
+            self.emit(Cue::BowStrain, Some(hand), Some(id), at, 0.8 * tight);
         }
         (g - rot * pivot, rot)
     }

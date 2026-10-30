@@ -8,8 +8,10 @@
 //! * **Both hands aim**: the bow turns about its grip so the line from the string hand through the
 //!   arrow's rest is the arrow, eased in over [`ALIGN_TIME`] as the hand takes the string, then
 //!   exact; its roll is the bow wrist's own.
-//! * **The string stops at full draw**: drawn further, the hand stays on it there (its ghost shows
-//!   the controller). Full draw is the bow's own, or as far as the player's arm draws to the chin.
+//! * **The string stiffens past full draw** ([`give`]): drawn further, it still comes back, less
+//!   and less of the way the hand goes, as a bow stacks, and the hand stays on it (its ghost shows
+//!   the controller). Full draw is the bow's own, or as far as the player's arm draws to the chin;
+//!   the shot is no stronger past it.
 //! * **The arrow leaves exactly along the drawn arrow**, with the draw's share of full draw as its
 //!   strength: the game fires its own arrow ([`CE_LOOSE`]). Short of [`MIN_DRAW`], letting go leaves
 //!   the arrow on the string.
@@ -36,6 +38,11 @@ pub const MIN_DRAW: f32 = 0.2;
 pub const TICK: f32 = 0.01;
 /// At full draw (this share of it and past), a low strain in the hands now and then.
 pub const STRAIN_AT: f32 = 0.98;
+/// Past full draw the string still gives, ever more stiffly: at most this share of the full draw
+/// further, ...
+pub const GIVE: f32 = 0.15;
+/// ... and at first this share of the hand's pull past full draw (it falls off from there).
+const GIVE_STIFF: f32 = 0.5;
 /// Where the fingers hold an arrow's nock and the string, in the controller's grip pose: at the
 /// top of the fist, where the index finger meets the thumb.
 pub const PINCH: Vec3 = Vec3::new(0.0, 0.0, 0.035);
@@ -114,6 +121,25 @@ pub fn full_draw(d: &ObjectDesc, arm: f32, fit: bool) -> f32 {
     (arm * ARM_DRAW - brace).clamp(own * 0.5, own)
 }
 
+/// How far the string is drawn by a hand `pull` metres behind its rest, with a full draw of
+/// `full`: up to full draw, as far as the hand; past it, the string keeps coming back with the
+/// hand, but stiffly: at first half as far as the hand goes, less and less of the way after, and
+/// never more than [`GIVE`] of the full draw past it. A bow has no wall, only a draw that gets
+/// harder; this is the hand feeling it, since nothing can push back on a controller.
+pub fn give(pull: f32, full: f32) -> f32 {
+    if pull <= full {
+        return pull.max(0.0);
+    }
+    let most = (GIVE * full).max(1e-4);
+    full + most * (1.0 - (-(pull - full) * GIVE_STIFF / most).exp())
+}
+
+/// How far into its give past full draw a string drawn `draw` is: 0 at full draw and short of it,
+/// towards 1 as tight as it goes.
+pub fn strain(draw: f32, full: f32) -> f32 {
+    ((draw - full) / (GIVE * full).max(1e-4)).clamp(0.0, 1.0)
+}
+
 /// Where an arrow (`arrow`: its description) lies on the bow with the string drawn `draw`, bow
 /// space: its nock on the string, pointing through the rest.
 pub fn nocked_pose(d: &ObjectDesc, arrow: &ObjectDesc, hand: usize, draw: f32) -> (Vec3, Quat) {
@@ -125,8 +151,9 @@ pub fn nocked_pose(d: &ObjectDesc, arrow: &ObjectDesc, hand: usize, draw: f32) -
 
 /// The bow held at `alone` (where the bow hand alone puts it, world) turned about its hold at
 /// `pivot` (bow space) so the arrow points from the string hand's pinch `pinch` (world) through
-/// its rest: the string is drawn back to the hand, up to `full`. Returns the bow's pose and the
-/// draw. A hand ahead of the string (between it and the bow) doesn't turn it.
+/// its rest: the string is drawn back to the hand, up to `full` and then stiffly ([`give`]).
+/// Returns the bow's pose and the draw. A hand ahead of the string (between it and the bow)
+/// doesn't turn it.
 pub fn aim(d: &ObjectDesc, hand: usize, alone: (Vec3, Quat), pivot: Vec3, pinch: Vec3, full: f32) -> ((Vec3, Quat), f32) {
     let g = alone.0 + alone.1 * pivot;
     let r = rest(d, hand);
@@ -142,7 +169,7 @@ pub fn aim(d: &ObjectDesc, hand: usize, alone: (Vec3, Quat), pivot: Vec3, pinch:
         }
         rot = (Quat::from_rotation_arc(cur.normalize(), want.normalize()) * rot).normalize();
         let rw = g + rot * (r - pivot);
-        draw = ((pinch - rw).length() - at_rest).clamp(0.0, full);
+        draw = give((pinch - rw).length() - at_rest, full);
     }
     // Ahead of the string the hand isn't drawing it: the bow turns to it only as it comes back
     // past the string's rest (else a hand near the grip would spin the bow about).

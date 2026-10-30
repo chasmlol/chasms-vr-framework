@@ -223,7 +223,8 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         // The Longbow's draw: a tick a centimetre, from a faint one at rest to one five times as
         // long at full draw.
         Cue::BowCreak => (0.004 + 0.008 * i, 170.0, 0.15 + 0.45 * i),
-        Cue::BowStrain => (0.02, 80.0, 0.35),
+        // Low at full draw, and longer and stronger as the string is drawn on past it.
+        Cue::BowStrain => (0.02 + 0.04 * i, 80.0, 0.35 + 0.5 * i),
         Cue::BowRelease => (0.05, 110.0, (0.5 + 0.5 * i).min(1.0)),
         Cue::StringSnap => (0.02, 240.0, (0.4 + 0.5 * i).min(1.0)),
         Cue::BowSpring => {
