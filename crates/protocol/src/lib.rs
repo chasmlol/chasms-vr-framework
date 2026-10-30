@@ -415,7 +415,8 @@ pub struct Intents {
     pub cursor_uv: [f32; 2],
     pub _pad2: [f32; 2],
     /// Swimming by the arms, while [`INT_SWIM`]: the velocity the strokes give the player
-    /// (tracking space, metres a second; never faster than [`WaterState::swim_speed`]). The adapter
+    /// (tracking space, metres a second; scaled by [`WaterState::swim_speed`], up to a few times it:
+    /// the strokes are made as strong as the game's swimmer, and stronger still). The adapter
     /// has the game's own swimming move the player at it, with the stick's swimming added.
     pub swim: [f32; 3],
     /// How hard the arms are stroking, 0..1 (0: they aren't): the game's swimming shows a swimmer
