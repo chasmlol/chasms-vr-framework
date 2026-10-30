@@ -532,12 +532,9 @@ impl Mechanics {
                 self.insane_logged = now;
                 tracing::info!("gun trace: menu controls (game menu {}, runtime menu {}, loading {loading})", inp.menu_mode, inp.runtime_menu);
             }
-            let walks = inp.menu_mode && !inp.runtime_menu && !loading && inp.game.is_some_and(|g| g.flags & GS_MENU_WALKS != 0);
             self.menu_controls(inp, &mut out);
-            if !walks {
-                self.following = false;
-                self.debug.following = false;
-            }
+            self.following = false;
+            self.debug.following = false;
             out.intents.presses = self.presses;
             return out;
         }
@@ -746,7 +743,39 @@ impl Mechanics {
 
         // ---------------- controls
         let mut held = 0u64;
-        let (mx, my) = self.walk(inp, head_yaw, &mut out);
+        let dz = c.input.stick_deadzone;
+        let (mut mx, mut my) = radial_deadzone(oc.stick[0], oc.stick[1], dz, STICK_RIM);
+        if c.comfort.move_relative == MoveRelative::OffHand && oc.connected != 0 {
+            let d = yaw_of(q(oc.aim.rot) * Vec3::Z) - head_yaw;
+            let (s, co) = d.sin_cos();
+            (mx, my) = (mx * co + my * s, -mx * s + my * co);
+        }
+        let mut move_xy = Vec2::new(mx, my);
+
+        // Roomscale: walk the game body after the tracked head while the stick is idle (the view
+        // itself never moves because of this: the adapter absorbs the body motion).
+        let room = game.map(|g| Vec2::from_array(g.tracking.room_offset)).unwrap_or(Vec2::ZERO);
+        let look_yaw = game.map(|g| g.tracking.look_yaw).unwrap_or(head_yaw);
+        let len = room.length();
+        let stick_idle = mx.abs() < 0.05 && my.abs() < 0.05;
+        if !c.comfort.roomscale || !stick_idle || gflags & GS_SCRIPTED != 0 || game.is_none() {
+            self.following = false;
+        } else if !self.following && len > 0.20 {
+            self.following = true;
+        } else if self.following && len < 0.05 {
+            self.following = false;
+        }
+        if self.following && len > 1e-4 {
+            let (ox, oz) = (room.x, room.y);
+            let fwd = ox * look_yaw.sin() + oz * look_yaw.cos();
+            let right = ox * look_yaw.cos() - oz * look_yaw.sin();
+            let m = (len * 2.5).clamp(0.32, 1.0);
+            move_xy = Vec2::new(right / len * m, fwd / len * m);
+            out.tracking.flags |= TRK_FOLLOW;
+        }
+        self.debug.following = self.following;
+        self.debug.room_len = len;
+        out.intents.move_xy = move_xy.to_array();
 
         // Turning: firing-hand stick X.
         let tx = deadzone(dc.stick[0], 0.25);
@@ -1167,62 +1196,13 @@ impl Mechanics {
         self.haptic(dom, 0.04, 150.0, 0.7);
     }
 
-    /// The walk (`out.intents.move_xy`): the off hand's stick, turned as the move setting has it, or
-    /// the game body walking after the tracked head while it's idle (roomscale). The stick as turned.
-    fn walk(&mut self, inp: &MechInput, head_yaw: f32, out: &mut MechOutput) -> (f32, f32) {
-        let c = inp.settings;
-        let oc = &inp.frame.hands[c.dominant() ^ 1];
-        let game = inp.game;
-        let gflags = game.map(|g| g.flags).unwrap_or(0);
-        let dz = c.input.stick_deadzone;
-        let (mut mx, mut my) = radial_deadzone(oc.stick[0], oc.stick[1], dz, STICK_RIM);
-        if c.comfort.move_relative == MoveRelative::OffHand && oc.connected != 0 {
-            let d = yaw_of(q(oc.aim.rot) * Vec3::Z) - head_yaw;
-            let (s, co) = d.sin_cos();
-            (mx, my) = (mx * co + my * s, -mx * s + my * co);
-        }
-        let mut move_xy = Vec2::new(mx, my);
-
-        // Roomscale: walk the game body after the tracked head while the stick is idle (the view
-        // itself never moves because of this: the adapter absorbs the body motion).
-        let room = game.map(|g| Vec2::from_array(g.tracking.room_offset)).unwrap_or(Vec2::ZERO);
-        let look_yaw = game.map(|g| g.tracking.look_yaw).unwrap_or(head_yaw);
-        let len = room.length();
-        let stick_idle = mx.abs() < 0.05 && my.abs() < 0.05;
-        if !c.comfort.roomscale || !stick_idle || gflags & GS_SCRIPTED != 0 || game.is_none() {
-            self.following = false;
-        } else if !self.following && len > 0.20 {
-            self.following = true;
-        } else if self.following && len < 0.05 {
-            self.following = false;
-        }
-        if self.following && len > 1e-4 {
-            let (ox, oz) = (room.x, room.y);
-            let fwd = ox * look_yaw.sin() + oz * look_yaw.cos();
-            let right = ox * look_yaw.cos() - oz * look_yaw.sin();
-            let m = (len * 2.5).clamp(0.32, 1.0);
-            move_xy = Vec2::new(right / len * m, fwd / len * m);
-            out.tracking.flags |= TRK_FOLLOW;
-        }
-        self.debug.following = self.following;
-        self.debug.room_len = len;
-        out.intents.move_xy = move_xy.to_array();
-        (mx, my)
-    }
-
-    /// Menus on the panel: the stick and buttons navigate, the laser drives the cursor. Under a menu
-    /// the world goes on under ([`GS_MENU_WALKS`]: a book read in the hands) the player walks with
-    /// the off hand's stick as without one; the buttons and the other stick stay the menu's.
+    /// Menus on the panel: the stick and buttons navigate, the laser drives the cursor.
     fn menu_controls(&mut self, inp: &MechInput, out: &mut MechOutput) {
         let f = inp.frame;
         let dom = inp.settings.dominant();
         let off = dom ^ 1;
         out.intents.flags |= INT_MENU_MODE;
-        if inp.menu_mode && !inp.runtime_menu && inp.game.is_some_and(|g| g.flags & GS_MENU_WALKS != 0) {
-            self.walk(inp, yaw_of(q(f.hmd.rot) * Vec3::Z), out);
-        } else {
-            out.intents.move_xy = [deadzone(f.hands[off].stick[0], 0.3), deadzone(f.hands[off].stick[1], 0.3)];
-        }
+        out.intents.move_xy = [deadzone(f.hands[off].stick[0], 0.3), deadzone(f.hands[off].stick[1], 0.3)];
         let (sx, sy) = (f.hands[dom].stick[0], f.hands[dom].stick[1]);
         let mut held = 0u64;
         if sy > 0.6 {
