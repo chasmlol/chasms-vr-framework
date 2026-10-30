@@ -1511,7 +1511,7 @@ impl Session {
         let body = &mut self.body;
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
-        let reins = &self.reins;
+        let reins = &mut self.reins;
         let warp = &mut self.warp;
         let headset_post = &mut self.headset_post;
         let map_now = self.map_now;
@@ -1617,6 +1617,16 @@ impl Session {
                 if moved && info.eye_map[e].world_per_meter > 0.0 { shown_map(&m) } else { m }
             });
             held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
+            // The reins' mount end where this picture shows the mount: moved to this eye with the
+            // picture, it moved with the rest of the game's world.
+            let picture = match (&stereo, moved) {
+                (Some((_, info)), true) if info.eye_map[e].world_per_meter > 0.0 => {
+                    let then = WorldMap::from_slot(&info.eye_map[e]);
+                    shown_map(&then).matrix().inverse() * then.matrix()
+                }
+                _ => glam::Mat4::IDENTITY,
+            };
+            reins.place(picture);
             let mut held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
             held.extend(reins.draw().filter(|_| draw_body && !framework));
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
@@ -1705,6 +1715,7 @@ impl Session {
             // (Placed by the picture it's drawn over: the first eye's.)
             let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| WorldMap::from_slot(&info.eye_map[first]));
             self.held_objects.place(eye_map.as_ref().or(self.map_now.as_ref()));
+            self.reins.place(glam::Mat4::IDENTITY);
             let mut held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
             held.extend(self.reins.draw().filter(|_| draw_body && !framework));
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {

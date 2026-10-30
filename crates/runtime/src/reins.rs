@@ -12,6 +12,11 @@
 //! carried along from the bit without twisting (parallel transport). Without the leather (a game
 //! that doesn't name it, or it didn't load), the same curves are drawn as flat ribbons of its
 //! colour.
+//!
+//! The mount's end of them (its bit, its neck, where they're held) is where each picture shows the
+//! mount ([`Reins::place`]): a game picture moved on to where the head is now (the session's warp)
+//! moves the mount in it with the rest of its world, so the reins on it go the same way, and the
+//! hands' end stays in the hands. A rein that has further to go for it stretches.
 
 use glam::{Mat4, Quat, Vec3};
 use rustvr_avatar::{HeldDraw, HeldModel};
@@ -51,6 +56,8 @@ pub struct Reins {
     parts: Vec<Option<Mat4>>,
     /// Without the leather: the curves as ribbons.
     ribbons: Vec<Ribbon>,
+    /// This frame's mount and hands, for each picture's place of them ([`Reins::place`]).
+    now: Option<(Riding, [Option<usize>; 2], [Vec3; 2])>,
 }
 
 impl Reins {
@@ -59,9 +66,11 @@ impl Reins {
     pub fn update(&mut self, gpu: &Gpu, r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2], light: Option<&LightHint>) {
         self.parts.clear();
         self.ribbons.clear();
+        self.now = None;
         if r.flags & RIDE_BITS == 0 || !r.mounted() {
             return;
         }
+        self.now = Some((*r, held, hands));
         let curves = curves(r, held, hands);
         if let Some(leather) = r.reins_leather() {
             if self.model.as_ref().is_none_or(|(name, uv, _)| name != leather || *uv != r.reins_uv) {
@@ -75,13 +84,7 @@ impl Reins {
             self.model = None;
         }
         if self.model.as_ref().is_some_and(|(_, _, m)| m.is_some()) {
-            let laid = [(REIN_RINGS, REIN_LENGTH), (REIN_RINGS, REIN_LENGTH), (BIGHT_RINGS, BIGHT_LENGTH)];
-            for (curve, (rings, length)) in curves.iter().zip(laid) {
-                match curve {
-                    Some((points, flat)) => place(&mut self.parts, &resample(points, rings), *flat, length),
-                    None => self.parts.extend(std::iter::repeat_n(None, rings)),
-                }
-            }
+            self.parts = parts(&curves);
         } else {
             let lit = light
                 .map(|l| Vec3::from_array(l.ambient) + Vec3::from_array(l.sun_color) * l.sun_dir[1].max(0.0))
@@ -92,6 +95,33 @@ impl Reins {
                 self.ribbons.extend(points.windows(2).map(|w| Ribbon { a: w[0], b: w[1], width: WIDTH, color }));
             }
         }
+    }
+
+    /// The reins for a picture whose mount is `picture` from where the game had it (tracking space
+    /// to tracking space: the picture's mapping then, to the one it's shown with): the mount's end
+    /// of them goes with it. The identity: as the game had it.
+    pub fn place(&mut self, picture: Mat4) {
+        let Some((mut r, held, hands)) = self.now else { return };
+        if self.model.as_ref().is_none_or(|(_, _, m)| m.is_none()) {
+            return;
+        }
+        if picture != Mat4::IDENTITY {
+            let point = |p: &mut [f32; 4]| {
+                let q = picture.transform_point3(Vec3::new(p[0], p[1], p[2]));
+                p[..3].copy_from_slice(&q.to_array());
+            };
+            let vector = |p: &mut [f32; 4]| {
+                let q = picture.transform_vector3(Vec3::new(p[0], p[1], p[2]));
+                p[..3].copy_from_slice(&q.to_array());
+            };
+            r.bits.iter_mut().chain(r.reins.iter_mut()).for_each(point);
+            for n in r.neck.iter_mut() {
+                point(&mut n.centre);
+                vector(&mut n.side);
+                vector(&mut n.up);
+            }
+        }
+        self.parts = parts(&curves(&r, held, hands));
     }
 
     /// The reins as a held model to draw with the body, when they're of the game's leather.
@@ -109,6 +139,19 @@ impl Reins {
 /// The reins' curves (tracking space) and the way each one's flat faces at its start: the left
 /// rein, the right, and their bight between two hands.
 type Curve = Option<(Vec<Vec3>, Vec3)>;
+
+/// Each cross-section's place along the curves (None: a strap not drawn).
+fn parts(curves: &[Curve; 3]) -> Vec<Option<Mat4>> {
+    let mut out = Vec::new();
+    let laid = [(REIN_RINGS, REIN_LENGTH), (REIN_RINGS, REIN_LENGTH), (BIGHT_RINGS, BIGHT_LENGTH)];
+    for (curve, (rings, length)) in curves.iter().zip(laid) {
+        match curve {
+            Some((points, flat)) => place(&mut out, &resample(points, rings), *flat, length),
+            None => out.extend(std::iter::repeat_n(None, rings)),
+        }
+    }
+    out
+}
 
 fn curves(r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2]) -> [Curve; 3] {
     let v = |p: [f32; 4]| Vec3::new(p[0], p[1], p[2]);
