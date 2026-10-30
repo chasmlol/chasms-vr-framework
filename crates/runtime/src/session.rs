@@ -1226,7 +1226,7 @@ impl Session {
         let shot = event == E::Fire;
         self.sounds_played += 1;
         let Some(a) = &self.audio else { return };
-        a.play_event(event, set, Some(fallback), fb.pos, fb.intensity);
+        a.play_event(event, set, fallback, fb.pos, fb.intensity);
         if shot {
             a.play_event(E::FireTail, set, None, fb.pos, fb.intensity);
             // The case lands on the floor under the gun.
@@ -1829,11 +1829,14 @@ fn runtime_plays(event: rustvr_audio::Event, flags: u32, shots: bool) -> bool {
 }
 
 /// The sound pack event for a cue, and the runtime's own sound for it (None: the cue is felt, not
-/// heard).
-fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Sound)> {
+/// heard; an event without a sound of the runtime's own: heard only from a game's pack).
+fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audio::Sound>)> {
     use feedback::Cue as C;
     use rustvr_audio::{Event as E, Sound as S};
     Some(match c {
+        // (The game's own chewing and swallowing, bite by bite: the runtime has none of its own.)
+        C::Bite => return Some((E::Bite, None)),
+        C::Gulp => return Some((E::Gulp, None)),
         C::Grab => (E::Grab, S::Grab),
         C::Release => (E::Release, S::Release),
         C::HolsterIn => (E::HolsterIn, S::HolsterIn),
@@ -1865,8 +1868,8 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::KnifeThrow => (E::KnifeThrow, S::GloveFlick),
         C::Explosion => (E::Explosion, S::ShotShotgun),
         C::KnifeStick => (E::KnifeStick, S::Impact),
-        // (The game plays its own eating and drinking.)
-        C::ExplosionRumble | C::Bite | C::Gulp | C::Use => return None,
+        // (The game plays its own eating and drinking as it's used.)
+        C::ExplosionRumble | C::Hold | C::Use => return None,
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),
@@ -1875,6 +1878,7 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::ShellOut | C::CaseEject => (E::MagOut, S::MagEject),
         C::AirHiss => (E::DryFire, S::EmptyClick),
     })
+    .map(|(e, s)| (e, Some(s)))
 }
 
 fn quat(a: [f32; 4]) -> Quat {
@@ -1916,10 +1920,10 @@ mod tests {
             let Some((event, fallback)) = event_of(c) else { continue };
             // The fallback is the runtime's own sound for that event (a shot keeps its kind).
             if event != E::Fire && c != C::Pouch {
-                assert_eq!(event.fallback(), Some(fallback), "{c:?}");
+                assert_eq!(event.fallback(), fallback, "{c:?}");
             }
         }
-        assert_eq!(event_of(C::ShotPistol), Some((E::Fire, rustvr_audio::Sound::ShotPistol)));
+        assert_eq!(event_of(C::ShotPistol), Some((E::Fire, Some(rustvr_audio::Sound::ShotPistol))));
     }
 }
 

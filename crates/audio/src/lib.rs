@@ -165,10 +165,14 @@ pub enum Event {
     KnifeThrow,
     /// A thrown knife sinking in.
     KnifeStick,
+    /// A bite of what's held at the mouth, and a gulp of a drink: a game's own chewing and
+    /// swallowing (the runtime has no sound of its own for them).
+    Bite,
+    Gulp,
 }
 
 impl Event {
-    pub const COUNT: usize = 32;
+    pub const COUNT: usize = 34;
     pub const ALL: [Event; Event::COUNT] = [
         Event::Grab,
         Event::Release,
@@ -202,6 +206,8 @@ impl Event {
         Event::Explosion,
         Event::KnifeThrow,
         Event::KnifeStick,
+        Event::Bite,
+        Event::Gulp,
     ];
 
     /// Its key in `sounds.toml`.
@@ -239,6 +245,8 @@ impl Event {
             Event::Explosion => "explosion",
             Event::KnifeThrow => "knife_throw",
             Event::KnifeStick => "knife_stick",
+            Event::Bite => "bite",
+            Event::Gulp => "gulp",
         }
     }
 
@@ -279,7 +287,7 @@ impl Event {
             Event::GrenadeThrow | Event::KnifeThrow => Sound::GloveFlick,
             Event::Explosion => Sound::ShotShotgun,
             Event::KnifeStick => Sound::Impact,
-            Event::FireTail | Event::Casing => return None,
+            Event::FireTail | Event::Casing | Event::Bite | Event::Gulp => return None,
         })
     }
 
@@ -310,6 +318,7 @@ impl Event {
             // A shot's tail and its casings keep the game's level relative to the shot.
             Event::FireTail => 0.25,
             Event::Casing => 0.2,
+            Event::Bite | Event::Gulp => 0.25,
         }
     }
 }

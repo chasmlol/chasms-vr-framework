@@ -2865,11 +2865,11 @@ impl Rig {
             let (time, cue) = if d.flags & (INV_EAT | INV_DRINK) != 0 && self.physics.distance_to(collider, mouth) < pockets::MOUTH_REACH * wpm {
                 (h.mouth_time, if d.flags & INV_EAT != 0 { Cue::Bite } else { Cue::Gulp })
             } else if d.flags & INV_READ != 0 && pockets::readable(head, self.map.inv_point(pos)) {
-                (h.read_time, Cue::Gulp)
+                (h.read_time, Cue::Hold)
             } else if d.flags & INV_COAT != 0 && weapon.is_some_and(|w| self.physics.distance_between(collider, w) < pockets::COAT_REACH * wpm) {
-                (h.coat_time, Cue::Gulp)
+                (h.coat_time, Cue::Hold)
             } else {
-                (-1.0, Cue::Gulp)
+                (-1.0, Cue::Hold)
             };
             if time < 0.0 {
                 d.armed = true;
