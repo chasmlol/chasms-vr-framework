@@ -707,7 +707,9 @@
 
 
 
-#define RVR_MAX_HUD_ELEMENTS 32
+#define RVR_MAX_HUD_ELEMENTS 48
+
+#define RVR_MAX_HUD_GROUPS 8
 
 /**
  * Spoken lines: a caption strip low in view (13 degrees under gaze), lazily following the head.
@@ -758,6 +760,86 @@
 #define RVR_HUD_HELD 9
 
 /**
+ * A piece of a menu: placed by its group (the element's `group`), not by its role.
+ */
+#define RVR_HUD_MENU 10
+
+/**
+ * The compass (a heading strip): low in front of the body, lazily following the head's yaw, where
+ * a glance down finds it.
+ */
+#define RVR_HUD_COMPASS 11
+
+/**
+ * What's said about a foe (its health): over the thing the layout's `target` says, facing the eye.
+ */
+#define RVR_HUD_TARGET 12
+
+/**
+ * What the eyes are on (a crosshair, what it can activate: "Open Door", a name): where the head
+ * looks, its `offset` from that point (the group's units), smoothed so it doesn't shake with the
+ * head, and out at the distance of the thing it's about (the layout's `gaze`), as big to the eye
+ * wherever it is. Pieces drawn there are small, so it stays out of the way.
+ */
+#define RVR_HUD_GAZE 13
+
+/**
+ * The laser points at it: where it hits is where the game's cursor goes (and the trigger clicks).
+ */
+#define RVR_HUDE_POINT (1 << 0)
+
+/**
+ * Its edges fade out over a few texels, so a piece cut from a bigger picture (the game's parchment)
+ * doesn't end in a hard line.
+ */
+#define RVR_HUDE_SOFT (1 << 1)
+
+/**
+ * It's solid where the game drew it: a page (the game's parchment) is never seen through, whatever
+ * coverage the game's blending left in the HUD texture's alpha. Where it drew half or more it's
+ * opaque, in its own colour; fainter edges (a torn edge, a letter's) stay soft.
+ */
+#define RVR_HUDE_SOLID (1 << 2)
+
+/**
+ * Beside a thing in the world (`HudGroup::at`, `radius`): a container, a merchant, a speaker. At the
+ * thing's distance (within the laser's comfortable range), on its `side`, under the eyes, facing
+ * them; it stays put in the world while the menu is open.
+ */
+#define RVR_ANCHOR_WORLD 1
+
+/**
+ * In front of the player, where they faced when it opened: their own menus (inventory, magic, the
+ * map, the journal, pause). It comes round after a big turn.
+ */
+#define RVR_ANCHOR_PLAYER 2
+
+/**
+ * A question or a count over another menu: in front of the eyes where they look, a little nearer
+ * than what's behind it.
+ */
+#define RVR_ANCHOR_POPUP 3
+
+#define RVR_SIDE_RIGHT 0
+
+#define RVR_SIDE_LEFT 1
+
+/**
+ * Under it (a speaker's line under their face).
+ */
+#define RVR_SIDE_BELOW 2
+
+/**
+ * In front of it, between it and the eyes.
+ */
+#define RVR_SIDE_FRONT 3
+
+/**
+ * Over it (a speaker's name over their head).
+ */
+#define RVR_SIDE_ABOVE 4
+
+/**
  * Don't draw what no element covers.
  */
 #define RVR_HUDL_REST_HIDDEN (1 << 0)
@@ -767,6 +849,17 @@
  * blended additively.
  */
 #define RVR_HUDL_ADDITIVE (1 << 1)
+
+/**
+ * The HUD texture's alpha is the game's coverage (its colour premultiplied by it, over clear): every
+ * element is drawn over the view as the game drew it, its art as opaque as the game made it.
+ */
+#define RVR_HUDL_ALPHA (1 << 2)
+
+/**
+ * The runtime's own settings float beside this menu (the game's pause menu).
+ */
+#define RVR_HUDL_SETTINGS (1 << 3)
 
 #define RVR_MAX_ITEM_INFOS 48
 

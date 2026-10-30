@@ -237,6 +237,25 @@ VOut VSQuad(uint id : SV_VertexID) {
     return o;
 }
 
+// The texture over this pixel's whole footprint: a panel seen smaller than its texture (a game's UI
+// drawn at the eye's resolution and shown a few degrees across) is averaged over the texels it
+// covers rather than sampled at one, so text doesn't shimmer. (The texture has no smaller copies of
+// itself to sample.)
+float4 sample_footprint(float2 uv) {
+    uint w, h;
+    tex.GetDimensions(w, h);
+    float2 dx = ddx(uv), dy = ddy(uv);
+    float2 size = float2(w, h);
+    float n = clamp(ceil(max(length(dx * size), length(dy * size))), 1, 4);
+    float4 acc = 0;
+    [loop] for (float a = 0; a < n; a++) {
+        [loop] for (float b = 0; b < n; b++) {
+            acc += tex.SampleLevel(samp, uv + dx * ((a + 0.5) / n - 0.5) + dy * ((b + 0.5) / n - 0.5), 0);
+        }
+    }
+    return acc / (n * n);
+}
+
 float4 PSQuad(VOut i) : SV_Target {
     int mode = (int)params.x;
     if (mode == 1) return color;
@@ -252,6 +271,21 @@ float4 PSQuad(VOut i) : SV_Target {
         float g = pow(saturate(1 - r), 2.5) + 0.6 * saturate(1 - r * 3);
         return float4(color.rgb * g, 0);
     }
+    if (mode == 5) {
+        // A beam of light (the laser): a bright thread along its middle (`color`) in a glow
+        // (`uv_rect`) that fades to nothing at its sides, added to what's behind (the thread a
+        // little opaque too, so it reads over a pale page). It comes in from the hand, fades out
+        // along its length when it points at nothing (`params.z`), and motes of light run out along
+        // it (`params.y`: seconds; `params.w`: its length in metres).
+        float across = saturate(1 - abs(i.local.x));
+        float d = (1 - i.local.y) * 0.5 * params.w;
+        float ends = saturate(d / 0.05) * lerp(1, saturate(1 - d / max(params.w, 1e-3)), params.z);
+        float m = frac(d / 0.25 - params.y * 4);
+        float mote = pow(saturate(1 - abs(m - 0.5) * 8), 2);
+        float thread = pow(across, 6);
+        float3 c = (color.rgb * thread + uv_rect.rgb * across * across * 0.35) * (1 + 1.5 * mote) * ends;
+        return float4(c, thread * 0.5 * ends);
+    }
     if (mode == 3) {
         float r = length(i.local);
         if (r > 1) discard;
@@ -265,7 +299,17 @@ float4 PSQuad(VOut i) : SV_Target {
         float vignette = saturate((1 - r) * 12);
         return float4(c * vignette, 1);
     }
-    float4 t = tex.Sample(samp, i.uv) * params.z;
+    float4 t = sample_footprint(i.uv);
+    // Solid (`color.z`): covered half or more is opaque, in its own colour (premultiplied again by
+    // the coverage it's given); fainter edges stay soft.
+    if (color.z > 0.5) {
+        float a = saturate(t.a * 2);
+        t = float4(t.rgb * (a / max(t.a, 1e-3)), a);
+    }
+    t *= params.z;
+    // A soft edge: faded out over the last part of the quad (`color.xy` of its half-width and
+    // half-height).
+    if (color.x > 0) t *= smoothstep(0, color.x, 1 - abs(i.local.x)) * smoothstep(0, color.y, 1 - abs(i.local.y));
     // Added to what's behind (a texture whose alpha means nothing): premultiplied with no coverage.
     if (params.w > 0.5) t.a = 0;
     return t;
@@ -375,6 +419,7 @@ const MODE_TEXTURE: f32 = 0.0;
 const MODE_SOLID: f32 = 1.0;
 const MODE_DOT: f32 = 2.0;
 const MODE_GLOW: f32 = 4.0;
+const MODE_BEAM: f32 = 5.0;
 const MODE_LENS: f32 = 3.0;
 
 /// One textured panel to draw.
@@ -386,12 +431,16 @@ pub struct PanelLayer<'a> {
     pub uv: [f32; 4],
     /// Its colour is added to what's behind it (its alpha is ignored).
     pub additive: bool,
+    /// Its edges fade out over this part of its half-width and half-height (0: a hard edge).
+    pub soft: [f32; 2],
+    /// Solid where its texture is half covered or more (`HUDE_SOLID`).
+    pub solid: bool,
 }
 
 impl<'a> PanelLayer<'a> {
     /// The whole texture on `panel`.
     pub fn whole(panel: Panel, srv: &'a ID3D11ShaderResourceView) -> Self {
-        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0], additive: false }
+        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0], additive: false, soft: [0.0; 2], solid: false }
     }
 }
 
@@ -421,11 +470,36 @@ pub struct Laser {
     pub end: Vec3,
     /// It hits a panel (draw the dot).
     pub hit: bool,
+    /// The trigger is held: the dot pressed in.
+    pub down: bool,
+    /// Its colours (linear): the bright thread along its middle, and the glow round it and its dot.
+    pub core: Vec3,
+    pub glow: Vec3,
+    /// Seconds (any start), for the light running along it.
+    pub time: f32,
+}
+
+impl Laser {
+    /// The runtime's own colours, for a game that doesn't give its own (`HudLayout::pointer`).
+    pub const CORE: Vec3 = Vec3::new(0.6, 0.9, 1.0);
+    pub const GLOW: Vec3 = Vec3::new(0.25, 0.75, 1.0);
+}
+
+/// A colour given as `0xRRGGBBAA` in sRGB, in linear light (its alpha left out).
+pub fn srgb(rgba: u32) -> Vec3 {
+    let f = |c: u32| {
+        let c = (c & 0xFF) as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    Vec3::new(f(rgba >> 24), f(rgba >> 16), f(rgba >> 8))
 }
 
 #[derive(Default)]
 pub struct Layers<'a> {
     pub lens: Option<LensLayer<'a>>,
+    /// Panels in the world (a game's menus floating there): drawn before the body, which is nearer
+    /// (the hands are never covered by a menu they're in front of).
+    pub world_panels: Vec<PanelLayer<'a>>,
     pub panels: Vec<PanelLayer<'a>>,
     /// Panels only the headset shows: never the desktop view, never a recording (OBS's window).
     pub private: Vec<PanelLayer<'a>>,
@@ -633,6 +707,18 @@ impl Compositor {
             }
             ctx.PSSetShaderResources(0, Some(&[None, None, None, None]));
         }
+        if !layers.world_panels.is_empty() {
+            self.bind(gpu, target);
+            unsafe {
+                ctx.OMSetBlendState(&self.premul, Some(&[0.0; 4]), 0xFFFF_FFFF);
+                ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            }
+            self.quad.bind(ctx);
+            for p in &layers.world_panels {
+                self.draw_panel(gpu, &cb, p);
+            }
+            unsafe { ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
+        }
         self.cb.update(ctx, &cb);
         between(gpu);
         self.bind(gpu, target);
@@ -657,13 +743,7 @@ impl Compositor {
         }
         // (The headset's own, `private`, only in the headset: `comfort` is only for it.)
         for p in layers.panels.iter().chain(layers.private.iter().filter(|_| comfort)) {
-            let mut c = cb;
-            c.center = p.panel.center.extend(1.0).to_array();
-            c.axis_x = (p.panel.right * p.panel.width * 0.5).extend(0.0).to_array();
-            c.axis_y = (p.panel.up * p.panel.height * 0.5).extend(0.0).to_array();
-            c.params = [MODE_TEXTURE, 0.0, p.opacity, if p.additive { 1.0 } else { 0.0 }];
-            c.uv_rect = p.uv;
-            self.draw_quad(gpu, &c, Some(p.srv));
+            self.draw_panel(gpu, &cb, p);
         }
         for (pos, rot) in &layers.markers {
             self.draw_ribbon(gpu, &cb, eye_pos, *pos, *pos + *rot * Vec3::Z * 0.08, 0.012, Vec4::new(0.35, 0.55, 0.65, 0.9));
@@ -682,10 +762,23 @@ impl Compositor {
             self.draw_ribbon(gpu, &cb, eye_pos, r.a, r.b, r.width, r.color);
         }
         if let Some(l) = &layers.laser {
-            let color = if l.hit { Vec4::new(0.25, 0.75, 1.0, 0.7) } else { Vec4::new(0.25, 0.5, 0.7, 0.35) };
-            self.draw_ribbon(gpu, &cb, eye_pos, l.origin, l.end, 0.003, color);
+            // A thread of light in a glow, fainter and fading out when it points at nothing.
+            let k = if l.hit { 1.0 } else { 0.5 };
+            self.draw_beam(gpu, &cb, eye_pos, l, 0.012, k);
             if l.hit {
-                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.012, Vec4::new(0.6, 0.9, 1.0, 1.0));
+                // Where it points: the light it casts, and a dot like the game's own cursor (a dark
+                // edge round the glow's colour, a bright heart), pressed in while the trigger's held.
+                let r = if l.down { 0.75 } else { 1.0 };
+                let mut c = cb;
+                c.center = l.end.extend(1.0).to_array();
+                c.axis_x = (eye_rot * Vec3::X * 0.025 * r).extend(0.0).to_array();
+                c.axis_y = (eye_rot * Vec3::Y * 0.025 * r).extend(0.0).to_array();
+                c.color = (l.glow * 0.6).extend(0.0).to_array();
+                c.params = [MODE_GLOW, 0.0, 1.0, 0.0];
+                self.draw_quad(gpu, &c, None);
+                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.0055 * r, Vec4::new(0.01, 0.006, 0.0, 0.85));
+                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.0042 * r, l.glow.extend(1.0));
+                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.002 * r, l.core.extend(1.0));
             }
         }
         let k = &layers.comfort;
@@ -705,6 +798,17 @@ impl Compositor {
             ctx.PSSetShaderResources(0, Some(&[None]));
             ctx.OMSetRenderTargets(None, None);
         }
+    }
+
+    fn draw_panel(&self, gpu: &Gpu, cb: &DrawCb, p: &PanelLayer) {
+        let mut c = *cb;
+        c.center = p.panel.center.extend(1.0).to_array();
+        c.axis_x = (p.panel.right * p.panel.width * 0.5).extend(0.0).to_array();
+        c.axis_y = (p.panel.up * p.panel.height * 0.5).extend(0.0).to_array();
+        c.params = [MODE_TEXTURE, 0.0, p.opacity, if p.additive { 1.0 } else { 0.0 }];
+        c.color = [p.soft[0], p.soft[1], if p.solid { 1.0 } else { 0.0 }, 0.0];
+        c.uv_rect = p.uv;
+        self.draw_quad(gpu, &c, Some(p.srv));
     }
 
     fn draw_quad(&self, gpu: &Gpu, cb: &DrawCb, srv: Option<&ID3D11ShaderResourceView>) {
@@ -729,6 +833,24 @@ impl Compositor {
         c.axis_y = along.extend(0.0).to_array();
         c.color = color.to_array();
         c.params = [MODE_SOLID, 0.0, 1.0, 0.0];
+        self.draw_quad(gpu, &c, None);
+    }
+
+    /// The laser's beam, `width` wide, turned to the eye, its light `k` as strong.
+    fn draw_beam(&self, gpu: &Gpu, base: &DrawCb, eye: Vec3, l: &Laser, width: f32, k: f32) {
+        let mid = (l.origin + l.end) * 0.5;
+        let along = (l.end - l.origin) * 0.5;
+        if along.length_squared() < 1e-10 {
+            return;
+        }
+        let side = along.cross(eye - mid).normalize_or_zero() * width * 0.5;
+        let mut c = *base;
+        c.center = mid.extend(1.0).to_array();
+        c.axis_x = side.extend(0.0).to_array();
+        c.axis_y = along.extend(0.0).to_array();
+        c.color = (l.core * k).extend(1.0).to_array();
+        c.uv_rect = (l.glow * k).extend(0.0).to_array();
+        c.params = [MODE_BEAM, l.time, if l.hit { 0.0 } else { 1.0 }, along.length() * 2.0];
         self.draw_quad(gpu, &c, None);
     }
 
