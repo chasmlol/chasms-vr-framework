@@ -100,6 +100,15 @@ pub fn finger_segments(bones: Option<&[asset::Bone]>, joints: &[Pose; JOINT_COUN
 }
 
 /// Everything about the player's body for one frame (tracking space).
+/// The game's water near the player ([`Avatar::set_water`]): its surface's height in tracking
+/// space, its colour (as the game's shaders take it) and how far through it light goes (metres).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Water {
+    pub surface: f32,
+    pub color: [f32; 3],
+    pub visibility: f32,
+}
+
 pub struct AvatarFrame<'a> {
     pub joints: &'a [Pose; JOINT_COUNT],
     pub fingers: [Fingers; 2],
@@ -232,6 +241,12 @@ impl Avatar {
     /// effect at the next [`Avatar::set_game_shading`].
     pub fn set_in_frame(&mut self, in_frame: bool) {
         self.renderer.set_in_frame(in_frame);
+    }
+
+    /// The game's water where the player is, from now on (None: none): its surface is in the
+    /// game's depth, but the body under it is seen through it, the water's colour over it.
+    pub fn set_water(&mut self, water: Option<Water>) {
+        self.renderer.set_water(water);
     }
 
     /// Testing: draw the body in one flat colour and what it holds in another (linear; HDR in the

@@ -463,6 +463,14 @@ impl PlayerBody {
     }
 
     /// The held gun's laser from now on (None: none), drawn with the body.
+    /// The game's water near the player (tracking space), from now on: the body under its
+    /// surface is seen through it.
+    pub fn set_water(&mut self, water: Option<rustvr_avatar::Water>) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.set_water(water);
+        }
+    }
+
     pub fn set_laser(&mut self, gpu: &Gpu, laser: Option<rustvr_avatar::LaserBeam>) {
         if let Some(a) = self.avatar.as_mut() {
             a.set_laser(gpu, laser);

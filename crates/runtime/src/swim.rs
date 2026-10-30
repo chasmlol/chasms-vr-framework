@@ -18,6 +18,8 @@
 //!   is floated back up by the game); under water there's no buoyancy: a still swimmer hangs where
 //!   they are, as the game has them.
 //! * **Feel**: a pushing hand buzzes with the water's resistance; a hand slapping into it, a pulse.
+//!   Holding the breath with little of it left, the heart beats in both hands, faster and harder as
+//!   it runs out (the game's own meter and gasp say so too): time to come up.
 
 use glam::{Quat, Vec3};
 use rustvr_ik::{HandOffsets, Side};
@@ -50,6 +52,9 @@ const FIST: f32 = 0.6;
 const SLAP: f32 = 0.8;
 /// While a hand pushes, its buzz is renewed this often (seconds), each pulse a little longer.
 const BUZZ_EVERY: f64 = 0.03;
+/// Under the water with less breath than this left, the heart beats in the hands: a beat every
+/// `HEART[1]` seconds at the warning's start, `HEART[2]` at none left.
+const HEART: [f32; 3] = [0.3, 1.1, 0.5];
 
 /// What the strokes did this frame.
 #[derive(Clone, Copy, Debug, Default)]
@@ -97,6 +102,9 @@ pub struct Swim {
     said: bool,
     /// When the strokes were last logged.
     logged: f64,
+    /// When the heart next beats (and the beat's second thump), while the breath runs low.
+    beat: f64,
+    thump: Option<(f64, f32)>,
 }
 
 fn yaw_of(q: Quat) -> f32 {
@@ -154,6 +162,7 @@ impl Swim {
         }
         self.last = Some((pos, head, yaw));
 
+        self.heart(water, inp.now, inp.paused);
         if !swimming || !inp.enabled || inp.paused || full <= 0.0 {
             self.velocity = Vec3::ZERO;
             self.effort = 0.0;
@@ -221,5 +230,32 @@ impl Swim {
             );
         }
         SwimOut { velocity: self.velocity, effort: self.effort, swimming, full_speed: full }
+    }
+
+    /// The heart in the hands while the breath runs low under the water: a beat (two thumps, the
+    /// second softer) every second or so, faster and harder as it runs out.
+    fn heart(&mut self, water: Option<WaterState>, now: f64, paused: bool) {
+        if let Some((at, amp)) = self.thump
+            && now >= at
+        {
+            self.thump = None;
+            for h in 0..2 {
+                self.pulses.push((h, 0.05, 55.0, amp));
+            }
+        }
+        let low = water.filter(|w| w.flags & WATER_HEAD_UNDER != 0 && w.breath < HEART[0] && !paused);
+        let Some(w) = low else {
+            self.beat = 0.0;
+            return;
+        };
+        let left = (w.breath / HEART[0]).clamp(0.0, 1.0);
+        if now >= self.beat {
+            let amp = 0.35 + 0.45 * (1.0 - left);
+            for h in 0..2 {
+                self.pulses.push((h, 0.06, 55.0, amp));
+            }
+            self.thump = Some((now + 0.15, amp * 0.6));
+            self.beat = now + (HEART[2] + (HEART[1] - HEART[2]) * left) as f64;
+        }
     }
 }

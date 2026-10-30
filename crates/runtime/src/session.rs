@@ -782,6 +782,14 @@ impl Session {
         for &(hand, seconds, frequency, amplitude) in &self.swim.pulses {
             self.backend.haptic(hand, seconds, frequency, amplitude);
         }
+        // The game's water near the player, for the body: what's under its surface is seen
+        // through it (in tracking space: the mapping turns about the vertical only).
+        let plane = water.filter(|w| w.flags & WATER_HERE != 0 && w.visibility > 0.0).zip(self.map_now).map(|(w, m)| rustvr_avatar::Water {
+            surface: m.origin.y + (w.surface - m.anchor.y) / m.world_per_meter,
+            color: w.color,
+            visibility: w.visibility / m.world_per_meter,
+        });
+        self.body.set_water(plane);
         if self.swim_out.swimming && self.settings.current.input.arm_swimming {
             out.intents.flags |= INT_SWIM;
             out.intents.swim = self.swim_out.velocity.to_array();

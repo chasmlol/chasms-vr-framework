@@ -681,7 +681,11 @@ pub struct WaterState {
     pub swim_speed: f32,
     /// Breath left, 0..1 (1: full, or the player can breathe here).
     pub breath: f32,
-    pub _pad: [f32; 4],
+    /// How the water looks from above, for what the runtime draws under its surface: its colour
+    /// (as the game's shaders take it, 0..1) and how far through it light goes before it's all the
+    /// water's colour (metres; 0: not given).
+    pub color: [f32; 3],
+    pub visibility: f32,
 }
 /// The player's cell has water: `surface` is given.
 pub const WATER_HERE: u32 = 1 << 0;
