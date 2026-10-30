@@ -57,6 +57,8 @@ cbuffer Frame : register(b0) {
     float4 ghost;        // rgb, opacity
     float4 plain;        // rgb, w: 1 for the plain look (one colour, no textures, a headlamp), 2 for one flat colour (testing)
     float4 post;         // x: the game's bloom and lens bound
+    float4 water;        // x: the game's water given, y: its surface's height, z: how far light goes through it (metres)
+    float4 water_color;  // the water's colour
 };
 cbuffer Bones : register(b1) {
     float4 bone_rows[MAX_BONES * 3];   // bind model space -> tracking space, 3x4 rows
@@ -259,9 +261,35 @@ float blood_at(float3 p, out float wet) {
 // The colour of blood that has dried as far as `wet` says (display range).
 float3 blood_color(float wet) { return lerp(splat_color.rgb * float3(0.42, 0.36, 0.34), splat_color.rgb, saturate(wet * 1.4)); }
 
+// The game's water's surface is in its depth, but what's under it is seen through it: a sample
+// of the game's depth on the surface (within a few centimetres of it), with the eye and the
+// fragment either side of it, doesn't hide the fragment. `through`: how far the light goes through
+// the water from the surface to it, looking down into it (0 otherwise).
+bool behind_game_water(float4 svpos, float z, float3 world, out float through) {
+    through = 0;
+    if (depth.x == 0) return false;
+    uint w, h;
+    game_depth.GetDimensions(w, h);
+    int2 px = int2(svpos.xy * float2(w, h) / target_size.xy);
+    float g = game_depth.Load(int3(px, 0)) * depth.y;
+    if (!(g > 0 && z > g + depth.z + depth.w * g)) return false;
+    if (water.x == 0) return true;
+    float3 hit = eye_pos.xyz + (world - eye_pos.xyz) * (g / max(z, 1e-4));
+    bool eye_above = eye_pos.y > water.y;
+    if (eye_above == (world.y > water.y) || abs(hit.y - water.y) > 0.06) return true;
+    if (eye_above) through = length(world - hit);
+    return false;
+}
+
+// The water's colour over a colour seen `through` metres through it.
+float3 under_water(float3 c, float through) {
+    return water.x == 0 ? c : lerp(c, water_color.rgb, saturate(through / max(water.z, 0.05)));
+}
+
 float4 PSMain(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     if (i.vis < 0) discard;
-    if (behind_game(i.pos, i.view_z)) discard;
+    float through;
+    if (behind_game_water(i.pos, i.view_z, i.world, through)) discard;
     if (plain.w > 1.5) return float4(plain.rgb, atlas.w > 0 ? i.view_z : 1);
     float3 base = tint.rgb;
     if (plain.w > 0) {
@@ -289,7 +317,7 @@ float4 PSMain(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     // A faint rim that doesn't depend on the game's light, so hands still read in the dark.
     float rim = pow(1 - saturate(abs(dot(n, v))), 3);
     c += rim * (0.035 + 0.4 * ambient.rgb) * (0.4 + 0.6 * base);
-    return float4(c, 1);
+    return float4(under_water(c, through), 1);
 }
 
 float3 to_world(float3 v) { return float3(dot(view_to_world[0].xyz, v), dot(view_to_world[1].xyz, v), dot(view_to_world[2].xyz, v)); }
@@ -639,8 +667,10 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     float3 dpx = ddx(i.world), dpy = ddy(i.world);
     float2 dux = ddx(i.uv), duy = ddy(i.uv);
     if (i.vis < 0) discard;
-    // (A strap lying on the game's model may be a little behind its surface: extra.x.)
-    if (behind_game(i.pos, i.view_z - extra.x)) discard;
+    // (A strap lying on the game's model may be a little behind its surface: extra.x. What's under
+    // the game's water is seen through its surface.)
+    float through;
+    if (behind_game_water(i.pos, i.view_z - extra.x, i.world, through)) discard;
     if (plain.w > 1.5) return float4(plain.rgb, 1);
     float4 base = albedo.Sample(samp, i.uv);
     if (material.y > 0 && base.a < 0.5) discard;
@@ -701,7 +731,7 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     // (The hair's light isn't capped: its shader adds the ambient to its lights as they are.)
     float3 col = saturate(c * (hair ? amb.rgb + d : saturate(amb.rgb + glow + d)) + s);
     if (fog_fade.y != 0) col = lerp(col, fog_color.rgb, saturate(length(eye_pos.xyz - i.world) * fog_fade.y + fog_fade.x));
-    return float4(m_display_to_linear(col), 1);
+    return float4(m_display_to_linear(under_water(col, through)), 1);
 }
 
 // The game's effect shader over something held (Oblivion's EFSH membrane: an enchanted weapon's
@@ -977,6 +1007,8 @@ struct FrameCb {
     ghost: [f32; 4],
     plain: [f32; 4],
     post: [f32; 4],
+    water: [f32; 4],
+    water_color: [f32; 4],
 }
 
 /// The plain look's colour (linear): a light grey-blue mannequin.
@@ -1691,6 +1723,8 @@ pub struct Renderer {
     in_frame: bool,
     /// Testing: the body, and what it holds, each in one flat colour ([`Renderer::set_flat`]).
     flat: Option<([f32; 3], [f32; 3])>,
+    /// The game's water near the player (`Avatar::set_water`).
+    water: Option<crate::Water>,
     /// The held gun's laser ([`Renderer::set_laser`]), its pass and light added over what's there,
     /// the game's textures for it (loaded with the first laser; None inside: not there), and the
     /// clock its dust drifts by.
@@ -1758,6 +1792,7 @@ impl Renderer {
             depth: Vec::new(),
             in_frame: false,
             flat: None,
+            water: None,
             laser: None,
             laser_textures: None,
             laser_clock: std::time::Instant::now(),
@@ -1816,6 +1851,10 @@ impl Renderer {
     /// game's frame), so a picture of them can be found exactly in each frame; None: as they are.
     pub fn set_flat(&mut self, colors: Option<([f32; 3], [f32; 3])>) {
         self.flat = colors;
+    }
+
+    pub fn set_water(&mut self, water: Option<crate::Water>) {
+        self.water = water;
     }
 
     /// The game's lighting for this frame (None: the runtime's own look).
@@ -1981,7 +2020,7 @@ impl Renderer {
         main.pose(&input);
         main.upload_body(ctx, show);
 
-        let mut cb = frame_constants(width, height, eye, fov, frame, depth.as_ref());
+        let mut cb = frame_constants(width, height, eye, fov, frame, depth.as_ref(), self.water.as_ref());
         if let Some((c, _)) = self.flat {
             cb.plain = [c[0], c[1], c[2], 2.0];
         }
@@ -2117,7 +2156,7 @@ impl Renderer {
         let main = main_model(body, arms, show);
         main.pose(&pose_input(frame));
         main.upload_body(ctx, show);
-        self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, frame, depth.as_ref()));
+        self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, frame, depth.as_ref(), self.water.as_ref()));
         let dsv = self.depth_for(gpu, width, height)?;
         unsafe {
             ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
@@ -2158,7 +2197,7 @@ impl Renderer {
         let main = main_model(body, arms, show);
         main.pose(&pose_input(frame));
         main.upload_body(ctx, show);
-        let mut cb = frame_constants(width, height, eye, fov, frame, None);
+        let mut cb = frame_constants(width, height, eye, fov, frame, None, None);
         cb.view_proj = (proj * view_matrix(eye)).to_cols_array();
         self.frame_cb.update(ctx, &cb);
         unsafe { ctx.OMSetRenderTargets(None, dsv) };
@@ -2203,7 +2242,7 @@ impl Renderer {
         main.upload_then(ctx, &pose_input(then), show);
         main.pose(&pose_input(now));
         main.upload_body(ctx, show);
-        self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, now, depth.as_ref()));
+        self.frame_cb.update(ctx, &frame_constants(width, height, eye, fov, now, depth.as_ref(), self.water.as_ref()));
         let mut cb = SourcesCb::zeroed();
         for (k, s) in sources.iter().take(2).enumerate() {
             let view = view_matrix(&s.eye);
@@ -2699,7 +2738,7 @@ fn additive_blend(gpu: &Gpu) -> Result<ID3D11BlendState> {
     s.context("no blend state")
 }
 
-fn frame_constants(width: u32, height: u32, eye: &Pose, fov: &Fov, frame: &AvatarFrame, depth: Option<&DepthInput>) -> FrameCb {
+fn frame_constants(width: u32, height: u32, eye: &Pose, fov: &Fov, frame: &AvatarFrame, depth: Option<&DepthInput>, water: Option<&crate::Water>) -> FrameCb {
     let view = view_matrix(eye);
     let l = &frame.light;
     let unset = l.sun_color == [0.0; 3] && l.ambient == [0.0; 3];
@@ -2724,6 +2763,8 @@ fn frame_constants(width: u32, height: u32, eye: &Pose, fov: &Fov, frame: &Avata
         ghost: GHOST,
         plain: [PLAIN[0], PLAIN[1], PLAIN[2], frame.plain as u32 as f32],
         post: [depth.is_some_and(|d| d.bloom.is_some() && d.lens.is_some()) as u32 as f32, 0.0, 0.0, 0.0],
+        water: water.map_or([0.0; 4], |w| [1.0, w.surface, w.visibility, 0.0]),
+        water_color: water.map_or([0.0; 4], |w| [w.color[0], w.color[1], w.color[2], 0.0]),
     }
 }
 

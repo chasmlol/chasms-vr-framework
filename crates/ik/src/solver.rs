@@ -9,6 +9,7 @@ use crate::legs::{self, Feet, FeetInput};
 use crate::math::{clamp_dt, flat, frame_yz, sanitize_pos, sanitize_rot, smoothing, wrap_angle, yaw_of, UP};
 use crate::skeleton::Skeleton;
 use crate::spine::{self, ChainInput, MAX_PITCH};
+use crate::swim::{self, SwimState};
 use crate::torso::{RootYaw, TorsoYaw};
 use crate::{BodyOutput, BodyParams, Calibration, Pose, Saddle, Side, StraightArms, TrackedInput};
 
@@ -38,6 +39,8 @@ struct State {
     hip_drop: f32,
     /// Each hand's last target in upper chest space, which an untracked hand eases on from.
     loose_hand: [Pose; 2],
+    /// The body in water: floating, and how far into its swimming pose.
+    swim: SwimState,
 }
 
 pub struct BodySolver {
@@ -110,6 +113,7 @@ impl BodySolver {
                     locomotion: Vec3::ZERO,
                     seated: false,
                     elbows: [None; 2],
+                    swim: None,
                 };
                 let mut out = s.solve(&input);
                 for _ in 0..30 {
@@ -159,6 +163,7 @@ impl BodySolver {
             locomotion: Vec3::ZERO,
             seated: false,
             elbows: [None, None],
+            swim: None,
         };
         let out = self.solve_frame(&neutral);
         self.state = None;
@@ -200,6 +205,7 @@ impl BodySolver {
                 head_speed: 0.0,
                 hip_drop: 0.0,
                 loose_hand: [Side::Left, Side::Right].map(|side| rest_hand(skel, side)),
+                swim: SwimState::default(),
             }
         });
         let head_yaw = if facing.length_squared() > 1e-8 { yaw_of(facing) } else { state.torso.yaw };
@@ -242,6 +248,9 @@ impl BodySolver {
             let palms = grips.map(|g| g.map(|g| g.pos));
             let torso_yaw = state.torso.update(p, dt, s, eyes, head_joint, head_yaw, palms);
             let root_yaw = state.root.update(p, dt, torso_yaw, moving);
+            // In water the body floats, leaning into the way it swims (`swim`).
+            state.swim.update(dt, input.swim.as_ref(), torso_yaw);
+            let floating = state.swim.weight;
 
             // ---- spine ----
             let h0 = if input.seated { skel.seated_eye_height(p.seat_height) } else { skel.eye_height };
@@ -249,6 +258,7 @@ impl BodySolver {
             // without the body going anywhere. This is the eye height with a level gaze.
             let level_eyes_y = head_joint.y - skel.eye_to_head.y;
             let target = spine::target_pitch(p, skel, level_eyes_y, h0, head_pitch);
+            let target = target + (state.swim.lean() - target) * floating;
             state.pitch += (target - state.pitch) * smoothing(dt, p.spine_tau);
             let chain_at = |pitch| spine::build(skel, &ChainInput { head_joint, head_rot, torso_yaw, root_yaw, pitch });
             let mut chain = chain_at(state.pitch);
@@ -271,6 +281,10 @@ impl BodySolver {
                 (l + r) * 0.5
             });
             let feet_input = FeetInput { com, com_vel: state.com_vel, root_yaw, locomotion, seated_hips };
+            // Floating, the feet are kept under the body, where they'll stand again.
+            if input.swim.is_some() {
+                state.feet = Feet::new(p, skel, chain.hips(), root_yaw);
+            }
             state.feet.update(p, skel, dt, &feet_input);
             let lifts = state.feet.feet.map(|f| f.lift(p, s));
 
@@ -286,7 +300,7 @@ impl BodySolver {
                 range
             };
             let (low, _) = hips_range(&chain);
-            if chain.hips().y < low {
+            if chain.hips().y < low && floating < 0.5 {
                 // Too low for the knees: bend the spine further (that raises the hips), then squash it.
                 let (mut lo, mut hi) = (state.pitch, MAX_PITCH);
                 if chain_at(hi).hips().y >= low {
@@ -311,7 +325,7 @@ impl BodySolver {
             } else {
                 state.hip_drop + (excess - state.hip_drop) * smoothing(dt, p.hip_release_tau)
             };
-            let drop = state.hip_drop.min((chain.hips().y - low).max(0.0));
+            let drop = state.hip_drop.min((chain.hips().y - low).max(0.0)) * (1.0 - floating);
             if drop > 0.0 {
                 chain.shift_hips(drop);
             }
@@ -319,7 +333,11 @@ impl BodySolver {
             // ---- legs ----
             let hips_fwd = chain.rot[0] * Vec3::Z;
             let joints_at_hips = hip_joints(&chain);
-            let legs = [0, 1].map(|i| legs::solve_leg(p, skel, joints_at_hips[i], &state.feet.feet[i], lifts[i], hips_fwd));
+            let mut legs = [0, 1].map(|i| legs::solve_leg(p, skel, joints_at_hips[i], &state.feet.feet[i], lifts[i], hips_fwd));
+            if floating > 0.0 {
+                let float = state.swim.legs(skel, chain.rot[0], joints_at_hips);
+                legs = [0, 1].map(|i| swim::blend(&legs[i], &float[i], floating));
+            }
                 (chain, legs)
             }
         };

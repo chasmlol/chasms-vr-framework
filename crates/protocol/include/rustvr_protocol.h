@@ -207,6 +207,11 @@
 #define RVR_INT_HOLDING_MAG (1 << 8)
 
 /**
+ * The player is in the game's water and the runtime swims them by the arms ([`Intents::swim`]).
+ */
+#define RVR_INT_SWIM (1 << 9)
+
+/**
  * One past the highest [Action] value (some values in between are unused).
  */
 #define RVR_ACTION_COUNT 48
@@ -261,6 +266,26 @@
  * the player, and puts it away when this goes, unless the player had called it up.
  */
 #define RVR_GS_MIRROR (1 << 12)
+
+/**
+ * The player's cell has water: `surface` is given.
+ */
+#define RVR_WATER_HERE (1 << 0)
+
+/**
+ * The game has the player swimming.
+ */
+#define RVR_WATER_SWIMMING (1 << 1)
+
+/**
+ * The player's head is under the surface (the game counts their breath).
+ */
+#define RVR_WATER_HEAD_UNDER (1 << 2)
+
+/**
+ * The player walks on water (the game's water walking): no swimming.
+ */
+#define RVR_WATER_WALKING (1 << 3)
 
 #define RVR_RIG_HAS_SIGHT (1 << 0)
 

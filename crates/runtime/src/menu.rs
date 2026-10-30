@@ -545,6 +545,10 @@ fn controls(ui: &mut egui::Ui, s: &mut Settings) {
         slider(ui, "Strike speed", &mut i.melee_speed, 1.5, 5.0, " m/s", 1);
     }
     slider(ui, "Stick deadzone", &mut i.stick_deadzone, 0.0, 0.5, "", 2);
+    ui.checkbox(&mut i.arm_swimming, "Swim with your arms (in the game's water)");
+    if i.arm_swimming {
+        slider(ui, "Stroke strength", &mut i.swim_ease, 0.5, 3.0, "x", 1);
+    }
 }
 
 fn weapon(ui: &mut egui::Ui, s: &mut Settings) {

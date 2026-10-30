@@ -36,6 +36,8 @@ pub struct BodyInput<'a> {
     pub finger_give: [[f32; 5]; 2],
     /// Stick locomotion velocity in tracking space (m/s), for the legs' gait.
     pub locomotion: Vec3,
+    /// The player is swimming in the game's water: the body floats.
+    pub swim: Option<rustvr_ik::Swimming>,
     /// Standing head height as measured in tracking space (0: not known yet).
     pub eye_height: f32,
     /// Where the game's floor is in tracking space (the body stands on it, whatever the real
@@ -287,7 +289,7 @@ impl PlayerBody {
             seat: rustvr_ik::Pose { pos: s.seat.pos - down, rot: s.seat.rot },
             legs: s.legs.map(|l| l.map(|leg| leg.map(|p| p - down))),
         }));
-        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows });
+        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows, swim: inp.swim });
         for j in out.joints.iter_mut().chain(out.hand_targets.iter_mut()) {
             j.pos += down;
         }
@@ -536,6 +538,14 @@ impl PlayerBody {
     }
 
     /// The held gun's laser from now on (None: none), drawn with the body.
+    /// The game's water near the player (tracking space), from now on: the body under its
+    /// surface is seen through it.
+    pub fn set_water(&mut self, water: Option<rustvr_avatar::Water>) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.set_water(water);
+        }
+    }
+
     pub fn set_laser(&mut self, gpu: &Gpu, laser: Option<rustvr_avatar::LaserBeam>) {
         if let Some(a) = self.avatar.as_mut() {
             a.set_laser(gpu, laser);
@@ -720,6 +730,7 @@ mod tests {
                 grasps: [None; 2],
                 finger_give: [[0.0; 5]; 2],
                 locomotion: Vec3::ZERO,
+                swim: None,
                 eye_height: 1.7,
                 floor: 0.0,
                 saddle: None,
@@ -756,6 +767,7 @@ mod tests {
                     grasps: [None; 2],
                     finger_give: [[0.0; 5]; 2],
                     locomotion: Vec3::ZERO,
+                    swim: None,
                     eye_height: 1.7 + floor,
                     floor,
                     saddle: None,
@@ -797,7 +809,7 @@ mod tests {
         let grips = [Some(grip_for(Side::Left, -0.78)), Some(grip_for(Side::Right, 0.78))];
         let mut out = None;
         for _ in 0..120 {
-            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2] }));
+            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], swim: None }));
         }
         let out = out.unwrap();
         for j in [Joint::LeftUpperArm, Joint::LeftLowerArm, Joint::RightUpperArm, Joint::RightLowerArm, Joint::LeftHand, Joint::RightHand, Joint::Hips, Joint::Chest] {
