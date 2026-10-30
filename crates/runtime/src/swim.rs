@@ -11,20 +11,21 @@
 //!   faces the other hand whichever way it sweeps. The hand's velocity is measured against the
 //!   head, so walking about the room pushes nothing, and under a dead zone (a hand drifting, or
 //!   reaching about) it pushes nothing either.
-//! * **The way the head looks steers.** A stroke's pull back drives the swimmer where the head
-//!   looks, up or down too (level within a few degrees of it): breaststroke looking down to dive
-//!   down, looking up to come up. Its push up or down, or to a side, stays as it is.
-//! * **Going that way the hands slice through the water**, so the swimmer glides on. Any other way,
-//!   the hands in the water hold it back: turn and stroke a new way, and the old way's momentum
-//!   dies in the hands instead of drifting the swimmer off. Gliding out, the swimmer slows with the
-//!   water's drag (the faster, the sooner).
+//! * **The arms steer**, in any direction, whatever the head does: a stroke drives the swimmer the
+//!   way it pushes the water, so a breaststroke done downwards dives. A stroke's stronger part (the
+//!   pull) sets the way; a hand going that way through the water (the recovery reaching out again,
+//!   or hands held still in a glide) slices through it, and any other way it meets the water. So
+//!   turn and stroke a new way, and the old way's momentum dies in the hands instead of drifting the
+//!   swimmer off. A recovery as quick as its pull doesn't turn the swimmer round; a stroke clearly
+//!   harder than the recent ones does, or any stroke after a pause. Gliding out, the swimmer slows
+//!   with the water's drag (the faster, the sooner).
 //! * **Faster than the game's swimmer.** The game's swim speed (skills, attributes, load) is the
 //!   strokes' scale: a firm stroke surges the swimmer to about two and a half times it, a gentle one
 //!   to about the game's own, and nothing goes past four times it.
 //! * **Comfort**: the strokes only ever push; they never turn the player. At the surface the game
 //!   holds the player up (pushing up there does nothing), and a stroke's little drift down is held
-//!   there too: diving takes a look or a push down. Under water there's no buoyancy: a still swimmer
-//!   hangs where they are, as the game has them.
+//!   there too: diving takes a stroke that goes down. Under water there's no buoyancy: a still
+//!   swimmer hangs where they are, as the game has them.
 //! * **Feel**: a pushing hand buzzes with the water's resistance; a hand slapping into it, a pulse.
 //!   Holding the breath with little of it left, the heart beats in both hands, faster and harder as
 //!   it runs out (the game's own meter and gasp say so too): time to come up.
@@ -41,14 +42,20 @@ use crate::rig::WorldMap;
 const VELOCITY_TAU: f32 = 0.03;
 /// Below this (m/s, against the head) a hand isn't stroking: it drifts, or reaches about.
 const DEAD_ZONE: f32 = 0.1;
-/// Through the water the way the swimmer is headed (a stroke's recovery, reaching ahead, or the
-/// hands held still in a glide) a hand slices: only this share of its speed that way meets the
-/// water. Any other way (pulled back, swept, pushed up or down, the swimmer drifting off to a side)
-/// meets it fully.
+/// Through the water the strokes' way (a stroke's recovery reaching out again, or the hands held
+/// still in a glide) a hand slices: only this share of its speed that way meets the water. Any
+/// other way (pulled back, swept, the swimmer drifting off to a side) meets it fully.
 const RECOVERY: f32 = 0.1;
-/// The head looking up or down this little (degrees) is level: a stroke drives the swimmer along the
-/// surface without a careful head. Past it, up to straight up or down.
-const LEVEL: f32 = 12.0;
+/// The strokes' way is set by the strongest of them. A stroke at least `STEER[0]` as strong as the
+/// recent strongest steers it (pushing about that way), `STEER[1]` turns it round (pushing against
+/// it), and in between by how far it turns. So a recovery, even one as quick as its pull, doesn't
+/// turn the swimmer round, and a stroke meant to does.
+const STEER: [f32; 2] = [0.5, 1.3];
+/// The recent strongest stroke fades by e over this long (seconds): after a pause, any stroke sets
+/// the way.
+const STRONGEST_FADE: f32 = 3.0;
+/// The strokes' way turns to a new stroke's over this long (seconds, e-folding).
+const TURN: f32 = 0.12;
 /// A hand is in the water from its palm's last 2 cm above the surface to 4 cm under.
 const WET: [f32; 2] = [-0.02, 0.04];
 /// The palm's centre in the hand's canonical frame (`rustvr_ik`: +Y along the fingers).
@@ -77,7 +84,7 @@ const MAX_SPEED: f32 = 4.0;
 /// changes fast with the speed it gives.
 const STEP: f32 = 1.0 / 120.0;
 /// At the surface (the head out of the water) a stroke must take the player down faster than
-/// `SURFACE_HOLD[0]` m/s and `SURFACE_HOLD[1]` of their speed to dive (a look about 20 degrees
+/// `SURFACE_HOLD[0]` m/s and `SURFACE_HOLD[1]` of their speed to dive (a stroke about 7 degrees
 /// down): below it they stay at the surface. Every real stroke has a little up and down in it, and
 /// the game floats a swimmer only once they stop: a long swim at the surface sank them.
 const SURFACE_HOLD: [f32; 2] = [0.1, 0.12];
@@ -127,6 +134,11 @@ pub struct Swim {
     /// The swimming velocity (tracking space, m/s).
     velocity: Vec3,
     effort: f32,
+    /// The strokes' drive (their way, and how strong, smoothed), its way, and the recent strongest
+    /// stroke's strength (m/s of hand past the dead zone).
+    drive: Vec3,
+    way: Vec3,
+    strongest: f32,
     /// Each hand's velocity against the head (smoothed), and where the hands and the head were last
     /// frame.
     hand_vel: [Vec3; 2],
@@ -163,17 +175,6 @@ impl Swim {
             _ => None,
         };
         let head = Vec3::from_array(f.hmd.pos);
-        let head_rot = Quat::from_array(f.hmd.rot).normalize();
-        // Ahead, level: where the face looks, or, looking down, where the top of the head points (a
-        // swimmer face down in the water looks at the bottom, and swims the crown's way).
-        let face = head_rot * Vec3::Z;
-        let ahead = face + head_rot * Vec3::Y * (-face.y).max(0.0);
-        let ahead = Vec3::new(ahead.x, 0.0, ahead.z).normalize_or_zero();
-        // The way the strokes drive: ahead, turned up or down as far as the head looks past level.
-        let pitch = face.y.clamp(-1.0, 1.0).asin();
-        let level = LEVEL.to_radians();
-        let tilt = pitch.signum() * (pitch.abs() - level).max(0.0) * std::f32::consts::FRAC_PI_2 / (std::f32::consts::FRAC_PI_2 - level);
-        let gaze = ahead * tilt.cos() + Vec3::Y * tilt.sin();
         let side = [Side::Left, Side::Right];
         let palms: [Option<Vec3>; 2] = std::array::from_fn(|i| {
             let c = &f.hands[i];
@@ -202,6 +203,7 @@ impl Swim {
         if !swimming || !inp.enabled || inp.paused || full <= 0.0 {
             self.velocity = Vec3::ZERO;
             self.effort = 0.0;
+            (self.drive, self.way, self.strongest) = (Vec3::ZERO, Vec3::ZERO, 0.0);
             self.wet = [false; 2];
             return SwimOut { swimming, full_speed: full, ..Default::default() };
         }
@@ -211,8 +213,7 @@ impl Swim {
         }
         let surface = surface.unwrap_or(f32::MAX);
         let scale = full / HAND_FULL * inp.ease.clamp(0.25, 4.0);
-        // Each hand's stroke (against the head, past the dead zone, its pull back turned the way the
-        // head looks), and how far it's in the water.
+        // Each hand's stroke (against the head, past the dead zone), and how far it's in the water.
         let mut strokes = [(Vec3::ZERO, 0.0f32); 2];
         for i in 0..2 {
             let Some(palm) = palms[i] else { continue };
@@ -229,16 +230,33 @@ impl Swim {
             }
             let speed = v.length();
             let h = if speed > DEAD_ZONE { v * ((speed - DEAD_ZONE) / speed) } else { Vec3::ZERO };
-            strokes[i] = (h + (gaze - ahead) * h.dot(ahead), wet);
+            strokes[i] = (h, wet);
+        }
+        // The strokes' way: where they'd push the swimmer from still water (the hands' speeds
+        // squared, as the water's push goes), the stronger strokes steering it.
+        let push = strokes.iter().map(|&(h, wet)| -h * h.length() * wet).sum::<Vec3>();
+        let strength = push.length().sqrt();
+        let dir = push.normalize_or_zero();
+        self.strongest *= (-dt / STRONGEST_FADE).exp();
+        let agree = if self.way == Vec3::ZERO { 1.0 } else { dir.dot(self.way) };
+        if strength > 0.05 && strength >= self.strongest * (STEER[0] + (STEER[1] - STEER[0]) * (1.0 - agree) / 2.0) {
+            self.drive += (dir * strength - self.drive) * (1.0 - (-dt / TURN).exp());
+            self.way = self.drive.normalize_or_zero();
+            // (A stroke turning the way round is measured against the old way's strongest until it
+            // has.)
+            if dir.dot(self.way) > 0.0 {
+                self.strongest = self.strongest.max(strength);
+            }
         }
         // Each hand moves through the water at the swimmer's speed and its stroke's (made as strong
         // as the game's swimmer), and the water pushes back on it: the swimmer goes the other way.
-        // The way the head looks it slices through; any other way it holds the swimmer back, which
-        // is what stops them drifting off the way they went before. The swimmer's own drag glides
-        // their speed out.
+        // The strokes' way it slices through; any other way it holds the swimmer back, which is what
+        // stops them drifting off the way they went before. The swimmer's own drag glides their
+        // speed out.
+        let way = self.way;
         let through = |velocity: Vec3, h: Vec3| {
             let w = velocity + h * scale;
-            w - gaze * w.dot(gaze).max(0.0) * (1.0 - RECOVERY)
+            w - way * w.dot(way).max(0.0) * (1.0 - RECOVERY)
         };
         let steps = (dt / STEP).ceil().clamp(1.0, 12.0);
         for _ in 0..steps as usize {
@@ -276,15 +294,17 @@ impl Swim {
         if inp.now - self.logged > 1.0 && (self.effort > 0.02 || self.velocity.length() > 0.05) {
             self.logged = inp.now;
             let depth = palms.map(|p| p.map(|p| surface - p.y));
-            // (As the swimmer has them: ahead, up, to the right.)
+            // (As the swimmer has them: ahead of the face, level, up, to the right.)
+            let face = Quat::from_array(f.hmd.rot).normalize() * Vec3::Z;
+            let ahead = Vec3::new(face.x, 0.0, face.z).normalize_or_zero();
             let right = Vec3::new(ahead.z, 0.0, -ahead.x);
             let felt = |v: Vec3| Vec3::new(v.dot(ahead), v.y, v.dot(right));
             tracing::info!(
-                "swim: {:.2?} m/s ahead, up, right ({:.0}% of the game's {full:.2}), the strokes driving {:.0} degrees up (the head {:.0}), effort {:.2}; the hands {:.2?} m under, at {:.2?} m/s",
+                "swim: {:.2?} m/s ahead, up, right ({:.0}% of the game's {full:.2}), the strokes' way {:.2?} (the strongest {:.2} m/s), effort {:.2}; the hands {:.2?} m under, at {:.2?} m/s",
                 felt(self.velocity),
                 100.0 * self.velocity.length() / full,
-                tilt.to_degrees(),
-                pitch.to_degrees(),
+                felt(self.way),
+                self.strongest,
                 self.effort,
                 depth,
                 self.hand_vel.map(felt),
