@@ -102,6 +102,8 @@ pub const HELD_PAGES: u32 = 1 << 2;
 /// The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on
 /// it, its button down, as the hand moves (a map's pan), until the grip opens.
 pub const HELD_DRAG: u32 = 1 << 3;
+/// [`HudHeld::hand`]: whichever hand the laser doesn't come from (the player's off hand).
+pub const HELD_OFF_HAND: u32 = 2;
 
 // ---- which side of its thing a group goes (`HudGroup::side`) --------------------------------------
 pub const SIDE_RIGHT: u32 = 0;
@@ -171,7 +173,8 @@ pub struct HudHeld {
     /// The thing it's on ([`crate::ObjectDesc::id`]: the runtime has where it is), or 0: in a hand
     /// with nothing under it (`hand`).
     pub object: u32,
-    /// With no object: the hand it's in ([`crate::HAND_LEFT`], [`crate::HAND_RIGHT`]).
+    /// With no object: the hand it's in ([`crate::HAND_LEFT`], [`crate::HAND_RIGHT`], or
+    /// [`HELD_OFF_HAND`]).
     pub hand: u32,
     pub flags: u32, // HELD_*
     /// Pieces wholly to one side of the group's middle (x = 0) tip towards the eye about it by this

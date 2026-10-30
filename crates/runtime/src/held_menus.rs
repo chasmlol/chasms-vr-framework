@@ -190,7 +190,8 @@ impl HeldMenus {
                 continue;
             }
             // The hand that holds it, and the other.
-            let holder = thing.map_or(held.hand as usize & 1, |t| t.hand);
+            let in_hand = if held.hand == HELD_OFF_HAND { s.dominant() ^ 1 } else { held.hand as usize & 1 };
+            let holder = thing.map_or(in_hand, |t| t.hand);
             let free = holder ^ 1;
             let k = match self.lies.iter().position(|l| l.id == g.id) {
                 Some(k) => k,

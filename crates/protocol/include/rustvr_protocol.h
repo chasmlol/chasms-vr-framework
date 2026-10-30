@@ -659,6 +659,11 @@
  */
 #define RVR_HELD_DRAG (1 << 3)
 
+/**
+ * [`HudHeld::hand`]: whichever hand the laser doesn't come from (the player's off hand).
+ */
+#define RVR_HELD_OFF_HAND 2
+
 #define RVR_SIDE_RIGHT 0
 
 #define RVR_SIDE_LEFT 1
