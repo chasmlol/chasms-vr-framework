@@ -6,11 +6,27 @@
 //!
 //! It lives in the adapter, not the runtime, because it must use the anchor of the frame being
 //! rendered: doing it a frame late in the runtime would make the view jitter while walking.
+//!
+//! A game's body is often wider than the player's (Oblivion's reaches 30 cm round them), so it
+//! stops well short of a table or a wall. Pushed on against it, the view carries on inside the
+//! game's body ([`TrackingMapper::set_body_radius`]) until the player's own front is where its edge
+//! is: up against the table, never through anything the game's body keeps out.
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 use rustvr_protocol::*;
 
 use crate::math::*;
+
+/// How far ahead of the eyes the player's own front is (metres): the view leading a game's body
+/// stays this far inside its edge. A head's breadth: the runtime fades the view out as a head this
+/// round goes into a wall, so up against one it doesn't.
+pub const EYE_TO_FRONT: f32 = 0.12;
+/// A push (the stick, or the body walked after the head) of at least this much of a full one that
+/// moves the game's body slower than this along it (metres a second) is held up, and the view goes
+/// on inside the body at this speed for a full push.
+const LEAD_PUSH: f32 = 0.2;
+const HELD_UP_SPEED: f32 = 0.1;
+const LEAD_SPEED: f32 = 1.0;
 
 /// Where the game's camera is this frame, in world metres (canonical axes, see [`crate::Basis`]).
 #[derive(Clone, Copy, Debug)]
@@ -40,7 +56,8 @@ pub struct View {
     pub look_yaw: f32,
     pub look_pitch: f32,
     pub look_dir: Vec3,
-    /// World point the tracking origin maps onto (the smoothed game eye anchor).
+    /// World point the tracking origin maps onto (the smoothed game eye anchor, and where the view
+    /// leads the game's body from it).
     pub anchor: Vec3,
     pub room_offset: Vec2,
     pub scripted: bool,
@@ -109,6 +126,10 @@ pub struct TrackingMapper {
     follow_end: f64,
     recenter_pending: bool,
     last: Option<View>,
+    /// How far the view may lead the game's body (metres, along the floor), and where it leads it
+    /// now (the world, along the floor).
+    lead_max: f32,
+    lead: Vec3,
 }
 
 impl Default for TrackingMapper {
@@ -125,6 +146,8 @@ impl Default for TrackingMapper {
             follow_end: -1.0,
             recenter_pending: true,
             last: None,
+            lead_max: 0.0,
+            lead: Vec3::ZERO,
         }
     }
 }
@@ -133,6 +156,16 @@ impl TrackingMapper {
     /// Recentre on the next update (e.g. after a level load).
     pub fn recenter(&mut self) {
         self.recenter_pending = true;
+    }
+
+    /// The game's body is round, `radius` (metres) from its middle (the anchor) at its edge. While
+    /// a push can't move it, the view goes on inside it towards what's holding it up, as far as the
+    /// player's own front ([`EYE_TO_FRONT`] ahead of their eyes) reaching its edge. Never further:
+    /// whatever the game's body keeps out, the view stays out of. 0 (the default): the view stays on
+    /// the body.
+    pub fn set_body_radius(&mut self, radius: f32) {
+        self.lead_max = (radius - EYE_TO_FRONT).max(0.0);
+        self.lead = self.lead.clamp_length_max(self.lead_max);
     }
 
     pub fn last_view(&self) -> Option<View> {
@@ -188,6 +221,35 @@ impl TrackingMapper {
         r.y = self.ref_smooth_y + trk.height_offset;
 
         let wpm = 1.0 / trk.world_scale.max(0.1);
+        // The lead: a push the game's body was held up on (it moved slower than that along it)
+        // carries the view on inside the body. A jump of the body (a load, a door), a recentre or
+        // the game's own camera puts the view back on it.
+        let mut led = Vec3::ZERO;
+        match self.last_ref {
+            Some(last) if self.lead_max > 0.0 && !scripted && (r - last).length() < 0.25 => {
+                // (The game turns a push by its own heading: +Y ahead, +X to the right.)
+                let [mx, my] = frame.intents.move_xy;
+                let (s, c) = anchor.look_yaw.sin_cos();
+                let push = Vec3::new(s, 0.0, c) * my + Vec3::new(c, 0.0, -s) * mx;
+                let m = push.length();
+                if m > LEAD_PUSH && dt > 0.0 {
+                    let d = push / m;
+                    if Vec3::new(r.x - last.x, 0.0, r.z - last.z).dot(d) / dt < HELD_UP_SPEED {
+                        let lead = (self.lead + d * (LEAD_SPEED * m.min(1.0) * dt)).clamp_length_max(self.lead_max);
+                        led = lead - self.lead;
+                        self.lead = lead;
+                    }
+                }
+            }
+            _ => self.lead = Vec3::ZERO,
+        }
+        // While the body is walked after the head, the view is the head's: the lead is taken off
+        // the head's way from the body instead, as the body's own movement is below.
+        if trk.flags & (TRK_ROOMSCALE | TRK_FOLLOW) == TRK_ROOMSCALE | TRK_FOLLOW {
+            let shift_t = (Quat::from_rotation_y(-self.body_yaw) * led) / wpm;
+            self.origin.x += shift_t.x;
+            self.origin.z += shift_t.z;
+        }
         let mut room_offset = Vec2::ZERO;
         if trk.flags & TRK_ROOMSCALE == 0 {
             self.origin.x = hmd_pos.x;
@@ -225,6 +287,7 @@ impl TrackingMapper {
             room_offset = Vec2::new(off_w.x, off_w.z);
         }
         self.last_ref = Some(r);
+        let r = r + self.lead;
 
         let t2w = Mat4::from_translation(r)
             * Mat4::from_rotation_y(self.body_yaw)
