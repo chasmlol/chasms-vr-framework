@@ -15,6 +15,10 @@
 //! * Any stroke works, in any direction: a breaststroke or a crawl ahead, a pull up to dive, a push
 //!   down to rise, to the side. A pull only ever carries the swimmer its way; it never slows them
 //!   (pull the other way for that). The water's drag glides them out over several seconds.
+//! * A stroke pulls only while the hand goes on away from where that stroke started (or turned
+//!   back): squeezing the grip a little before the reach ends, or letting it go a little after the
+//!   hand starts back, slips, as the hand goes back over its own stroke. (Without that, those hands
+//!   moving forward threw the swimmer backwards and sideways: playtest 7.)
 //! * The hands' velocity is measured against the head, so walking about the room pushes nothing.
 //!   A hand holding something doesn't swim.
 //! * The game's swim speed (skills, attributes, load) scales the pull, and the strokes may go up to
@@ -23,10 +27,10 @@
 //!   the surface the game holds the player up (pushing up there does nothing), and a stroke's little
 //!   drift down is held there too. Under water there's no buoyancy: a still swimmer hangs where they
 //!   are, as the game has them.
-//! * **Feel**: a hand catching the water gives a pulse, and buzzes as it pulls; a hand slapping into
-//!   it, a pulse.
-//!   Holding the breath with little of it left, the heart beats in both hands, faster and harder as
-//!   it runs out (the game's own meter and gasp say so too): time to come up.
+//! * **Feel**: a hand catching the water gives a pulse, and buzzes as it pulls (not as it slips); a
+//!   hand slapping into it, a pulse. Holding the breath with little of it left, the heart beats in
+//!   both hands, faster and harder as it runs out (the game's own meter and gasp say so too): time to
+//!   come up.
 
 use glam::{Quat, Vec3};
 use rustvr_ik::{HandOffsets, Side};
@@ -42,9 +46,15 @@ const VELOCITY_TAU: f32 = 0.03;
 const CATCH: [f32; 2] = [0.6, 0.35];
 /// A pull carries the swimmer this many of the game's full swim speeds for each m/s of the hand's
 /// (about three times as fast as the hand, at the game's 2 m/s): a relaxed breaststroke (the hands
-/// pulled half a metre in half a second) swims about 1.6 times the game's speed, a firm one (in a
-/// third of a second) 2.3 times; one firm stroke carries the swimmer about 16 m.
+/// out, back and in over most of a second) swims about 1.5 times the game's speed, a firm one 2
+/// times, and with the grip squeezed early and let go late about 1.2 and 1.7 times.
 const PULL: f32 = 1.5;
+/// A stroke pulls once the hand is this far (m) from the point of the stroke it's furthest from:
+/// a grip squeezed while the reach is still ending moves the hand less than that.
+const STROKE_FROM: f32 = 0.1;
+/// A stroke's points are kept this far apart (m), and no more of them than this.
+const STROKE_STEP: f32 = 0.01;
+const STROKE_POINTS: usize = 400;
 /// How quickly a pull takes the swimmer up to its pace (seconds, e-folding): about as fast as the
 /// hands, so the water holds them.
 const CATCH_TAU: f32 = 0.08;
@@ -69,7 +79,7 @@ const JUMP: f32 = 10.0;
 const SLAP: f32 = 0.8;
 /// While a hand pulls, its buzz is renewed this often (seconds), each pulse a little longer.
 const BUZZ_EVERY: f64 = 0.03;
-/// A hand holding the water and moving faster than this (m/s) buzzes with its resistance.
+/// A hand pulling faster than this (m/s) buzzes with the water's resistance.
 const BUZZ_FROM: f32 = 0.4;
 /// Under the water with less breath than this left, the heart beats in the hands: a beat every
 /// `HEART[1]` seconds at the warning's start, `HEART[2]` at none left.
@@ -116,8 +126,11 @@ pub struct Swim {
     hand_vel: [Vec3; 2],
     last: Option<([Option<Vec3>; 2], Vec3)>,
     wet: [bool; 2],
-    /// The hands holding the water.
+    /// The hands holding the water, where each has been since it caught it (against the head), and
+    /// how fast each pulls.
     caught: [bool; 2],
+    stroke: [Vec<Vec3>; 2],
+    pulling: [f32; 2],
     buzzed: [f64; 2],
     pub pulses: Vec<Pulse>,
     said: bool,
@@ -178,6 +191,8 @@ impl Swim {
             self.effort = 0.0;
             self.wet = [false; 2];
             self.caught = [false; 2];
+            self.stroke.iter_mut().for_each(Vec::clear);
+            self.pulling = [0.0; 2];
             return SwimOut { swimming, full_speed: full, ..Default::default() };
         }
         if !self.said {
@@ -192,6 +207,8 @@ impl Swim {
         for i in 0..2 {
             let Some(palm) = palms[i] else {
                 self.caught[i] = false;
+                self.stroke[i].clear();
+                self.pulling[i] = 0.0;
                 continue;
             };
             let wet = surface - palm.y > WET;
@@ -207,13 +224,32 @@ impl Swim {
                 self.pulses.push((i, 0.03, 90.0, 0.35));
             }
             self.caught[i] = caught;
+            self.pulling[i] = 0.0;
             if !caught {
+                self.stroke[i].clear();
                 continue;
             }
-            pull += v;
             holding += 1;
+            // The stroke pulls the way the hand goes on away from the point of it that's furthest
+            // from the hand: back over its own stroke, the hand slips.
+            let at = palm - head;
+            let stroke = &mut self.stroke[i];
+            if stroke.last().is_none_or(|p| p.distance(at) > STROKE_STEP) && stroke.len() < STROKE_POINTS {
+                stroke.push(at);
+            }
+            let from = stroke.iter().copied().max_by(|a, b| a.distance_squared(at).total_cmp(&b.distance_squared(at))).unwrap_or(at);
+            let gone = at - from;
+            if gone.length() < STROKE_FROM {
+                continue;
+            }
+            let along = gone.normalize();
+            let speed = v.dot(along);
+            if speed <= 0.0 {
+                continue;
+            }
+            self.pulling[i] = speed;
+            pull += along * speed;
             // The water's resistance in the hand.
-            let speed = v.length();
             stroking += speed;
             if speed > BUZZ_FROM && inp.now - self.buzzed[i] >= BUZZ_EVERY {
                 self.buzzed[i] = inp.now;
@@ -240,9 +276,10 @@ impl Swim {
             self.velocity = Vec3::ZERO;
         }
         // (Pushing up with the head out of the water does nothing: the game holds the player at its
-        // surface.)
+        // surface, and a stroke's rise there goes into it, not on into the glide.)
         let mut velocity = self.velocity;
         if water.is_some_and(|w| w.flags & WATER_HEAD_UNDER == 0) {
+            self.velocity.y = self.velocity.y.min(0.0);
             velocity.y = (velocity.y + SURFACE_HOLD).min(0.0);
         }
         // How hard the arms work: both hands at 0.75 m/s is all they've got.
@@ -257,13 +294,14 @@ impl Swim {
             let right = Vec3::new(ahead.z, 0.0, -ahead.x);
             let felt = |v: Vec3| Vec3::new(v.dot(ahead), v.y, v.dot(right));
             tracing::info!(
-                "swim: {:.2?} m/s ahead, up, right ({:.0}% of the game's {full:.2}), effort {:.2}; the hands {:.2?} m under, at {:.2?} m/s, holding the water {:?}",
+                "swim: {:.2?} m/s ahead, up, right ({:.0}% of the game's {full:.2}), effort {:.2}; the hands {:.2?} m under, at {:.2?} m/s, holding the water {:?}, pulling at {:.2?} m/s",
                 felt(self.velocity),
                 100.0 * self.velocity.length() / full,
                 self.effort,
                 depth,
                 self.hand_vel.map(felt),
                 self.caught,
+                self.pulling,
             );
         }
         SwimOut { velocity, effort: self.effort, swimming, full_speed: full }
