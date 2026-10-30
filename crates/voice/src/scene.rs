@@ -70,7 +70,10 @@ impl Scene {
             let (link, stops) = (link.clone(), stops.clone());
             let lines_dir = PathBuf::from(first.lines_dir());
             std::thread::spawn(move || {
-                let mut line = 0u32;
+                // (numbered on from the clock, so no run's files share a name with an earlier run's:
+                // a game may keep a sound it played by its file's name)
+                let mut line = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) % 1_000_000) as u32 * 1000;
+                let first = line;
                 for job in queue {
                     match job {
                         Job::Sentence(voicing, epoch) => {
@@ -85,7 +88,7 @@ impl Scene {
                                 Ok(_) => {}
                                 Err(e) => eprintln!("[voice] line {line} not written: {e:#}"),
                             }
-                            if line > LINES_KEPT {
+                            if line > first + LINES_KEPT {
                                 for extension in ["wav", "lips", "lip"] {
                                     let _ = std::fs::remove_file(lines_dir.join(format!("{}.{extension}", line - LINES_KEPT)));
                                 }

@@ -153,7 +153,7 @@ pub const VL_STOP: u32 = 5;
 pub struct VoiceLine {
     pub kind: u32, // VL_*
     pub speaker: u32,
-    /// The sentence's number (its files' names), counting up from 1 in a run of the plugin.
+    /// The sentence's number (its files' names), counting up; no two runs of the plugin share one.
     pub line: u32,
     pub duration_ms: u32,
     pub _pad: [u32; 4],
