@@ -9,9 +9,10 @@
 //!
 //! What may go in, let go over its mouth (or falling into it), goes in and lies on its floor, the
 //! first in the middle and the rest round it ([`Bowl::place`]), each shrunk to fit if it's bigger
-//! than the bowl ([`fit`]). The bowl keeps it wherever it's carried. Its grinder (a pestle) rests
-//! in it too, where the game's model has it, until a hand takes it, and goes back there when let
-//! go over the mouth.
+//! than the bowl ([`fit`]). The bowl keeps it wherever it's carried, until it's turned over: then
+//! what's in it falls out. A hand reaching into it takes what's in it. Its grinder (a pestle)
+//! rests in it too, where the game's model has it, until a hand takes it, and goes back there when
+//! let go over the mouth.
 //!
 //! **Grinding** ([`Grind`]): the grinder's tip pressed low in the bowl (within [`PRESS`] of its
 //! floor, beyond the tip's own size) and worked about grinds what's in it by the distance the tip

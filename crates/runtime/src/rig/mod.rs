@@ -440,6 +440,7 @@ pub struct RigDebug {
     /// Things gone into a bowl, and grinding strokes in one ([`receptacle`]).
     pub into_bowls: u32,
     pub grind_strokes: u32,
+    pub spills: u32,
     /// Where the last grenade went off, and where the last knife's tip went in (tracking space).
     pub last_detonation: Option<Vec3>,
     pub last_stick: Option<Vec3>,
@@ -661,6 +662,8 @@ const BOWL_MAX_SPEED: f32 = 2.5;
 const BOWL_FALL: f64 = 0.18;
 /// How often the hand on a grinder feels its grinding (seconds between pulses).
 const GRIND_FEEL: f64 = 0.045;
+/// A bowl whose mouth faces lower than this (its up's height, -1 upside down) spills.
+const SPILL: f32 = -0.3;
 /// A throw lets go when the grip eases this far off its hardest squeeze while the hand swings
 /// faster than this (m/s).
 const THROW_EASE: f32 = 0.25;
@@ -1422,6 +1425,19 @@ impl Rig {
         for (id, at) in falling {
             if let Some(bowl) = self.bowl_for(id, at, 0.0, 0.0) {
                 self.into_bowl(id, bowl);
+            }
+        }
+        // A bowl turned over spills what's in it (and its grinder).
+        let over: Vec<u32> = self.bowls.keys().copied().filter(|b| self.obj_pose(*b).is_some_and(|(_, q)| (q * Vec3::Y).y < SPILL)).collect();
+        for b in over {
+            let spilt: Vec<u32> = self.objects.iter().filter(|(_, o)| matches!(o.holder, Holder::InBowl { bowl, .. } if bowl == b)).map(|(id, _)| *id).collect();
+            for id in spilt {
+                self.free_body(id, groups_free());
+                // (A grinder that fell out stays where it falls.)
+                if let Some(o) = self.objects.get_mut(&id) {
+                    o.handled = true;
+                }
+                self.debug.spills += 1;
             }
         }
         let inside: Vec<u32> = self.objects.iter().filter(|(_, o)| matches!(o.holder, Holder::InBowl { .. })).map(|(id, _)| *id).collect();
@@ -2433,6 +2449,9 @@ impl Rig {
             Attach::Fixed(p, q) => compose((palm, grip_rot), (p, q)).0,
             Attach::Gun => palm,
         };
+        if let Some(Holder::InBowl { bowl, grinder, .. }) = self.objects.get(&id).map(|o| o.holder) {
+            tracing::info!("rig: the {} hand takes {id:#x} out of the bowl {bowl:#x}{}: the hand at {:.3?} in it", if i == 0 { "left" } else { "right" }, if grinder { " (its grinder)" } else { "" }, self.in_bowl_space(bowl, palm));
+        }
         self.out_of_bowl(id);
         let o = self.objects.get_mut(&id).unwrap();
         o.attach = attach;
