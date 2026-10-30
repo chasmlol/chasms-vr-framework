@@ -158,6 +158,8 @@ pub struct Session {
     combat: crate::combat::Combat,
     /// The melee weapons table the rig last took ([`MeleeWeapons::seq`]).
     melee_weapons_seq: u32,
+    /// Slowing time, stamina, imbuing (crate::powers).
+    powers: crate::powers::Powers,
     /// Blood and limbs cut off (crate::gore).
     gore: crate::gore::Gore,
     /// Hands whose trigger casts a spell this frame (`crate::combat`).
@@ -357,6 +359,7 @@ impl Session {
             rig_out: RigOutput::default(),
             combat: crate::combat::Combat::default(),
             melee_weapons_seq: 0,
+            powers: Default::default(),
             gore: crate::gore::Gore::default(),
             spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
@@ -916,10 +919,13 @@ impl Session {
             let rig_paused = (menu_mode && !held_open) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             let game_name = name_str(&g.name).to_owned();
             self.holsters.before(&self.link, &mut self.rig, &mut self.settings, &game_name, &self.gpu, &mut self.held_objects);
+            // Slowed time (crate::powers): the player's world steps less a frame; the hands keep their
+            // real speed, so in it they swing faster.
+            let world_dt = frame.dt * self.powers.time_scale;
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
                 map: rig_map,
-                dt: frame.dt,
+                dt: world_dt,
                 now,
                 settings: &self.settings.current,
                 eye_height: if stand > 1.0 { stand } else { 1.7 },
@@ -1061,7 +1067,10 @@ impl Session {
                 self.melee_weapons_seq = self.combat.weapons.seq;
                 self.rig.set_melee_weapons(&self.combat.weapons);
             }
-            self.rig.set_melee_strength(if self.combat.rules.strength > 0.0 { self.combat.rules.strength } else { 1.0 });
+            let game_strength = if self.combat.rules.strength > 0.0 { self.combat.rules.strength } else { 1.0 };
+            self.rig.set_melee_strength(game_strength * self.powers.strength());
+            self.combat.imbues = self.powers.imbues.keys().filter_map(|&id| self.powers.imbue_of(id).map(|i| (id, i))).collect();
+            self.combat.fire_spells = self.combat.spells_with(SPELL_FIRE);
             // The game's effect shaders over what the runtime draws, when they change.
             if self.link.read_overlays_into(&mut self.overlays) && self.overlays.seq != self.overlays_seq {
                 self.overlays_seq = self.overlays.seq;
@@ -1081,12 +1090,48 @@ impl Session {
                 objects: &self.objects,
                 dominant: self.settings.current.dominant(),
                 now,
-                dt: frame.dt,
+                dt: world_dt,
                 paused: rig_paused || menu_mode,
                 player: &player,
             });
             for ev in &combat {
                 self.link.push_combat_event(ev);
+            }
+            // The powers: slowing time, stamina, imbuing, for the game too.
+            {
+                let held: [Option<u32>; 2] = [self.rig.held(0), self.rig.held(1)];
+                let charging = std::array::from_fn(|h| {
+                    let c = self.combat.casting[h];
+                    (matches!(c.state, CAST_CHARGING | CAST_READY) && c.object == 0).then(|| (c.spell, c.charge, rig_map.point(Vec3::from_array(c.at.pos)), self.combat.spell_flags(c.spell)))
+                });
+                let melee_held = held
+                    .iter()
+                    .flatten()
+                    .filter_map(|&id| self.combat.weapons.get(id).map(|w| (id, w.tier, self.rig.mass_of(id), self.combat.blades(id).into_iter().map(|(a, b, _)| (a, b)).collect())))
+                    .collect();
+                let hits = combat.iter().filter(|e| e.kind == CE_HIT).map(|e| e.object).collect();
+                let loose = self.powers.imbues.keys().copied().filter(|id| self.rig.is_free(*id)).collect();
+                let off = self.settings.current.dominant() ^ 1;
+                self.powers.update(&crate::powers::PowersInput {
+                    frame: &frame,
+                    settings: &self.settings.current.melee,
+                    rules: &self.combat.rules,
+                    dominant: self.settings.current.dominant(),
+                    dt: frame.dt,
+                    now,
+                    walking: Vec2::from_array(frame.hands[off].stick).length() > 0.2,
+                    charging,
+                    held: melee_held,
+                    loose,
+                    hits,
+                    paused: rig_paused || menu_mode,
+                });
+                let mut rt = self.powers.report(held);
+                rt.climb = self.rig.climb_velocity().to_array();
+                if self.rig.climbing() {
+                    rt.flags |= RTM_CLIMBING;
+                }
+                self.link.write_rt_melee(&rt);
             }
             // Each hand's casting, for the game's own casting art.
             let mut casters: Casters = bytemuck::Zeroable::zeroed();
@@ -1101,7 +1146,7 @@ impl Session {
             }
             // Gore: the blood the hits and the stumps spill, the limbs the game says were cut off.
             let gore_events = self.gore.read(&self.link);
-            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, combat: &self.combat, now, dt: frame.dt, paused: rig_paused || menu_mode };
+            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, combat: &self.combat, now, dt: world_dt, paused: rig_paused || menu_mode };
             self.gore.update(&mut self.rig, &gore_input, &gore_events);
             for p in &self.gore.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);

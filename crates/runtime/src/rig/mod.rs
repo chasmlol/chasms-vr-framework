@@ -445,6 +445,9 @@ pub struct RigOutput {
     pub hand_busy: [bool; 2],
     /// Hands pointing at something they could grab or pull (the trigger shouldn't "use").
     pub hand_targeting: [bool; 2],
+    /// Of those, hands only marking something far off for the gloves (the grip takes it; the
+    /// trigger is free to charge a spell, as telekinesis leaves it).
+    pub hand_glove_hovers: [bool; 2],
     /// Objects flying to each hand (gravity gloves), tracking space.
     pub pulled: [Option<Vec3>; 2],
     /// How each hand's fingers wrap what it holds.
@@ -6685,8 +6688,12 @@ impl Rig {
             if let Glove::Flight(id) = h.glove {
                 out.pulled[i] = self.obj_pose(id).map(|(p, _)| map.inv_point(p));
             }
-            // (A hand on a person still has the trigger's use: touch someone's shoulder to talk.)
-            out.hand_targeting[i] = !matches!(h.hover, Hover::None | Hover::Creature(..)) || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
+            // (A hand on a person still has the trigger's use: touch someone's shoulder to talk. So
+            // has a hand by the other hand's weapon: its spell fills the blade, imbuing it.)
+            let others = matches!(h.hover, Hover::Object(id) | Hover::Foregrip(id) | Hover::Handle(id) if hands[i ^ 1].holding == Some(id));
+            let near = !(matches!(h.hover, Hover::None | Hover::Creature(..)) || others);
+            out.hand_targeting[i] = near || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
+            out.hand_glove_hovers[i] = !near && matches!(h.glove, Glove::Hover(_));
         }
         // Primary gun: the firing hand's, else any held gun.
         let gun_in = |hand: usize| hands[hand].holding.filter(|id| self.objects.get(id).is_some_and(|o| matches!(o.attach, Attach::Gun)));

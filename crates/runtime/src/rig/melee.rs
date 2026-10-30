@@ -59,6 +59,10 @@ pub struct MeleeRig {
     pub slides: [Option<Slide>; 2],
     /// The game's creatures' weapons and shields this frame (their object ids).
     pub creature_items: std::collections::HashSet<u32>,
+    /// Each hand holding the world to climb: where it holds it (world); and how the arms move the
+    /// player this frame.
+    pub climbs: [Option<Vec3>; 2],
+    pub climb: Vec3,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -378,5 +382,17 @@ impl Rig {
             }
         }
         out
+    }
+}
+
+impl Rig {
+    /// The hands holding the world climb ([`super::melee`]'s climbing): how the arms move the player
+    /// (world, m/s), and whether any hand climbs.
+    pub fn climb_velocity(&self) -> Vec3 {
+        self.melee.climb
+    }
+
+    pub fn climbing(&self) -> bool {
+        self.melee.climbs.iter().any(|c| c.is_some())
     }
 }

@@ -180,7 +180,7 @@ impl People {
                 let item = &self.dummies.items[k];
                 brain::Hold { reach: item.blade.1.length(), mass: item.mass, shield: item.shield }
             }));
-            let staggered = p.stagger.is_some_and(|s| now - s.since < 0.6 / f.brain.tier.difficulty().recovery as f64);
+            let staggered = p.stagger.is_some_and(|s| now - s.since < 0.6 / f.brain.tier.difficulty().recovery as f64) || self.dummies.is_shocked(f.person) || p.burning.is_some();
             let swinging = f.brain.swing.is_some();
             let t = f.brain.think(now, dt, at, face, hands, &sight, staggered);
             // A shout as it swings, seven times in ten.

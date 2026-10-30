@@ -93,6 +93,10 @@ const CHOKE_DPS: f32 = 5.0;
 const STRUGGLE_EVERY: f64 = 2.5;
 const STRUGGLE_JERK: f32 = 5.0;
 
+/// On fire: 2 damage every half second, and dead once its fire has run its course (s).
+const BURN_DPS: f32 = 4.0;
+const BURN_DEATH: f64 = 4.0;
+
 /// The most a push may give a part at once (N s).
 const PUSH_MAX: f32 = 60.0;
 /// A part slamming into something this much faster than it was going is a slam (m/s), and does
@@ -231,6 +235,11 @@ pub struct Person {
     pub severed: u32,
     /// A hand holds it.
     handled: bool,
+    /// Heat from a fire-filled blade (0..100, cooling 4 a second alive, 8 dead), and on fire since
+    /// then; shocked until then.
+    pub heat: f32,
+    pub burning: Option<f64>,
+    pub shocked: f64,
     /// Choked by a hand since then; when it next tries to struggle free, and how often it has.
     choked_since: Option<f64>,
     choked_by: Option<usize>,
@@ -388,6 +397,9 @@ impl Dummies {
             doing: Doing::Idle,
             severed: 0,
             handled: false,
+            heat: 0.0,
+            burning: None,
+            shocked: -10.0,
             choked_since: None,
             choked_by: None,
             next_struggle: 0.0,
@@ -520,6 +532,7 @@ impl Dummies {
             self.owed -= STEP;
             self.time += STEP as f64;
             self.balance();
+            self.burn();
             self.pin();
             self.hold();
             self.world.integration_parameters.dt = STEP;
@@ -565,7 +578,10 @@ impl Dummies {
     fn pin(&mut self) {
         let now = self.time;
         for p in &mut self.people {
+            let shocked = p.shocked > now;
             let (stance, gravity, loose) = match p.balance {
+                // Shocked: it shakes on weak pins (it can't fight or stand up).
+                Balance::Standing if shocked => (0.35 + 0.15 * ((now * 40.0).sin() as f32), 0.5, 0.2),
                 Balance::Standing => (1.0, 0.0, 0.0),
                 Balance::Down { still, .. } => (0.0, 1.0, if still.is_some() { GROUND_TURN_SPRING } else { LOOSE_TURN_SPRING }),
                 Balance::Rising(t) => {
@@ -876,6 +892,54 @@ impl Dummies {
         }
     }
 
+    /// Heat from a fire-filled blade: at 100 it catches fire.
+    pub fn heat(&mut self, k: usize, heat: f32, at: V3) {
+        let p = &mut self.people[k];
+        if p.burning.is_some() {
+            return;
+        }
+        p.heat = (p.heat + heat).min(100.0);
+        if p.heat >= 100.0 {
+            p.burning = Some(self.time);
+            tracing::info!("range: {:#x} catches fire", p.id);
+            let _ = at;
+        }
+    }
+
+    /// Shocked for `seconds`: its arms and legs go stiff and useless (it can't fight or stand up).
+    pub fn shock(&mut self, k: usize, seconds: f64) {
+        let p = &mut self.people[k];
+        p.shocked = p.shocked.max(self.time + seconds);
+        p.stagger = None;
+        tracing::info!("range: {:#x} shocked for {seconds:.0} s", p.id);
+    }
+
+    /// Burning and cooling, once a step: a body on fire takes 2 every half second, and dies 85% of
+    /// the way through its fire's course (about 4 s); heat not yet alight cools at 4 a second (8
+    /// dead).
+    fn burn(&mut self) {
+        let now = self.time;
+        for k in 0..self.people.len() {
+            let p = &mut self.people[k];
+            match p.burning {
+                Some(since) => {
+                    let at = from_pose(self.world.bodies[p.parts[anim::TORSO].body].position()).0;
+                    if p.alive && now - since > BURN_DEATH {
+                        self.kill(k, at);
+                    } else if p.alive {
+                        self.hurt(k, BURN_DPS * STEP, at);
+                    }
+                }
+                None => p.heat = (p.heat - if p.alive { 4.0 } else { 8.0 } * STEP).max(0.0),
+            }
+        }
+    }
+
+    /// Whether person `k` is shocked now.
+    pub fn is_shocked(&self, k: usize) -> bool {
+        self.people[k].shocked > self.time
+    }
+
     /// Knocked out for `seconds`: limp, eyes shut.
     pub fn knock_out(&mut self, k: usize, seconds: f64, at: V3) {
         let p = &mut self.people[k];
@@ -1136,9 +1200,12 @@ impl Dummies {
                     _ if part.kind == PART_HEAD || part.kind == PART_HAND => [0.86, 0.68, 0.55, 1.0],
                     _ => [0.77, 0.66, 0.38, 1.0],
                 };
-                // Paler as it bleeds out; grey dead.
+                // Paler as it bleeds out; grey dead; charring as it burns, and glowing hot.
                 let k = if p.alive { 0.75 + 0.25 * (p.health / rustvr_melee::body::HEALTH).clamp(0.0, 1.0) } else { 0.6 };
-                out.push((Mat4::from_scale_rotation_translation(size, along, (a + b) * 0.5), [tint[0] * k, tint[1] * k, tint[2] * k, 1.0]));
+                let char = p.burning.map_or(0.0, |t| ((self.time - t) / 10.0).clamp(0.0, 0.85) as f32);
+                let hot = (p.heat / 100.0) * 0.4;
+                let tint = [(tint[0] * k * (1.0 - char) + hot).min(1.0), tint[1] * k * (1.0 - char) + hot * 0.3, tint[2] * k * (1.0 - char), 1.0];
+                out.push((Mat4::from_scale_rotation_translation(size, along, (a + b) * 0.5), tint));
                 // Its eyes: open, screwed up in pain for a moment after a hit, shut knocked out or
                 // dead, or mid-blink.
                 if i == anim::HEAD {

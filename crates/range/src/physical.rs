@@ -741,7 +741,7 @@ impl Armory {
 
     /// Draw items for every object the range draws (not the ones the runtime does). `triggers`:
     /// each controller's trigger (a held gun's trigger follows its hand's).
-    pub fn draws(&self, v: &View, weapons: &[&Weapon], triggers: [f32; 2], skip: &dyn Fn(&ObjectState) -> bool) -> Vec<DrawItem> {
+    pub fn draws(&self, v: &View, weapons: &[&Weapon], triggers: [f32; 2], skip: &dyn Fn(&ObjectState) -> bool, glow_of: &dyn Fn(u32) -> f32) -> Vec<DrawItem> {
         let mut out = Vec::new();
         for s in self.states() {
             let Some(kind) = self.kinds.get(&s.desc) else { continue };
@@ -753,7 +753,8 @@ impl Armory {
             }
             let (p, q) = Self::world_pose(s, v);
             let model = Mat4::from_rotation_translation(q, p);
-            let glow = if s.flags & OS_HOVERED != 0 { 0.25 } else { 0.0 };
+            // (Hovered, or a blade filled with a spell: it glows.)
+            let glow = if s.flags & OS_HOVERED != 0 { 0.25 } else { 0.0f32 }.max(glow_of(s.id));
             match *kind {
                 Kind::Weapon(i) => {
                     let w = &weapons[i];

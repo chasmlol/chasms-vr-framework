@@ -504,6 +504,16 @@ impl Combat {
             .collect()
     }
 
+    /// The ids of the game's spells with any of `flags` (`SPELL_*`).
+    pub fn spells_with(&self, flags: u32) -> Vec<u32> {
+        self.spells.spells[..(self.spells.count as usize).min(MAX_SPELLS)].iter().filter(|s| s.flags & flags != 0).map(|s| s.id).collect()
+    }
+
+    /// Spell `id`'s flags (`SPELL_*`; 0: no such spell).
+    pub fn spell_flags(&self, id: u32) -> u32 {
+        self.spells.spells[..(self.spells.count as usize).min(MAX_SPELLS)].iter().find(|s| s.id == id).map_or(0, |s| s.flags)
+    }
+
     /// The game's own index for creature `actor`'s part `index` (as [`ActorPart::game_part`]).
     pub fn game_part(&self, actor: u32, index: usize) -> u32 {
         self.actors().iter().find(|a| a.id == actor).and_then(|a| a.parts.get(index)).map_or(index as u32, |p| p.game_part)
@@ -1308,7 +1318,7 @@ impl Combat {
             // What it casts with: a held thing that casts, else (the spell hand, empty) the spell.
             let held = inp.rig.held(h);
             let thing = held.and_then(|id| inp.objects.descs[..(inp.objects.count as usize).min(MAX_OBJECTS)].iter().find(|d| d.id == id && d.flags & OBJF_CASTS != 0 && d.casts != 0).copied());
-            let free = held.is_none() && !inp.out.hand_busy[h] && !inp.out.hand_targeting[h];
+            let free = held.is_none() && !inp.out.hand_busy[h] && (!inp.out.hand_targeting[h] || inp.out.hand_glove_hovers[h]);
             let source = match (thing, spell) {
                 (Some(d), _) => Some(Source::Thing(d)),
                 (None, Some(s)) if hands[h] && free && s.flags & SPELL_CASTABLE != 0 => Some(Source::Spell(s)),

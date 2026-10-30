@@ -384,6 +384,19 @@
  */
 #define RVR_EV_MIRROR_HIT 8
 
+/**
+ * One of the game's creatures cries out (a grunt as it's hit, a shout as it swings, its last
+ * breath), for a game with no voices of its own: `a` which (`VOICE_*`), f0..f2 where (world), f3
+ * how loud (0..1).
+ */
+#define RVR_EV_VOICE 9
+
+#define RVR_VOICE_HURT 1
+
+#define RVR_VOICE_ATTACK 2
+
+#define RVR_VOICE_DEATH 3
+
 #define RVR_HAPTIC_LEFT 0
 
 #define RVR_HAPTIC_RIGHT 1

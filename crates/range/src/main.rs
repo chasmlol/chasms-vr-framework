@@ -137,10 +137,16 @@ struct Game {
     /// struck.
     player_health: f32,
     struck_at: f64,
+    /// Blades in someone past their deep depth (by object id: who): a spell in one keeps working
+    /// on who it's in.
+    stuck: HashMap<u32, u32>,
     /// Each fighter's weapon's throwable (for drawing it), by its object id.
     npc_meshes: HashMap<u32, usize>,
     /// The melee weapons' handles and damagers (`arsenal`), for the runtime.
     melee_weapons: Box<MeleeWeapons>,
+    /// The player's side of melee as the runtime last said (`RtMelee`), and the spell selected.
+    rt_melee: RtMelee,
+    spell: u32,
 }
 
 fn main() -> Result<()> {
@@ -339,8 +345,11 @@ impl Game {
             people,
             player_health: rustvr_melee::body::PLAYER_HEALTH,
             struck_at: -10.0,
+            stuck: HashMap::new(),
             npc_meshes,
             melee_weapons,
+            rt_melee: bytemuck::Zeroable::zeroed(),
+            spell: combat::FIRE_BOLT,
         })
     }
 
@@ -383,6 +392,13 @@ impl Game {
     }
 
     fn frame(&mut self, f: &RtFrame, dt: f32) -> Result<()> {
+        // The player's powers (the runtime's `RtMelee`): time slowed, the arms climbing, blades
+        // filled with spells.
+        self.adapter.read_rt_melee(&mut self.rt_melee);
+        let world_dt = dt * if self.rt_melee.flags & RTM_SLOW != 0 || self.rt_melee.time_scale > 0.0 { self.rt_melee.time_scale.clamp(0.05, 1.0) } else { 1.0 };
+        let dt_real = dt;
+        let dt = world_dt;
+        let _ = dt_real;
         self.time += dt as f64;
         let now = self.time;
         let it = f.intents;
@@ -597,11 +613,19 @@ impl Game {
             self.adapter.write_melee(&combat::melee_table(&self.melee_weapons));
             self.melee_weapons.seq = self.melee_weapons.seq.wrapping_add(2);
             self.adapter.write_melee_weapons(&self.melee_weapons);
-            self.adapter.write_spells(&combat::spells());
+            self.adapter.write_spells(&combat::spells_with(self.spell));
             let mut bloods = combat::bloods();
             bloods.seq = 2;
             self.adapter.write_bloods(&bloods);
         }
+        // A blade filled with a spell, stuck in someone, keeps working on them (40 heat a second
+        // times its fill; a shock's re-shocking).
+        for (&object, &actor) in &self.stuck {
+            if let Some(i) = self.rt_melee.imbue.iter().find(|i| i.object == object && i.charge > 0.0) {
+                combat::imbued_stuck(&mut self.people, actor, i.spell, i.charge, dt);
+            }
+        }
+        self.stuck.retain(|_, actor| self.people.dummies.find(*actor).is_some());
         // The fighters' weapons the player's hands have: moved where the runtime has them (their
         // holders dragged after them), and handed back where the runtime let them go.
         if let Some(a) = &self.armory {
@@ -641,6 +665,12 @@ impl Game {
             match ev.kind {
                 CE_HIT => {
                     let bled = combat::hit(&mut self.people, &ev, &self.melee_weapons);
+                    // An imbued blade's spell: fire heats what it hits until it burns, a shock may
+                    // stun it.
+                    if ev.flags & CEF_IMBUED != 0 {
+                        let charge = (0..2).map(|h| self.rt_melee.imbue[h]).find(|i| i.object == ev.object).map_or(0.5, |i| i.charge);
+                        combat::imbued_hit(&mut self.people, &ev, charge);
+                    }
                     self.stats_f[rs::F_MELEE_HITS] += 1.0;
                     if ev.flags & CEF_POWER != 0 {
                         self.stats_f[rs::F_MELEE_POWER] += 1.0;
@@ -653,8 +683,14 @@ impl Game {
                         self.effects.sparks(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), rustvr_melee::intensity(ev.speed));
                     }
                 }
-                CE_WOUND => combat::wound(&mut self.people, &ev),
-                CE_PULLED_OUT => self.effects.blood(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), 0.5),
+                CE_WOUND => {
+                    combat::wound(&mut self.people, &ev);
+                    self.stuck.insert(ev.object, ev.actor);
+                }
+                CE_PULLED_OUT => {
+                    self.effects.blood(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), 0.5);
+                    self.stuck.remove(&ev.object);
+                }
                 CE_BLOCK => {
                     // The player's weapon met a fighter's: its swing parried (a roll for a chain, nothing
                     // or a recoil), or its guard blocked a blow (a riposte maybe).
@@ -686,6 +722,9 @@ impl Game {
                     }
                 }
                 CE_CAST => {
+                    // The other spell is ready next (a game would have its own way to choose).
+                    self.spell = if ev.what == combat::FIRE_BOLT { combat::SHOCK } else { combat::FIRE_BOLT };
+                    self.adapter.write_spells(&combat::spells_with(self.spell));
                     self.stats_f[rs::F_CASTS] += 1.0;
                     if ev.actor == arena::DUMMY_ID {
                         self.stats_f[rs::F_CASTS_AT_DUMMY] += 1.0;
@@ -931,7 +970,8 @@ impl Game {
             let ws: Vec<&Weapon> = self.scene.weapons.iter().map(|g| &g.w).collect();
             // (The fighters' weapons the range draws itself, where its own physics has them, unless
             // the player has one.)
-            draws.extend(a.draws(v, &ws, f.hands.map(|h| h.trigger), &|s: &ObjectState| s.id >= arena::NPC_ITEM_BASE && s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) == 0));
+            let imbues = self.rt_melee.imbue;
+            draws.extend(a.draws(v, &ws, f.hands.map(|h| h.trigger), &|s: &ObjectState| s.id >= arena::NPC_ITEM_BASE && s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) == 0, &|id| imbues.iter().find(|i| i.object == id && i.object != 0).map_or(0.0, |i| 0.8 * i.charge)));
             // The throwables: without the pin once it's out, the lever once it's flown.
             for s in a.states() {
                 let Some(i) = a.throwable(s.desc).filter(|_| s.flags & OS_SPENT == 0) else { continue };
@@ -1075,6 +1115,17 @@ impl Game {
         let show_gun = self.armory.is_none() || self.held.is_some();
         let name = weapon.name.clone();
         let metro = self.metro_hud.is_some();
+        // The melee: the player's health, the focus that slows time, stamina (when kept), the spell
+        // ready in the spell hand.
+        let r = self.rt_melee;
+        let melee_line = format!(
+            "health {:.0}   focus {:.0}%{}{}   spell: {}",
+            self.player_health,
+            r.focus * 100.0,
+            if r.flags & RTM_SLOW != 0 { " (slowed)" } else { "" },
+            if r.stamina < 0.999 { format!("   stamina {:.0}%", r.stamina * 100.0) } else { String::new() },
+            if self.spell == combat::FIRE_BOLT { "fire" } else { "shock" }
+        );
         let mut out = ctx.run_ui(input, |ui| {
             let painter = ui.painter();
             if paused {
@@ -1103,6 +1154,7 @@ impl Game {
                     painter.text(panel.min + egui::vec2(12.0, 30.0), egui::Align2::LEFT_TOP, ammo_text, egui::FontId::proportional(28.0), egui::Color32::WHITE);
                 }
                 painter.text(egui::pos2(size.x - 20.0, 20.0), egui::Align2::RIGHT_TOP, format!("hits {hits} / {shots}"), egui::FontId::proportional(16.0), egui::Color32::WHITE);
+                painter.text(egui::pos2(size.x - 20.0, 42.0), egui::Align2::RIGHT_TOP, &melee_line, egui::FontId::proportional(14.0), egui::Color32::LIGHT_GRAY);
             }
         });
         let prims = ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);

@@ -172,19 +172,65 @@ pub fn melee_table(weapons: &MeleeWeapons) -> MeleeTable {
     t
 }
 
-pub fn spells() -> Spells {
+/// The player's spells: a fire bolt and a shock, `selected` the one the spell hand charges.
+pub fn spells_with(selected: u32) -> Spells {
     let mut s: Spells = bytemuck::Zeroable::zeroed();
-    let mut bolt: Spell = bytemuck::Zeroable::zeroed();
-    bolt.id = FIRE_BOLT;
-    bolt.delivery = DELIVER_TARGET;
-    bolt.flags = SPELL_SELECTED | SPELL_CASTABLE | SPELL_FIRE;
-    bolt.cost = 10.0;
-    bolt.color = [1.0, 0.45, 0.1];
-    bolt.set_name("Fire bolt");
-    s.spells[0] = bolt;
-    s.count = 1;
+    for (i, (id, name, color, element)) in [(FIRE_BOLT, "Fire bolt", [1.0, 0.45, 0.1], SPELL_FIRE), (SHOCK, "Shock", [0.5, 0.7, 1.0], SPELL_SHOCK)].into_iter().enumerate() {
+        let mut spell: Spell = bytemuck::Zeroable::zeroed();
+        spell.id = id;
+        spell.delivery = DELIVER_TARGET;
+        spell.flags = SPELL_CASTABLE | element | if id == selected { SPELL_SELECTED } else { 0 };
+        spell.cost = 10.0;
+        spell.color = color;
+        spell.set_name(name);
+        s.spells[i] = spell;
+    }
+    s.count = 2;
     s.magicka = 100.0;
     s.magicka_max = 100.0;
     s.cast_time = 0.5;
     s
+}
+
+/// A fire-filled blade's hit heats what it hits 6 times the hit's intensity (0 to 1) times how full
+/// the blade is (some 17 hard hits in quick succession to catch fire at 100); stuck in someone, 40
+/// a second times its fill (some 2.5 s).
+const IMBUE_HIT_HEAT: f32 = 6.0;
+const IMBUE_STUCK_HEAT: f32 = 40.0;
+
+/// A blade filled with a spell stuck in `actor`, a step of `dt`: fire heats them, a shock keeps
+/// shocking them.
+pub fn imbued_stuck(people: &mut crate::arena::People, actor: u32, spell: u32, charge: f32, dt: f32) {
+    let d = &mut people.dummies;
+    let Some(k) = d.find(actor) else { return };
+    let at = d.part_pose(k, crate::anim::TORSO).0;
+    match spell {
+        FIRE_BOLT => d.heat(k, IMBUE_STUCK_HEAT * charge.clamp(0.0, 1.0) * dt, at),
+        SHOCK if !d.is_shocked(k) => d.shock(k, 2.0),
+        _ => {}
+    }
+}
+
+/// A hit with a blade filled with a spell (an imbued hit): fire adds heat until the creature
+/// catches fire at 100; a shock hit over 4 m/s does 2 and stuns it two seconds (four in metal
+/// armour) two times in five, always when the blade went in.
+pub fn imbued_hit(people: &mut crate::arena::People, ev: &CombatEvent, charge: f32) {
+    let d = &mut people.dummies;
+    let Some(k) = d.find(ev.actor) else { return };
+    let point = Vec3::from_array(ev.point);
+    match ev.spell {
+        FIRE_BOLT => {
+            let heat = IMBUE_HIT_HEAT * rustvr_melee::intensity(ev.speed) * charge.clamp(0.0, 1.0);
+            d.heat(k, heat, point);
+        }
+        SHOCK if ev.speed >= 4.0 || ev.flags & CEF_PENETRATED != 0 => {
+            let metal = matches!(ev.material, MAT_CHAINMAIL | MAT_PLATE);
+            let certain = ev.flags & CEF_PENETRATED != 0 || metal;
+            d.hurt(k, 2.0, point);
+            if certain || (ev.speed * 13.7).fract() < 0.4 {
+                d.shock(k, if metal { 4.0 } else { 2.0 });
+            }
+        }
+        _ => {}
+    }
 }
