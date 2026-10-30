@@ -901,7 +901,11 @@ impl Mechanics {
             } else if self.phys_crouch && h > self.stand_h - thr + 0.06 {
                 self.phys_crouch = false;
             }
-            if c.input.physical_crouch && !c.comfort.seated && game.is_some() {
+            // (Swimming, a head ducked is a face put into the water, not a crouch. Nor could a crouch
+            // be kept in step there: a swimmer's game body isn't crouched, so one pressed in the
+            // water would still be on at the shore.)
+            let swimming = game.is_some_and(|g| g.water.flags & WATER_SWIMMING != 0);
+            if c.input.physical_crouch && !c.comfort.seated && game.is_some() && !swimming {
                 if self.phys_crouch != was {
                     self.crouch_pending = if self.phys_crouch { 1 } else if self.crouch_by_phys { 0 } else { -1 };
                 }
