@@ -2085,6 +2085,14 @@ impl Rig {
         Some(id)
     }
 
+    /// Object `id`, held by the other hand, into hand `i`'s palm (a sheet spread between both hands,
+    /// let go by the one that had it: the other has it now).
+    pub fn give(&mut self, id: u32, i: usize) {
+        if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1)) {
+            self.take(id, i, true);
+        }
+    }
+
     /// Testing (`RUSTVR_TEST_TAKE=<hand>:<id>`): object `id`, wherever it is, into hand `i` as the
     /// gloves' catch would take it.
     pub fn test_take(&mut self, i: usize, id: u32) -> Option<u32> {

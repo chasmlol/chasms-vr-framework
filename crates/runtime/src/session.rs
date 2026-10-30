@@ -726,6 +726,15 @@ impl Session {
                 };
                 tracing::info!("runtime: test: the nearest prop into the {} hand: {got:?}", if hand == 0 { "left" } else { "right" });
             }
+            // A sheet spread between the hands, let go by the hand that had it: the other has it now
+            // (before the rig sees the grip open, which would put it away).
+            let release = self.settings.current.interaction.grip_release;
+            for (id, holder) in self.held_menus.spread() {
+                if frame.hands[holder].squeeze <= release + 0.1 && frame.hands[holder ^ 1].squeeze > 0.6 {
+                    tracing::info!("runtime: {id:#x} handed over to the other hand, which holds its other side");
+                    self.rig.give(id, holder ^ 1);
+                }
+            }
             let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
             // (A menu held in the hands keeps them going while the game waits: the book can be moved,
             // handed over and let go, the map spread. Fights stay paused with the game.)

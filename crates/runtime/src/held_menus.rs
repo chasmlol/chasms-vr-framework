@@ -81,6 +81,8 @@ const SWEEP_TO: f32 = 0.08;
 const SWEEP_TIME: f64 = 1.2;
 const BACK_AFTER: f64 = 1.0;
 const AGAIN_AFTER: f64 = 0.2;
+/// A hand this far behind a sheet (metres) can still take hold of it.
+const GRIP_BEHIND: f32 = 0.08;
 /// A grip within this share of the half width of a sheet's far side spreads it between the hands.
 const FAR_SIDE: f32 = 0.3;
 /// A sheet spread between the hands is this many times its natural size at least and at most.
@@ -100,6 +102,9 @@ enum Hold {
 /// How a held group lies on what holds it, kept while it's there.
 struct Lie {
     id: u32,
+    /// What it's on and the hand that holds that, as last placed.
+    object: u32,
+    holder: usize,
     /// (`HELD_FACE`) the face's middle, right and up in the thing's space.
     face: Option<(Vec3, Vec3, Vec3)>,
     /// (`HELD_SHEET`) how it's held.
@@ -172,6 +177,12 @@ fn ease(v: Vec3, to: Vec3, k: f32) -> Vec3 {
 }
 
 impl HeldMenus {
+    /// The things spread between both hands (a map): each, and the hand that has it (the other only
+    /// holds the sheet). Let go by that hand, the other has it.
+    pub fn spread(&self) -> Vec<(u32, usize)> {
+        self.lies.iter().filter(|l| l.object != 0 && matches!(l.hold, Some(Hold::Both))).map(|l| (l.object, l.holder)).collect()
+    }
+
     /// This frame's held menus. `things`: what the hands hold; `hands`: both hands; `aspect`: the
     /// HUD texture's width / height.
     #[allow(clippy::too_many_arguments)]
@@ -204,11 +215,12 @@ impl HeldMenus {
                         tracing::info!("held menus: {:#x} lies on {:#x}'s face at {:.3?} (right {:.2?}, up {:.2?}; its box {:.3?} about {:.3?}; held at {:.3?})", g.id, t.id, f.0, f.1, f.2, t.half, t.centre, t.pos);
                         f
                     })).flatten();
-                    self.lies.push(Lie { id: g.id, face, hold: None, unit: natural, frame: None, sweep: None, turned: None, gripped: false, pinched: false, drag: None });
+                    self.lies.push(Lie { id: g.id, object: held.object, holder, face, hold: None, unit: natural, frame: None, sweep: None, turned: None, gripped: false, pinched: false, drag: None });
                     self.lies.len() - 1
                 }
             };
             let lie = &mut self.lies[k];
+            (lie.object, lie.holder) = (held.object, holder);
             // Where it is now: its origin, right and up.
             let frame = match (lie.face, thing) {
                 (Some((c, r, u)), Some(t)) => Some((t.pos + t.rot * c, t.rot * r, t.rot * u)),
@@ -245,16 +257,18 @@ impl HeldMenus {
                 let d = p - origin;
                 (Vec2::new(d.dot(right), d.dot(up)) / unit, d.dot(normal))
             });
-            let near = on.filter(|&(xy, z)| {
-                z > -0.03 && z < NEAR_PAGE && xy.x > fp[0] - half_w * 0.15 && xy.x < fp[2] + half_w * 0.15 && xy.y > fp[1] - (fp[3] - fp[1]) * 0.2 && xy.y < fp[3] + (fp[3] - fp[1]) * 0.2
-            });
+            let over = |xy: Vec2| xy.x > fp[0] - half_w * 0.15 && xy.x < fp[2] + half_w * 0.15 && xy.y > fp[1] - (fp[3] - fp[1]) * 0.2 && xy.y < fp[3] + (fp[3] - fp[1]) * 0.2;
+            let near = on.filter(|&(xy, z)| z > -0.03 && z < NEAR_PAGE && over(xy));
+            // (A hand taking hold of a sheet may be a little behind it: paper is taken from both sides.)
+            let on_it = on.filter(|&(xy, z)| z > -GRIP_BEHIND && z < NEAR_PAGE && over(xy));
             let grip = hands[free].squeeze > 0.6;
             let pinch = hands[free].trigger > 0.6;
             // Spreading a sheet: the free hand's grip near its far side.
             if held.flags & HELD_SHEET != 0 && grip && !lie.gripped && lie.drag.is_none() {
                 let far = if holder == 0 { fp[2] } else { fp[0] };
-                if near.is_some_and(|(xy, _)| (xy.x - far).abs() < half_w * FAR_SIDE) {
+                if on_it.is_some_and(|(xy, _)| (xy.x - far).abs() < half_w * FAR_SIDE) {
                     lie.hold = Some(Hold::Both);
+                    tracing::info!("held menus: {:#x} taken by its far side: spread between the hands", g.id);
                     out.haptics.push((free, 0.02, 160.0, 0.5));
                 }
             }
@@ -264,7 +278,8 @@ impl HeldMenus {
             }
             // Dragging what's on it: the free hand's grip on its face.
             if held.flags & HELD_DRAG != 0 && !matches!(lie.hold, Some(Hold::Both)) {
-                if grip && !lie.gripped && near.is_some() {
+                if grip && !lie.gripped && on_it.is_some() {
+                    tracing::info!("held menus: {:#x} gripped on its face: the game's cursor dragged", g.id);
                     lie.drag = Some(Vec2::ZERO);
                 }
                 if lie.drag.is_some() {
@@ -326,8 +341,8 @@ impl HeldMenus {
 /// up, from the hands; its size kept in `lie.unit`.
 #[allow(clippy::too_many_arguments)]
 fn sheet_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], holder: usize, thing: Option<&Thing>, hands: &[Hand; 2], eye: Vec3, head_up: Vec3, natural: f32, dt: f32) -> Option<(Vec3, Vec3, Vec3)> {
-    // The holding hand: where the thing is in it (it's where the hand has it), or the hand.
-    let at = thing.map(|t| (t.pos, t.rot)).or(hands[holder].grip)?;
+    // The holding hand (a sheet's thing is only what the hand has of it).
+    let at = hands[holder].grip.or(thing.map(|t| (t.pos, t.rot)))?;
     let mid_y = (fp[1] + fp[3]) * 0.5;
     if let (Some(Hold::Both), Some((other, _))) = (lie.hold, hands[holder ^ 1].grip) {
         // Spread between the hands: its sides' middles in them, facing the eyes about the line
