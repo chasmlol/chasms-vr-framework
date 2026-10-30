@@ -125,7 +125,7 @@ pub struct BodyParams {
     pub support_margin: f32,
     /// Once the body has been still for `settle_delay`, a foot further than this from its spot
     /// steps under the body (est.; VRIK leaves feet wherever the last balance step put them, and
-    /// people at rest stand as their feet are unless they're far out of place).
+    /// people at rest stand as their feet are unless they're well out of place).
     pub settle_distance: f32,
     pub settle_delay: f32,
     /// Stick locomotion walks once faster than this and stops below `gait_stop_speed` (FRIK 35
@@ -210,7 +210,7 @@ impl Default for BodyParams {
             leg_cross_guard: 0.25,
             step_height: 0.08,
             support_margin: 0.03,
-            settle_distance: 0.15,
+            settle_distance: 0.10,
             settle_delay: 1.0,
             gait_start_speed: 0.5,
             gait_stop_speed: 0.29,

@@ -33,12 +33,8 @@ const STILL_SPEED: f32 = 0.1;
 /// far ahead of the ball (metres at reference size; est. from adult foot length).
 const HEEL_BACK: f32 = 0.06;
 const TOES_AHEAD: f32 = 0.05;
-/// A step to catch the centre of mass goes no further than this ahead of or behind it, and
-/// leaves the feet at least this far apart sideways (metres at reference size, est.).
-const MAX_STRIDE: f32 = 0.35;
 /// Seconds ahead the centre of mass is predicted for balance steps.
 const COM_AHEAD: f32 = 0.15;
-const MIN_STANCE: f32 = 0.15;
 /// Seated feet rest this far ahead of the hip joints, as a fraction of the thigh, and glide to
 /// new spots with this time constant (est.).
 const SEATED_REACH: f32 = 0.9;
@@ -53,8 +49,6 @@ struct Step {
     length: f32,
     /// Over where it was going: it only comes down onto it from there, and stays.
     landed: bool,
-    /// A step to catch the centre of mass (see `balance_target`), rather than to the foot's place.
-    balance: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -166,7 +160,6 @@ impl Feet {
             duration,
             length: speed * duration,
             landed: false,
-            balance: false,
         });
         step.duration = duration;
         step.length = speed * duration;
@@ -185,8 +178,8 @@ impl Feet {
     ///
     /// * the centre of mass, extrapolated a little ahead by its velocity (VRIK's prediction; the
     ///   "capture point" of balance studies), leaves the outline round both feet
-    ///   (`BodyParams::support_margin` past it): the foot whose place under the body is further
-    ///   steps there;
+    ///   (`BodyParams::support_margin` past it): the foot further from its place under the body
+    ///   steps there (VRIK's places either side of the centre of mass, as the research has it);
     /// * the leg can't comfortably reach it: its ankle is further from under its hip joint than
     ///   `step_reach` of the leg's length;
     /// * the hips have twisted further than `step_angle_deg` from it (the hip's own rotation);
@@ -210,13 +203,10 @@ impl Feet {
             let t = spot(skel, ground, input.root_yaw, i, p.foot_spacing);
             cross_guard(p, skel, t, self.feet[1 - i].pos, input.root_yaw, i)
         });
-        for i in 0..2 {
-            let other = self.feet[1 - i].pos;
-            let foot = &mut self.feet[i];
+        for (i, foot) in self.feet.iter_mut().enumerate() {
             if let Some(step) = foot.step.as_mut() {
                 step.progress += dt / step.duration;
-                let target = if step.balance { balance_target(p, skel, ground, other, input.root_yaw, i) } else { targets[i] };
-                advance(foot, target, input.root_yaw);
+                advance(foot, targets[i], input.root_yaw);
             }
         }
 
@@ -249,18 +239,8 @@ impl Feet {
             }
         }
         if let Some((i, need)) = best {
-            // A step for balance puts the foot where it brings the centre of mass back between the
-            // feet (the other foot's place mirrored through it, kept a stance's width apart and
-            // no longer than a stride), as people do: so a lean or a sway forward is caught by
-            // one foot stepping out, and the stance it leaves holds the next sway too. Any other
-            // step goes to the foot's place under the body.
-            let target = if outside > 0.0 {
-                balance_target(p, skel, ground, self.feet[1 - i].pos, input.root_yaw, i)
-            } else {
-                targets[i]
-            };
             let foot = &mut self.feet[i];
-            let length = flat(target - foot.pos).length();
+            let length = flat(targets[i] - foot.pos).length();
             let turn = wrap_angle(input.root_yaw - foot.yaw).abs();
             // (A step of a centimetre or two, turning a few degrees, is no step: the foot stays.)
             if length < 0.03 * s && turn < 0.2 {
@@ -269,27 +249,10 @@ impl Feet {
             // Urgent steps are quicker (VRIK's 3-4.5 per second, deterministic here).
             let urgency = (need - 1.0).clamp(0.0, 1.0);
             let duration = p.step_time_max + (p.step_time_min - p.step_time_max) * urgency;
-            foot.step = Some(Step { from: foot.pos, from_yaw: foot.yaw, progress: 0.0, duration, length, landed: false, balance: outside > 0.0 });
+            foot.step = Some(Step { from: foot.pos, from_yaw: foot.yaw, progress: 0.0, duration, length, landed: false });
             self.still_time = 0.0;
         }
     }
-}
-
-/// Where a foot (`side`) steps to catch the centre of mass (`ground`): the other foot's place
-/// mirrored through it, so the centre of mass ends up between the feet, then kept between a
-/// narrow stance and `foot_spacing` to the side and within a stride of the centre of mass along
-/// the body's heading (est.), and never across the other foot.
-fn balance_target(p: &BodyParams, skel: &Skeleton, ground: Vec3, other: Vec3, yaw: f32, side: usize) -> Vec3 {
-    let s = skel.scale;
-    let (fwd, right) = (yaw_dir(yaw), right_of(yaw));
-    let outward = right * if side == 0 { -1.0 } else { 1.0 };
-    let mirror = flat(ground) * 2.0 - flat(other);
-    let rel = mirror - flat(ground);
-    let ahead = rel.dot(fwd).clamp(-MAX_STRIDE * s, MAX_STRIDE * s);
-    // (Its own side of the centre of mass, at least half a narrow stance out.)
-    let aside = rel.dot(outward).clamp(0.5 * MIN_STANCE * s, 0.5 * p.foot_spacing * s);
-    let target = flat(ground) + fwd * ahead + outward * aside;
-    cross_guard(p, skel, target, other, yaw, side)
 }
 
 /// How far `p` is outside the feet's base of support (the outline round both feet, heels to
