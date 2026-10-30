@@ -123,6 +123,13 @@ pub struct Plate {
     /// flare the artist blended between the forearm and the hand).
     #[serde(default)]
     pub corners_within: Option<Bounds>,
+    /// Of the islands chosen, only the corners whose texture coordinates are inside this box,
+    /// `{ min = [u, v], max = [u, v] }` (the same on both sides): the metal of a piece whose leather
+    /// or cloth is part of the same island, told apart by where the texture draws each. The soft
+    /// part's corners where it meets the plate (at the same place) go with the plate, so it stays
+    /// joined to the plate's edge and bends from there.
+    #[serde(default)]
+    pub uv_within: Option<UvBounds>,
     /// Comes apart from the rest of its island where they meet: it takes the triangles with a
     /// corner chosen, whole, and its own copy of the corners it shares with the others, so as the
     /// joint between them bends it slides over or under what it meets, as a real plate does,
@@ -216,6 +223,20 @@ impl Bounds {
     pub fn contains(&self, p: [f32; 3]) -> bool {
         let p = [p[0].abs(), p[1], p[2]];
         (0..3).all(|k| p[k] >= self.min[k] && p[k] <= self.max[k])
+    }
+}
+
+/// A box in a texture's coordinates (0..1 across it, v down).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct UvBounds {
+    pub min: [f32; 2],
+    pub max: [f32; 2],
+}
+
+impl UvBounds {
+    pub fn contains(&self, uv: [f32; 2]) -> bool {
+        (0..2).all(|k| uv[k] >= self.min[k] && uv[k] <= self.max[k])
     }
 }
 

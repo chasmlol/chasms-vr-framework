@@ -295,11 +295,20 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Mark
                 if !take {
                     continue;
                 }
+                // The places drawn from the texture's box: a corner there with other texture
+                // coordinates (the soft part's, where it meets the plate) goes too, so the two stay
+                // joined. (A plate coming apart at its seam leaves them apart.)
+                let drawn: Option<HashSet<u32>> = mark.uv_within.map(|b| {
+                    isl.vertices.iter().filter(|&&i| b.contains(mesh.vertices[i as usize].uv)).map(|&i| if mark.seam { i } else { welded[i as usize] }).collect()
+                });
                 // A plate made of some of an island's corners is on the side of their bones (an
                 // island across the body, both legs' leather, gives each leg its own plate);
                 // one made of whole islands, on theirs.
                 for &i in &isl.vertices {
                     if mark.corners_within.is_some_and(|b| !b.contains(mesh.vertices[i as usize].pos)) {
+                        continue;
+                    }
+                    if drawn.as_ref().is_some_and(|d| !d.contains(&if mark.seam { i } else { welded[i as usize] })) {
                         continue;
                     }
                     let side = if mark.vertices.is_empty() {

@@ -59,7 +59,11 @@ back, reaching, holding a gun, a squat) and draws each pose with the runtime's o
   `back`, `eye` (the wearer's own, the head cut away), `arm`, `shoulder`, `elbow` (side on to the
   bend), `wrist` (from the thumb's side));
 * `islands.png`: every island its own colour, numbered `mesh.island`;
-* `plates.png`: every plate its own colour, soft parts grey, at rest and with the arms raised;
+* `plates.png`: every plate its own colour, soft parts grey, at rest and with the arms raised (or
+  in the poses `--poses` names, from the views `--views` names: what bends where);
+* `uv-<model>.png`: each marked model's textures with the right side's triangles drawn where they
+  take their texture from, a plate's filled in its colour (as the listing names it), the soft ones
+  outlined: where its metal, leather and cloth are drawn, for `uv_within`;
 * `list.txt`: every model's meshes and islands (vertices, triangles, middle and bounds, and the
   bones their skin is on, heaviest first), then the plates its marks make (what each rides, its
   pivot at rest, its layer), what went wrong, and the rules that chose nothing in it.
@@ -119,6 +123,7 @@ narrows the choice; none chooses everything:
 | `vertices` | Of the islands chosen, only the corners mostly on one of these bones: a plate that's part of an island (the back of a glove, a boot's toe cap) |
 | `firm` | With `vertices`: only corners with at least this share on that bone, so the corners blended across a joint stay soft and bend smoothly between the plates either side |
 | `corners_within` | Of the islands chosen, only the corners in a box, `{ min = [x, y, z], max = [x, y, z] }`: a plate that's part of an island whose weights don't say where it ends (a cuff whose flare the artist blended between the forearm and the hand) |
+| `uv_within` | Of the islands chosen, only the corners whose texture coordinates are in a box, `{ min = [u, v], max = [u, v] }`: the metal of a piece whose leather or cloth is part of the same island (a bracer strapped on, a couter and its strap), told apart by where the texture draws each (`uv-<model>.png`). The soft part's corners where it meets the plate go with the plate, so it stays joined to the plate's edge |
 | `seam` | `true`: the plate comes apart from the rest of its island where they meet. It takes the triangles with a corner chosen, whole, and its own copy of the corners it shares, so as the joint bends it slides over or under what it meets instead of stretching or dragging it along (a gauntlet's hand plate joined to its cuff at the rim) |
 
 One plate is made each side (left, right, the middle) of everything a rule chooses there; a plate
@@ -146,6 +151,10 @@ leather, gives each leg its own). Write two rules to make two plates of one side
   Where the game's weights blend a hard part across the joint (a cuff's flare over the wrist), a
   soft band there bends the metal: split by place instead (`corners_within`), and let the plate
   past the joint come apart at its `seam`, as a real gauntlet's hand plate slides over its cuff.
+* **Only the hard part is rigid.** A plate's straps, its leather lining and the cloth under it are
+  often the same island as the plate: leave them soft (`uv_within` the metal's part of the
+  texture), above all a strap across the inside of a joint, which the arm or the leg goes through
+  at the least bend if it's rigid.
 * **Torso plates** ride the spine bones explicitly: averaged weights often carry a little of the
   head or the neck, and a breastplate turning with the head looks wrong (`ride = { "Bip01 Spine2"
   = 0.6, "Bip01 Spine1" = 0.4 }`). Make the chest rigid and leave the belly soft where the

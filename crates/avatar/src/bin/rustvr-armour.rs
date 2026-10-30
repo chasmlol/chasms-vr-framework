@@ -21,7 +21,10 @@
 //!   shoulder, the right elbow side on, the right wrist from the thumb's side; `--views` picks);
 //! * `islands.png`: the body at rest, every island its own colour, numbered `mesh.island` as the
 //!   listing numbers them (each part's meshes counted from 0);
-//! * `plates.png`: the same, each plate its own colour, soft parts grey, at rest and arms raised;
+//! * `plates.png`: the same, each plate its own colour, soft parts grey, at rest and arms raised
+//!   (or in the poses `--poses` names, from the views `--views` names);
+//! * `uv-<model>.png`: each marked model's textures, its triangles drawn where they take their
+//!   texture from, a plate's filled in its colour (for `uv_within`);
 //! * `list.txt` (with `--list`, printed instead of drawing anything): each model's meshes and
 //!   islands (their vertices, bones and bounds), and the plates its marks give it (what each
 //!   rides, its pivot at rest), with what in the marks didn't work.
@@ -193,10 +196,13 @@ fn main() -> Result<()> {
         rustvr_gpu::save_png(&out.join(format!("{name}.png")), w, h, &rows.concat())?;
     }
 
-    // The islands, and the plates, coloured.
+    // The islands, and the plates, coloured (the plates in the poses asked for, to see what bends
+    // where).
+    let plates_posed = if a.poses.is_some() { poses.iter().map(|p| p.1).collect() } else { vec![pose::arms_down(HEIGHT), pose::arms_raised(HEIGHT)] };
+    let coloured_views: Vec<View> = if a.views.is_some() { views.clone() } else { vec![View::Front, View::Side, View::Back, View::Arm] };
     for (file, skinning, colours, posed) in [
         ("islands.png", Skinning::Linear, Colours::Islands, vec![pose::arms_down(HEIGHT)]),
-        ("plates.png", Skinning::Marked(&marks), Colours::Plates, vec![pose::arms_down(HEIGHT), pose::arms_raised(HEIGHT)]),
+        ("plates.png", Skinning::Marked(&marks), Colours::Plates, plates_posed),
     ] {
         let (source, labels) = coloured(rustvr_avatar::compose(&dir, &skeleton, &parts, &[], skinning)?, &dir, &parts, &marks, &name_of, colours)?;
         let AvatarSource::Built { model, .. } = &source else { unreachable!() };
@@ -211,7 +217,7 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|(text, mesh, vertices)| (text.as_str(), vertices.iter().map(|&v| skin[starts[*mesh] + v as usize].0).sum::<Vec3>() / vertices.len().max(1) as f32))
                 .collect();
-            let row: Vec<Vec<u8>> = [View::Front, View::Side, View::Back, View::Arm]
+            let row: Vec<Vec<u8>> = coloured_views
                 .iter()
                 .map(|&v| {
                     let mut px = render(&gpu, &mut avatar, size, joints, v, false, BODYVIS_FULL)?;
@@ -226,10 +232,164 @@ fn main() -> Result<()> {
                 .collect::<Result<_>>()?;
             rows.push(tile_row(&row, size));
         }
-        rustvr_gpu::save_png(&out.join(file), size.0 * 4, size.1 * rows.len() as u32, &rows.concat())?;
+        rustvr_gpu::save_png(&out.join(file), size.0 * coloured_views.len() as u32, size.1 * rows.len() as u32, &rows.concat())?;
     }
-    println!("{} poses x {} ways of skinning, islands and plates: {}", poses.len(), a.skins.len(), out.display());
+    uv_sheets(&dir, &skeleton, &parts, &name_of, &marks, &out)?;
+    println!("{} poses x {} ways of skinning, islands, plates and their textures: {}", poses.len(), a.skins.len(), out.display());
     Ok(())
+}
+
+/// `uv-<model>.png` for each marked model: its textures, with the right side's (and the
+/// middle's) triangles drawn where they take their texture from, a plate's filled in its colour
+/// as the listing names it, the soft ones outlined. A piece whose metal and leather are one island
+/// is split by the texture (`uv_within`): its boxes are read off these.
+fn uv_sheets(dir: &Path, skeleton: &str, parts: &[String], name_of: &HashMap<String, String>, marks: &ArmourFile, out: &Path) -> Result<()> {
+    let skel = asset::load_model(dir, skeleton)?;
+    // (Plates numbered across the parts, as the listing numbers them for their colours.)
+    let mut plate_count = 0;
+    for key in parts {
+        let name = name_of.get(key).map_or(key.as_str(), String::as_str);
+        let mut model = asset::load_model(dir, key)?;
+        if model.bones.len() != skel.bones.len() || model.bones.iter().zip(&skel.bones).any(|(a, b)| a.name != b.name) {
+            rustvr_avatar::rebind(&mut model, &skel.bones)?;
+        }
+        let Some(piece) = marks.piece(name) else { continue };
+        let plates = armour::plates(piece, &model, &[]).plates;
+        // Each triangle's plate: all its corners on it (a plate's own triangles, if it has them).
+        let mut plate_of: HashMap<(usize, usize), usize> = HashMap::new();
+        for (k, p) in plates.iter().enumerate() {
+            let mesh = &model.meshes[p.mesh];
+            let mine: std::collections::HashSet<u32> = p.vertices.iter().copied().collect();
+            for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+                if (p.triangles.is_empty() && tri.iter().all(|i| mine.contains(i))) || p.triangles.contains(&(t as u32)) {
+                    plate_of.insert((p.mesh, t), plate_count + k);
+                }
+            }
+        }
+        plate_count += plates.len();
+        let mut textures: Vec<&str> = Vec::new();
+        for m in &model.meshes {
+            if !m.texture.is_empty() && !textures.contains(&m.texture.as_str()) {
+                textures.push(&m.texture);
+            }
+        }
+        let mut sheets: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+        for tex in textures {
+            let (w, h, mut px) = match asset::load_texture(dir, tex).ok().and_then(|t| decoded(&t).map(|px| (t.width, t.height, px))) {
+                Some(t) => t,
+                None => (512, 512, [60, 60, 60, 255].repeat(512 * 512)),
+            };
+            for (m, mesh) in model.meshes.iter().enumerate().filter(|(_, m)| m.texture == tex) {
+                for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+                    let corners = [0, 1, 2].map(|k| &mesh.vertices[tri[k] as usize]);
+                    if corners.iter().all(|v| v.pos[0] < -0.02) {
+                        continue;
+                    }
+                    let at = corners.map(|v| (v.uv[0].rem_euclid(1.0) * w as f32, v.uv[1].rem_euclid(1.0) * h as f32));
+                    match plate_of.get(&(m, t)) {
+                        Some(&k) => {
+                            let c = PALETTE[k % PALETTE.len()].0.map(|x| (x * 255.0) as u8);
+                            fill_triangle(&mut px, (w, h), at, c);
+                            outline_triangle(&mut px, (w, h), at, c);
+                        }
+                        None => outline_triangle(&mut px, (w, h), at, [235, 235, 235]),
+                    }
+                }
+            }
+            sheets.push((w, h, px));
+        }
+        // Side by side, the shorter ones padded below.
+        let (w, h) = (sheets.iter().map(|s| s.0).sum::<u32>(), sheets.iter().map(|s| s.1).max().unwrap_or(1));
+        let mut px = [0u8, 0, 0, 255].repeat((w * h) as usize);
+        let mut x0 = 0;
+        for (sw, sh, s) in &sheets {
+            for y in 0..*sh {
+                let row = (*sw * 4) as usize;
+                let to = ((y * w + x0) * 4) as usize;
+                px[to..to + row].copy_from_slice(&s[y as usize * row..(y as usize + 1) * row]);
+            }
+            x0 += sw;
+        }
+        let stem = Path::new(&asset::armour::normalise(name).replace('\\', "/")).file_stem().map_or("model".into(), |s| s.to_string_lossy().into_owned());
+        rustvr_gpu::save_png(&out.join(format!("uv-{stem}.png")), w, h, &px)?;
+    }
+    Ok(())
+}
+
+/// A texture's largest level as 8-bit RGBA, for the formats the games' diffuse maps use (none for
+/// the others).
+fn decoded(t: &asset::Texture) -> Option<Vec<u8>> {
+    let (w, h) = (t.width as usize, t.height as usize);
+    let data = t.mips.first()?;
+    let block = match t.format {
+        asset::TexFormat::Rgba8 => return Some(data.clone()),
+        asset::TexFormat::Bc1 => 8,
+        asset::TexFormat::Bc2 | asset::TexFormat::Bc3 => 16,
+        _ => return None,
+    };
+    let rgb = |c: u16| [((c >> 11) & 31) as u32 * 255 / 31, ((c >> 5) & 63) as u32 * 255 / 63, (c & 31) as u32 * 255 / 31];
+    let mut out = vec![255u8; w * h * 4];
+    let across = w.div_ceil(4);
+    for by in 0..h.div_ceil(4) {
+        for bx in 0..across {
+            let b = data.get((by * across + bx) * block..)?.get(..block)?;
+            // (The colour half of a block: BC2's and BC3's after their alpha, always four colours.)
+            let c = &b[block - 8..];
+            let (c0, c1) = (u16::from_le_bytes([c[0], c[1]]), u16::from_le_bytes([c[2], c[3]]));
+            let (p0, p1) = (rgb(c0), rgb(c1));
+            let four = block == 16 || c0 > c1;
+            let mix = |a: u32, b: u32, k: u32| if four { (a * (3 - k) + b * k) / 3 } else { (a + b) / 2 };
+            let palette = [p0, p1, [0, 1, 2].map(|i| mix(p0[i], p1[i], 1)), if four { [0, 1, 2].map(|i| mix(p0[i], p1[i], 2)) } else { [0, 0, 0] }];
+            let bits = u32::from_le_bytes([c[4], c[5], c[6], c[7]]);
+            for i in 0..16 {
+                let (x, y) = (bx * 4 + i % 4, by * 4 + i / 4);
+                if x < w && y < h {
+                    let p = palette[((bits >> (2 * i)) & 3) as usize];
+                    out[(y * w + x) * 4..][..3].copy_from_slice(&p.map(|v| v as u8));
+                }
+            }
+        }
+    }
+    Some(out)
+}
+
+/// A triangle filled half over what's there.
+fn fill_triangle(px: &mut [u8], (w, h): (u32, u32), p: [(f32, f32); 3], colour: [u8; 3]) {
+    let edge = |a: (f32, f32), b: (f32, f32), x: f32, y: f32| (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0);
+    let area = edge(p[0], p[1], p[2].0, p[2].1);
+    if area.abs() < 1e-6 {
+        return;
+    }
+    let (x0, x1) = (p.iter().map(|q| q.0).fold(f32::MAX, f32::min).max(0.0) as u32, p.iter().map(|q| q.0).fold(f32::MIN, f32::max).min(w as f32 - 1.0) as u32);
+    let (y0, y1) = (p.iter().map(|q| q.1).fold(f32::MAX, f32::min).max(0.0) as u32, p.iter().map(|q| q.1).fold(f32::MIN, f32::max).min(h as f32 - 1.0) as u32);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let inside = [edge(p[0], p[1], fx, fy), edge(p[1], p[2], fx, fy), edge(p[2], p[0], fx, fy)].iter().all(|&e| e * area >= 0.0);
+            if inside {
+                let o = ((y * w + x) * 4) as usize;
+                for k in 0..3 {
+                    px[o + k] = ((px[o + k] as u32 + colour[k] as u32) / 2) as u8;
+                }
+            }
+        }
+    }
+}
+
+/// A triangle's edges, a pixel wide.
+fn outline_triangle(px: &mut [u8], (w, h): (u32, u32), p: [(f32, f32); 3], colour: [u8; 3]) {
+    for k in 0..3 {
+        let (a, b) = (p[k], p[(k + 1) % 3]);
+        let steps = (b.0 - a.0).abs().max((b.1 - a.1).abs()).ceil().max(1.0) as u32;
+        for s in 0..=steps {
+            let f = s as f32 / steps as f32;
+            let (x, y) = (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
+            if x >= 0.0 && y >= 0.0 && (x as u32) < w && (y as u32) < h {
+                let o = ((y as u32 * w + x as u32) * 4) as usize;
+                px[o..o + 3].copy_from_slice(&colour);
+            }
+        }
+    }
 }
 
 /// The listing: every part's meshes, islands and plates.
