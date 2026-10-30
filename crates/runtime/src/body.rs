@@ -60,7 +60,7 @@ pub struct PlayerBody {
     /// The body the game makes up (`rustvr_protocol::AvatarDesc`), as last asked for, and being
     /// put together off the frame.
     game_body_seq: u32,
-    game_body: Option<std::sync::mpsc::Receiver<anyhow::Result<AvatarSource>>>,
+    game_body: Option<std::sync::mpsc::Receiver<anyhow::Result<(AvatarSource, Option<crate::sculpt::FaceKit>)>>>,
     /// The body's parts as last asked for ((game, skeleton), parts, swaps), and its face
     /// (`rustvr_protocol::FaceDesc`, by its seq): a new face puts the same parts together again.
     game_parts: Option<((String, String), Vec<String>, Vec<(String, String)>)>,
@@ -68,6 +68,16 @@ pub struct PlayerBody {
     game_face: Option<rustvr_avatar::facegen::Face>,
     /// A body is being put together while another change came in: put it together again after.
     game_body_stale: bool,
+    /// The face the body was last put together with, and a new face held back from it (only its
+    /// shape changed, and that's drawn live: see [`PlayerBody::set_face_now`]) since when.
+    composed_face: Option<rustvr_avatar::facegen::Face>,
+    face_held_back: Option<f64>,
+    /// The face drawn live on the body's FaceGen parts (`crate::sculpt`), and whether a new face's
+    /// shape waits for it instead of the body being put together again.
+    face_now: Option<std::sync::Arc<rustvr_avatar::facegen::FaceNow>>,
+    pub face_live: bool,
+    /// A new body's face to shape by hand (`crate::sculpt`): taken by [`PlayerBody::take_face`].
+    face_kit: Option<Option<crate::sculpt::FaceKit>>,
     pub body: RtBody,
     /// Ghost hands (canonical hand frames), drawn translucent.
     pub ghosts: [Option<Pose>; 2],
@@ -148,6 +158,11 @@ impl Default for PlayerBody {
             game_face_seq: 0,
             game_face: None,
             game_body_stale: false,
+            composed_face: None,
+            face_held_back: None,
+            face_now: None,
+            face_live: false,
+            face_kit: None,
             body: bytemuck::Zeroable::zeroed(),
             ghosts: [None; 2],
             held: [None; 2],
@@ -186,6 +201,10 @@ fn grip_of(c: &Controller) -> (Vec3, Quat) {
 }
 
 const SIDES: [Side; 2] = [Side::Left, Side::Right];
+/// How long a face drawn live (`crate::sculpt`) is still before the body is put together again with
+/// it (seconds): putting it together again exactly (its eyes' turning points, its joints) costs a
+/// moment off the frame, which a hand pulling it would pay every frame.
+const FACE_STILL: f64 = 0.5;
 /// Wrist to the middle finger's knuckle against a person's height (palm length: about 10.3 cm in
 /// a 1.75 m adult).
 const HAND_PER_HEIGHT: f32 = 0.059;
@@ -379,7 +398,7 @@ impl PlayerBody {
     /// the frame (`rustvr_avatar::compose`, the face's morphs on the parts made to it), then drawn
     /// instead of the avatar so far. (While one is being put together a newer change waits for it,
     /// so a character creator's slider dragged along makes one body at a time, the latest.)
-    pub fn read_game_body(&mut self, link: &rustvr_protocol::link::Link) {
+    pub fn read_game_body(&mut self, link: &rustvr_protocol::link::Link, now: f64) {
         let mut d: rustvr_protocol::AvatarDesc = bytemuck::Zeroable::zeroed();
         if link.read_avatar_into(&mut d) && d.seq != self.game_body_seq {
             self.game_body_seq = d.seq;
@@ -410,9 +429,25 @@ impl PlayerBody {
                 eyes: [0, 1].map(|s| f.eye(s).split_once('/').map(|(_, k)| k.to_owned())),
             });
             if face != self.game_face {
+                // A face whose shape alone changed is drawn live while the face is being shaped
+                // (`crate::sculpt`): the body is put together again once it's been still a moment.
+                let shape_only = match (&face, &self.composed_face) {
+                    (Some(a), Some(b)) => a.coords.texture_symmetric == b.coords.texture_symmetric && a.hair == b.hair && a.detail == b.detail && a.eyes == b.eyes,
+                    _ => false,
+                };
                 self.game_face = face;
-                self.game_body_stale = self.game_parts.is_some();
+                if shape_only && self.face_live {
+                    self.face_held_back = Some(now);
+                } else {
+                    self.game_body_stale = self.game_parts.is_some();
+                }
             }
+        }
+        if let Some(since) = self.face_held_back
+            && (!self.face_live || now - since > FACE_STILL)
+        {
+            self.face_held_back = None;
+            self.game_body_stale = self.game_parts.is_some() && self.game_face != self.composed_face;
         }
         if !self.game_body_stale || self.game_body.is_some() {
             return;
@@ -420,6 +455,7 @@ impl PlayerBody {
         let Some(((game, skeleton), parts, swaps)) = self.game_parts.clone() else { return };
         self.game_body_stale = false;
         let face = self.game_face.clone();
+        self.composed_face = face.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let dir = rustvr_asset::default_root().join(&game);
         std::thread::spawn(move || {
@@ -441,7 +477,11 @@ impl PlayerBody {
             let t = std::time::Instant::now();
             let built = rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps, face.as_ref(), skinning);
             tracing::debug!("runtime: the game's body put together in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
-            let _ = tx.send(built);
+            // Its face, ready to be shaped by hand (off the frame too: its solver's sums take a while).
+            let _ = tx.send(built.map(|source| {
+                let kit = crate::sculpt::FaceKit::new(&source, &dir);
+                (source, kit)
+            }));
         });
         self.game_body = Some(rx);
     }
@@ -459,6 +499,10 @@ impl PlayerBody {
             self.avatar_tried = true;
             let t = std::time::Instant::now();
             // (A body already drawn keeps its renderer: only the new body goes onto the GPU.)
+            let built = built.map(|(source, kit)| {
+                self.face_kit = Some(kit);
+                source
+            });
             let made = match self.avatar.as_mut() {
                 Some(a) => built.and_then(|source| a.set_source(gpu, source)),
                 None => built.and_then(|source| Avatar::new(gpu, source)).map(|a| self.avatar = Some(a)),
@@ -584,8 +628,10 @@ impl PlayerBody {
         // (The avatar's loaded first: `special` is borrowed beside it.)
         self.avatar(gpu);
         let hand = (self.hand_length > 0.02).then_some(self.hand_length);
+        let face_now = self.face_now.clone();
         let Some(avatar) = self.avatar.as_mut() else { return };
         avatar.set_hand_length(hand);
+        avatar.set_face_shape(face_now);
         if let Some(l) = hand
             && (l - self.hand_said).abs() > 0.002
         {
@@ -608,6 +654,36 @@ impl PlayerBody {
         if let Err(e) = avatar.draw_with(gpu, &target.rtv, target.width, target.height, eye, fov, &frame, depth, true, holding, special) {
             tracing::warn!("runtime: drawing the avatar: {e:#}");
         }
+    }
+
+    /// The face drawn live on the body's FaceGen parts from now on (`crate::sculpt`; None: the face
+    /// it was put together with).
+    pub fn set_face_now(&mut self, face: Option<std::sync::Arc<rustvr_avatar::facegen::FaceNow>>) {
+        self.face_now = face;
+    }
+
+    /// A new body's face to shape by hand, when a new body has come (Some(None): it has none).
+    pub fn take_face(&mut self) -> Option<Option<crate::sculpt::FaceKit>> {
+        self.face_kit.take()
+    }
+
+    /// Where the bone `name` is on the body as a mirror shows it (its head on), as the body was
+    /// last posed: its skinning matrix (bind model space -> tracking space).
+    pub fn bone_skin(&mut self, name: &str) -> Option<glam::Mat4> {
+        let body = self.body;
+        let frame = AvatarFrame {
+            joints: &body.joints,
+            fingers: body.fingers,
+            hands: body.hands,
+            ghosts: [None; 2],
+            held: self.held,
+            grasp: [self.grasp[0].as_ref(), self.grasp[1].as_ref()],
+            visibility: BODYVIS_FULL,
+            light: LightHint::default(),
+            first_person: false,
+            plain: self.plain,
+        };
+        self.avatar.as_mut()?.bone_skin(&frame, name)
     }
 
     /// Draws the body as a mirror shows it (`crate::mirror`): from `eye` (a camera reflected in the

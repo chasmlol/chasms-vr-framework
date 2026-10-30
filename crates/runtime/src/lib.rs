@@ -29,6 +29,7 @@ pub mod reins;
 pub mod riding;
 pub mod scenario;
 pub mod scenario_physical;
+pub mod sculpt;
 pub mod session;
 pub mod settings;
 pub mod spectator;
