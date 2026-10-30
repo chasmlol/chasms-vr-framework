@@ -27,6 +27,51 @@ pub struct Face {
     pub eyes: [Option<String>; 2],
 }
 
+/// A FaceGen part's mesh as the face's geometry coordinates move it, kept so the face can change
+/// live (a hand pulling it into shape) without the body being put together again: its vertices'
+/// places with no face on them, and each coordinate's move of each, in the body's model space
+/// (the part as [`crate::compose`] put it on the skeleton).
+#[derive(Debug, Default)]
+pub struct FaceShape {
+    /// Which of the body's face parts it is (the order [`crate::compose`] met them in).
+    pub part: usize,
+    pub rest: Vec<[f32; 3]>,
+    /// Each symmetric coordinate's move of every vertex, then each asymmetric one's.
+    pub symmetric: Vec<Vec<[f32; 3]>>,
+    pub asymmetric: Vec<Vec<[f32; 3]>>,
+}
+
+impl FaceShape {
+    /// Every vertex's place for a face's geometry coordinates (symmetric, asymmetric).
+    pub fn positions(&self, symmetric: &[f32], asymmetric: &[f32]) -> Vec<[f32; 3]> {
+        let mut out = self.rest.clone();
+        for (set, c) in [(&self.symmetric, symmetric), (&self.asymmetric, asymmetric)] {
+            for (morph, &k) in set.iter().zip(c) {
+                if k == 0.0 {
+                    continue;
+                }
+                for (p, d) in out.iter_mut().zip(morph) {
+                    for a in 0..3 {
+                        p[a] += d[a] * k;
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The face as it's drawn live, without the body being put together again
+/// ([`crate::Avatar::set_face_shape`], [`crate::HeldModel::set_face`]): its geometry coordinates,
+/// and by face part ([`FaceShape::part`]) how strongly each of its vertices glows, 0..255, for what
+/// a hand would take hold of (missing or empty: none).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FaceNow {
+    pub symmetric: Vec<f32>,
+    pub asymmetric: Vec<f32>,
+    pub glow: Vec<Vec<u8>>,
+}
+
 /// Moves a mesh's vertices to the face: each morph times its coordinate.
 pub fn morph_mesh(mesh: &mut asset::Mesh, morphs: &FaceMorphs, coords: &FaceCoords) {
     let sets = [(&morphs.symmetric, &coords.geometry_symmetric), (&morphs.asymmetric, &coords.geometry_asymmetric)];

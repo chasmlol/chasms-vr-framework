@@ -126,6 +126,7 @@ struct VSOut {
     float view_z : TEXCOORD3;
     float vis : TEXCOORD4;
     float ao : TEXCOORD5;
+    float glow : TEXCOORD6;    // what a hand would take hold of (0..1)
 };
 
 float3x3 q_matrix(float4 q) {
@@ -205,6 +206,7 @@ VSOut VSMain(VSIn i) {
     o.view_z = dot(view_z.xyz, world) + view_z.w;
     o.vis = vis;
     o.ao = i.ao.x;
+    o.glow = i.ao.y;
     return o;
 }
 
@@ -660,6 +662,10 @@ float4 PSMetroGlass(VSOut i) : SV_Target {
     return float4(finish(fogged(c.rgb, pv), i.pos), m_bad(c.aaa) ? 0 : saturate(c.a));
 }
 
+// The light on what a hand would take hold of: the game's cursor's gold (255, 203, 57), in the
+// display's range.
+#define HOLD_GLOW (float3(1.0, 0.796, 0.224) * 0.32)
+
 // Gamebryo's per-pixel lighting (gamebryo.rs: Oblivion's ShadowLightShader and SkinShader), in the
 // display's range as the game's back buffer holds it, written through the sRGB target. The game's
 // textures raw; the lights and the eye in tracking space (the lighting's `eye` is the identity).
@@ -730,6 +736,9 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     }
     // (The hair's light isn't capped: its shader adds the ambient to its lights as they are.)
     float3 col = saturate(c * (hair ? amb.rgb + d : saturate(amb.rgb + glow + d)) + s);
+    // What a hand would take hold of (a face to pull into shape): lit in the gold of the game's own
+    // cursor, as the laser lights what it points at, most where it would move most.
+    if (i.glow > 0) col = saturate(col + i.glow * HOLD_GLOW);
     if (fog_fade.y != 0) col = lerp(col, fog_color.rgb, saturate(length(eye_pos.xyz - i.world) * fog_fade.y + fog_fade.x));
     return float4(m_display_to_linear(under_water(col, through)), 1);
 }
@@ -1109,6 +1118,8 @@ struct GpuMesh {
     ib: ID3D11Buffer,
     /// A mesh that bends (a bow's limbs and string): its vertex buffer is rewritten as it does.
     bent: Option<Bent>,
+    /// A FaceGen part: its vertex buffer is rewritten as the face changes live.
+    shaped: Option<Shaped>,
     /// (first index, count) per view.
     ranges: [(u32, u32); 3],
     srv: Option<ID3D11ShaderResourceView>,
@@ -1139,6 +1150,41 @@ impl Bent {
                 Vertex { pos: pos.to_array(), normal: n.to_array(), ..*v }
             })
             .collect()
+    }
+}
+
+/// A FaceGen part's mesh ([`crate::facegen::FaceShape`]): its vertices with no face on them, and the
+/// face its buffer holds now (None: the one it was put together with).
+struct Shaped {
+    rest: Vec<Vertex>,
+    shape: Arc<crate::facegen::FaceShape>,
+    drawn: std::cell::RefCell<Option<Arc<crate::facegen::FaceNow>>>,
+}
+
+impl Shaped {
+    /// Rewrites the buffer for `face` unless it already holds it.
+    fn draw_face(&self, ctx: &ID3D11DeviceContext, vb: &ID3D11Buffer, face: &Arc<crate::facegen::FaceNow>) {
+        let mut drawn = self.drawn.borrow_mut();
+        if drawn.as_ref().is_some_and(|d| Arc::ptr_eq(d, face)) {
+            return;
+        }
+        *drawn = Some(face.clone());
+        let at = self.shape.positions(&face.symmetric, &face.asymmetric);
+        let glow = face.glow.get(self.shape.part).map(Vec::as_slice).unwrap_or(&[]);
+        let vertices: Vec<Vertex> = self
+            .rest
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let mut v = *v;
+                if let Some(p) = at.get(i) {
+                    v.pos = *p;
+                }
+                v.ao[1] = glow.get(i).copied().unwrap_or(0);
+                v
+            })
+            .collect();
+        pipeline::write_dynamic(ctx, vb, bytemuck::cast_slice(&vertices));
     }
 }
 
@@ -1182,6 +1228,9 @@ pub struct Character {
     bone_names: Vec<String>,
     /// Where the eyes look, when they look at something (tracking space; [`crate::Avatar::set_gaze`]).
     pub(crate) gaze: Option<Vec3>,
+    /// The face drawn on its FaceGen parts, live ([`crate::Avatar::set_face_shape`]; None: the one
+    /// it was put together with).
+    pub(crate) face: Option<Arc<crate::facegen::FaceNow>>,
 }
 
 const SHOWS: [Show; 5] = [Show::Full, Show::Arms, Show::Hands, Show::Hand(0), Show::Hand(1)];
@@ -1241,7 +1290,9 @@ impl Character {
                 }
                 ranges[range] = (start, indices.len() as u32 - start);
             }
-            meshes.push(gpu_mesh(gpu, m, &indices, ranges, &mut upload)?);
+            let mut g = gpu_mesh(gpu, m, &indices, ranges, &mut upload)?;
+            shaped(gpu, m, &mut g)?;
+            meshes.push(g);
         }
         let cpu = source.meshes.iter().map(|m| m.vertices.iter().copied().zip(m.centres.iter().copied()).collect()).collect();
         let bone_names = source.bones.iter().map(|b| b.name.clone()).collect();
@@ -1258,6 +1309,7 @@ impl Character {
             ghost_cbs: [ConstantBuffer::new(gpu)?, ConstantBuffer::new(gpu)?],
             drawn_hands: [None; 2],
             gaze: None,
+            face: None,
         })
     }
 
@@ -1288,6 +1340,13 @@ impl Character {
 
     /// Uploads the posed palette with the visibility of `show`.
     fn upload_body(&mut self, ctx: &ID3D11DeviceContext, show: Show) {
+        if let Some(face) = &self.face {
+            for m in &self.meshes {
+                if let Some(s) = &m.shaped {
+                    s.draw_face(ctx, &m.vb, face);
+                }
+            }
+        }
         self.fill_palette(Mat4::IDENTITY, show);
         self.body_cb.update(ctx, &self.palette);
     }
@@ -1407,11 +1466,26 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
         vb: static_buffer(gpu, bytemuck::cast_slice(&vertices), D3D11_BIND_VERTEX_BUFFER)?,
         ib: static_buffer(gpu, bytemuck::cast_slice(indices), D3D11_BIND_INDEX_BUFFER)?,
         bent: None,
+        shaped: None,
         ranges,
         srv,
         material: static_buffer(gpu, bytemuck::bytes_of(&material), D3D11_BIND_CONSTANT_BUFFER)?,
         metro,
     })
+}
+
+/// A FaceGen part's mesh made one the face reshapes live: its buffer one the CPU writes, and its
+/// vertices with no face on them kept.
+fn shaped(gpu: &Gpu, m: &crate::SourceMesh, g: &mut GpuMesh) -> Result<()> {
+    let Some(shape) = m.shape.as_ref().filter(|s| s.rest.len() == m.vertices.len()) else { return Ok(()) };
+    let mut rest = gpu_vertices(m);
+    for (v, p) in rest.iter_mut().zip(&shape.rest) {
+        v.pos = *p;
+    }
+    // (As it was put together until the face first changes.)
+    g.vb = pipeline::dynamic_buffer(gpu, bytemuck::cast_slice(&gpu_vertices(m)), D3D11_BIND_VERTEX_BUFFER)?;
+    g.shaped = Some(Shaped { rest, shape: shape.clone(), drawn: std::cell::RefCell::new(None) });
+    Ok(())
 }
 
 /// A held model's mesh as it's loaded: the mesh, what part it is, and for one that bends each
@@ -1429,9 +1503,16 @@ pub struct HeldModel {
     cb: ConstantBuffer<BonesCb>,
     /// The parts where they were in the game's pictures ([`Renderer::draw_reprojected`]).
     then_cb: ConstantBuffer<BonesCb>,
+    /// The face drawn on its FaceGen parts, live ([`HeldModel::set_face`]).
+    face: std::cell::RefCell<Option<Arc<crate::facegen::FaceNow>>>,
 }
 
 impl HeldModel {
+    /// Draws the face `face` on its FaceGen parts from now on (a head shaped by hand, live).
+    pub fn set_face(&self, face: Option<Arc<crate::facegen::FaceNow>>) {
+        *self.face.borrow_mut() = face;
+    }
+
     /// `meshes`: each with the part it belongs to (its vertices' bones are ignored), whether a
     /// special draw takes it instead (see [`crate::SpecialDraw`]), and for one that bends, each
     /// vertex's offset at full bend (position, normal; see [`crate::HeldDraw::bend`]).
@@ -1478,6 +1559,7 @@ impl HeldModel {
             fix_winding(&mut m);
             let n = m.indices.len() as u32;
             let mut g = gpu_mesh(gpu, &m, &m.indices, [(0, n); 3], &mut upload)?;
+            shaped(gpu, &m, &mut g)?;
             if let Some(offsets) = offsets.filter(|o| o.len() == m.vertices.len()) {
                 // Its vertices rewritten as it bends: a buffer the CPU writes.
                 let rest = gpu_vertices(&m);
@@ -1487,7 +1569,15 @@ impl HeldModel {
             out.push(g);
             info.push(i);
         }
-        Ok(HeldModel { meshes: out, info, parts, palette: std::cell::RefCell::new(Box::new(BonesCb::zeroed())), cb: ConstantBuffer::new(gpu)?, then_cb: ConstantBuffer::new(gpu)? })
+        Ok(HeldModel {
+            meshes: out,
+            info,
+            parts,
+            palette: std::cell::RefCell::new(Box::new(BonesCb::zeroed())),
+            cb: ConstantBuffer::new(gpu)?,
+            then_cb: ConstantBuffer::new(gpu)?,
+            face: std::cell::RefCell::new(None),
+        })
     }
 
     /// Its meshes: which part each is, where it came from, and whether a special draw takes it.
@@ -1504,6 +1594,13 @@ impl HeldModel {
     /// that bend as far as `bend` (rewritten only when it changes).
     fn upload(&self, ctx: &ID3D11DeviceContext, parts: &[Option<Mat4>], bend: f32) {
         self.upload_to(ctx, parts, &self.cb);
+        if let Some(face) = self.face.borrow().as_ref() {
+            for m in &self.meshes {
+                if let Some(s) = &m.shaped {
+                    s.draw_face(ctx, &m.vb, face);
+                }
+            }
+        }
         for m in &self.meshes {
             if let Some(b) = m.bent.as_ref().filter(|b| (b.bend.get() - bend).abs() > 1e-4) {
                 b.bend.set(bend);
@@ -2445,6 +2542,15 @@ impl Renderer {
         };
         main.pose(&pose_input(frame));
         main.skin()
+    }
+
+    /// Where the bone `name` is as `frame` poses `body`, its head shown: its skinning matrix.
+    pub fn bone_skin(&mut self, frame: &AvatarFrame, body: &mut Character, name: &str) -> Option<Mat4> {
+        let mut input = pose_input(frame);
+        input.chop_head = false;
+        body.pose(&input);
+        let b = body.bone_names.iter().position(|n| n.eq_ignore_ascii_case(name))?;
+        body.posed.skin.get(b).copied()
     }
 
     /// Translucent hands over everything drawn so far, tested against (but not writing) depth.
