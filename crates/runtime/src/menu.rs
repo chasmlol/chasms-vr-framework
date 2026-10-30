@@ -435,6 +435,11 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
         ui.selectable_value(&mut h.grenade_arming, GrenadeArming::Button, "Trigger arms it");
     });
     ui.checkbox(&mut h.knife_assist, "Forgiving knife throws (they stick more)");
+    // The body's slots that hand out the player's things (the game's own editor sets them up).
+    let p = &mut s.holsters;
+    slider(ui, "Eating and drinking: hold at the mouth", &mut p.mouth_time, 0.15, 1.5, " s", 2);
+    slider(ui, "Reading a scroll: hold before the eyes", &mut p.read_time, 0.2, 2.0, " s", 2);
+    slider(ui, "Holsters' editor: grip held in a slot (0: off)", &mut p.edit_hold, 0.0, 3.0, " s", 1);
     ui.separator();
     ui.checkbox(&mut s.sound.enabled, "Interaction sounds");
     if s.sound.enabled {

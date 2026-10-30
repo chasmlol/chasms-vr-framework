@@ -375,7 +375,12 @@ pub struct ObjectDesc {
     /// `foregrip`.
     pub foregrip_line: [[f32; 3]; 2],
     pub foregrip_radius: f32,
-    pub _p_grips: [u32; 2],
+    /// As it arrives (or comes back with a new `spawn_seq`): the object it takes the place of, in
+    /// the hand that holds that one (0: none). A weapon drawn from one of the body's slots is the
+    /// runtime's copy of it ([`OS_INVENTORY`]); the game equips it, and its own weapon goes into
+    /// that hand by its grip, the copy gone.
+    pub replaces: u32,
+    pub _p_grips: u32,
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;

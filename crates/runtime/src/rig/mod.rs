@@ -1086,11 +1086,13 @@ impl Rig {
                         if d.kind == OBJ_WEAPON && d.flags & OBJF_GAME_AMMO != 0 {
                             self.load_game_magazine(d.id);
                         }
+                        self.replace(d.id, d.replaces);
                     }
                 }
                 None => {
                     self.add(*d, d.id, false, v3(d.spawn_pose.pos), q4(d.spawn_pose.rot));
                     self.start_in_slot(d);
+                    self.replace(d.id, d.replaces);
                 }
             }
         }
@@ -1179,6 +1181,22 @@ impl Rig {
                 }
             }
         }
+    }
+
+    /// The game's own thing taking the place of the runtime's copy of it a hand holds (a weapon
+    /// drawn from one of the body's slots, equipped by the game): into that hand by its grip, from
+    /// where the copy was, the copy gone.
+    fn replace(&mut self, id: u32, copy: u32) {
+        let Some(i) = self.hands.as_ref().and_then(|h| h.iter().position(|h| copy != 0 && h.holding == Some(copy))) else { return };
+        let Some(at) = self.obj_pose(copy) else { return };
+        self.remove(copy);
+        for s in self.slots.iter_mut().filter(|s| **s == Some(id)) {
+            *s = None;
+        }
+        let Some(body) = self.objects.get(&id).map(|o| o.body) else { return };
+        self.physics.set_pose(body, at.0, at.1);
+        self.take(id, i, true);
+        tracing::info!("rig: {id:#x} takes the place of its copy {copy:#x} in the {} hand", if i == 0 { "left" } else { "right" });
     }
 
     /// Objects the game hands the player at the start go straight into their body slot.
