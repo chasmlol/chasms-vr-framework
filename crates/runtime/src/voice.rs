@@ -10,31 +10,40 @@ use std::time::{Duration, Instant};
 
 /// A plugin that stopped is started again no sooner than this.
 const RETRY: Duration = Duration::from_secs(10);
+/// The game gone this long, the plugin stops: a loading screen stops the game's frames (and so its
+/// heartbeat) for seconds, and the plugin keeps what everyone's been told since the last save.
+const GONE: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub struct VoicePlugin {
     child: Option<Child>,
     started: Option<Instant>,
+    /// Since when the game hasn't been there, while the plugin runs.
+    gone: Option<Instant>,
     /// Said once that it isn't there.
     missing: bool,
 }
 
 impl VoicePlugin {
-    /// Starts the plugin when it's `wanted` and not running, stops it when it's running and not.
-    pub fn update(&mut self, wanted: bool, mapping: &str, logs: &Path) {
+    /// Runs the plugin while the player has Voice `on` and a game is connected (`game`): started
+    /// when both are, stopped at once when Voice is turned off, and when the game has been gone a
+    /// while (not for a loading screen).
+    pub fn update(&mut self, on: bool, game: bool, mapping: &str, logs: &Path) {
         if let Some(child) = &mut self.child {
             if let Ok(Some(status)) = child.try_wait() {
                 tracing::warn!("voice: the plugin stopped ({status}); see {}", logs.join("voice.log").display());
                 self.child = None;
             }
         }
-        match (wanted, self.child.is_some()) {
-            (true, false) if self.started.is_none_or(|at| at.elapsed() > RETRY) => {
-                self.started = Some(Instant::now());
-                self.start(mapping, logs);
+        self.gone = if game { None } else { self.gone.or(Some(Instant::now())) };
+        let running = self.child.is_some();
+        if !on || self.gone.is_some_and(|since| since.elapsed() > GONE) {
+            if running {
+                self.stop();
             }
-            (false, true) => self.stop(),
-            _ => {}
+        } else if game && !running && self.started.is_none_or(|at| at.elapsed() > RETRY) {
+            self.started = Some(Instant::now());
+            self.start(mapping, logs);
         }
     }
 
