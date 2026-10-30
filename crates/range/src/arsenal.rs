@@ -137,6 +137,16 @@ fn melee(flags: u32, handles: &[MeleeHandle], blades: &[MeleeBlade], balance: Ve
     w.balance = balance.to_array();
     // The common weapons are tier 2.
     w.tier = 2;
+    w.throw_mult = 1.0;
+    w
+}
+
+/// A weapon thrown point first: within `angle` degrees of its flight
+/// when thrown, turned along it at a rate of 3.
+fn flies(mut w: MeleeWeapon, angle: f32) -> MeleeWeapon {
+    w.flags |= MW_FLIES;
+    w.fly_angle = angle;
+    w.fly_rate = 3.0;
     w
 }
 
@@ -153,7 +163,7 @@ pub fn sword() -> Arm {
     let grip = fist(Vec3::Z, Vec3::Y);
     let thing = thing("builtin_sword", "Arming sword", vec![m], 1.25, [Vec3::new(0.0, 0.0, -0.11), Vec3::new(0.0, 0.0, -0.012)], 0.014, grip, (flat(), 0.012));
     let melee = melee(
-        MW_SPINS,
+        0,
         &[
             handle(Vec3::new(0.0, 0.0, -0.11), Vec3::new(0.0, 0.0, -0.012), 0.014, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip),
             handle(Vec3::new(0.0, 0.0, -0.135), Vec3::new(0.0, 0.0, -0.11), 0.022, HANDLE_REVERSIBLE, grip),
@@ -180,7 +190,7 @@ pub fn dagger() -> Arm {
     let grip = fist(Vec3::Z, Vec3::Y);
     let thing = thing("kit_dagger", "Dagger", vec![m], 0.65, [Vec3::new(0.0, 0.0, -0.1), Vec3::new(0.0, 0.0, -0.01)], 0.013, grip, (flat(), 0.017));
     let melee = melee(
-        MW_SPINS,
+        0,
         &[handle(Vec3::new(0.0, 0.0, -0.1), Vec3::new(0.0, 0.0, -0.01), 0.013, HANDLE_MAIN | HANDLE_REVERSIBLE, grip)],
         &[
             blade(DAGGER_SLASH, Vec3::new(0.0, 0.0, 0.02), Vec3::new(0.0, 0.0, 0.2), 0.018, Vec3::X, 0.03),
@@ -189,6 +199,8 @@ pub fn dagger() -> Arm {
         ],
         Vec3::new(0.0, 0.0, 0.02),
     );
+    // (A dagger flies point first thrown within 145 degrees of it: almost always.)
+    let melee = flies(melee, 145.0);
     Arm { thing, melee }
 }
 
@@ -203,7 +215,7 @@ pub fn longsword() -> Arm {
     let grip = fist(Vec3::Z, Vec3::Y);
     let thing = thing("kit_longsword", "Longsword", vec![m], 2.0, [Vec3::new(0.0, 0.0, -0.25), Vec3::new(0.0, 0.0, -0.014)], 0.015, grip, (flat(), 0.026));
     let melee = melee(
-        MW_SPINS,
+        0,
         &[
             handle(Vec3::new(0.0, 0.0, -0.25), Vec3::new(0.0, 0.0, -0.014), 0.015, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip),
             handle(Vec3::new(0.0, 0.0, 0.3), Vec3::new(0.0, 0.0, 0.75), 0.02, HANDLE_BLADE | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip),
@@ -230,7 +242,7 @@ pub fn mace() -> Arm {
     let grip = fist(Vec3::Z, Vec3::Y);
     let thing = thing("kit_mace", "Mace", vec![m], 1.5, [Vec3::new(0.0, 0.0, -0.15), Vec3::new(0.0, 0.0, 0.0)], 0.014, grip, (flat(), 0.055));
     let melee = melee(
-        MW_SPINS,
+        0,
         &[handle(Vec3::new(0.0, 0.0, -0.15), Vec3::new(0.0, 0.0, 0.3), 0.014, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip)],
         &[blade(MACE, Vec3::new(0.0, 0.0, 0.41), Vec3::new(0.0, 0.0, 0.51), 0.06, Vec3::ZERO, 0.0), blade(HANDLE_LIGHT, Vec3::new(0.0, 0.0, -0.17), Vec3::new(0.0, 0.0, -0.15), 0.02, Vec3::ZERO, 0.0)],
         Vec3::new(0.0, 0.0, 0.32),
@@ -247,7 +259,7 @@ pub fn axe() -> Arm {
     let grip = fist(Vec3::Z, Vec3::Y);
     let thing = thing("kit_axe", "Axe", vec![m], 1.2, [Vec3::new(0.0, 0.0, -0.2), Vec3::new(0.0, 0.0, 0.25)], 0.015, grip, (flat(), 0.014));
     let melee = melee(
-        MW_SPINS,
+        0,
         &[handle(Vec3::new(0.0, 0.0, -0.2), Vec3::new(0.0, 0.0, 0.28), 0.015, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip)],
         &[
             blade(AXE_SLASH, Vec3::new(0.115, 0.0, 0.29), Vec3::new(0.115, 0.0, 0.43), 0.01, Vec3::X, 0.05),
@@ -282,6 +294,8 @@ pub fn spear() -> Arm {
     );
     // (`SpearBladed` is tier 4.)
     melee.tier = 4;
+    // (A spear flies point first thrown within 60 degrees of it.)
+    let melee = flies(melee, 60.0);
     Arm { thing, melee }
 }
 
@@ -319,7 +333,7 @@ pub fn staff() -> Arm {
     let grip = fist(Vec3::Z, Vec3::Y);
     let thing = thing("kit_staff", "Staff", vec![m], 1.5, [Vec3::new(0.0, 0.0, -0.8), Vec3::new(0.0, 0.0, 0.8)], 0.016, grip, (flat(), 0.02));
     let melee = melee(
-        MW_STAFF | MW_SPINS,
+        MW_STAFF,
         &[handle(Vec3::new(0.0, 0.0, -0.8), Vec3::new(0.0, 0.0, 0.8), 0.016, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip)],
         &[blade(HANDLE_HEAVY, Vec3::new(0.0, 0.0, 0.8), Vec3::new(0.0, 0.0, 0.9), 0.025, Vec3::ZERO, 0.0), blade(HANDLE_HEAVY, Vec3::new(0.0, 0.0, -0.9), Vec3::new(0.0, 0.0, -0.8), 0.025, Vec3::ZERO, 0.0)],
         Vec3::ZERO,
@@ -335,7 +349,7 @@ pub fn maul() -> Arm {
     let grip = fist(Vec3::Z, Vec3::Y);
     let thing = thing("kit_maul", "Maul", vec![m], 8.0, [Vec3::new(0.0, 0.0, -0.72), Vec3::new(0.0, 0.0, 0.2)], 0.018, grip, (flat(), 0.06));
     let melee = melee(
-        MW_SPINS,
+        0,
         &[handle(Vec3::new(0.0, 0.0, -0.72), Vec3::new(0.0, 0.0, 0.2), 0.018, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip)],
         &[blade(MACE_2H, Vec3::new(-0.13, 0.0, 0.36), Vec3::new(0.13, 0.0, 0.36), 0.065, Vec3::ZERO, 0.0), blade(HANDLE_HEAVY, Vec3::new(0.0, 0.0, -0.75), Vec3::new(0.0, 0.0, -0.7), 0.025, Vec3::ZERO, 0.0)],
         Vec3::new(0.0, 0.0, 0.28),

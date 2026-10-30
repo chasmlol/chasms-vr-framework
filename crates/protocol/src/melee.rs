@@ -123,9 +123,11 @@ pub struct MeleeBlade {
 // ---- weapons ------------------------------------------------------------------------------------
 /// A shield: it blocks with its face, and its rim bludgeons.
 pub const MW_SHIELD: u32 = 1 << 0;
-/// Thrown it turns end over end (an axe, a dagger); without it, it flies point first (a spear, a
-/// javelin).
-pub const MW_SPINS: u32 = 1 << 1;
+/// Thrown point first, it flies point first (a dagger, a spear): let go
+/// with its point within [`MeleeWeapon::fly_angle`] of the way it goes, it's turned along its
+/// flight each step until it first touches something. Without it, it tumbles as it was let go (a
+/// sword, an axe, a mace).
+pub const MW_FLIES: u32 = 1 << 1;
 /// It breaks under a hard enough blow ([`MeleeWeapon::break_impulse`]): the game makes the pieces.
 pub const MW_BREAKABLE: u32 = 1 << 2;
 /// Held, it's a staff that slides through the hands (both hands may slide).
@@ -146,7 +148,14 @@ pub struct MeleeWeapon {
     /// Its tier (0..5: 2 a common one), which picks its rows of the damage tables and
     /// how fast it must cut to sever.
     pub tier: u32,
-    pub _pad: [u32; 7],
+    /// Flying point first ([`MW_FLIES`]): the most its point may be off the way it's thrown
+    /// (degrees: a dagger 145, a spear 60), and how fast it's turned along its flight (that times
+    /// its speed times the step, of what's left; 3).
+    pub fly_angle: f32,
+    pub fly_rate: f32,
+    /// A throw's speed times this (1 on every weapon; 0: 1).
+    pub throw_mult: f32,
+    pub _pad: [u32; 4],
     pub handle: [MeleeHandle; MAX_HANDLES],
     pub blade: [MeleeBlade; MAX_BLADES],
 }

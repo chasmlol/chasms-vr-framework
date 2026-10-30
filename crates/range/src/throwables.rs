@@ -249,8 +249,8 @@ pub fn all(root: &std::path::Path) -> Vec<Throwable> {
 }
 
 /// Their places: (which throwable, its descriptor with id, spawn pose and start slot). Two frags
-/// in the chest pouches and a knife in the belt; two frags, two knives (Metro's if it's there)
-/// and Metro's bombs on the table.
+/// in the chest pouches and a knife in the belt; two frags, two knives (Metro's if it's there),
+/// the arming sword, a dagger and Metro's bombs on the table.
 pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
     let find = |key: &str| list.iter().position(|t| t.key == key);
     let frag = find("builtin_frag").unwrap();
@@ -265,8 +265,9 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_LEFT + 1),
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_RIGHT + 1),
         (find("builtin_knife").unwrap(), Vec3::new(-0.91, top, 1.05), SLOT_BELT + 1),
-        // The sword, its handle towards the player.
+        // The sword, its handle towards the player, and a dagger to throw behind it.
         (find("builtin_sword").unwrap(), Vec3::new(-0.72, top, 0.82), 0),
+        (find("kit_dagger").unwrap(), Vec3::new(-0.66, top, 0.97), 0),
     ];
     for (key, x) in [("throw_dynamite", -0.53), ("throw_incendiary", -0.61), ("throw_sticky_dynamite", -0.71)] {
         if let Some(i) = find(key) {

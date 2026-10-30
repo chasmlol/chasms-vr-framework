@@ -1278,10 +1278,12 @@
 #define RVR_MW_SHIELD (1 << 0)
 
 /**
- * Thrown it turns end over end (an axe, a dagger); without it, it flies point first (a spear, a
- * javelin).
+ * Thrown point first, it flies point first (a dagger, a spear): let go
+ * with its point within [`MeleeWeapon::fly_angle`] of the way it goes, it's turned along its
+ * flight each step until it first touches something. Without it, it tumbles as it was let go (a
+ * sword, an axe, a mace).
  */
-#define RVR_MW_SPINS (1 << 1)
+#define RVR_MW_FLIES (1 << 1)
 
 /**
  * It breaks under a hard enough blow ([`MeleeWeapon::break_impulse`]): the game makes the pieces.

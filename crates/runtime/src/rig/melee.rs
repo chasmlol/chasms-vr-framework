@@ -16,6 +16,11 @@
 //! * **Where a hand takes it** is where it is: a grab moves neither the hand nor the weapon (the
 //!   user's rule, rather than pulling the weapon into a pose). The handle the hand is on says how
 //!   the fingers close (round its line) and whether the hold is reversed.
+//! * **Throwing.** Let go of, it leaves as it was moving; let go of with the hand faster than
+//!   2 m/s (in the world's time) it's thrown, its speed doubled. One made to fly point first
+//!   ([`MW_FLIES`]: a dagger, a spear), thrown with its point near the way it goes,
+//!   is turned along its flight each step until it first touches something; the rest tumble. A
+//!   thrown weapon is judged as it flies (`combat`), until it sticks, is taken, or comes to rest.
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::*;
@@ -36,6 +41,12 @@ pub const SLIDE_DAMPER_MIN: f32 = 20.0;
 pub const HANDLE_HOP: f32 = 0.01;
 /// The fingers close round a handle this near the point held (metres from its line).
 pub const ON_HANDLE: f32 = 0.07;
+/// A weapon let go of with the hand faster than this (m/s, the world's time) is thrown, its speed
+/// times [`THROW_MULT`].
+pub const THROW_SPEED: f32 = 2.0;
+pub const THROW_MULT: f32 = 2.0;
+/// A thrown weapon slower than this (m/s) has come to rest: no longer thrown.
+pub const THROWN_REST: f32 = 0.1;
 
 /// Testing (`RUSTVR_DEBUG_MELEE=1`): how far each held weapon lags its hand, a few times a second.
 pub fn debug_melee() -> bool {
@@ -63,6 +74,20 @@ pub struct MeleeRig {
     /// player this frame.
     pub climbs: [Option<Vec3>; 2],
     pub climb: Vec3,
+    /// Weapons thrown and still flying or tumbling, by id.
+    pub thrown: std::collections::HashMap<u32, Thrown>,
+}
+
+/// A thrown weapon: the hand that threw it, when, (flying point first) its point's way (weapon
+/// space) and how fast it's turned along its flight, and this step's sweep: where it was before the
+/// physics stepped, and where it would have gone had nothing stopped it (what it hit is judged at
+/// the speed it met it, as the melee judges a contact before the physics resolves it).
+#[derive(Clone, Copy, Debug)]
+pub struct Thrown {
+    pub hand: usize,
+    pub since: f64,
+    pub flying: Option<(Vec3, f32)>,
+    pub sweep: Option<((Vec3, Quat), (Vec3, Quat))>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -395,4 +420,93 @@ impl Rig {
     pub fn climbing(&self) -> bool {
         self.melee.climbs.iter().any(|c| c.is_some())
     }
+}
+
+impl Rig {
+    /// Weapon `id` let go of by hand `i`: it leaves as it was moving, and
+    /// thrown (the hand faster than [`THROW_SPEED`] in the world's time) twice as fast. False: not
+    /// a melee weapon of the game's.
+    pub(super) fn release_melee(&mut self, i: usize, id: u32, inp: &super::RigInput) -> bool {
+        let Some(w) = self.melee.weapons.get(&id).copied() else { return false };
+        let body = self.objects[&id].body;
+        // (The hand's speed in the world's time: in slowed time a throw is that much faster.)
+        let time_scale = (inp.dt / inp.frame.dt.max(1e-4)).clamp(0.05, 1.0);
+        let hand_speed = self.hands.as_ref().unwrap()[i].history.recent().length() / time_scale;
+        let thrown = hand_speed > THROW_SPEED;
+        let (v, ang) = self.physics.velocity(body);
+        let v = if thrown { v * THROW_MULT * if w.throw_mult > 0.0 { w.throw_mult } else { 1.0 } } else { v };
+        self.free_body(id, super::groups_held(i)); // no hand contact for a moment
+        self.objects.get_mut(&id).unwrap().hands_off_until = self.now + if thrown { 0.2 } else { 0.1 };
+        self.physics.set_velocity(body, v, ang);
+        let (palm, _) = self.hands.as_ref().unwrap()[i].target;
+        if !thrown {
+            self.emit(super::feedback::Cue::Release, Some(i), Some(id), palm, 0.7);
+            return true;
+        }
+        // Flying point first: its point within its angle of the way it goes.
+        let (_, q) = self.physics.pose(body);
+        let point = point_of(&w);
+        let off = (q * point).angle_between(v.normalize_or(q * point)).to_degrees();
+        let flying = (w.flags & MW_FLIES != 0 && off <= w.fly_angle).then_some((point, if w.fly_rate > 0.0 { w.fly_rate } else { 3.0 }));
+        self.melee.thrown.insert(id, Thrown { hand: i, since: self.now, flying, sweep: None });
+        tracing::info!(
+            "rig: {id:#x} thrown at {:.1} m/s (the hand {hand_speed:.1}){}",
+            v.length() / self.map.world_per_meter,
+            if flying.is_some() { format!(", point first ({off:.0} degrees off)") } else { String::new() }
+        );
+        self.emit(super::feedback::Cue::KnifeThrow, Some(i), Some(id), palm, 1.0);
+        true
+    }
+
+    /// Thrown weapons, once a step before the physics: one flying point first is turned along its
+    /// flight by its rate times its speed times the step, of what's left (its pitch and yaw turned,
+    /// a rotation, not a torque), until it first touches something. A thrown weapon stops
+    /// being thrown once it's stuck in something, taken, or at rest.
+    pub(super) fn fly_melee(&mut self, dt: f32) {
+        let w = self.map.world_per_meter;
+        let now = self.now;
+        let ids: Vec<u32> = self.melee.thrown.keys().copied().collect();
+        for id in ids {
+            let t = self.melee.thrown[&id];
+            let Some(o) = self.objects.get(&id).filter(|o| o.holder == Holder::Free && o.embed.is_none()) else {
+                self.melee.thrown.remove(&id);
+                continue;
+            };
+            let (body, collider) = (o.body, o.collider);
+            let (v, ang) = self.physics.velocity(body);
+            if (now - t.since > 0.2 && v.length() < THROWN_REST * w) || now - t.since > 10.0 {
+                self.melee.thrown.remove(&id);
+                continue;
+            }
+            let (p, mut q) = self.physics.pose(body);
+            if let Some((point, rate)) = t.flying {
+                if self.physics.in_contact(collider) {
+                    self.melee.thrown.get_mut(&id).unwrap().flying = None;
+                } else {
+                    let speed = v.length() / w;
+                    let turn = Quat::from_rotation_arc((q * point).normalize_or(Vec3::Z), v.normalize_or(q * point));
+                    let k = (rate * speed * dt).min(1.0);
+                    q = (Quat::IDENTITY.slerp(turn, k) * q).normalize();
+                    self.physics.set_pose(body, p, q);
+                }
+            }
+            let to = (p + v * dt, (Quat::from_scaled_axis(ang * dt) * q).normalize());
+            self.melee.thrown.get_mut(&id).unwrap().sweep = Some(((p, q), to));
+        }
+    }
+
+    /// Thrown weapon `id`'s sweep this step (see [`Thrown`]).
+    pub fn thrown_sweep(&self, id: u32) -> Option<((Vec3, Quat), (Vec3, Quat))> {
+        self.melee.thrown.get(&id)?.sweep
+    }
+
+    /// The weapons thrown and still flying or tumbling, and the hand that threw each.
+    pub fn thrown_melee(&self) -> Vec<(u32, usize)> {
+        self.melee.thrown.iter().map(|(&id, t)| (id, t.hand)).collect()
+    }
+}
+
+/// The way weapon `w`'s point goes (weapon space): along its first point's damager, else its +Z.
+fn point_of(w: &MeleeWeapon) -> Vec3 {
+    w.blades().iter().find(|b| b.kind == DMG_PIERCE).map_or(Vec3::Z, |b| (v3(b.b) - v3(b.a)).normalize_or(Vec3::Z))
 }

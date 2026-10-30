@@ -670,6 +670,11 @@ impl Combat {
                 seen.insert(key, now.to_vec());
             }
         }
+        // Thrown weapons are judged as they fly (with the thrown multipliers and pushes), as the
+        // hand that threw them.
+        for (id, hand) in inp.rig.thrown_melee() {
+            self.judge_weapon(inp, &bodies, hand, id, dt, &mut events, &mut seen);
+        }
         self.prev = seen;
         self.touching = std::mem::take(&mut self.touching_now);
         if !inp.paused {
@@ -877,16 +882,25 @@ impl Combat {
     /// stays in ([`embed`]). False: it isn't one (the older table's path judges it).
     #[allow(clippy::too_many_arguments)]
     fn judge_weapon(&mut self, inp: &CombatInput, bodies: &[Body], hand: usize, id: u32, dt: f32, events: &mut Vec<CombatEvent>, seen: &mut HashMap<u32, Vec<[Vec3; SAMPLES]>>) -> bool {
-        let (Some(w), Some((wp, wq))) = (self.weapons.get(id).copied(), inp.rig.swing_pose(id)) else { return false };
+        // A thrown one sweeps from where it was before the physics stepped to where it would have
+        // gone (`rig::melee`'s `Thrown`); a held one from where it was last frame.
+        let sweep = inp.rig.thrown_sweep(id);
+        let (Some(w), Some((wp, wq))) = (self.weapons.get(id).copied(), sweep.map(|s| s.1).or_else(|| inp.rig.swing_pose(id))) else { return false };
         let blades = w.blades();
-        let now: Vec<[Vec3; SAMPLES]> = blades
-            .iter()
-            .map(|b| {
-                let (a, bb) = (Vec3::from_array(b.a), Vec3::from_array(b.b));
-                std::array::from_fn(|k| wp + wq * a.lerp(bb, k as f32 / (SAMPLES - 1) as f32))
-            })
-            .collect();
-        let prev = self.prev.get(&id).filter(|v| v.len() == now.len()).cloned();
+        let samples = |(p, q): (Vec3, Quat)| -> Vec<[Vec3; SAMPLES]> {
+            blades
+                .iter()
+                .map(|b| {
+                    let (a, bb) = (Vec3::from_array(b.a), Vec3::from_array(b.b));
+                    std::array::from_fn(|k| p + q * a.lerp(bb, k as f32 / (SAMPLES - 1) as f32))
+                })
+                .collect()
+        };
+        let now = samples((wp, wq));
+        let prev = match sweep {
+            Some((from, _)) => Some(samples(from)),
+            None => self.prev.get(&id).filter(|v| v.len() == now.len()).cloned(),
+        };
         seen.insert(id, now.clone());
         let Some(prev) = prev else { return true };
         if inp.paused {
@@ -936,12 +950,15 @@ impl Combat {
             // Gone in: it stays in (a cut 3 mm and sliding along its edge, an axe and a point as
             // deep as they go), unless it's already in something.
             if hit.judged.flags & CEF_PENETRATED != 0 && !embedded && !self.embeds.iter().any(|e| e.object == id) {
-                self.embeds.push(self.judge_embed(inp, id, &b, &hit, along, edge, (wp, wq)));
+                self.embeds.push(self.judge_embed(inp, id, &b, &hit, along, edge, (wp, wq), inp.rig.held(hand) != Some(id)));
             }
         }
-        let desc = Self::as_desc(&w);
-        self.blocks(inp, hand, id, &desc, &prev, &now, dt, events);
-        self.item_blocks(inp, hand, id, &desc, &prev, &now, dt, events);
+        // (A thrown one meeting a fighter's blade just glances off it.)
+        if inp.rig.held(hand) == Some(id) {
+            let desc = Self::as_desc(&w);
+            self.blocks(inp, hand, id, &desc, &prev, &now, dt, events);
+            self.item_blocks(inp, hand, id, &desc, &prev, &now, dt, events);
+        }
         true
     }
 
@@ -986,7 +1003,8 @@ impl Combat {
             if self.touching.contains(&entry) {
                 if (0..SAMPLES).any(|k| contact(k).3) {
                     self.touching_now.insert(entry);
-                    if b.kind == DMG_PIERCE && b.flags & DMGF_PRESSURE != 0 && !inp.rig.embedded(object) {
+                    // (Only a hand pushes: a thrown point that didn't go in rests where it is.)
+                    if b.kind == DMG_PIERCE && b.flags & DMGF_PRESSURE != 0 && !inp.rig.embedded(object) && inp.rig.held(hand) == Some(object) {
                         let k = SAMPLES - 1;
                         let (_, p, on_axis, _) = contact(k);
                         let normal = (p - on_axis).normalize_or(-along);
@@ -1122,7 +1140,8 @@ impl Combat {
 
     /// The stay in a body a blow that went in makes.
     #[allow(clippy::too_many_arguments)]
-    fn judge_embed(&self, inp: &CombatInput, id: u32, b: &MeleeBlade, hit: &JudgedHit, along: Vec3, edge: Vec3, (wp, wq): (Vec3, Quat)) -> embed::Request {
+    #[allow(clippy::too_many_arguments)]
+    fn judge_embed(&self, inp: &CombatInput, id: u32, b: &MeleeBlade, hit: &JudgedHit, along: Vec3, edge: Vec3, (wp, wq): (Vec3, Quat), thrown: bool) -> embed::Request {
         let w = inp.map.world_per_meter;
         let (a, bb) = (Vec3::from_array(b.a), Vec3::from_array(b.b));
         let l = wq.inverse() * (hit.point - wp);
@@ -1139,9 +1158,10 @@ impl Combat {
         let dampers: [f32; 3] = std::array::from_fn(|k| if dampers.iter().any(|&d| d > 0.0) { dampers[k] } else { defaults[k] } * hit.judged.damper);
         let max_depth = hit.judged.depth.max(0.003);
         // Its swing carries it in a little (its momentum against the damper going in), the hand's
-        // push the rest.
+        // push the rest. A thrown point goes in freely (no damper going in for its first half
+        // second or second): all the way.
         let mass = inp.rig.mass_of(id);
-        let first = (mass * hit.judged.speed / dampers[0].max(1.0)).min(max_depth);
+        let first = if thrown && b.kind == DMG_PIERCE { max_depth } else { (mass * hit.judged.speed / dampers[0].max(1.0)).min(max_depth) };
         let part = rustvr_melee::body::Part::of(hit.part_kind, false);
         let wounding = embed::Wounding {
             blade: self.blade_index(id, b),

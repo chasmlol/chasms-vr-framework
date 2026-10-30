@@ -2030,6 +2030,7 @@ impl Rig {
             for i in 0..2 {
                 self.slide_melee(i, inp, dt);
             }
+            self.fly_melee(dt);
         }
         self.drive(inp, dt, &zones);
         self.place_fingers(inp);
@@ -3852,6 +3853,10 @@ impl Rig {
                     return;
                 }
             }
+        }
+        // A melee weapon leaves as it was moving, or thrown (`melee`).
+        if desc.kind == OBJ_MELEE && self.release_melee(i, id, inp) {
+            return;
         }
         // Throw (or drop) with the hand's motion at its peak before the release.
         let rel = self.hands.as_ref().unwrap()[i].history.release(self.now);
@@ -5752,7 +5757,12 @@ impl Rig {
     /// A held object chopped or stabbed into something (the combat's): it stays in there.
     pub fn embed(&mut self, r: &embed::Request) {
         let Some(o) = self.objects.get(&r.object) else { return };
-        let Holder::Held(hand) = o.holder else { return };
+        // (Held, or thrown: let go of, it's free.)
+        let hand = match o.holder {
+            Holder::Held(hand) => Some(hand),
+            Holder::Free => None,
+            _ => return,
+        };
         if o.embed.is_some() {
             return;
         }
@@ -5788,7 +5798,7 @@ impl Rig {
         self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
         self.physics.set_pose(body, pos, q);
         self.debug.embeds += 1;
-        self.emit(Cue::KnifeStick, Some(hand), Some(r.object), r.point, 1.0);
+        self.emit(Cue::KnifeStick, hand, Some(r.object), r.point, 1.0);
         // A cut goes in at once: its wound's told with the hit (a slash's deep damage at any depth).
         self.embed_wound(r.object);
     }
