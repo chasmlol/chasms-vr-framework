@@ -4370,7 +4370,9 @@ impl Rig {
             if h.blocked && inp.settings.interaction.ghost_hands {
                 out.ghosts[i] = Some(pose(h.grip_t.0, h.grip_t.1));
             }
-            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some();
+            // (A hand on a door or a lever too: its trigger, squeezed with the grip, would use what
+            // the eyes are on, the game's Activate on the lever it's already pulling.)
+            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.valve.is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if matches!(o.attach, Attach::Gun) => rustvr_ik::HoldShape::PistolGrip,
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::Foregrip,
