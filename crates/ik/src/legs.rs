@@ -497,8 +497,9 @@ mod tests {
         let leg = solve_leg(&p, &s, hip, &foot, 0.0, Vec3::Z);
         assert!((leg.toes.y - s.toe_height).abs() < 1e-5, "toes stay on the floor");
         assert!(leg.ankle.y > s.ankle_height + 0.01, "heel up");
-        assert!((leg.knee.distance(hip) - s.thigh).abs() < 1e-3);
-        assert!((leg.knee.distance(leg.ankle) - s.shin).abs() < 2e-3);
+        // (Easing into straight, the bones lengthen by a quarter of the ease at most.)
+        assert!((leg.knee.distance(hip) - s.thigh).abs() < s.thigh * LEG_EASE / 4.0 + 1e-3);
+        assert!((leg.knee.distance(leg.ankle) - s.shin).abs() < s.shin * LEG_EASE / 4.0 + 2e-3);
     }
 
     #[test]
