@@ -3,7 +3,7 @@
 
 use glam::{Quat, Vec3};
 
-use crate::math::{frame_yz, smoothstep, wrap_angle, yaw_dir, yaw_rot, UP};
+use crate::math::{frame_yz, smoothstep, wrap_angle, yaw_rot, UP};
 use crate::skeleton::{Skeleton, NECK_LEAN};
 use crate::BodyParams;
 
@@ -64,9 +64,22 @@ impl Chain {
     pub(crate) fn refresh_frames(&mut self) {
         for i in 0..4 {
             let up = self.pos[i + 1] - self.pos[i];
-            self.rot[i] = frame_yz(up, yaw_dir(self.yaw[i]), UP);
+            self.rot[i] = spine_frame(up, yaw_rot(self.yaw[i]) * Vec3::X);
         }
     }
+}
+
+/// A spine frame: +Y up the segment `up`, +X as near the body's right `right` as it can be. Built
+/// from the right, not the way the body faces: bent right over, the spine runs the way the body
+/// faces, a forward hint along it says nothing, and the frame (the shoulders and hips with it)
+/// spun from one frame to the next.
+fn spine_frame(up: Vec3, right: Vec3) -> Quat {
+    frame_yz(up, right.cross(up), UP)
+}
+
+/// The neck's right: between the chest's and the head's, as far as it follows the head.
+fn neck_right(chest_yaw: f32, head_rot: Quat) -> Vec3 {
+    (yaw_rot(chest_yaw) * Vec3::X).lerp(head_rot * Vec3::X, NECK_FOLLOW).normalize_or(yaw_rot(chest_yaw) * Vec3::X)
 }
 
 pub struct ChainInput {
@@ -98,11 +111,9 @@ pub fn build(skel: &Skeleton, input: &ChainInput) -> Chain {
     for i in (0..4).rev() {
         pos[i] = pos[i + 1] - dirs[i] * skel.spine[i];
     }
-    let head_fwd = input.head_rot * Vec3::Z;
-    let neck_fwd = yaw_dir(yaw[3]).lerp(head_fwd, NECK_FOLLOW);
     let mut chain = Chain { pos, rot: [Quat::IDENTITY; 6], yaw };
     chain.refresh_frames();
-    chain.rot[4] = frame_yz(neck_dir, neck_fwd, yaw_dir(yaw[3]));
+    chain.rot[4] = spine_frame(neck_dir, neck_right(yaw[3], input.head_rot));
     chain.rot[5] = input.head_rot;
     chain
 }
@@ -153,11 +164,9 @@ pub fn seated(skel: &Skeleton, input: &ChainInput, hips: Vec3, up: Vec3, fwd: Ve
     }
     pos[4] = neck;
     pos[5] = input.head_joint;
-    let head_fwd = input.head_rot * Vec3::Z;
-    let neck_fwd = yaw_dir(yaw[3]).lerp(head_fwd, NECK_FOLLOW);
     let mut chain = Chain { pos, rot: [Quat::IDENTITY; 6], yaw };
     chain.refresh_frames();
-    chain.rot[4] = frame_yz(neck_dir, neck_fwd, yaw_dir(yaw[3]));
+    chain.rot[4] = spine_frame(neck_dir, neck_right(yaw[3], input.head_rot));
     chain.rot[5] = input.head_rot;
     chain
 }

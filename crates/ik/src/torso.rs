@@ -103,23 +103,33 @@ impl TorsoYaw {
         let magnitude = sum.length();
         // FRIK zeroes the hand yaw when either hand is unreliable rather than letting the other
         // hand alone steer the torso, so the weights gate the confidence.
-        let confidence = smoothstep(0.2, 0.8, magnitude) * weight(left).min(weight(right)) * uncrossed;
+        let weights = weight(left).min(weight(right));
+        let confidence = smoothstep(0.2, 0.8, magnitude) * weights * uncrossed;
         if magnitude < 0.2 {
+            self.prev_raw = None;
             return 0.0;
         }
         let raw = yaw_of(sum);
         // VRArmIK's flip detector: both hands going behind the body swings the sum through zero,
-        // so its yaw jumps by about 180° in one step.
-        if let Some(prev) = self.prev_raw {
-            let jump = (raw - prev).rem_euclid(TAU).to_degrees();
-            if (p.flip_jump_min_deg..=p.flip_jump_max_deg).contains(&jump) {
-                self.flipped = !self.flipped;
+        // so its yaw jumps by about 180° in one step. It only reads hands well out from under the
+        // head and away from the face: bent over with the hands under it (sweeping, picking
+        // something up), their directions are noise whose jumps it took for the hands going behind
+        // the back, and it turned the chest round backwards, the shoulders leaping.
+        let steady = weights > 0.5;
+        if steady {
+            if let Some(prev) = self.prev_raw {
+                let jump = (raw - prev).rem_euclid(TAU).to_degrees();
+                if (p.flip_jump_min_deg..=p.flip_jump_max_deg).contains(&jump) {
+                    self.flipped = !self.flipped;
+                }
             }
         }
-        self.prev_raw = Some(raw);
+        self.prev_raw = steady.then_some(raw);
         let mut offset = wrap_angle(raw + if self.flipped { PI } else { 0.0 } - head_yaw);
         if offset.abs() > FLIP_BY_HEAD {
-            self.flipped = !self.flipped;
+            if steady {
+                self.flipped = !self.flipped;
+            }
             offset = wrap_angle(offset + PI);
         }
         let clamp = p.torso_yaw_clamp_deg.to_radians();
