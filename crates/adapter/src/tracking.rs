@@ -195,6 +195,7 @@ impl TrackingMapper {
                 let step = trk.carry_step.copysign(self.carry_held);
                 self.body_yaw += step;
                 self.carry_held -= step;
+                tracing::info!("rustvr: the view turns a step ({:.0} degrees) with what carries the player", step.to_degrees());
             }
         } else {
             self.body_yaw += carried + std::mem::take(&mut self.carry_held);

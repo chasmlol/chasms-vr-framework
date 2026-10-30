@@ -110,6 +110,7 @@ adapters (`tests/header.rs` keeps the two in step).
 | `KickTable`: the guns' recoil as the game authored it (per-shot kicks, keyframed) | adapter -> runtime | seqlock |
 | `SoundPack`: where the game's sound pack is, each object's sound set, which sounds the game plays itself | adapter -> runtime | seqlock |
 | `HudLayout`: which rectangle of the HUD texture is what (subtitles, hints, ammo, status...) | adapter -> runtime | seqlock |
+| `Ride` / `RtRide`: the mounts near the player and the one ridden (its saddle, gait, where the rider sits, the reins) / what the rider does with it (gait, pace, steering, getting on and off) | both | seqlock |
 
 - **Shared memory** is only touched through 32-bit atomics, so concurrent access is defined
   behaviour.
@@ -243,6 +244,7 @@ the hands while walking.
 | Full body | `crates/ik` solves 22 joints every frame from the head and the hands the rig drew (VRIK/FRIK-style: torso yaw from the hands, spine pitch from the head drop, stepping legs, elbow prediction, hands pinned exactly). The avatar (Metro's Miller when extracted, else a mannequin) is drawn between the game's picture and the overlays, hidden behind the game's geometry using its linear depth; the head is cut away in first person. Hands only, arms or full body. The body stands on the game's floor (the game puts your eyes at its own eye height, so the real floor would leave it floating or crouched), its proportions follow your height (set, measured, or the game character's), and its arms follow your arm span: set, measured in a T-pose, or automatic (it grows whenever your real arms reach further). Seated mode draws it standing |
 | Comfort | A vignette eases in while the stick moves or smooth-turns you (strength 0.5, 0.3 s); the view fades out when the head pushes into the game's collision; snap turn 45° (0.75 press, 0.25 re-arm, 0.5 s repeat); seated mode; play at your real height or the character's |
 | Menu | Opens on a Help page with every control and feature; tabs for comfort, hands, body (height, arms, seated), controls, weapon and display |
+| Riding | `riding.rs` (`rustvr_protocol::ride`): a free hand closing on a mount's saddle gets on (the game's own way); the reins are where the game has them, taken by the grip, measured from where each hand took its rein in the rider's frame: one pulled back or both moved aside steers (full at 12 cm), both back slows a gait (7 cm; held, it stops and backs), a flick of a rein hand (1.1 m/s down, stopped) or its trigger spurs on a gait; let go, the gait holds 2.5 s, then slows; the sticks ride too. A free hand's trigger held, or the pommel held while leaning 35 cm out, gets off. The body sits in the saddle (`BodySolver::ride`), legs where the game puts them. The mount's turn carries the view (`TrackingMapper::carry_turn`, smoothly or in steps); a vignette while it turns or gallops; a fade while the game gets the rider on or off; no walking the body after the head, the turning stick steers |
 
 In rig mode the mechanics leave grabbing and gun buttons to the rig and map the rest the way most
 VR shooters do: left stick move, right stick turn (flick down to crouch), A/X jump with an empty

@@ -66,6 +66,8 @@ const LEAN_HOLD: f64 = 0.3;
 const POMMEL_REACH: f32 = 0.15;
 /// The stick rides past this push.
 const STICK: f32 = 0.15;
+/// A stride's beat: the seat came down at least this far from its last height (metres).
+const STRIDE_DROP: f32 = 0.01;
 /// Asking to get on again is held off this long (seconds): the game's own check (a crime's
 /// question) is still up.
 const MOUNT_AGAIN: f64 = 1.5;
@@ -123,6 +125,7 @@ pub struct Riding {
     was_mounted: bool,
     /// The seat's height and which way it last moved, for the stride in the hands.
     seat_y: f32,
+    seat_top: f32,
     seat_falling: bool,
     out: RtRide,
     pub haptics: Vec<Pulse>,
@@ -402,15 +405,22 @@ impl Riding {
             }
         }
 
-        // The stride, felt in the hands on the reins: a beat each time the seat comes down.
+        // The stride, felt in the hands on the reins: a beat each time the seat comes down from a
+        // stride's height (not the seat's every little move).
         let y = r.seat.pos[1];
         if (y - self.seat_y).abs() > 1e-4 {
             let falling = y < self.seat_y;
-            if self.seat_falling && !falling && s.stride_haptics && r.gait != 0 && r.speed.abs() > 0.3 {
-                let amp = 0.12 + 0.2 * (r.gait.unsigned_abs() as f32 / gaits as f32);
-                for &h in &held {
-                    self.haptics.push((h, 0.03, 60.0, amp));
+            if self.seat_falling && !falling {
+                let dropped = self.seat_top - self.seat_y;
+                if dropped >= STRIDE_DROP && s.stride_haptics && r.gait != 0 && r.speed.abs() > 0.3 {
+                    let amp = 0.12 + 0.2 * (r.gait.unsigned_abs() as f32 / gaits as f32);
+                    for &h in &held {
+                        self.haptics.push((h, 0.03, 60.0, amp));
+                    }
                 }
+            }
+            if !self.seat_falling && falling {
+                self.seat_top = self.seat_y;
             }
             self.seat_falling = falling;
             self.seat_y = y;

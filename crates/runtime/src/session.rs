@@ -1131,6 +1131,9 @@ impl Session {
         // dark until it's done, and a moment after (the view settles in the saddle, or on foot).
         let now = frame.display_time_ns as f64 * 1e-9;
         if rs.fade_on_off && ride.moving_on_or_off() {
+            if now >= self.ride_fade_until {
+                tracing::info!("runtime: riding: the view fades while the game's animation gets the rider {}", if ride.flags & RIDE_GETTING_ON != 0 { "on" } else { "off" });
+            }
             self.ride_fade_until = now + RIDE_FADE_AFTER;
         }
         if now < self.ride_fade_until {
