@@ -15,10 +15,14 @@
 //! * Any stroke works, in any direction: a breaststroke or a crawl ahead, a pull up to dive, a push
 //!   down to rise, to the side. A pull only ever carries the swimmer its way; it never slows them
 //!   (pull the other way for that). The water's drag glides them out over several seconds.
-//! * A stroke pulls only while the hand goes on away from where that stroke started (or turned
+//! * The hands holding the water make one stroke together: their mean. A breaststroke's sweeps out
+//!   and in cancel in it, leaving its pull back (a hand's own way, the sweep out, hid the pull in
+//!   playtest 8). The stroke pulls only while it goes on away from where it started (or turned
 //!   back): squeezing the grip a little before the reach ends, or letting it go a little after the
-//!   hand starts back, slips, as the hand goes back over its own stroke. (Without that, those hands
-//!   moving forward threw the swimmer backwards and sideways: playtest 7.)
+//!   hands start back, slips, as the hands go back over their own stroke. (Without that, those
+//!   hands moving forward threw the swimmer backwards: playtest 7.)
+//! * A pull steers the glide its way, as a swimmer's streamlined body does: what goes across it
+//!   dies out, so uneven hands don't leave the swimmer drifting sideways for seconds.
 //! * The hands' velocity is measured against the head, so walking about the room pushes nothing.
 //!   A hand holding something doesn't swim.
 //! * The game's swim speed (skills, attributes, load) scales the pull, and the strokes may go up to
@@ -44,20 +48,21 @@ use crate::rig::WorldMap;
 const VELOCITY_TAU: f32 = 0.03;
 /// A hand catches the water with the grip squeezed past `CATCH[0]`, and lets go below `CATCH[1]`.
 const CATCH: [f32; 2] = [0.6, 0.35];
-/// A pull carries the swimmer this many of the game's full swim speeds for each m/s of the hand's
-/// (about three times as fast as the hand, at the game's 2 m/s): a relaxed breaststroke (the hands
-/// out, back and in over most of a second) swims about 1.5 times the game's speed, a firm one 2
-/// times, and with the grip squeezed early and let go late about 1.2 and 1.7 times.
+/// A pull carries the swimmer this many of the game's full swim speeds for each m/s of the hands'
+/// (about three times as fast as the hands, at the game's 2 m/s): at the surface a relaxed
+/// breaststroke (the hands wide out, back and in over most of a second) swims about 1.5 times the
+/// game's speed, a firm one 2 times, however the grip is timed.
 const PULL: f32 = 1.5;
-/// A stroke pulls once the hand is this far (m) from the point of the stroke it's furthest from:
-/// a grip squeezed while the reach is still ending moves the hand less than that.
+/// A stroke pulls once the hands are this far (m) from the point of the stroke they're furthest
+/// from: a grip squeezed while the reach is still ending moves them less than that.
 const STROKE_FROM: f32 = 0.1;
 /// A stroke's points are kept this far apart (m), and no more of them than this.
 const STROKE_STEP: f32 = 0.01;
 const STROKE_POINTS: usize = 400;
 /// How quickly a pull takes the swimmer up to its pace (seconds, e-folding): about as fast as the
-/// hands, so the water holds them.
+/// hands, so the water holds them. And how quickly it turns the glide its way.
 const CATCH_TAU: f32 = 0.08;
+const STEER_TAU: f32 = 0.25;
 /// The water's drag on the swimmer: their speed glides out by e over this long (seconds), and
 /// sooner when fast (`DRAG` more for each m/s). From 4 m/s a swimmer is still at 2.7 m/s a second
 /// on and 1.4 m/s three seconds on.
@@ -126,11 +131,12 @@ pub struct Swim {
     hand_vel: [Vec3; 2],
     last: Option<([Option<Vec3>; 2], Vec3)>,
     wet: [bool; 2],
-    /// The hands holding the water, where each has been since it caught it (against the head), and
-    /// how fast each pulls.
+    /// The hands holding the water; how far their stroke (their mean) has gone since they caught it,
+    /// and its points on the way; how fast it pulls.
     caught: [bool; 2],
-    stroke: [Vec<Vec3>; 2],
-    pulling: [f32; 2],
+    drawn: Vec3,
+    stroke: Vec<Vec3>,
+    pulling: f32,
     buzzed: [f64; 2],
     pub pulses: Vec<Pulse>,
     said: bool,
@@ -191,8 +197,9 @@ impl Swim {
             self.effort = 0.0;
             self.wet = [false; 2];
             self.caught = [false; 2];
-            self.stroke.iter_mut().for_each(Vec::clear);
-            self.pulling = [0.0; 2];
+            self.drawn = Vec3::ZERO;
+            self.stroke.clear();
+            self.pulling = 0.0;
             return SwimOut { swimming, full_speed: full, ..Default::default() };
         }
         if !self.said {
@@ -200,15 +207,13 @@ impl Swim {
             tracing::info!("swim: the arms swim (the game's full speed {full:.2} m/s)");
         }
         let surface = surface.unwrap_or(f32::MAX);
+        let at_surface = water.is_some_and(|w| w.flags & WATER_HEAD_UNDER == 0);
         // The hands holding the water: under the surface, the grip squeezed, holding nothing else.
         let mut pull = Vec3::ZERO;
         let mut holding = 0;
-        let mut stroking = 0.0;
         for i in 0..2 {
             let Some(palm) = palms[i] else {
                 self.caught[i] = false;
-                self.stroke[i].clear();
-                self.pulling[i] = 0.0;
                 continue;
             };
             let wet = surface - palm.y > WET;
@@ -224,48 +229,54 @@ impl Swim {
                 self.pulses.push((i, 0.03, 90.0, 0.35));
             }
             self.caught[i] = caught;
-            self.pulling[i] = 0.0;
-            if !caught {
-                self.stroke[i].clear();
-                continue;
-            }
-            holding += 1;
-            // The stroke pulls the way the hand goes on away from the point of it that's furthest
-            // from the hand: back over its own stroke, the hand slips.
-            let at = palm - head;
-            let stroke = &mut self.stroke[i];
-            if stroke.last().is_none_or(|p| p.distance(at) > STROKE_STEP) && stroke.len() < STROKE_POINTS {
-                stroke.push(at);
-            }
-            let from = stroke.iter().copied().max_by(|a, b| a.distance_squared(at).total_cmp(&b.distance_squared(at))).unwrap_or(at);
-            let gone = at - from;
-            if gone.length() < STROKE_FROM {
-                continue;
-            }
-            let along = gone.normalize();
-            let speed = v.dot(along);
-            if speed <= 0.0 {
-                continue;
-            }
-            self.pulling[i] = speed;
-            pull += along * speed;
-            // The water's resistance in the hand.
-            stroking += speed;
-            if speed > BUZZ_FROM && inp.now - self.buzzed[i] >= BUZZ_EVERY {
-                self.buzzed[i] = inp.now;
-                self.pulses.push((i, BUZZ_EVERY as f32 * 1.6, 70.0, 0.12 + 0.3 * (speed / 2.0).min(1.0)));
+            if caught {
+                pull += v;
+                holding += 1;
             }
         }
-        // The hands holding the water carry the swimmer the other way, at `PULL` times their pace.
-        // A pull never slows them: one slower than they already go its way slips through.
-        if holding > 0 {
-            let to = -pull / holding as f32 * PULL * full * inp.ease.clamp(0.25, 4.0);
-            let pace = to.length();
-            if pace > 1e-3 {
-                let way = to / pace;
-                let along = self.velocity.dot(way);
-                if along < pace {
-                    self.velocity += way * (pace - along) * (1.0 - (-dt / CATCH_TAU).exp());
+        // The hands holding the water stroke together: their mean. It pulls the way it goes on away
+        // from the point of the stroke that's furthest from it; back over its own stroke, it slips.
+        self.pulling = 0.0;
+        let mut stroking = 0.0;
+        if holding == 0 {
+            self.drawn = Vec3::ZERO;
+            self.stroke.clear();
+        } else {
+            let mean = pull / holding as f32;
+            self.drawn += mean * dt;
+            let at = self.drawn;
+            if self.stroke.last().is_none_or(|p| p.distance(at) > STROKE_STEP) && self.stroke.len() < STROKE_POINTS {
+                self.stroke.push(at);
+            }
+            let from = self.stroke.iter().copied().max_by(|a, b| a.distance_squared(at).total_cmp(&b.distance_squared(at))).unwrap_or(at);
+            let gone = at - from;
+            if gone.length() >= STROKE_FROM && mean.dot(gone) > 0.0 {
+                self.pulling = mean.length();
+                // It carries the swimmer the other way, at `PULL` times its pace, and steers their
+                // glide its way. A pull never slows them: one slower than they already go its way
+                // slips through. (At the surface its rise goes into the surface.)
+                let mut to = -mean * PULL * full * inp.ease.clamp(0.25, 4.0);
+                if at_surface {
+                    to.y = to.y.min(0.0);
+                }
+                let pace = to.length();
+                if pace > 1e-3 {
+                    let way = to / pace;
+                    let along = self.velocity.dot(way);
+                    if along < pace {
+                        self.velocity += way * (pace - along) * (1.0 - (-dt / CATCH_TAU).exp());
+                        let across = self.velocity - way * self.velocity.dot(way);
+                        self.velocity -= across * (1.0 - (-dt / STEER_TAU).exp());
+                    }
+                }
+                // The water's resistance in the hands pulling.
+                for i in (0..2).filter(|&i| self.caught[i]) {
+                    let speed = self.hand_vel[i].length();
+                    stroking += speed;
+                    if speed > BUZZ_FROM && inp.now - self.buzzed[i] >= BUZZ_EVERY {
+                        self.buzzed[i] = inp.now;
+                        self.pulses.push((i, BUZZ_EVERY as f32 * 1.6, 70.0, 0.12 + 0.3 * (speed / 2.0).min(1.0)));
+                    }
                 }
             }
         }
@@ -278,7 +289,7 @@ impl Swim {
         // (Pushing up with the head out of the water does nothing: the game holds the player at its
         // surface, and a stroke's rise there goes into it, not on into the glide.)
         let mut velocity = self.velocity;
-        if water.is_some_and(|w| w.flags & WATER_HEAD_UNDER == 0) {
+        if at_surface {
             self.velocity.y = self.velocity.y.min(0.0);
             velocity.y = (velocity.y + SURFACE_HOLD).min(0.0);
         }
