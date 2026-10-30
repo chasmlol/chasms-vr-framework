@@ -457,6 +457,30 @@ impl HeldModel {
         }
         render::HeldModel::new(gpu, meshes)
     }
+
+    /// A model that bends (a strap, a rope) from an asset cache folder (`dir`, its textures by
+    /// key): its meshes whole, each vertex moving with its own bones as weighted, and a part for
+    /// each bone ([`HeldDraw::parts`] places them: bone space -> tracking space). Drawn with the
+    /// body as anything held is: in its depth, with the game's materials and lighting.
+    pub fn load_bent(gpu: &Gpu, dir: &std::path::Path, model: &asset::Model) -> Result<HeldModel> {
+        let mut cache: HashMap<String, Option<Arc<asset::Texture>>> = HashMap::new();
+        let mut texture = |key: &str| -> Option<Arc<asset::Texture>> {
+            if key.is_empty() {
+                return None;
+            }
+            cache
+                .entry(key.to_string())
+                .or_insert_with(|| asset::load_texture(dir, key).map_err(|e| tracing::warn!("avatar: texture {key}: {e:#}")).ok().map(Arc::new))
+                .clone()
+        };
+        let mut meshes = Vec::new();
+        for (i, m) in model.meshes.iter().enumerate() {
+            let one = asset::Model { source: model.source.clone(), meshes: vec![m.clone()], ..Default::default() };
+            let Some(source) = from_model(one, &mut texture).meshes.pop() else { continue };
+            meshes.push((source, HeldMeshInfo { part: 0, source: i, name: m.name.clone(), special: false }));
+        }
+        render::HeldModel::bent(gpu, meshes)
+    }
 }
 
 /// A model as the renderer takes it: a skeleton and meshes, with their textures.

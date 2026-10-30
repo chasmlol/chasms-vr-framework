@@ -28,6 +28,8 @@ use crate::Pose;
 pub const OFF_RIDE: usize = (crate::OFF_ITEM_INFO + size_of::<crate::ItemInfos>()).next_multiple_of(64);
 pub const OFF_RT_RIDE: usize = (OFF_RIDE + size_of::<Ride>()).next_multiple_of(64);
 pub const MAX_MOUNTS: usize = 8;
+/// The most cross-sections of a mount's neck and head ([`Riding::neck`]).
+pub const NECK_SECTIONS: usize = 10;
 
 /// The mount is the player's own.
 pub const MOUNT_OWNED: u32 = 1 << 0;
@@ -63,6 +65,22 @@ pub const RIDE_REINS: u32 = 1 << 4;
 /// The bits are given: the runtime draws the reins from them to the hands (a game whose mount has
 /// reins of its own leaves this off).
 pub const RIDE_BITS: u32 = 1 << 5;
+/// The mount's neck and head are given ([`Riding::neck`]): the reins lie on them.
+pub const RIDE_NECK: u32 = 1 << 6;
+/// The reins' leather is given ([`Riding::reins_leather`]): they're drawn in the game's own.
+pub const RIDE_LEATHER: u32 = 1 << 7;
+
+/// A cross-section of a mount's neck or head (tracking space): an ellipse round the top of it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct NeckSection {
+    /// Its middle (xyz).
+    pub centre: [f32; 4],
+    /// Across it to its edge, and up from its middle to its top (xyz: each as long as the ellipse's
+    /// half width and half height).
+    pub side: [f32; 4],
+    pub up: [f32; 4],
+}
 
 /// The mount the player rides, as the game has it (tracking space).
 #[repr(C)]
@@ -92,12 +110,22 @@ pub struct Riding {
     /// The front of the saddle (its pommel, or horn) a hand can hold (xyz).
     pub pommel: [f32; 4],
     /// Where the reins run from [left, right]: the rings of the bit in the mount's mouth (xyz;
-    /// `RIDE_BITS`), and where each passes on its way back to the hands (over the top of the neck,
-    /// behind the ears).
+    /// `RIDE_BITS`).
     pub bits: [[f32; 4]; 2],
-    pub reins_over: [[f32; 4]; 2],
-    /// The reins' colour (linear RGB; `RIDE_BITS`): the game's own leather's.
+    /// The reins' colour (linear RGB; `RIDE_BITS`): the game's own leather's, for when they can't
+    /// be drawn in it.
     pub reins_color: [f32; 4],
+    /// The reins' leather (`RIDE_LEATHER`): the model (`<game>/<asset key>` in the runtime's asset
+    /// cache, NUL-padded) whose first mesh's material they're made of (its texture, its normal map,
+    /// how it shines), and the stretch of that texture they're cut from (u0, v0, u1, v1: a strap
+    /// running along v).
+    pub reins_leather: [u8; 32],
+    pub reins_uv: [f32; 4],
+    /// The mount's neck and head from its withers to its muzzle, in order (`RIDE_NECK`): the reins
+    /// lie on them and never pass through them. `neck[..neck_count]`.
+    pub neck_count: u32,
+    pub _pad2: [u32; 3],
+    pub neck: [NeckSection; NECK_SECTIONS],
 }
 
 impl Riding {
@@ -108,6 +136,25 @@ impl Riding {
     /// Getting on or off: the game's animation has the rider.
     pub fn moving_on_or_off(&self) -> bool {
         self.flags & (RIDE_GETTING_ON | RIDE_GETTING_OFF) != 0
+    }
+
+    /// The neck's cross-sections given (`RIDE_NECK`).
+    pub fn neck(&self) -> &[NeckSection] {
+        if self.flags & RIDE_NECK == 0 { &[] } else { &self.neck[..(self.neck_count as usize).min(NECK_SECTIONS)] }
+    }
+
+    /// The reins' leather's model (`RIDE_LEATHER`), if given.
+    pub fn reins_leather(&self) -> Option<&str> {
+        let n = self.reins_leather.iter().position(|&b| b == 0).unwrap_or(self.reins_leather.len());
+        std::str::from_utf8(&self.reins_leather[..n]).ok().filter(|s| self.flags & RIDE_LEATHER != 0 && !s.is_empty())
+    }
+
+    /// Names the reins' leather's model (cut to fit) and sets `RIDE_LEATHER`.
+    pub fn set_reins_leather(&mut self, name: &str) {
+        self.reins_leather = [0; 32];
+        let n = name.len().min(31);
+        self.reins_leather[..n].copy_from_slice(&name.as_bytes()[..n]);
+        self.flags |= RIDE_LEATHER;
     }
 }
 
@@ -182,7 +229,7 @@ pub struct RtRide {
 
 const _: () = {
     assert!(size_of::<Mount>() == 48);
-    assert!(size_of::<Riding>() == 32 + 32 + 16 * 14);
+    assert!(size_of::<Riding>() == 32 + 32 + 16 * 12 + 32 + 16 + 16 + 48 * NECK_SECTIONS);
     assert!(size_of::<RtRide>() == 64);
     assert!(OFF_RIDE.is_multiple_of(64) && OFF_RT_RIDE.is_multiple_of(64));
     assert!(OFF_RT_RIDE + size_of::<RtRide>() <= crate::OFF_HUD_LAYOUT);

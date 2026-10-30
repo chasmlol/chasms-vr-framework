@@ -38,7 +38,8 @@
 //!
 //! The rest of riding is elsewhere: the view turning with the mount (the adapter SDK's
 //! `TrackingMapper::carry_turn`, smoothly or in steps), the vignette and the fade while getting on
-//! and off (the session's comfort), the body in the saddle (`crate::body`, `rustvr_ik`).
+//! and off (the session's comfort), the body in the saddle (`crate::body`, `rustvr_ik`), the reins
+//! drawn (`crate::reins`).
 
 use glam::{Quat, Vec2, Vec3};
 use rustvr_protocol::*;
@@ -559,57 +560,6 @@ fn quat(q: [f32; 4]) -> Quat {
 fn deadzone(x: f32, dz: f32) -> f32 {
     if x.abs() < dz { 0.0 } else { x.signum() * (x.abs() - dz) / (1.0 - dz) }
 }
-
-/// A mount's reins as straps (tracking space): from each ring of the bit, over the top of the neck,
-/// to the hand holding that rein, or let go, lying back over the neck to where they're held. A
-/// rein has a little slack at rest and hangs in a curve by it; pulled further than that it's
-/// straight. Both held, the reins' bight hangs between the hands. Their leather is lit as the
-/// game lights its scene (`light`: its ambient, and its sun from above), the strap lying flat.
-pub fn reins(r: &rustvr_protocol::Riding, held: [Option<usize>; 2], hands: [Vec3; 2], light: Option<&LightHint>) -> Vec<crate::compositor::Ribbon> {
-    let mut out = Vec::new();
-    if r.flags & RIDE_BITS == 0 || !r.mounted() {
-        return out;
-    }
-    let v = |p: [f32; 4]| Vec3::new(p[0], p[1], p[2]);
-    let lit = light
-        .map(|l| Vec3::from_array(l.ambient) + Vec3::from_array(l.sun_color) * l.sun_dir[1].max(0.0))
-        .filter(|l| l.max_element() > 1e-3)
-        .unwrap_or(Vec3::ONE);
-    let leather = (Vec3::new(r.reins_color[0], r.reins_color[1], r.reins_color[2]) * lit).clamp(Vec3::ZERO, Vec3::ONE);
-    let color = leather.extend(1.0);
-    let mut strap = |from: Vec3, to: Vec3, length: f32| {
-        let chord = from.distance(to);
-        let sag = 0.5 * (length * length - chord * chord).max(0.0).sqrt() * REIN_SAG;
-        let mut last = from;
-        for k in 1..=REIN_PIECES {
-            let t = k as f32 / REIN_PIECES as f32;
-            let p = from.lerp(to, t) - Vec3::Y * sag * 4.0 * t * (1.0 - t);
-            out.push(crate::compositor::Ribbon { a: last, b: p, width: REIN_WIDTH, color });
-            last = p;
-        }
-    };
-    for side in 0..2 {
-        let (bit, over, rest) = (v(r.bits[side]), v(r.reins_over[side]), v(r.reins[side]));
-        strap(bit, over, 0.0);
-        let length = over.distance(rest) * (1.0 + REIN_SLACK);
-        let hand = (0..2).find(|&h| held[h] == Some(side));
-        strap(over, hand.map_or(rest, |h| hands[h]), length);
-    }
-    if let (Some(_), Some(_)) = (held[0], held[1]) {
-        let apart = hands[0].distance(hands[1]);
-        strap(hands[0], hands[1], apart + REIN_BIGHT);
-    }
-    out
-}
-
-/// The reins drawn: their width (metres), their slack at rest (a share of their length), how deep
-/// that slack lets them hang (a share of a free rope's), the bight's spare length between two hands
-/// (metres), and the pieces a rein is drawn in.
-const REIN_WIDTH: f32 = 0.014;
-const REIN_SLACK: f32 = 0.12;
-const REIN_SAG: f32 = 0.7;
-const REIN_BIGHT: f32 = 0.25;
-const REIN_PIECES: usize = 8;
 
 /// The distance from `p` to the segment `a`..`b`.
 fn segment_distance(p: Vec3, a: Vec3, b: Vec3) -> f32 {

@@ -196,6 +196,8 @@ pub struct Session {
     /// the rider's hands on it, and the fade held a moment after getting on or off.
     ride: Box<Ride>,
     riding: crate::riding::Riding,
+    /// The mount's reins (`crate::reins`): drawn with the body, of the game's own leather.
+    reins: crate::reins::Reins,
     ride_fade_until: f64,
     menu_trigger_was: bool,
     /// The player's body (IK) and its avatar.
@@ -329,6 +331,7 @@ impl Session {
             comfort: Comfort::default(),
             ride: Box::default(),
             riding: crate::riding::Riding::new(),
+            reins: Default::default(),
             ride_fade_until: f64::MIN,
             menu_trigger_was: false,
             body: crate::body::PlayerBody::default(),
@@ -1318,8 +1321,10 @@ impl Session {
         };
         let obs_panel = self.obs.update(&self.gpu, s.ui.obs_view, Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot), left, frame.display_time_ns as f64 * 1e-9);
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
-        // A mount's reins, from its bit to the hands holding them (the game's mount has none).
-        layers.ribbons = crate::riding::reins(&self.ride.riding, self.riding.reins_held(), frame.hands.map(|h| Vec3::from_array(h.grip.pos)), self.game.as_ref().map(|g| &g.light));
+        // A mount's reins, from its bit to the hands holding them (the game's mount has none): of
+        // the game's own leather, drawn with the body; without it, flat ribbons over the picture.
+        self.reins.update(&self.gpu, &self.ride.riding, self.riding.reins_held(), frame.hands.map(|h| Vec3::from_array(h.grip.pos)), self.game.as_ref().map(|g| &g.light));
+        layers.ribbons = self.reins.ribbons();
         if let (Some(p), Some(srv)) = (obs_panel, self.obs.srv()) {
             layers.private.push(PanelLayer::whole(p, srv));
         }
@@ -1506,6 +1511,7 @@ impl Session {
         let body = &mut self.body;
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
+        let reins = &self.reins;
         let warp = &mut self.warp;
         let headset_post = &mut self.headset_post;
         let map_now = self.map_now;
@@ -1611,7 +1617,8 @@ impl Session {
                 if moved && info.eye_map[e].world_per_meter > 0.0 { shown_map(&m) } else { m }
             });
             held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
-            let held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
+            let mut held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
+            held.extend(reins.draw().filter(|_| draw_body && !framework));
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
                 if framework {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {
@@ -1698,7 +1705,8 @@ impl Session {
             // (Placed by the picture it's drawn over: the first eye's.)
             let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| WorldMap::from_slot(&info.eye_map[first]));
             self.held_objects.place(eye_map.as_ref().or(self.map_now.as_ref()));
-            let held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
+            let mut held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
+            held.extend(self.reins.draw().filter(|_| draw_body && !framework));
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");

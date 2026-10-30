@@ -1019,7 +1019,22 @@ impl HeldModel {
     /// `meshes`: each with the part it belongs to (its vertices' bones are ignored) and whether a
     /// special draw takes it instead (see [`crate::SpecialDraw`]).
     pub(crate) fn new(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>) -> Result<HeldModel> {
-        let parts = meshes.iter().map(|(_, i)| i.part + 1).max().unwrap_or(0);
+        Self::build(gpu, meshes, false)
+    }
+
+    /// As [`HeldModel::new`], but each vertex keeps its own bones (as weighted), a part for each
+    /// bone: the mesh bends between the parts' places (a strap, its every cross-section a part).
+    pub(crate) fn bent(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>) -> Result<HeldModel> {
+        Self::build(gpu, meshes, true)
+    }
+
+    fn build(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>, own_bones: bool) -> Result<HeldModel> {
+        let parts = if own_bones {
+            let weighted = |v: &asset::Vertex| (0..4).filter(|&k| v.weights[k] > 0).map(|k| v.bones[k] as usize + 1).max().unwrap_or(1);
+            meshes.iter().flat_map(|(m, _)| m.vertices.iter().map(weighted)).max().unwrap_or(0)
+        } else {
+            meshes.iter().map(|(_, i)| i.part + 1).max().unwrap_or(0)
+        };
         anyhow::ensure!(parts <= MAX_BONES, "{parts} parts (at most {MAX_BONES})");
         let mut uploaded: HashMap<*const asset::Texture, Option<GpuTex>> = HashMap::new();
         let mut upload = |t: &Arc<asset::Texture>, what: &str| {
@@ -1031,9 +1046,11 @@ impl HeldModel {
         let mut out = Vec::new();
         let mut info = Vec::new();
         for (mut m, i) in meshes.into_iter().filter(|(m, _)| !m.indices.is_empty()) {
-            for v in &mut m.vertices {
-                v.bones = [i.part as u8, 0, 0, 0];
-                v.weights = [255, 0, 0, 0];
+            if !own_bones {
+                for v in &mut m.vertices {
+                    v.bones = [i.part as u8, 0, 0, 0];
+                    v.weights = [255, 0, 0, 0];
+                }
             }
             fix_winding(&mut m);
             let n = m.indices.len() as u32;
