@@ -267,7 +267,10 @@ pub const CE_PULLED_OUT: u32 = 6;
 /// A blade in `actor` cuts on as it's dragged (`DMGF_SLIDES`), or is pushed deeper: more damage
 /// (`damage`), `depth` how deep it is now.
 pub const CE_WOUND: u32 = 7;
-/// The player's weapon `object` broke against `actor`'s (0: the world): the game makes its pieces.
+/// Thing `object` broke ([`crate::OBJF_BREAKABLE`]), struck by `what` (one of the runtime's things,
+/// or 0: a hand, a creature or the world) at `speed` along `dir`, `strength` the knock's weighed
+/// speed, at `point`: the runtime has taken it out of its world until the game puts it back (a new
+/// `spawn_seq`), and the game makes its pieces.
 pub const CE_BROKE: u32 = 8;
 
 /// A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.

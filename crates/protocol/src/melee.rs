@@ -128,7 +128,8 @@ pub const MW_SHIELD: u32 = 1 << 0;
 /// flight each step until it first touches something. Without it, it tumbles as it was let go (a
 /// sword, an axe, a mace).
 pub const MW_FLIES: u32 = 1 << 1;
-/// It breaks under a hard enough blow ([`MeleeWeapon::break_impulse`]): the game makes the pieces.
+/// It breaks when something meets it hard enough, as a breakable thing does
+/// ([`crate::OBJF_BREAKABLE`]), at its own [`MeleeWeapon::break_momentum`].
 pub const MW_BREAKABLE: u32 = 1 << 2;
 /// Held, it's a staff that slides through the hands (both hands may slide).
 pub const MW_STAFF: u32 = 1 << 3;
@@ -141,8 +142,9 @@ pub struct MeleeWeapon {
     pub flags: u32, // MW_*
     pub handles: u32,
     pub blades: u32,
-    /// The impulse (N s) a blow on it must have to break it ([`MW_BREAKABLE`]).
-    pub break_impulse: f32,
+    /// How hard a knock must be to break it ([`MW_BREAKABLE`]): the squared weighed speed of
+    /// [`crate::OBJF_BREAKABLE`] (0: 20).
+    pub break_momentum: f32,
     /// Its balance (object space): the centre of mass, which a grip turns it about.
     pub balance: [f32; 3],
     /// Its tier (0..5: 2 a common one), which picks its rows of the damage tables and

@@ -1161,6 +1161,10 @@ impl Session {
                 ev.part = self.combat.game_part(ev.actor, ev.part as usize);
                 self.link.push_combat_event(&ev);
             }
+            // Things broken (`rig::breaking`): the game makes their pieces.
+            for ev in self.rig.take_breaks() {
+                self.link.push_combat_event(&ev);
+            }
             for p in &self.combat.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }

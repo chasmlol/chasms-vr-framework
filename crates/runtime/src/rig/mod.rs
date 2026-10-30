@@ -28,6 +28,7 @@ pub mod grips;
 pub mod valve;
 pub mod kick;
 pub mod melee;
+pub mod breaking;
 pub mod physics;
 pub mod pickpocket;
 pub mod pockets;
@@ -880,6 +881,8 @@ pub struct Rig {
     touches: HashMap<u32, sheet::Touches>,
     /// The melee weapons and the hands' hold on them ([`melee`]).
     melee: melee::MeleeRig,
+    /// Things broken and breaking ([`breaking`]).
+    breaking: breaking::Breaking,
     /// What blades stuck in creatures did this frame (gone in deep, out the far side, pulled out),
     /// for the game: their part is the creature's part index.
     pub embed_events: Vec<CombatEvent>,
@@ -951,6 +954,7 @@ impl Default for Rig {
             grind_felt: [0.0; 2],
             touches: HashMap::new(),
             melee: melee::MeleeRig { strength: 1.0, ..Default::default() },
+            breaking: Default::default(),
             embed_events: Vec::new(),
         }
     }
@@ -1324,6 +1328,8 @@ impl Rig {
                     }
                     if o.spawn_seq != d.spawn_seq {
                         o.spawn_seq = d.spawn_seq;
+                        // (Put back whole, if it had broken.)
+                        self.breaking.broken.remove(&d.id);
                         // Put back by the game (a grenade that went off, say): safe again.
                         if let Some(t) = &mut o.throw {
                             t.reset();
@@ -2037,6 +2043,7 @@ impl Rig {
         self.apply_pushes();
         self.physics.set_dt(dt);
         self.physics.step();
+        self.breaks();
         self.after_step(inp);
         self.bowls(dt);
         self.sheets();
@@ -6878,6 +6885,7 @@ impl Rig {
                 Holder::InWeapon(_) => flags |= OS_IN_WEAPON,
                 Holder::Pulled { .. } => flags |= OS_PULLED,
                 Holder::Stuck { .. } => flags |= OS_STUCK,
+                Holder::Gone if self.breaking.broken.contains(id) => flags |= OS_BROKEN,
                 Holder::Stowed(_) => flags |= OS_STOWED,
                 Holder::Nocked { .. } => flags |= OS_IN_WEAPON,
                 Holder::InBowl { grinder: false, .. } => flags |= OS_IN_RECEPTACLE,

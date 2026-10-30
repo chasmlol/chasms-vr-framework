@@ -32,6 +32,7 @@ mod arsenal;
 mod brain;
 mod combat;
 mod content;
+mod debris;
 mod effects;
 mod hits;
 mod physical;
@@ -57,6 +58,8 @@ use render::{Draw, Mesh, Renderer};
 use std::collections::HashMap;
 
 const STAND_EYE: f32 = 1.7;
+/// A broken thing is put back whole this long after (s).
+const BROKEN_FOR: f64 = 8.0;
 const CROUCH_EYE: f32 = 1.1;
 const WALK_SPEED: f32 = 3.0;
 const SPRINT_SPEED: f32 = 5.0;
@@ -128,6 +131,8 @@ struct Game {
     watch: throwables::Watch,
     /// The guns' shots as a game shows them, and what the bullets hit.
     effects: Effects,
+    /// The pieces of things broken.
+    debris: debris::Debris,
     gun_fx: Vec<GunFx>,
     world: hits::World,
     /// The range's people: the training dummies, the bench's and the arena's fighters
@@ -140,6 +145,8 @@ struct Game {
     /// Blades in someone past their deep depth (by object id: who): a spell in one keeps working
     /// on who it's in.
     stuck: HashMap<u32, u32>,
+    /// Things broken (`OBJF_BREAKABLE`), put back whole this long after (by object id: when).
+    broken: HashMap<u32, f64>,
     /// Each fighter's weapon's throwable (for drawing it), by its object id.
     npc_meshes: HashMap<u32, usize>,
     /// The melee weapons' handles and damagers (`arsenal`), for the runtime.
@@ -340,12 +347,14 @@ impl Game {
             throwables: throw_list,
             watch: throwables::Watch::default(),
             effects: Effects::new(sprites),
+            debris: Default::default(),
             gun_fx,
             world,
             people,
             player_health: rustvr_melee::body::PLAYER_HEALTH,
             struck_at: -10.0,
             stuck: HashMap::new(),
+            broken: HashMap::new(),
             npc_meshes,
             melee_weapons,
             rt_melee: bytemuck::Zeroable::zeroed(),
@@ -437,6 +446,7 @@ impl Game {
             self.throwables(v, now);
             let objects = self.object_poses(v);
             self.effects.update(dt, &self.world, &|id| objects.get(&id).copied());
+            self.debris.step(dt, self.time, &self.world);
         }
         self.stats_f[rs::F_FX_LIVE] = self.effects.live() as f32;
         if let Some(until) = self.reload_until
@@ -618,6 +628,15 @@ impl Game {
             bloods.seq = 2;
             self.adapter.write_bloods(&bloods);
         }
+        // Broken things whole again.
+        let now = self.time;
+        let mended: Vec<u32> = self.broken.iter().filter(|(_, t)| **t <= now).map(|(id, _)| *id).collect();
+        for id in mended {
+            self.broken.remove(&id);
+            if let Some(a) = &mut self.armory {
+                a.respawn(id);
+            }
+        }
         // A blade filled with a spell, stuck in someone, keeps working on them (40 heat a second
         // times its fill; a shock's re-shocking).
         for (&object, &actor) in &self.stuck {
@@ -649,6 +668,7 @@ impl Game {
                     CE_STRUCK => "struck",
                     CE_WOUND => "wound",
                     CE_PULLED_OUT => "pulled out",
+                    CE_BROKE => "broke",
                     _ => "?",
                 },
                 ev.actor,
@@ -686,6 +706,17 @@ impl Game {
                 CE_WOUND => {
                     combat::wound(&mut self.people, &ev);
                     self.stuck.insert(ev.object, ev.actor);
+                }
+                CE_BROKE => {
+                    // Its pieces fly, and it's put back whole a while later.
+                    if let Some(a) = &self.armory
+                        && let Some((color, half)) = a.prop_look(ev.object)
+                    {
+                        let at = Vec3::from_array(ev.point);
+                        self.debris.burst(at, half, color, Vec3::from_array(ev.dir), ev.speed, self.time);
+                        self.effects.broken_dust(at, half, color);
+                    }
+                    self.broken.insert(ev.object, self.time + BROKEN_FOR);
                 }
                 CE_PULLED_OUT => {
                     self.effects.blood(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), 0.5);
@@ -939,6 +970,9 @@ impl Game {
         }
         // The people, part by part, and what they hold.
         for (m, tint) in self.people.dummies.draws() {
+            draws.push((200, m, tint, 0.0, false));
+        }
+        for (m, tint) in self.debris.draws() {
             draws.push((200, m, tint, 0.0, false));
         }
         for (id, m) in self.people.dummies.item_draws() {

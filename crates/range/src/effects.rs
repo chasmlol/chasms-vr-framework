@@ -513,6 +513,15 @@ impl Effects {
         }
     }
 
+    /// A puff of dust off a thing of `color` and `half` (half extents) broken at `at` (its pieces
+    /// are `debris`).
+    pub fn broken_dust(&mut self, at: Vec3, half: Vec3, color: [f32; 4]) {
+        let size = half.length().clamp(0.03, 0.4);
+        let mut d = Self::particle(self.sprites.dust, FxBlend::Alpha, at, size * 0.6, 0.8, [color[0] * 0.8, color[1] * 0.8, color[2] * 0.8, 0.35]);
+        d.size = (size * 0.6, size * 2.0);
+        self.push(d);
+    }
+
     /// A knife went in at `at` (a little puff, sparks off a target plate).
     pub fn knife_hit(&mut self, at: Vec3, metal: bool) {
         if metal {

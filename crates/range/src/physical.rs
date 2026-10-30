@@ -427,7 +427,12 @@ impl Armory {
         ];
         for (k, (name, at, half, mass, color)) in props.into_iter().enumerate() {
             let id = PROP_BASE + k as u32;
-            descs.push(prop(id, name, at, half, mass));
+            let mut d = prop(id, name, at, half, mass);
+            // Bottles, boxes, crates and barrels break; cans don't.
+            if name != "can" {
+                d.flags |= OBJF_BREAKABLE;
+            }
+            descs.push(d);
             kinds.insert(id, Kind::Prop { color });
         }
         // The valves on the board, their axles out of it towards you.
@@ -577,6 +582,15 @@ impl Armory {
         if let Some(d) = self.table.descs[..n].iter_mut().find(|d| d.id == id) {
             d.spawn_seq = d.spawn_seq.wrapping_add(1).max(1);
             self.dirty = true;
+        }
+    }
+
+    /// The colour and size (half extents) a prop is drawn at, for its pieces when it breaks.
+    pub fn prop_look(&self, id: u32) -> Option<([f32; 4], Vec3)> {
+        let d = self.descs.get(&id)?;
+        match self.kinds.get(&id)? {
+            Kind::Prop { color } => Some((*color, Vec3::from_array(d.half_extents))),
+            _ => Some(([0.6, 0.6, 0.6, 1.0], Vec3::from_array(d.half_extents).max(Vec3::splat(0.03)))),
         }
     }
 
@@ -748,7 +762,7 @@ impl Armory {
             if skip(s) {
                 continue;
             }
-            if self.descs.get(&s.desc).is_some_and(|d| d.flags & OBJF_RUNTIME_DRAWS != 0) {
+            if self.descs.get(&s.desc).is_some_and(|d| d.flags & OBJF_RUNTIME_DRAWS != 0) || s.flags & OS_BROKEN != 0 {
                 continue;
             }
             let (p, q) = Self::world_pose(s, v);

@@ -644,7 +644,10 @@
 #define RVR_CE_WOUND 7
 
 /**
- * The player's weapon `object` broke against `actor`'s (0: the world): the game makes its pieces.
+ * Thing `object` broke ([`crate::OBJF_BREAKABLE`]), struck by `what` (one of the runtime's things,
+ * or 0: a hand, a creature or the world) at `speed` along `dir`, `strength` the knock's weighed
+ * speed, at `point`: the runtime has taken it out of its world until the game puts it back (a new
+ * `spawn_seq`), and the game makes its pieces.
  */
 #define RVR_CE_BROKE 8
 
@@ -1286,7 +1289,8 @@
 #define RVR_MW_FLIES (1 << 1)
 
 /**
- * It breaks under a hard enough blow ([`MeleeWeapon::break_impulse`]): the game makes the pieces.
+ * It breaks when something meets it hard enough, as a breakable thing does
+ * ([`crate::OBJF_BREAKABLE`]), at its own [`MeleeWeapon::break_momentum`].
  */
 #define RVR_MW_BREAKABLE (1 << 2)
 
@@ -1653,6 +1657,15 @@
 #define RVR_OBJF_SHEET (1 << 18)
 
 /**
+ * It breaks when something meets it hard enough (a pot, a crate, a
+ * stool): the hitter's mass weighed clamp(0.5 ln m, 1, 5) times the speed they meet at, squared,
+ * 20 or more (about 4.5 m/s for anything up to 7 kg). The runtime takes it out of its world
+ * ([`OS_BROKEN`]) and tells the game ([`crate::CE_BROKE`]), which makes its pieces and puts it
+ * back when it likes (a new `spawn_seq`).
+ */
+#define RVR_OBJF_BREAKABLE (1 << 19)
+
+/**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
  */
 #define RVR_GAME_HANDBACK 0.15
@@ -1927,6 +1940,11 @@
  * `slide` the size to draw it at (1: its own; shrunk to fit the bowl, and as it's ground).
  */
 #define RVR_OS_IN_RECEPTACLE (1 << 19)
+
+/**
+ * Broken ([`OBJF_BREAKABLE`]): out of the runtime's world until the game puts it back.
+ */
+#define RVR_OS_BROKEN (1 << 20)
 
 #define RVR_SLOT_HIP_RIGHT 0
 
