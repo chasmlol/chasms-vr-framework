@@ -41,7 +41,7 @@ pub(crate) const DEPTH_BIAS_PER_METER: f32 = 0.002;
 /// The ghost hands' colour (linear) and opacity.
 const GHOST: [f32; 4] = [0.30, 0.62, 1.0, 0.35];
 
-const SHADER: &str = r#"
+pub(crate) const SHADER: &str = r#"
 #define MAX_BONES 256
 cbuffer Frame : register(b0) {
     float4x4 view_proj;
@@ -156,6 +156,49 @@ bool behind_game(float4 svpos, float z) {
     return g > 0 && z > g + depth.z + depth.w * g;
 }
 
+// Blood on the player and what the hands hold (gore.rs): spheres where it got on them, the game's
+// splat laid across each. (Their own slots: b6 and t15 are the effect shaders' and the hair's,
+// which are bound between draws that read the splats.)
+cbuffer Splats : register(b8) {
+    float4 splat_pos[48];   // tracking space; w: radius
+    float4 splat_nrm[48];   // the surface's normal there; w: wet
+    float4 splat_end[48];   // a streak's other end; w: how much of it is left (it wears away)
+    float4 splat_info;      // x: how many, y: the splat texture is bound, z: its atlas
+    float4 splat_color;     // the blood's colour (display range)
+};
+Texture2D splat_tex : register(t20);
+
+// How much blood covers p (0..1), and how wet it is.
+float blood_at(float3 p, out float wet) {
+    wet = 0;
+    float b = 0;
+    uint n = (uint)splat_info.x;
+    uint tiles = (uint)max(splat_info.z, 1);
+    for (uint k = 0; k < n; k++) {
+        // (A splat is round; a run down a blade is a streak, round about the line it ran.)
+        float3 a0 = splat_pos[k].xyz;
+        float3 ab = splat_end[k].xyz - a0;
+        float3 d = p - (a0 + ab * saturate(dot(p - a0, ab) / max(dot(ab, ab), 1e-8)));
+        float r = splat_pos[k].w;
+        float q = dot(d, d) / (r * r);
+        if (q >= 1) continue;
+        float3 nn = normalize(splat_nrm[k].xyz + 1e-5);
+        float3 a = normalize(cross(nn, abs(nn.y) < 0.9 ? float3(0, 1, 0) : float3(1, 0, 0)));
+        float3 bb = cross(nn, a);
+        float2 uv = float2(dot(d, a), dot(d, bb)) / r * 0.5 + 0.5;
+        uint tile = k % (tiles * tiles);
+        float m = splat_info.y > 0 ? splat_tex.SampleLevel(clamp_samp, (uv + float2(tile % tiles, tile / tiles)) / tiles, 0).a : 1;
+        // A film of it in the middle, the splat's ragged shape towards its edge.
+        float bk = saturate(max(m * 1.6, (0.6 - q) * 2.5)) * saturate((1 - q) * 4) * splat_end[k].w;
+        b = max(b, bk);
+        wet = max(wet, bk * splat_nrm[k].w);
+    }
+    return b;
+}
+
+// The colour of blood that has dried as far as `wet` says (display range).
+float3 blood_color(float wet) { return lerp(splat_color.rgb * float3(0.42, 0.36, 0.34), splat_color.rgb, saturate(wet * 1.4)); }
+
 float4 PSMain(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     if (i.vis < 0) discard;
     if (behind_game(i.pos, i.view_z)) discard;
@@ -175,6 +218,9 @@ float4 PSMain(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     }
     // The inside of the shell, seen through a cut (a sleeve or the wrist): kept dark.
     if (!front) return float4(base * ambient.rgb * 0.3, 1);
+    float wet;
+    float bl = blood_at(i.world, wet);
+    base = lerp(base, m_display_to_linear(blood_color(wet)), bl);
     float3 n = normalize(i.normal);
     float3 v = normalize(eye_pos.xyz - i.world);
     float diffuse = saturate(dot(n, sun_dir.xyz));
@@ -503,9 +549,19 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     bool skin = (uint)material.z == GB_SKIN;
     // (The hair's highlight is its own, below.)
     float gloss = surf_params.y > 0 && !hair ? surf_params.x : 0;
+    float mask = nm.a;
+    // Blood on it (gore.rs): the blood's colour, glossy while it's wet.
+    float wet;
+    float bl = blood_at(i.world, wet);
+    if (bl > 0) {
+        c = lerp(c, blood_color(wet), bl);
+        skin = skin && bl < 0.5;
+        gloss = lerp(gloss, lerp(8, 60, wet), bl);
+        mask = lerp(mask, 0.15 + 0.75 * wet, bl);
+    }
     float3 d = 0, s = 0;
     uint count = (uint)envc.w;
-    for (uint k = 0; k < count; k++) gb_light(lights[k], i.world, n, v, skin, hair, gloss, nm.a, d, s);
+    for (uint k = 0; k < count; k++) gb_light(lights[k], i.world, n, v, skin, hair, gloss, mask, d, s);
     // The hair's anisotropic highlight, each light's, tinted towards its colour.
     if (hair && options.w > 0) {
         float3 tint = (0.5 + i.ao * (surf_color.rgb - 0.5)) * 0.5 + 0.15;
@@ -1442,6 +1498,8 @@ pub struct Renderer {
     through_lens: Program,
     lens_cb: ConstantBuffer<[f32; 4]>,
     premultiplied: ID3D11BlendState,
+    /// Blood (gore.rs): over the world, on the stumps, in the air, and on the player.
+    gore: Option<crate::gore::GoreGpu>,
 }
 
 impl Renderer {
@@ -1495,6 +1553,7 @@ impl Renderer {
             through_lens: Program::new(gpu, THROUGH_LENS, "avatar_lens", &[])?,
             lens_cb: ConstantBuffer::new(gpu)?,
             premultiplied: pipeline::blend_state(gpu, Blend::Premultiplied)?,
+            gore: crate::gore::GoreGpu::new(gpu, &format!("{}{}{SHADER}{}", metro::HLSL, crate::gamebryo::HLSL, crate::gore::HLSL)).map_err(|e| tracing::warn!("avatar: no blood: {e:#}")).ok(),
         })
     }
 
@@ -1566,6 +1625,16 @@ impl Renderer {
             unsafe { gpu.ctx.UpdateSubresource(&self.lut, 0, None, l.lut.as_ptr().cast(), row, row * LUT_SIZE as u32) };
         }
         self.shading = true;
+    }
+
+    /// The blood to draw into the next eye (`None`: none), with that eye's world -> tracking.
+    pub fn set_gore(&mut self, gpu: &Gpu, frame: Option<&crate::gore::GoreFrame>) {
+        if let Some(g) = self.gore.as_mut() {
+            g.set(gpu, frame);
+            if !g.active {
+                g.clear_splats(&gpu.ctx);
+            }
+        }
     }
 
     pub fn draw(
@@ -1707,6 +1776,12 @@ impl Renderer {
             Show::Arms => ARMS,
             _ => HANDS,
         };
+        // Blood on the world and the stumps' caps, under the player (the hands hide them).
+        if let Some(g) = self.gore.as_mut().filter(|g| g.active) {
+            g.draw_world(gpu, self.shading, &self.premultiplied, &self.two_sided, &self.depth_write);
+            self.bind_common(ctx, game_depth.as_ref(), width, height);
+            unsafe { ctx.VSSetConstantBuffers(1, Some(&[Some(main.body_cb.buf.clone())])) };
+        }
         if draw_body {
             self.draw_body(ctx, main, range);
             self.draw_body_overlays(ctx, main, range);
@@ -1735,6 +1810,12 @@ impl Renderer {
                 }
                 self.bind_common(ctx, game_depth.as_ref(), width, height);
             }
+        }
+
+        // The drops in the air, in the player's depth.
+        if let Some(g) = self.gore.as_mut().filter(|g| g.active) {
+            g.draw_drops(gpu, self.shading, &self.premultiplied, &self.two_sided, &self.depth_test);
+            self.bind_common(ctx, game_depth.as_ref(), width, height);
         }
 
         let mut ghost_ready = [false; 2];
@@ -1946,6 +2027,10 @@ impl Renderer {
             ctx.PSSetSamplers(0, Some(&[Some(self.sampler.clone()), Some(self.clamp_sampler.clone())]));
             ctx.PSSetShaderResources(1, Some(&[game_depth.cloned()]));
             ctx.PSSetShaderResources(5, Some(&[Some(self.lut_srv.clone()), self.atlas.clone()]));
+            if let Some(g) = self.gore.as_ref() {
+                ctx.PSSetConstantBuffers(8, Some(&[Some(g.splat_cb.buf.clone())]));
+                ctx.PSSetShaderResources(20, Some(&[g.splat_tex.clone()]));
+            }
             ctx.OMSetBlendState(&self.opaque_blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
             ctx.OMSetDepthStencilState(&self.depth_write, 0);
             ctx.RSSetState(&self.two_sided);

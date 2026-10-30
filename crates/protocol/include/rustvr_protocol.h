@@ -610,6 +610,73 @@
  */
 #define RVR_CEF_BACK (1 << 5)
 
+#define RVR_OFF_GORE 5242880
+
+#define RVR_MAX_BLOODS 16
+
+
+
+#define RVR_MAX_STUMPS 8
+
+#define RVR_GORE_EVENT_SLOTS 32
+
+/**
+ * A liquid: it sprays, runs, drips and pools (red blood, a lich's, a daedra's).
+ */
+#define RVR_BLOOD_LIQUID (1 << 0)
+
+/**
+ * A dust or ash (a skeleton's bone dust): it puffs and settles, and never runs or drips.
+ */
+#define RVR_BLOOD_DUST (1 << 1)
+
+/**
+ * Thin and glowing (a will-o'-the-wisp's, a ghost's): drawn by its own light, unlit.
+ */
+#define RVR_BLOOD_GLOW (1 << 2)
+
+#define RVR_LIMB_HEAD 0
+
+#define RVR_LIMB_UPPER_ARM 1
+
+#define RVR_LIMB_FOREARM 2
+
+#define RVR_LIMB_HAND 3
+
+#define RVR_LIMB_THIGH 4
+
+#define RVR_LIMB_CALF 5
+
+#define RVR_LIMB_FOOT 6
+
+/**
+ * A tail, a wing, a creature's own limb: cut like a forearm.
+ */
+#define RVR_LIMB_OTHER 7
+
+/**
+ * On the body's left side (with any of the above but the head).
+ */
+#define RVR_LIMB_LEFT (1 << 8)
+
+/**
+ * The damage the reference blade does (an iron longsword's, in Oblivion's numbers).
+ */
+#define RVR_REFERENCE_DAMAGE 10.0
+
+/**
+ * It lives (its stumps pump; a dead body's only drain).
+ */
+#define RVR_GB_ALIVE (1 << 0)
+
+/**
+ * A limb cut off ([`GoreEvent`]): `actor` lost `limb` at `at` (a stump now, in its
+ * [`GoreBodies`]), and it became the prop `object` (0: nothing to show).
+ */
+#define RVR_GE_SEVER 1
+
+#define RVR_OFF_BLOODS RVR_OFF_GORE
+
 
 
 #define RVR_MAX_HUD_ELEMENTS 32
@@ -1689,6 +1756,8 @@ typedef uint32_t RVR_Joint;
 #endif // __cplusplus
 
 #define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, RVR_TexKind_BloomLeft, RVR_TexKind_BloomRight, RVR_TexKind_LensLeft, RVR_TexKind_LensRight, RVR_TexKind_AuxDepth, }
+
+
 
 
 

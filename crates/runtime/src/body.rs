@@ -528,6 +528,13 @@ impl PlayerBody {
         }
     }
 
+    /// The blood to draw into the next eye (`crate::gore`; `None`: none).
+    pub fn set_gore(&mut self, gpu: &Gpu, frame: Option<&rustvr_avatar::gore::GoreFrame>) {
+        if let Some(a) = self.avatar.as_mut() {
+            a.set_gore(gpu, frame);
+        }
+    }
+
     /// Draws the body into one eye, with what the runtime draws of what the player holds (`holding`,
     /// see `crate::held_objects`). `light.sun_dir` must already be in tracking space.
     pub fn draw(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw]) {

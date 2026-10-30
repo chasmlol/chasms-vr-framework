@@ -40,6 +40,7 @@
 //! | [`OFF_SOUNDS`] | [`SoundPack`]: the game's own sounds (see [`sound`]) | adapter -> runtime | seqlock |
 //! | [`OFF_CASTERS`], [`OFF_OVERLAYS`] | [`Casters`] (runtime -> adapter), [`Overlays`] (adapter -> runtime): see [`magic`] | | seqlock |
 //! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
+//! | [`OFF_GORE`] | the game's blood, its creatures' stumps, limbs cut off (see [`gore`]) | adapter -> runtime | seqlock, SPSC ring |
 //!
 //! # Frames
 //!
@@ -64,6 +65,7 @@ pub mod link;
 pub mod archery;
 pub mod avatar;
 pub mod combat;
+pub mod gore;
 pub mod hud;
 pub mod items;
 pub mod sound;
@@ -75,6 +77,7 @@ pub mod player;
 pub use archery::*;
 pub use avatar::*;
 pub use combat::*;
+pub use gore::*;
 pub use hud::*;
 pub use items::*;
 pub use sound::*;

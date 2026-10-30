@@ -409,6 +409,23 @@ impl Combat {
             .collect()
     }
 
+    /// The creatures as the game last said (for the gore: whose body a hit drew blood from).
+    pub fn actors(&self) -> &[Actor] {
+        &self.actors.actors[..(self.actors.count as usize).min(MAX_ACTORS)]
+    }
+
+    /// A held weapon's cutting and stabbing damagers where they were judged this frame (world):
+    /// each one's ends, and its kind.
+    pub fn blades(&self, object: u32) -> Vec<(Vec3, Vec3, u32)> {
+        let (Some(desc), Some(points)) = (self.melee_desc(object), self.prev.get(&object)) else { return Vec::new() };
+        desc.damagers[..(desc.count as usize).min(MAX_DAMAGERS)]
+            .iter()
+            .zip(points)
+            .filter(|(d, _)| d.flags & DMGF_GUARD == 0 && matches!(d.kind, DMG_SLASH | DMG_PIERCE))
+            .map(|(d, p)| (p[0], p[SAMPLES - 1], d.kind))
+            .collect()
+    }
+
     /// The tables the game wrote (reads the link once a frame; what's unchanged stays).
     #[cfg(windows)]
     pub fn read(&mut self, link: &rustvr_protocol::link::Link) {
