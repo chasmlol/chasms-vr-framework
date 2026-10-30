@@ -60,6 +60,9 @@ pub const RIDE_GETTING_OFF: u32 = 1 << 2;
 pub const RIDE_LEGS: u32 = 1 << 3;
 /// The reins are where the game's rider holds them.
 pub const RIDE_REINS: u32 = 1 << 4;
+/// The bits are given: the runtime draws the reins from them to the hands (a game whose mount has
+/// reins of its own leaves this off).
+pub const RIDE_BITS: u32 = 1 << 5;
 
 /// The mount the player rides, as the game has it (tracking space).
 #[repr(C)]
@@ -88,6 +91,13 @@ pub struct Riding {
     pub reins: [[f32; 4]; 2],
     /// The front of the saddle (its pommel, or horn) a hand can hold (xyz).
     pub pommel: [f32; 4],
+    /// Where the reins run from [left, right]: the rings of the bit in the mount's mouth (xyz;
+    /// `RIDE_BITS`), and where each passes on its way back to the hands (over the top of the neck,
+    /// behind the ears).
+    pub bits: [[f32; 4]; 2],
+    pub reins_over: [[f32; 4]; 2],
+    /// The reins' colour (linear RGB; `RIDE_BITS`): the game's own leather's.
+    pub reins_color: [f32; 4],
 }
 
 impl Riding {
@@ -172,7 +182,7 @@ pub struct RtRide {
 
 const _: () = {
     assert!(size_of::<Mount>() == 48);
-    assert!(size_of::<Riding>() == 32 + 32 + 16 * 9);
+    assert!(size_of::<Riding>() == 32 + 32 + 16 * 14);
     assert!(size_of::<RtRide>() == 64);
     assert!(OFF_RIDE.is_multiple_of(64) && OFF_RT_RIDE.is_multiple_of(64));
     assert!(OFF_RT_RIDE + size_of::<RtRide>() <= crate::OFF_HUD_LAYOUT);

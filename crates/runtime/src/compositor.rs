@@ -430,10 +430,21 @@ pub struct Layers<'a> {
     /// Panels only the headset shows: never the desktop view, never a recording (OBS's window).
     pub private: Vec<PanelLayer<'a>>,
     pub laser: Option<Laser>,
+    /// Straps drawn as flat ribbons turned to the eye (tracking space): a mount's reins.
+    pub ribbons: Vec<Ribbon>,
     /// Controller grip poses to mark (when the game isn't drawing hands).
     pub markers: Vec<(Vec3, Quat)>,
     pub glows: Vec<Glow>,
     pub comfort: Comfort,
+}
+
+/// A straight piece of a strap: from `a` to `b`, `width` across, of one colour (linear RGBA).
+#[derive(Clone, Copy, Debug)]
+pub struct Ribbon {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub width: f32,
+    pub color: Vec4,
 }
 
 /// The comfort overlay for this frame.
@@ -666,6 +677,9 @@ impl Compositor {
             c.color = g.color.extend(0.0).to_array();
             c.params = [MODE_GLOW, 0.0, 1.0, 0.0];
             self.draw_quad(gpu, &c, None);
+        }
+        for r in &layers.ribbons {
+            self.draw_ribbon(gpu, &cb, eye_pos, r.a, r.b, r.width, r.color);
         }
         if let Some(l) = &layers.laser {
             let color = if l.hit { Vec4::new(0.25, 0.75, 1.0, 0.7) } else { Vec4::new(0.25, 0.5, 0.7, 0.35) };

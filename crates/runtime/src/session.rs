@@ -1318,6 +1318,8 @@ impl Session {
         };
         let obs_panel = self.obs.update(&self.gpu, s.ui.obs_view, Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot), left, frame.display_time_ns as f64 * 1e-9);
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
+        // A mount's reins, from its bit to the hands holding them (the game's mount has none).
+        layers.ribbons = crate::riding::reins(&self.ride.riding, self.riding.reins_held(), frame.hands.map(|h| Vec3::from_array(h.grip.pos)), self.game.as_ref().map(|g| &g.light));
         if let (Some(p), Some(srv)) = (obs_panel, self.obs.srv()) {
             layers.private.push(PanelLayer::whole(p, srv));
         }
