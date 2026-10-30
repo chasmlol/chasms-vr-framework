@@ -795,7 +795,8 @@
 #define RVR_SLOTF_EQUIPPED_FIRST (1 << 0)
 
 /**
- * It counts only with the hand behind the head (over the shoulder).
+ * It counts only with the hand beside or behind the head (over the shoulder), not in front of the
+ * face.
  */
 #define RVR_SLOTF_BEHIND (1 << 1)
 

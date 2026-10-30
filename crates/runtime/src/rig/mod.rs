@@ -2815,7 +2815,9 @@ impl Rig {
         self.take(id, i, false);
         self.debug.pocket_draws += 1;
         self.emit(Cue::PocketOut, Some(i), Some(id), palm, 1.0);
-        tracing::info!("rig: {} ({} of them) drawn from slot {k} ({name}) into the {} hand as {id:#x}", item.name(), item.count, if i == 0 { "left" } else { "right" });
+        // (Where the hand was, from the eyes in the body's frame: where players reach for a slot.)
+        let reached = self.anchor.local(self.hands.as_ref().unwrap()[i].grip_t.0);
+        tracing::info!("rig: {} ({} of them) drawn from slot {k} ({name}) into the {} hand as {id:#x}, reached at {reached:.2?}", item.name(), item.count, if i == 0 { "left" } else { "right" });
     }
 
     /// A grip held still in a slot (`Holsters::edit_hold`) asks for the slot's editor; what it drew

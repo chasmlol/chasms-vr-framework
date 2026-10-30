@@ -91,7 +91,8 @@ pub const EMPTY_COUNT: u32 = 3;
 // ---- [`SlotDesc::flags`] -----------------------------------------------------------------------
 /// What the player has on comes out first (the equipped arrows).
 pub const SLOTF_EQUIPPED_FIRST: u32 = 1 << 0;
-/// It counts only with the hand behind the head (over the shoulder).
+/// It counts only with the hand beside or behind the head (over the shoulder), not in front of the
+/// face.
 pub const SLOTF_BEHIND: u32 = 1 << 1;
 
 /// One of the game's kinds of things.

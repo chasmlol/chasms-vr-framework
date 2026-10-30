@@ -83,7 +83,7 @@ pub struct SlotZones {
 pub fn zones(slot: &BodySlot, eye_height: f32) -> SlotZones {
     let k = (eye_height / 1.70).clamp(0.6, 1.3);
     let offset = Vec3::from_array(slot.at) * k;
-    let behind = slot.behind.then_some(-0.03);
+    let behind = slot.behind.then_some(super::zones::BEHIND);
     SlotZones { take: Zone { offset, radius: slot.radius + slot.reach, behind }, put: Zone { offset, radius: slot.radius, behind } }
 }
 

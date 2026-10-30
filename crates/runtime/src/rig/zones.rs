@@ -16,12 +16,16 @@
 //!
 //! Holsters are deliberately tight and gated (players complained of guns holstering themselves
 //! when let go of near the body): the hips are 13 cm spheres at the belt (and in from them), and
-//! the back slots only count once the hand is behind the head.
+//! the back slots only count once the hand is behind the eyes ([`BEHIND`]).
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::*;
 
 use super::filters::alpha;
+
+/// The over-the-shoulder slots count only with the hand behind this (the anchor frame's z, from
+/// the eyes): anywhere beside or behind the head, never in front of the face (food at the mouth).
+pub const BEHIND: f32 = 0.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Zone {
@@ -61,9 +65,10 @@ fn belt(eye_height: f32) -> f32 {
 /// Holster slots, indexed by `SLOT_*`.
 pub fn slot_zones(eye_height: f32, dominant: usize) -> [Zone; SLOT_COUNT_BODY] {
     let belt = belt(eye_height);
-    // (The back slots are the biggest: a hand over the shoulder is out of sight, and the arm's
-    // reach behind the head varies the most from player to player.)
-    let back = |side: f32| Zone { offset: Vec3::new(0.17 * side, -0.08, -0.12), radius: 0.24, behind: Some(-0.03) };
+    // (The back slots are the biggest, from above the shoulder down behind it: a hand over the
+    // shoulder is out of sight, and the arm's reach behind the head varies the most from player to
+    // player.)
+    let back = |side: f32| Zone { offset: Vec3::new(0.16 * side, -0.12, -0.12), radius: 0.28, behind: Some(BEHIND) };
     // Grenade pouches high on the chest either side of the sternum (clear of the magazine pouch
     // in its middle), and one on the belt front on the weapon hand's side (the magazine belt
     // pouch is on the other).
