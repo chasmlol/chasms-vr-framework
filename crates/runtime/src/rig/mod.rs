@@ -26,6 +26,7 @@ pub mod grips;
 pub mod valve;
 pub mod kick;
 pub mod physics;
+pub mod pockets;
 pub mod recoil;
 pub mod throwable;
 pub mod throwing;
@@ -43,6 +44,7 @@ use actions::{Chamber, Cycle, CycleEvent, HingeEvent};
 use feedback::{Cue, Feedback};
 use filters::OneEuro;
 use physics::{Physics, groups_free, groups_game_prop, groups_hand, groups_held, groups_none};
+use pockets::{InPocket, Pocketed};
 use throwable::{Flight, Fuse, KnifeMode, ThrowState};
 use throwing::{ThrowClass, ThrowHistory};
 use weapon::{Fire, HandleGrab, WeaponState};
@@ -181,6 +183,8 @@ struct Obj {
     valve_shape: Vec<Vec3>,
     /// Stuck in something it chopped or stabbed into ([`embed`]).
     embed: Option<embed::Embedded>,
+    /// A copy of a thing a hand took out of one of the game's creatures' pockets ([`pockets`]).
+    pocketed: Option<Pocketed>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +203,8 @@ enum Hover {
     Chamber(u32, usize),
     /// A valve's rim.
     Valve(u32),
+    /// In one of the game's creatures' pockets (its id).
+    Pocket(u32),
 }
 
 /// A hand holding a hinged action's barrels: which gun, where on them it took them (weapon space,
@@ -352,6 +358,13 @@ struct Hand {
     /// Laid slowly on something it could take: it rests on it without shoving it (see
     /// [`Rig::rest_on`]).
     yielding: bool,
+    /// In one of the game's creatures' pockets, on one of its things ([`pockets`]); when its
+    /// creature's watching heart next beats in it, and how aware the creature was last frame.
+    pocket: Option<InPocket>,
+    heartbeat: f64,
+    aware: f32,
+    /// Let go while the game decided on the thing it took out of a pocket: let go once it has.
+    let_go: bool,
 }
 
 impl Hand {
@@ -695,6 +708,15 @@ pub struct Rig {
     pushes: Vec<Push>,
     /// What each hand's fingers close on this frame (tracking space).
     grasps: [Option<rustvr_avatar::Grasp>; 2],
+    /// The game's creatures' pockets now (world), and its latest answers ([`Rig::set_pockets`]).
+    pockets: Vec<Pocket>,
+    pocket_answers: Vec<PocketOutcome>,
+    /// What the hands did with them this frame, for the game, numbered from `pocket_next` on (the
+    /// ring's next number: the session pushes them in order).
+    pub pocket_events: Vec<PocketEvent>,
+    pocket_next: u64,
+    /// The creatures whose pickpocketing is open, and when a hand was last near their pockets.
+    pocket_sessions: BTreeMap<u32, f64>,
 }
 
 impl Default for Rig {
@@ -723,6 +745,11 @@ impl Default for Rig {
             kicks: HashMap::new(),
             pushes: Vec::new(),
             grasps: [None, None],
+            pockets: Vec::new(),
+            pocket_answers: Vec::new(),
+            pocket_events: Vec::new(),
+            pocket_next: 0,
+            pocket_sessions: BTreeMap::new(),
         }
     }
 }
@@ -1098,6 +1125,7 @@ impl Rig {
                 }),
                 valve_shape: Vec::new(),
                 embed: None,
+                pocketed: None,
             },
         );
         // A valve's wheel turns on its axle, never anywhere else.
@@ -1364,6 +1392,7 @@ impl Rig {
         self.anchor.update(head_t.0, head_t.1, dt, near_zone);
 
         if !inp.paused {
+            self.pocket_frame(inp, &zones);
             for i in 0..2 {
                 self.update_hover(i, s, &zones, &ammo);
             }
@@ -1558,8 +1587,13 @@ impl Rig {
                 *e = g;
             }
         };
+        let quiet: [Option<u32>; 2] = [0, 1].map(|i| self.in_pocket(i).map(|(actor, _)| actor));
         for (&(actor, part), &(_, proxy, ..)) in &self.proxies {
             for c in self.physics.touching(proxy) {
+                // A hand in one of its pockets is light: it pushes nothing of it.
+                if hands.iter().zip(quiet).any(|(h, q)| h.collider == c && q == Some(actor)) {
+                    continue;
+                }
                 // Who's pressing, and how far behind where it's driven it is (what it presses with).
                 let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0)).or_else(|| {
                     self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }))
@@ -1653,6 +1687,10 @@ impl Rig {
                 returning: None,
                 grasp: GraspState::default(),
                 yielding: false,
+                pocket: None,
+                heartbeat: 0.0,
+                aware: 0.0,
+                let_go: false,
             }
         };
         let l = mk(&mut self.physics, 0);
@@ -1701,6 +1739,252 @@ impl Rig {
     fn other_weapon(&self, hand: usize) -> Option<u32> {
         let id = self.hands.as_ref()?[hand ^ 1].holding?;
         (self.objects.get(&id)?.desc.kind == OBJ_WEAPON).then_some(id)
+    }
+
+    // ---- the game's creatures' pockets ([`pockets`]) -------------------------------------------------
+    /// The game's creatures' pockets now (world space) and its answers to what the hands did with
+    /// them; `next`: the number the next pocket event will have in the ring (the session pushes this
+    /// frame's [`Rig::pocket_events`] in order after the update).
+    pub fn set_pockets(&mut self, table: &Pockets, next: u64) {
+        self.pockets.clear();
+        self.pockets.extend_from_slice(table.pockets());
+        self.pocket_answers.clear();
+        self.pocket_answers.extend_from_slice(table.outcomes());
+        self.pocket_next = next;
+        self.pocket_events.clear();
+    }
+
+    /// The pocket hand `i` is in (its creature and its id), its fingers on its things or holding one
+    /// still in it: what it does there is the pocket's, not a grab of the creature's body.
+    pub fn in_pocket(&self, i: usize) -> Option<(u32, u32)> {
+        let h = &self.hands.as_ref()?[i];
+        if let Some(p) = h.pocket {
+            return Some((p.actor, p.pocket));
+        }
+        match self.objects.get(&h.holding?)?.pocketed? {
+            Pocketed::Inside { pocket, actor, .. } => Some((actor, pocket)),
+            _ => None,
+        }
+    }
+
+    fn pocket(&self, id: u32) -> Option<&Pocket> {
+        self.pockets.iter().find(|p| p.id == id)
+    }
+
+    /// An event for the game: its number in the ring.
+    fn pocket_event(&mut self, ev: PocketEvent) -> u64 {
+        let n = self.pocket_next + self.pocket_events.len() as u64;
+        self.pocket_events.push(ev);
+        n
+    }
+
+    /// The event for something done with object `id` by hand `i` (where it is, how fast).
+    fn pocket_event_of(&self, kind: u32, actor: u32, pocket: u32, item: u32, id: u32, i: usize) -> PocketEvent {
+        let (pos, rot) = self.obj_pose(id).unwrap_or((Vec3::ZERO, Quat::IDENTITY));
+        let vel = self.objects.get(&id).map_or(Vec3::ZERO, |o| self.physics.velocity(o.body).0);
+        let speed = self.hands.as_ref().map_or(0.0, |h| h[i].history.recent().length());
+        PocketEvent { kind, actor, pocket, item, object: id, hand: i as u32, pos: pos.to_array(), speed, rot: rot.to_array(), vel: vel.to_array(), ..Default::default() }
+    }
+
+    /// A copy of template `t` (a thing in a pocket), at `pos`.
+    fn spawn_copy(&mut self, t: &ObjectDesc, pos: Vec3, rot: Quat) -> u32 {
+        let id = self.next_spawn;
+        self.next_spawn = self.next_spawn.wrapping_add(1).max(SPAWN_BASE);
+        let mut d = *t;
+        d.id = id;
+        d.flags &= !OBJF_TEMPLATE;
+        self.add(d, t.id, true, pos, rot);
+        id
+    }
+
+    /// A copy of a pocket's thing goes from wherever it is (a hand holding it lets go of nothing).
+    fn drop_copy(&mut self, id: u32) {
+        if let Some(hands) = &mut self.hands {
+            for (i, h) in hands.iter_mut().enumerate() {
+                if h.holding == Some(id) {
+                    h.holding = None;
+                    h.let_go = false;
+                    self.physics.set_groups(h.collider, groups_hand(i));
+                }
+            }
+        }
+        self.remove(id);
+    }
+
+    /// Once a frame, before the hands' input: the game's answers; the hands in the creatures'
+    /// pockets, feeling what's there and a thing held in one coming out of it (the attempt); the
+    /// creatures' pickpocketing opening as a hand goes in and closing once the hands are away.
+    fn pocket_frame(&mut self, inp: &RigInput, zones: &[Zone; SLOT_COUNT_BODY]) {
+        self.pocket_answers();
+        let scale = self.map.world_per_meter;
+        let now = self.now;
+        for i in 0..2 {
+            let h = &self.hands.as_ref().unwrap()[i];
+            let palm = self.physics.pose(h.body).0;
+            let busy = h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.valve.is_some();
+            let (holding, before, let_go) = (h.holding, h.pocket, h.let_go);
+            if let Some(id) = holding {
+                self.hands.as_mut().unwrap()[i].pocket = None;
+                if let Some(Pocketed::Inside { pocket, actor, item }) = self.objects.get(&id).and_then(|o| o.pocketed) {
+                    match self.pocket(pocket).copied() {
+                        // Its pocket's gone (the creature out of reach, the player not sneaking):
+                        // it's back where it was, nothing tried.
+                        None => {
+                            tracing::info!("rig: pocket {pocket:#x} went with {id:#x} still in it: put back");
+                            self.drop_copy(id);
+                        }
+                        // Pulled out: the attempt, for the game to decide.
+                        Some(p) if pockets::out_of(&p, palm, scale) => {
+                            let ev = self.pocket_event_of(PE_TAKE, actor, pocket, item, id, i);
+                            let n = self.pocket_event(ev);
+                            let o = self.objects.get_mut(&id).unwrap();
+                            o.pocketed = Some(Pocketed::Deciding { event: n, since: now });
+                            let c = o.collider;
+                            self.physics.set_groups(c, groups_held(i));
+                            tracing::info!("rig: {id:#x} (thing {item:#x}) pulled out of pocket {pocket:#x} of {actor:#x}: event {n}");
+                            self.emit(Cue::PocketOut, Some(i), Some(id), palm, 1.0);
+                        }
+                        _ => {}
+                    }
+                }
+                // Let go while the game decided: now that it has, it's let go of.
+                let deciding = self.objects.get(&id).is_some_and(|o| matches!(o.pocketed, Some(Pocketed::Deciding { .. })));
+                if let_go && !deciding && self.hands.as_ref().unwrap()[i].holding == Some(id) {
+                    self.hands.as_mut().unwrap()[i].let_go = false;
+                    self.release(i, inp, zones);
+                }
+            } else if busy {
+                self.hands.as_mut().unwrap()[i].pocket = None;
+            } else {
+                let in_now = pockets::pocket_at(&self.pockets, palm, before.map(|p| p.pocket), scale);
+                match (before, in_now.and_then(|id| self.pocket(id).copied())) {
+                    (Some(mut p), Some(pk)) if p.pocket == pk.id => {
+                        // On along it: the next thing, felt.
+                        if let Some(k) = p.feel_along(palm, pk.items().len(), scale).filter(|_| pk.flags & POCKET_SHUT == 0) {
+                            self.emit(Cue::PocketFeel(pk.items[k].feel), Some(i), None, palm, 1.0);
+                        }
+                        self.hands.as_mut().unwrap()[i].pocket = Some(p);
+                    }
+                    (_, Some(pk)) => {
+                        // In: a brush, and the first thing (or nothing, or a refusal).
+                        self.hands.as_mut().unwrap()[i].pocket = Some(InPocket { pocket: pk.id, actor: pk.actor, index: 0, moved: 0.0, last: palm });
+                        self.emit(Cue::PocketIn, Some(i), None, palm, 0.6);
+                        if pk.flags & POCKET_SHUT != 0 {
+                            self.emit(Cue::PocketShut, Some(i), None, palm, 1.0);
+                        } else if let Some(first) = pk.items().first() {
+                            self.emit(Cue::PocketFeel(first.feel), Some(i), None, palm, 1.0);
+                        } else {
+                            self.emit(Cue::PocketEmpty, Some(i), None, palm, 1.0);
+                        }
+                        if !self.pocket_sessions.contains_key(&pk.actor) {
+                            self.pocket_sessions.insert(pk.actor, now);
+                            let ev = PocketEvent { kind: PE_OPEN, actor: pk.actor, pocket: pk.id, hand: i as u32, pos: palm.to_array(), ..Default::default() };
+                            let n = self.pocket_event(ev);
+                            tracing::info!("rig: the {} hand into pocket {:#x} of {:#x} ({} things{}): its pickpocketing opens (event {n})", if i == 0 { "left" } else { "right" }, pk.id, pk.actor, pk.count, if pk.flags & POCKET_SHUT != 0 { ", shut" } else { "" });
+                        }
+                    }
+                    _ => self.hands.as_mut().unwrap()[i].pocket = None,
+                }
+            }
+            // Its creature sees the player: a slow heartbeat in the hand in its pocket, strong as it
+            // first notices them.
+            let aware = self.in_pocket(i).and_then(|(_, p)| self.pocket(p)).map_or(0.0, |p| p.awareness);
+            let h = &self.hands.as_ref().unwrap()[i];
+            let (was, next) = (h.aware, h.heartbeat);
+            if aware >= pockets::WATCHED && (was < pockets::WATCHED || now >= next) {
+                self.emit(Cue::PocketWatched, Some(i), None, palm, if was < pockets::WATCHED { 1.0 } else { 0.4 });
+                self.hands.as_mut().unwrap()[i].heartbeat = now + pockets::HEARTBEAT;
+            }
+            self.hands.as_mut().unwrap()[i].aware = aware;
+        }
+        // The creatures' pickpocketing closes once no hand has been near their pockets a moment.
+        let near: Vec<u32> = self
+            .pocket_sessions
+            .keys()
+            .copied()
+            .filter(|&actor| (0..2).any(|i| pockets::near_actor(&self.pockets, actor, self.physics.pose(self.hands.as_ref().unwrap()[i].body).0, scale) || self.in_pocket(i).is_some_and(|(a, _)| a == actor)))
+            .collect();
+        let mut closed = Vec::new();
+        for (actor, last) in self.pocket_sessions.iter_mut() {
+            if near.contains(actor) {
+                *last = now;
+            } else if now - *last > pockets::SESSION_GAP {
+                closed.push(*actor);
+            }
+        }
+        for actor in closed {
+            self.pocket_sessions.remove(&actor);
+            let n = self.pocket_event(PocketEvent { kind: PE_CLOSE, actor, ..Default::default() });
+            tracing::info!("rig: the hands are away from {actor:#x}'s pockets: its pickpocketing closes (event {n})");
+        }
+    }
+
+    /// The game's answers: a thing pulled out is the player's or goes, one dropped is the game's;
+    /// unanswered too long, as if it went (a take) or was done (a drop).
+    fn pocket_answers(&mut self) {
+        let now = self.now;
+        let mut gone = Vec::new();
+        for (&id, o) in self.objects.iter_mut() {
+            let (event, since) = match o.pocketed {
+                Some(Pocketed::Deciding { event, since } | Pocketed::Dropping { event, since }) => (event, since),
+                _ => continue,
+            };
+            let answer = self.pocket_answers.iter().find(|a| a.event == event + 1 && a.object == id).map(|a| a.outcome);
+            match (o.pocketed, answer) {
+                (Some(Pocketed::Deciding { .. }), Some(PO_TAKEN)) => {
+                    o.pocketed = Some(Pocketed::Taken);
+                    tracing::info!("rig: the game let {id:#x} be taken (event {event})");
+                }
+                (Some(Pocketed::Deciding { .. }), Some(_)) => {
+                    let hand = match o.holder {
+                        Holder::Held(h) => Some(h),
+                        _ => None,
+                    };
+                    gone.push((id, hand, true));
+                    tracing::info!("rig: {id:#x} wasn't taken unnoticed (event {event}): it stays where it was");
+                }
+                (Some(Pocketed::Dropping { .. }), Some(_)) => gone.push((id, None, false)),
+                (_, None) if now - since > pockets::ANSWER_WAIT => {
+                    tracing::warn!("rig: no answer from the game for {id:#x} (event {event}) in {:.0} s: it goes", pockets::ANSWER_WAIT);
+                    gone.push((id, None, false));
+                }
+                _ => {}
+            }
+        }
+        for (id, hand, caught) in gone {
+            let at = self.obj_pose(id).map_or(Vec3::ZERO, |p| p.0);
+            self.drop_copy(id);
+            if caught {
+                self.emit(Cue::PocketCaught, hand, None, at, 1.0);
+            }
+        }
+    }
+
+    /// Hand `i` closes on the thing it's on in pocket `pid`: a copy of it in the hand, still its
+    /// creature's while it's in the pocket.
+    fn take_from_pocket(&mut self, i: usize, pid: u32) {
+        let Some(p) = self.pocket(pid).copied() else { return };
+        let (palm, rot) = self.hands.as_ref().unwrap()[i].target;
+        if p.flags & POCKET_SHUT != 0 || p.items().is_empty() {
+            self.emit(if p.flags & POCKET_SHUT != 0 { Cue::PocketShut } else { Cue::PocketEmpty }, Some(i), None, palm, 1.0);
+            return;
+        }
+        let k = self.hands.as_ref().unwrap()[i].pocket.map_or(0, |x| x.index).min(p.items().len() - 1);
+        let item = p.items[k];
+        let Some(t) = self.templates.iter().find(|t| t.id == item.object).copied() else {
+            tracing::warn!("rig: pocket {pid:#x}'s thing {:#x} has no template {:#x}", item.id, item.object);
+            self.emit(Cue::Fail, Some(i), None, palm, 1.0);
+            return;
+        };
+        let id = self.spawn_copy(&t, palm, rot);
+        self.take(id, i, true);
+        let o = self.objects.get_mut(&id).unwrap();
+        o.pocketed = Some(Pocketed::Inside { pocket: pid, actor: p.actor, item: item.id });
+        // In the pocket it meets nothing (it's in among the creature's things).
+        let c = o.collider;
+        self.physics.set_groups(c, groups_none());
+        self.hands.as_mut().unwrap()[i].pocket = None;
+        tracing::info!("rig: the {} hand closes on thing {:#x} ({k} of {}) in pocket {pid:#x} of {:#x}: {id:#x}", if i == 0 { "left" } else { "right" }, item.id, p.count, p.actor);
     }
 
     // ---- what an empty hand would grab ------------------------------------------------------------
@@ -1770,6 +2054,13 @@ impl Rig {
             if at_grip || self.physics.distance_to(o.collider, palm) < ON_IT * self.map.world_per_meter {
                 hover = Hover::Object(id);
             }
+        }
+        // A pocket of one of the game's creatures the hand's in: its things come before the
+        // player's own holsters behind it, and before anything of the creature's body.
+        if hover == Hover::None
+            && let Some(p) = h.pocket
+        {
+            hover = Hover::Pocket(p.pocket);
         }
         // 2. Holsters, then the ammo pouch (it beats nearby objects when the other hand has a gun).
         if hover == Hover::None {
@@ -2047,6 +2338,7 @@ impl Rig {
                 self.hands.as_mut().unwrap()[i].pin = Some((gid, palm));
                 self.emit(Cue::Grab, Some(i), Some(gid), palm, 0.4);
             }
+            Hover::Pocket(pid) => self.take_from_pocket(i, pid),
         }
         let _ = inp;
     }
@@ -2321,7 +2613,21 @@ impl Rig {
             return;
         }
         let Some(id) = self.hands.as_mut().unwrap()[i].holding.take() else { return };
+        let pocketed = self.objects.get(&id).and_then(|o| o.pocketed);
+        // Out of a pocket, and the game deciding on it: the hand holds on until it has (a moment).
+        if matches!(pocketed, Some(Pocketed::Deciding { .. })) {
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            h.holding = Some(id);
+            h.let_go = true;
+            return;
+        }
         self.physics.set_groups(self.hands.as_ref().unwrap()[i].collider, groups_hand(i));
+        // Let go still in its pocket: back where it was, nothing tried.
+        if matches!(pocketed, Some(Pocketed::Inside { .. })) {
+            self.remove(id);
+            self.emit(Cue::Release, Some(i), None, palm, 0.4);
+            return;
+        }
         // Let go of while it's stuck in something: it stays in.
         if self.objects[&id].embed.is_some() {
             let o = self.objects.get_mut(&id).unwrap();
@@ -2358,8 +2664,41 @@ impl Rig {
         let stowable = o.throw.as_ref().is_none_or(|t| t.stowable());
         let holsterable = desc.flags & OBJF_HOLSTERABLE != 0 && stowable;
         let hand_speed = self.hands.as_ref().unwrap()[i].history.recent().length();
+        // Let go gently in one of the game's creatures' pockets: planted (a thing to take, or one taken
+        // from a pocket), if the game will have it. One taken goes into the pocket (it's the
+        // player's still if the game won't: it was never anywhere else); a thing of the game's is let
+        // go there as anywhere, and the game takes it if it's planted.
+        let taken = pocketed == Some(Pocketed::Taken);
+        let hand_at = self.physics.pose(self.hands.as_ref().unwrap()[i].body).0;
+        let plant = (desc.flags & OBJF_LOOT != 0 || taken)
+            .then(|| pockets::pocket_at(&self.pockets, hand_at, None, self.map.world_per_meter))
+            .flatten()
+            .and_then(|pid| self.pocket(pid).copied())
+            .filter(|p| p.flags & POCKET_SHUT == 0 && hand_speed < HOLSTER_MAX_SPEED);
+        if let Some(p) = plant {
+            let ev = self.pocket_event_of(PE_PLANT, p.actor, p.id, 0, id, i);
+            let n = self.pocket_event(ev);
+            tracing::info!("rig: {id:#x} let go in pocket {:#x} of {:#x}: planting it (event {n})", p.id, p.actor);
+            self.emit(Cue::PocketPlant, Some(i), Some(id), palm, 1.0);
+            if taken {
+                self.remove(id);
+                return;
+            }
+        }
+        // A thing taken from a pocket, let go gently in a body slot: kept (it's the player's).
+        if taken
+            && hand_speed < HOLSTER_MAX_SPEED
+            && zones.iter().any(|z| self.anchor.contains(z, palm_t))
+        {
+            let ev = self.pocket_event_of(PE_STOW, 0, 0, 0, id, i);
+            self.pocket_event(ev);
+            self.remove(id);
+            self.emit(Cue::HolsterIn, Some(i), None, palm, 1.0);
+            return;
+        }
         // A thing to take, let go of gently in any of the body's slots: stowed, for the game.
         if desc.flags & OBJF_LOOT != 0
+            && plant.is_none()
             && hand_speed < HOLSTER_MAX_SPEED
             && let Some(slot) = zones.iter().position(|z| self.anchor.contains(z, palm_t))
         {
@@ -2481,6 +2820,15 @@ impl Rig {
             );
         }
         self.emit(cue, Some(i), Some(id), palm, if l.thrown { 1.0 } else { 0.7 });
+        // A thing taken from a pocket let go in the world: the game's own thing there, where it's
+        // let go and moving as it goes (the copy flies on until the game has it).
+        if taken {
+            let ev = self.pocket_event_of(PE_DROP, 0, 0, 0, id, i);
+            let n = self.pocket_event(ev);
+            if let Some(o) = self.objects.get_mut(&id) {
+                o.pocketed = Some(Pocketed::Dropping { event: n, since: self.now });
+            }
+        }
         if lit {
             self.debug.arms += 1;
             self.emit(Cue::GrenadeArm, None, Some(id), at, 0.8);

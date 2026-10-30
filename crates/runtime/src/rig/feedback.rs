@@ -72,6 +72,22 @@ pub enum Cue {
     /// An air gun's pump stroke (pressure building), and its trigger without the pressure to fire.
     Pump,
     AirHiss,
+    // Pockets on the game's creatures (`rig::pockets`).
+    /// A hand going into a pocket (a soft brush), and finding it empty or shut.
+    PocketIn,
+    PocketEmpty,
+    PocketShut,
+    /// A finger coming on a thing in a pocket: its feel (`FEEL_*`).
+    PocketFeel(u32),
+    /// A thing pulled out of a pocket, and the game's answer that it didn't go unnoticed (the hand
+    /// jolts and the thing is gone from it).
+    PocketOut,
+    PocketCaught,
+    /// The pocket's creature sees the player: a slow heartbeat in the hand in it (stronger as it
+    /// first notices them).
+    PocketWatched,
+    /// A thing let go into a pocket.
+    PocketPlant,
 }
 
 impl Cue {
@@ -123,6 +139,14 @@ impl Cue {
             Cue::PumpForward => "pump_forward",
             Cue::Pump => "pump",
             Cue::AirHiss => "air_hiss",
+            Cue::PocketIn => "pocket_in",
+            Cue::PocketEmpty => "pocket_empty",
+            Cue::PocketShut => "pocket_shut",
+            Cue::PocketFeel(_) => "pocket_feel",
+            Cue::PocketOut => "pocket_out",
+            Cue::PocketCaught => "pocket_caught",
+            Cue::PocketWatched => "pocket_watched",
+            Cue::PocketPlant => "pocket_plant",
         }
     }
 }
@@ -196,6 +220,16 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::BoltForward | Cue::PumpForward => (0.045, 140.0, 0.85),
         Cue::Pump => (0.04, 90.0, 0.6),
         Cue::AirHiss => (0.03, 320.0, 0.25),
+        // Felt more than heard: a thief's hand.
+        Cue::PocketIn => (0.03, 80.0, 0.3),
+        Cue::PocketEmpty => (0.05, 50.0, 0.25),
+        Cue::PocketShut => (0.06, 60.0, 0.5),
+        Cue::PocketFeel(kind) => super::pockets::feel(kind),
+        Cue::PocketOut => (0.03, 120.0, 0.45),
+        // Caught: the hardest jolt there is short of an explosion.
+        Cue::PocketCaught => (0.18, 60.0, 1.0),
+        Cue::PocketWatched => (0.05, 45.0, 0.3 + 0.5 * i),
+        Cue::PocketPlant => (0.04, 100.0, 0.5),
     })
 }
 

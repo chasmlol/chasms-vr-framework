@@ -39,14 +39,15 @@ pub struct ItemCard {
     opacity: f32,
 }
 
-/// The thing to show a card for: one a hand holds or pulls that the game says what it is: the one
-/// shown already while a hand still has it, else one held, else one flying in. Where it is
-/// (tracking space) and how far its top is over its middle.
+/// The thing to show a card for: one a hand holds or pulls that the game says what it is (itself, or
+/// the template it's a copy of: a thing out of a pocket): the one shown already while a hand still
+/// has it, else one held, else one flying in. Where it is (tracking space) and how far its top is
+/// over its middle.
 pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, infos: &ItemInfos, map: Option<&WorldMap>) -> Option<(u32, Vec3, f32)> {
     let states = &states.states[..(states.count as usize).min(MAX_OBJECTS)];
     let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
     let place = |s: &ObjectState| -> Option<(u32, Vec3, f32)> {
-        infos.get(s.id)?;
+        info_of(infos, s)?;
         let p = Vec3::from_array(s.pose.pos);
         let at = if s.flags & OS_TRACKING != 0 { p } else { map?.inv_point(p) };
         let d = descs.iter().find(|d| d.id == s.desc)?;
@@ -63,6 +64,11 @@ pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, in
         return Some(p);
     }
     states.iter().filter(held).find_map(place).or_else(|| states.iter().filter(pulled).find_map(place))
+}
+
+/// What the game says a thing is: its own card, or its template's.
+fn info_of<'a>(infos: &'a ItemInfos, s: &ObjectState) -> Option<&'a ItemInfo> {
+    infos.get(s.id).or_else(|| infos.get(s.desc).filter(|_| s.desc != 0))
 }
 
 impl ItemCard {
@@ -116,7 +122,8 @@ impl ItemCard {
                 let k = 1.0 - (-dt / FOLLOW).exp();
                 self.at = Some(self.at.map_or(want, |a| a.lerp(want, k)));
                 self.opacity = (self.opacity + dt / FADE_IN).min(1.0);
-                let info = *self.infos.get(id).unwrap();
+                let s = states.states[..(states.count as usize).min(MAX_OBJECTS)].iter().find(|s| s.id == id).unwrap();
+                let info = *info_of(&self.infos, s).unwrap();
                 if self.painted.is_none_or(|p| bytemuck::bytes_of(&p) != bytemuck::bytes_of(&info)) {
                     self.paint(gpu, &info)?;
                     self.painted = Some(info);

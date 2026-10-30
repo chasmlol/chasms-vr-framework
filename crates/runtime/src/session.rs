@@ -169,6 +169,8 @@ pub struct Session {
     game_poses: Box<GamePoses>,
     /// Where the hands push them (see `Rig::game_pushes`).
     game_pushes: Box<GamePushes>,
+    /// The game's creatures' pockets and its answers ([`Pockets`]).
+    pockets: Box<Pockets>,
     /// Their convex collision (see `Rig::set_game_hulls`).
     game_hulls: Box<GameHulls>,
     hud: crate::hud::HudPlacer,
@@ -302,6 +304,7 @@ impl Session {
             hud_layout_seq: 0,
             game_poses: bytemuck::zeroed_box(),
             game_pushes: bytemuck::zeroed_box(),
+            pockets: bytemuck::zeroed_box(),
             game_hulls: bytemuck::zeroed_box(),
             game_lighting: bytemuck::zeroed_box(),
             game_lighting_read: bytemuck::zeroed_box(),
@@ -639,6 +642,10 @@ impl Session {
                 tracing::info!("runtime: test: the nearest prop into the {} hand: {got:?}", if hand == 0 { "left" } else { "right" });
             }
             let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
+            // The game's creatures' pockets, and its answers to what the hands did with them (a
+            // torn read keeps the last).
+            self.link.read_pockets_into(&mut self.pockets);
+            self.rig.set_pockets(&self.pockets, self.link.pocket_events_written());
             let rig_paused = menu_mode || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
@@ -691,6 +698,11 @@ impl Session {
                     format!("{:.3?} for the controller at {:.3?}{}", at(&h.pose), at(&frame.hands[i].grip), if h.flags & HAND_BLOCKED != 0 { " (blocked)" } else { "" })
                 };
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
+            }
+            // What the hands did with the pockets, for the game, in order (numbered as the rig
+            // numbered them).
+            for ev in std::mem::take(&mut self.rig.pocket_events) {
+                self.link.push_pocket_event(&ev);
             }
             self.rig.write_states(&mut self.states);
             // What the thing in a hand is, on a card beside it.
@@ -1747,6 +1759,12 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::ShellIn => (E::MagIn, S::MagSeat),
         C::ShellOut | C::CaseEject => (E::MagOut, S::MagEject),
         C::AirHiss => (E::DryFire, S::EmptyClick),
+        // A pocket is found like a holster, and a shut one says no; the rest is felt, not heard
+        // (the game's own sounds say what came of it).
+        C::PocketIn => (E::ZoneTick, S::ZoneTick),
+        C::PocketShut => (E::Fail, S::Fail),
+        C::PocketPlant => (E::HolsterIn, S::HolsterIn),
+        C::PocketEmpty | C::PocketFeel(_) | C::PocketOut | C::PocketCaught | C::PocketWatched => return None,
     })
 }
 
