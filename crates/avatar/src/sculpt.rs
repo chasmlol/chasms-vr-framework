@@ -302,4 +302,3 @@ mod tests {
         assert_eq!(s.nearest(&at, Vec3::new(0.031, 0.01, 0.0)).map(|n| (n.0, n.1)), Some((0, 1)));
     }
 }
-

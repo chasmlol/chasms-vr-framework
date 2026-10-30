@@ -64,6 +64,9 @@ const LET_GO: f32 = 0.35;
 const ASYM_EASE: f32 = 0.12;
 /// The point taken's size, for the fingers to close round (metres, the face's own size).
 const POINT_RADIUS: f32 = 0.012;
+/// How long the fingers take to close on the point taken, and to open and the hand to come back to
+/// the controller after letting go (seconds).
+const EASE: f64 = 0.15;
 /// How long after the hands let go the game's face is waited for to come back with the one they
 /// made, before what the game says goes (something else changed it).
 const ECHO_WAIT: f64 = 0.6;
@@ -106,6 +109,9 @@ struct HandState {
     squeezed: bool,
     /// Where the face held it this frame (see [`HandOut`]).
     out: Option<HandOut>,
+    /// Let go: since when, where the face had it then, its fingers then (the hand eases back to the
+    /// controller and its fingers open, over [`EASE`]).
+    released: Option<(f64, HandOut)>,
 }
 
 struct Holding {
@@ -118,6 +124,8 @@ struct Holding {
     change: Vec<f32>,
     /// How far the point taken is held back from the hand (metres, tracking space).
     gap: f32,
+    /// When it took hold (its fingers close over [`EASE`]).
+    since: f64,
 }
 
 /// A body's face, ready to be shaped by hand: its parts on their own, the solver for them, and
@@ -205,6 +213,11 @@ pub struct Sculpt {
     /// go, where).
     pub haptics: Vec<(usize, f32, f32, f32)>,
     pub sounds: Vec<(bool, Vec3)>,
+}
+
+fn smooth(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 fn v3(a: [f32; 3]) -> Vec3 {
@@ -341,13 +354,13 @@ impl Sculpt {
             let ease = 1.0 - (-inp.dt / ASYM_EASE).exp();
             self.hands[i].asym += (c.trigger.clamp(0.0, 1.0) - self.hands[i].asym) * ease;
             if c.connected == 0 {
-                self.let_go(i, p);
+                self.let_go(i, p, inp.now);
                 continue;
             }
             // Holding: pulled, or let go.
             if self.hands[i].holding.is_some() {
                 if !self.hands[i].squeezed {
-                    self.let_go(i, p);
+                    self.let_go(i, p, inp.now);
                     changed = true;
                     continue;
                 }
@@ -373,7 +386,8 @@ impl Sculpt {
                     let from = m.inverse().transform_point3(p);
                     tracing::info!("sculpt: the {} hand takes hold of the {} at part {part}, vertex {vertex}", if i == 0 { "left" } else { "right" }, if on == On::Copy { "copy" } else { "own head" });
                     let n = self.face.0.len() + self.face.1.len();
-                    self.hands[i].holding = Some(Holding { on, hold, from, pull: Vec3::ZERO, change: vec![0.0; n], gap: 0.0 });
+                    self.hands[i].holding = Some(Holding { on, hold, from, pull: Vec3::ZERO, change: vec![0.0; n], gap: 0.0, since: inp.now });
+                    self.hands[i].released = None;
                     self.hands[i].near = None;
                     self.haptics.push((i, 0.03, 160.0, 0.45));
                     self.sounds.push((true, p));
@@ -395,10 +409,22 @@ impl Sculpt {
                     let moved = m.transform_vector3(got - want);
                     let scale = if h.on == On::Copy { BUST_SCALE } else { 1.0 };
                     let point = m.transform_point3(got);
-                    let grasp = Grasp { solids: vec![Solid::Sphere { centre: point, radius: POINT_RADIUS * scale }], fingers: rustvr_avatar::grasp::ALL_FINGERS, weight: 1.0, ..Default::default() };
+                    let weight = smooth(((inp.now - h.since) / EASE) as f32);
+                    let grasp = Grasp { solids: vec![Solid::Sphere { centre: point, radius: POINT_RADIUS * scale }], fingers: rustvr_avatar::grasp::ALL_FINGERS, weight, ..Default::default() };
                     Some(HandOut { moved, grasp: Some(grasp) })
                 }),
-                None => self.pushed_out(p, copy).map(|moved| HandOut { moved, grasp: None }),
+                // Let go a moment ago: easing back to the controller, the fingers opening.
+                None => match &self.hands[i].released {
+                    Some((t, was)) if inp.now - t < EASE => {
+                        let k = 1.0 - smooth(((inp.now - t) / EASE) as f32);
+                        let grasp = was.grasp.clone().map(|mut g| {
+                            g.weight *= k;
+                            g
+                        });
+                        Some(HandOut { moved: was.moved * k, grasp })
+                    }
+                    _ => self.pushed_out(p, copy).map(|moved| HandOut { moved, grasp: None }),
+                },
             };
             // The pull felt: a fine texture while it moves, harder the further the face holds the
             // hand back.
@@ -418,8 +444,11 @@ impl Sculpt {
     }
 
     /// A hand lets go: its change stays in the face.
-    fn let_go(&mut self, i: usize, p: Vec3) {
+    fn let_go(&mut self, i: usize, p: Vec3, now: f64) {
         let Some(h) = self.hands[i].holding.take() else { return };
+        if let Some(out) = self.hands[i].out.clone() {
+            self.hands[i].released = Some((now, out));
+        }
         let (ks, _) = (self.base.0.len(), self.base.1.len());
         for (k, x) in h.change.iter().enumerate() {
             if k < ks {
