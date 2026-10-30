@@ -1112,7 +1112,11 @@ impl Session {
         let following = out.tracking.flags & TRK_FOLLOW != 0;
         let target = if menu || following { 0.0 } else { strength * moving.max(if ride.mounted() { 0.0 } else { turning }).min(1.0) };
         let k = 1.0 - (-dt / c.vignette_ease.max(0.02)).exp();
+        let was = self.comfort.vignette;
         self.comfort.vignette += (target - self.comfort.vignette) * k;
+        if ride.mounted() && (was > 0.25) != (self.comfort.vignette > 0.25) {
+            tracing::info!("runtime: riding: the vignette {} (the mount turning {:.2} rad/s, gait {})", if self.comfort.vignette > 0.25 { "closes in" } else { "opens" }, self.locomotion.walk().1, ride.gait);
+        }
         self.comfort.aperture = c.vignette_aperture;
         self.comfort.feather = c.vignette_feather;
         self.comfort.forward = quat(frame.hmd.rot) * Vec3::Z;

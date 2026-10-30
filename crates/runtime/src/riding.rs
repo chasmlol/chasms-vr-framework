@@ -117,6 +117,7 @@ pub struct Riding {
     trig_since: [Option<f64>; 2],
     hold_asked: [bool; 2],
     lean_since: Option<f64>,
+    on_pommel: bool,
     mount_at: f64,
     mounts_seen: u32,
     was_mounted: bool,
@@ -316,11 +317,13 @@ impl Riding {
             }
         }
 
-        // The stick rides too (and, let go, stops the mount as the game's own controls do).
+        // The stick rides too: pushed, its gait and pace (and, let go, the mount stops, as the
+        // game's own controls do); its sideways push, or the turning stick's, steers (the turning
+        // stick alone leaves the gait as it is).
         let stick = Vec2::from_array(inp.move_xy);
         let dom = inp.settings.dominant();
         let turning = deadzone(f.hands[dom].stick[0], 0.25);
-        let stick_on = stick.length() > STICK || turning != 0.0;
+        let stick_on = stick.length() > STICK;
         if stick_on {
             out.flags |= RR_STICK;
             let (gait, pace) = if stick.y > STICK {
@@ -333,7 +336,7 @@ impl Riding {
             self.gait = gait;
             out.gait = gait;
             out.pace = pace;
-            steer = stick.x + turning;
+            steer = stick.x;
         } else {
             if self.stick_was {
                 self.gait = 0;
@@ -341,10 +344,15 @@ impl Riding {
             out.gait = self.gait;
             out.pace = if self.gait != 0 { 1.0 } else { 0.0 };
         }
+        if turning != 0.0 {
+            out.flags |= RR_STICK;
+            steer = if stick_on { steer + turning } else { turning };
+        }
+        let by_stick = stick_on || self.stick_was;
         self.stick_was = stick_on;
         out.steer = steer.clamp(-1.0, 1.0);
         if self.gait != was {
-            tracing::info!("riding: gait {} -> {} ({})", was, self.gait, if stick_on { "the stick" } else if spur { "spurred on" } else if !held.is_empty() { "the reins pulled" } else { "the reins let go" });
+            tracing::info!("riding: gait {} -> {} ({})", was, self.gait, if by_stick { "the stick" } else if spur { "spurred on" } else if !held.is_empty() { "the reins pulled" } else { "the reins let go" });
             if self.gait < was {
                 for &h in &held {
                     self.haptics.push((h, 0.05, 60.0, 0.5));
@@ -372,6 +380,10 @@ impl Riding {
         let on_pommel = (0..2).any(|h| gripped[h] && self.reins[h].is_none() && pos(h).distance(pommel) <= POMMEL_REACH);
         let seat = Vec3::from_array(r.seat.pos);
         let lean = (Quat::from_rotation_y(-mount_yaw) * (Vec3::from_array(f.hmd.pos) - seat)).x;
+        if on_pommel != self.on_pommel {
+            self.on_pommel = on_pommel;
+            tracing::info!("riding: a hand {} the pommel (the head {:.2} m to the side of the seat)", if on_pommel { "on" } else { "off" }, lean);
+        }
         if on_pommel && lean.abs() >= LEAN_OUT {
             let since = *self.lean_since.get_or_insert(now);
             if now - since >= LEAN_HOLD {
