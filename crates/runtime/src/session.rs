@@ -698,6 +698,11 @@ impl Session {
                     format!("{:.3?} for the controller at {:.3?}{}", at(&h.pose), at(&frame.hands[i].grip), if h.flags & HAND_BLOCKED != 0 { " (blocked)" } else { "" })
                 };
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
+                for i in 0..2 {
+                    if let Some((p, d)) = self.rig.nearest_pocket(i).filter(|(_, d)| d.length() < 1.0) {
+                        tracing::info!("rig: the {} hand is {:.2} m from pocket {p:#x} (it's {d:.2?} from the hand)", if i == 0 { "left" } else { "right" }, d.length());
+                    }
+                }
             }
             // What the hands did with the pockets, for the game, in order (numbered as the rig
             // numbered them).
