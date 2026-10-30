@@ -55,9 +55,25 @@ const HIT_COOLDOWN: f64 = 0.35;
 /// One block per attack.
 const BLOCK_COOLDOWN: f64 = 0.8;
 /// A fist: a sphere this far along the hand from its joint, this big; closed past this squeeze.
-const FIST_FORWARD: f32 = 0.08;
-const FIST_RADIUS: f32 = 0.05;
-const FIST_SQUEEZE: f32 = 0.6;
+/// A hand's Punch damager (the player's hands: their palm and fingers, in the drawn hand's grip
+/// space, the fingers out along +Z): judged by the Punch table and curve (2 m/s: 1, 20 m/s: 5),
+/// within 60 degrees of square, never going in, twice its damage thrown.
+fn punch() -> MeleeBlade {
+    let mut b: MeleeBlade = bytemuck::Zeroable::zeroed();
+    b.kind = DMG_PUNCH;
+    b.modifier = rustvr_melee::modifiers::MOD_PUNCH;
+    b.radius = PUNCH_RADIUS;
+    b.a = [0.0, 0.0, -0.02];
+    b.b = [0.0, 0.0, 0.1];
+    b.tier = 1.0;
+    b.thrown = 2.0;
+    b.normal = 60.0;
+    b.curve = [2.0, 1.0, 20.0, 5.0];
+    b
+}
+
+/// How thick a hand is to its Punch damager (m).
+const PUNCH_RADIUS: f32 = 0.045;
 /// The damagers' angle limits (degrees): a sword's, an axe's.
 const SLASH_ACROSS_DEG: f32 = 35.0;
 const PIERCE_DEG: f32 = 35.0;
@@ -365,6 +381,9 @@ pub struct Combat {
     /// The weapons a hand's spell has filled, by id (`crate::rig::melee`'s imbuing), and which
     /// spells are fire (the damage tables' fire rows).
     pub imbues: HashMap<u32, Imbue>,
+    /// Each drawn hand as it sits on its controller's grip (tracking space), from when it was last
+    /// free: a punch is swept where the controller takes it.
+    hand_on_grip: [Option<(Vec3, Quat)>; 2],
     pub fire_spells: Vec<u32>,
     /// The hits heard this frame: (cue, where (world), how hard 0..1, the weapon).
     pub sounds: Vec<(crate::rig::feedback::Cue, Vec3, f32, u32)>,
@@ -402,6 +421,7 @@ impl Default for Combat {
             items: bytemuck::zeroed_box(),
             rules: bytemuck::zeroed_box(),
             imbues: HashMap::new(),
+            hand_on_grip: [None; 2],
             fire_spells: Vec::new(),
             item_prev: HashMap::new(),
             struck_until: HashMap::new(),
@@ -653,21 +673,31 @@ impl Combat {
                     self.blocks(inp, h, id, &desc, &prev, &now, dt, &mut events);
                 }
                 seen.insert(id, now);
-            } else if held.is_none() && inp.rig.holds_creature(h).is_none() {
-                // An empty hand closed into a fist punches (not one closed on a creature it holds).
+            } else if held.is_none() && !inp.out.hand_busy[h] {
+                // An empty hand hits open or closed alike (a fist doesn't hit harder): its palm and
+                // fingers carry Punch.
                 let hs = &inp.out.hands[h];
-                let fist = inp.frame.hands[h].squeeze > FIST_SQUEEZE && hs.flags & HAND_TRACKED != 0;
                 let (hp, hq) = (Vec3::from_array(hs.pose.pos), Quat::from_array(hs.pose.rot));
-                let k = inp.map.point(hp + hq * Vec3::Y * FIST_FORWARD);
-                let now = [[k; SAMPLES]];
-                let key = h as u32;
-                if fist && !inp.paused
-                    && let Some(prev) = self.prev.get(&key).cloned()
-                {
-                    let along = inp.map.rot(hq) * Vec3::Y;
-                    self.sweep(inp, &bodies, h, 0, h, DMG_PUNCH, 0, FIST_RADIUS, along, along, &prev[0], &now[0], dt, &mut events);
+                // Swept where the controller takes it (the hand meets things at the speed it was
+                // going, not stopped on them as the drawn hand is): the hand as it sits on its
+                // controller, from when it was last free.
+                let grip = &inp.frame.hands[h].grip;
+                let (gp, gq) = (Vec3::from_array(grip.pos), Quat::from_array(grip.rot));
+                if inp.out.ghosts[h].is_none() {
+                    self.hand_on_grip[h] = Some((gq.inverse() * (hp - gp), gq.inverse() * hq));
                 }
-                seen.insert(key, now.to_vec());
+                let (hp, hq) = self.hand_on_grip[h].map_or((hp, hq), |(p, q)| (gp + gq * p, gq * q));
+                let blade = punch();
+                let now: [Vec3; SAMPLES] = std::array::from_fn(|k| inp.map.point(hp + hq * Vec3::from_array(blade.a).lerp(Vec3::from_array(blade.b), k as f32 / (SAMPLES - 1) as f32)));
+                let key = h as u32;
+                if hs.flags & HAND_TRACKED != 0
+                    && !inp.paused
+                    && let Some(prev) = self.prev.get(&key).filter(|p| p.len() == 1).cloned()
+                {
+                    let along = inp.map.rot(hq) * Vec3::Z;
+                    self.judge_sweep(inp, &bodies, h, 0, h, &blade, 1, along, along, &prev[0], &now, dt, false, &[], &mut events);
+                }
+                seen.insert(key, vec![now]);
             }
         }
         // Thrown weapons are judged as they fly (with the thrown multipliers and pushes), as the
@@ -1030,7 +1060,8 @@ impl Combat {
         let (_, bi, point, vel, normal) = best?;
         let body = &bodies[bi];
         self.touching_now.insert((body.actor.id, object, blade));
-        let thrown = !inp.rig.held(hand).is_some_and(|h| h == object);
+        // (A hand's own blow, object 0, is never thrown.)
+        let thrown = object != 0 && !inp.rig.held(hand).is_some_and(|h| h == object);
         let contact = rustvr_melee::Contact { along, edge, vel: vel / w, normal, material: body.part.material, tier, thrown, fire: self.imbued_with_fire(object) };
         let judged = rustvr_melee::judge(b, &contact);
         if debug_combat() {

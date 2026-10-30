@@ -166,6 +166,8 @@ pub fn judge(b: &MeleeBlade, c: &Contact) -> Option<Judged> {
             let v_plane = (dir - side * dir.dot(side)).normalize_or_zero();
             within(h_plane, c.along, h) && within(v_plane, c.along, v) && within(-c.normal, c.along, n)
         }
+        // A hand (a punch) hits square enough: its way within the normal's angle of the face.
+        DMG_PUNCH => within(-c.normal, dir, n),
         _ => normal_ok,
     };
     let (modifier, kind, mut flags, base) = if clean {
