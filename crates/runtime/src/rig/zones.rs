@@ -5,11 +5,18 @@
 //!
 //! The zones hang off a body anchor whose yaw follows the head with a 0.5 s lag and freezes while
 //! a hand is in or approaching a zone, so a slot never slides away mid-reach (the shock2quest fix
-//! for drifting hip slots).
+//! for drifting hip slots). They hang from the eyes as they'd be looking level
+//! over the neck the head turns on, not from the eyes themselves: looking down at a hip swings the
+//! eyes some 10 cm forward and down, and a zone that went with them was out in front of the body,
+//! away from the hand reaching for where it was.
+//!
+//! A zone's middle sits a little out from the body, and a hand counts there or deeper: anywhere
+//! from its middle in toward the body's middle line (`DEPTH` at most), so a hand pressed against
+//! the body at a slot is in the slot.
 //!
 //! Holsters are deliberately tight and gated (players complained of guns holstering themselves
-//! when let go of near the body): the hips are 13 cm spheres at the belt, and the back slots only
-//! count once the hand is behind the head.
+//! when let go of near the body): the hips are 13 cm spheres at the belt (and in from them), and
+//! the back slots only count once the hand is behind the head.
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::*;
@@ -31,6 +38,21 @@ impl Zone {
     }
 }
 
+/// The eyes to the neck pivot the head turns on (head space, for a player of the reference eye
+/// height): the IK body's (`rustvr_ik`'s skeleton: the legacy Oculus neck model's direction, 7.5 cm
+/// down and 8.05 cm back, at Parger's 0.13 m).
+const EYES_TO_NECK: Vec3 = Vec3::new(0.0, -0.0886, -0.0951);
+
+/// How much deeper than a zone's middle, toward the body's middle line, a hand is still in it (for
+/// a player of the reference eye height): from the hips' and the chest's middles, about to the
+/// body.
+const DEPTH: f32 = 0.12;
+
+/// A player's size against the reference body (eyes 1.70 m up).
+pub fn scale(eye_height: f32) -> f32 {
+    (eye_height / 1.70).clamp(0.6, 1.3)
+}
+
 /// Belt height below the eyes for a player with this standing eye height.
 fn belt(eye_height: f32) -> f32 {
     -0.55 * (eye_height / 1.70).clamp(0.6, 1.3)
@@ -39,7 +61,9 @@ fn belt(eye_height: f32) -> f32 {
 /// Holster slots, indexed by `SLOT_*`.
 pub fn slot_zones(eye_height: f32, dominant: usize) -> [Zone; SLOT_COUNT_BODY] {
     let belt = belt(eye_height);
-    let back = |side: f32| Zone { offset: Vec3::new(0.17 * side, -0.08, -0.12), radius: 0.2, behind: Some(-0.03) };
+    // (The back slots are the biggest: a hand over the shoulder is out of sight, and the arm's
+    // reach behind the head varies the most from player to player.)
+    let back = |side: f32| Zone { offset: Vec3::new(0.17 * side, -0.08, -0.12), radius: 0.24, behind: Some(-0.03) };
     // Grenade pouches high on the chest either side of the sternum (clear of the magazine pouch
     // in its middle), and one on the belt front on the weapon hand's side (the magazine belt
     // pouch is on the other).
@@ -78,19 +102,25 @@ pub fn ammo_zones(eye_height: f32, dominant: usize) -> [Zone; 2] {
 #[derive(Clone, Copy, Debug)]
 pub struct BodyAnchor {
     pub yaw: f32,
+    /// The eyes (tracking space).
     pub head: Vec3,
+    /// The eyes as they'd be looking level ahead over the neck they turn on (tracking space): what
+    /// the zones hang from, still while the head looks down or tilts.
+    pub level: Vec3,
+    /// The player's size against the reference body ([`scale`]).
+    pub scale: f32,
     init: bool,
 }
 
 impl Default for BodyAnchor {
     fn default() -> Self {
-        BodyAnchor { yaw: 0.0, head: Vec3::ZERO, init: false }
+        BodyAnchor { yaw: 0.0, head: Vec3::ZERO, level: Vec3::ZERO, scale: 1.0, init: false }
     }
 }
 
 impl BodyAnchor {
     /// Follows the head (yaw only), unless `frozen` (a hand is reaching into a zone).
-    pub fn update(&mut self, head_pos: Vec3, head_rot: Quat, dt: f32, frozen: bool) {
+    pub fn update(&mut self, head_pos: Vec3, head_rot: Quat, eye_height: f32, dt: f32, frozen: bool) {
         let f = head_rot * Vec3::Z;
         let head_yaw = f.x.atan2(f.z);
         if !self.init {
@@ -101,6 +131,9 @@ impl BodyAnchor {
             self.yaw = crate::wrap_angle(self.yaw + d * alpha(dt, 0.5));
         }
         self.head = head_pos;
+        self.scale = scale(eye_height);
+        let neck = EYES_TO_NECK * self.scale;
+        self.level = head_pos + head_rot * neck - self.rot() * neck;
     }
 
     pub fn rot(&self) -> Quat {
@@ -109,15 +142,35 @@ impl BodyAnchor {
 
     /// A zone's centre in tracking space.
     pub fn zone_center(&self, z: &Zone) -> Vec3 {
-        self.head + self.rot() * z.offset
+        self.level + self.rot() * z.offset
     }
 
     /// A tracking-space point in the anchor frame.
     pub fn local(&self, p: Vec3) -> Vec3 {
-        self.rot().inverse() * (p - self.head)
+        self.rot().inverse() * (p - self.level)
     }
 
+    /// How far a tracking-space point is from a zone's reach: the line from its middle in toward
+    /// the body's middle line (under the neck, at the zone's height), [`DEPTH`] long at most.
+    pub fn distance(&self, z: &Zone, p: Vec3) -> f32 {
+        let a = z.offset;
+        let inward = Vec3::new(0.0, a.y, EYES_TO_NECK.z * self.scale) - a;
+        let b = a + inward.clamp_length_max(DEPTH * self.scale);
+        let l = self.local(p);
+        let ab = b - a;
+        let t = if ab.length_squared() > 1e-8 { ((l - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+        l.distance(a + ab * t)
+    }
+
+    /// A point is in a zone: at its middle or deeper toward the body, and behind the head where
+    /// that's asked.
     pub fn contains(&self, z: &Zone, p: Vec3) -> bool {
+        self.distance(z, p) < z.radius && z.behind.is_none_or(|b| self.local(p).z < b)
+    }
+
+    /// A point is in a zone's middle, not only deeper (a hand there is in it before a nearer
+    /// zone's reach into the body).
+    pub fn at_middle(&self, z: &Zone, p: Vec3) -> bool {
         p.distance(self.zone_center(z)) < z.radius && z.behind.is_none_or(|b| self.local(p).z < b)
     }
 
@@ -146,15 +199,15 @@ mod tests {
     fn anchor_lags_the_head_and_freezes() {
         let mut a = BodyAnchor::default();
         let head = Vec3::new(0.0, 1.7, 0.0);
-        a.update(head, Quat::IDENTITY, 0.011, false);
-        a.update(head, Quat::from_rotation_y(1.0), 0.011, false);
+        a.update(head, Quat::IDENTITY, 1.7, 0.011, false);
+        a.update(head, Quat::from_rotation_y(1.0), 1.7, 0.011, false);
         assert!(a.yaw > 0.0 && a.yaw < 0.1, "lags behind a fast head turn: {}", a.yaw);
         for _ in 0..300 {
-            a.update(head, Quat::from_rotation_y(1.0), 0.011, false);
+            a.update(head, Quat::from_rotation_y(1.0), 1.7, 0.011, false);
         }
         assert!((a.yaw - 1.0).abs() < 0.01, "catches up");
         let before = a.yaw;
-        a.update(head, Quat::from_rotation_y(2.0), 0.5, true);
+        a.update(head, Quat::from_rotation_y(2.0), 1.7, 0.5, true);
         assert_eq!(a.yaw, before, "frozen while reaching into a zone");
     }
 
@@ -170,7 +223,7 @@ mod tests {
     #[test]
     fn back_slots_need_the_hand_behind_the_head() {
         let mut a = BodyAnchor::default();
-        a.update(Vec3::new(0.0, 1.7, 0.0), Quat::IDENTITY, 0.011, false);
+        a.update(Vec3::new(0.0, 1.7, 0.0), Quat::IDENTITY, 1.7, 0.011, false);
         let z = slot_zones(1.7, 1)[SLOT_BACK_RIGHT as usize];
         assert!(a.contains(&z, Vec3::new(0.18, 1.62, -0.15)), "over the shoulder, behind the head");
         assert!(!a.contains(&z, Vec3::new(0.2, 1.62, 0.05)), "beside the head in front isn't the back");
@@ -179,7 +232,7 @@ mod tests {
     #[test]
     fn grenade_pouches_sit_on_the_torso_clear_of_the_magazines_and_holsters() {
         let mut a = BodyAnchor::default();
-        a.update(Vec3::new(0.0, 1.7, 0.0), Quat::IDENTITY, 0.011, false);
+        a.update(Vec3::new(0.0, 1.7, 0.0), Quat::IDENTITY, 1.7, 0.011, false);
         let z = slot_zones(1.7, 1);
         let ammo = ammo_zones(1.7, 1);
         let (l, r) = (&z[SLOT_CHEST_LEFT as usize], &z[SLOT_CHEST_RIGHT as usize]);
@@ -204,7 +257,7 @@ mod tests {
     #[test]
     fn pouches_are_at_the_chest_and_belt_not_the_face() {
         let mut a = BodyAnchor::default();
-        a.update(Vec3::new(0.0, 1.7, 0.0), Quat::IDENTITY, 0.011, false);
+        a.update(Vec3::new(0.0, 1.7, 0.0), Quat::IDENTITY, 1.7, 0.011, false);
         let z = ammo_zones(1.7, 1);
         assert!(a.contains(&z[0], Vec3::new(0.0, 1.38, 0.15)), "chest");
         assert!(a.contains(&z[1], Vec3::new(-0.1, 1.22, 0.15)), "belt front, off-hand side");

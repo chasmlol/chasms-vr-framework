@@ -1432,9 +1432,9 @@ impl Rig {
         self.pocket_zones = self.pockets.iter().map(|p| pockets::zones(p, inp.eye_height)).collect();
         let near_zone = (0..2).any(|i| {
             let p = self.hands.as_ref().unwrap()[i].grip_t.0;
-            zones.iter().chain(ammo.iter()).chain(self.pocket_zones.iter().map(|z| &z.take)).any(|z| p.distance(self.anchor.zone_center(z)) < z.radius + 0.1)
+            zones.iter().chain(ammo.iter()).chain(self.pocket_zones.iter().map(|z| &z.take)).any(|z| self.anchor.distance(z, p) < z.radius + 0.1)
         });
-        self.anchor.update(head_t.0, head_t.1, dt, near_zone);
+        self.anchor.update(head_t.0, head_t.1, inp.eye_height, dt, near_zone);
         self.place_by_hand(inp);
 
         if !inp.paused {
@@ -1849,21 +1849,24 @@ impl Rig {
                 hover = Hover::Object(id);
             }
         }
-        // 2. Holsters, then the ammo pouch (it beats nearby objects when the other hand has a gun).
+        // 2. Holsters and the slots that hand out the player's things, then the ammo pouch (it beats
+        // nearby objects when the other hand has a gun). A hand at a slot's middle takes from it,
+        // holsters first (a hip with a sword in it gives the sword); one only deeper, toward the
+        // body, from the slot whose reach it's furthest into (pressed against the belly beside the
+        // potions, the potions, not the sword at the hip).
         if hover == Hover::None {
-            for (slot, z) in zones.iter().enumerate() {
-                if self.slots[slot].is_some() && self.anchor.contains(z, palm_t) {
-                    hover = Hover::Slot(slot as u32);
-                    break;
-                }
+            let anchor = &self.anchor;
+            let holsters = zones.iter().enumerate().filter(|(slot, _)| self.slots[*slot].is_some()).map(|(slot, z)| (Hover::Slot(slot as u32), z));
+            let pockets = self.pocket_zones.iter().enumerate().map(|(k, z)| (Hover::Pocket(k), &z.take));
+            let all: Vec<(Hover, &Zone)> = holsters.chain(pockets).collect();
+            let deepest = || {
+                all.iter()
+                    .filter(|(_, z)| anchor.contains(z, palm_t))
+                    .min_by(|a, b| (anchor.distance(a.1, palm_t) / a.1.radius).total_cmp(&(anchor.distance(b.1, palm_t) / b.1.radius)))
+            };
+            if let Some((h, _)) = all.iter().find(|(_, z)| anchor.at_middle(z, palm_t)).or_else(deepest) {
+                hover = *h;
             }
-        }
-        // The slots that hand out the player's things (after the holsters: a hip with a sword in it
-        // gives the sword).
-        if hover == Hover::None
-            && let Some(k) = self.pocket_zones.iter().position(|z| self.anchor.contains(&z.take, palm_t))
-        {
-            hover = Hover::Pocket(k);
         }
         // Magazines (unlimited) from the chest and belt pouches, or any empty slot, whenever the
         // other hand holds a magazine-fed gun.
