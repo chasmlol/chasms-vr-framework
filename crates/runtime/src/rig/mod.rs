@@ -2699,7 +2699,7 @@ impl Rig {
         let taken = pocketed == Some(Pocketed::Taken);
         let hand_at = self.physics.pose(self.hands.as_ref().unwrap()[i].body).0;
         let plant = (desc.flags & OBJF_LOOT != 0 || taken)
-            .then(|| pockets::pocket_at(&self.pockets, hand_at, None, self.map.world_per_meter))
+            .then(|| pockets::pocket_at(&self.pockets, hand_at, self.hands.as_ref().unwrap()[i].pocket.map(|p| p.pocket), self.map.world_per_meter))
             .flatten()
             .and_then(|pid| self.pocket(pid).copied())
             .filter(|p| p.flags & POCKET_SHUT == 0 && hand_speed < HOLSTER_MAX_SPEED);
