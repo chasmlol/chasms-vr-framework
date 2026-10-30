@@ -359,6 +359,9 @@ pub fn rack_places() -> Vec<(&'static str, Vec3, Quat)> {
     // its front edge (+Z, towards where you start); the long ones lie along it.
     let across = Quat::from_rotation_y(std::f32::consts::PI);
     let along = flat();
+    let a = crate::arenas::ARENA_TABLE;
+    // (Blades pointing away from the arena's start, flat side up.)
+    let toward = Quat::IDENTITY;
     vec![
         ("kit_dagger", Vec3::new(lo.x + 0.15, top, z), across),
         ("kit_mace", Vec3::new(lo.x + 0.35, top, z), across),
@@ -368,5 +371,11 @@ pub fn rack_places() -> Vec<(&'static str, Vec3, Quat)> {
         ("kit_shield", Vec3::new(lo.x + 1.55, top, z), Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
         ("kit_spear", Vec3::new((lo.x + hi.x) * 0.5, top, lo.z + 0.08), along),
         ("kit_staff", Vec3::new((lo.x + hi.x) * 0.5 + 0.1, top, hi.z - 0.08), along),
+        // The arena's table at your left as you go in: a sword, a dagger and a longsword, blades
+        // away and handles towards you at its near edge, and a shield beside them.
+        ("builtin_sword", Vec3::new(a.1.x - 0.1, a.1.y, a.0.z + 0.15), toward),
+        ("kit_dagger", Vec3::new(a.1.x - 0.25, a.1.y, a.0.z + 0.13), toward),
+        ("kit_longsword", Vec3::new(a.1.x - 0.42, a.1.y, a.0.z + 0.3), toward),
+        ("kit_shield", Vec3::new(a.0.x + 0.35, a.1.y, a.0.z + 0.6), Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
     ]
 }

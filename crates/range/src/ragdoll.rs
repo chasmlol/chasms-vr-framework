@@ -559,6 +559,16 @@ impl Dummies {
                     (pos, rot, from_v(rb.linvel()), from_v(rb.angvel()))
                 })
                 .collect();
+            // Each part's mass and its inertia (the mean of its principal moments), what its pins act on.
+            let masses: Vec<(f32, f32)> = p
+                .parts
+                .iter()
+                .map(|part| {
+                    let rb = &self.world.bodies[part.body];
+                    let i = from_v(rb.mass_properties().local_mprops.principal_inertia());
+                    (rb.mass().max(0.05), ((i.x + i.y + i.z) / 3.0).max(1e-4))
+                })
+                .collect();
             let mut torques = vec![V3::ZERO; p.parts.len()];
             let mut forces = vec![V3::ZERO; p.parts.len()];
             for (i, part) in p.parts.iter().enumerate() {
@@ -568,15 +578,17 @@ impl Dummies {
                 let arm = (0..2).find(|&h| [anim::UPPER_ARM[h], anim::FOREARM[h], anim::HAND[h]].contains(&i)).map_or((1.0, 1.0, 1.0), |h| p.arms[h]);
                 let (target, trot) = targets[i];
                 if !cut && stance > 0.0 {
-                    let f = (PIN_SPRING * arm.0 * (target - pos) - PIN_DAMPER * arm.1 * vel) * stance;
+                    let (m, inertia) = masses[i];
+                    let f = implicit(m, PIN_SPRING * arm.0 * stance, PIN_DAMPER * arm.1 * stance, target - pos, vel, STEP);
                     forces[i] = f.clamp_length_max(PIN_MAX * arm.2 * stance);
-                    torques[i] += ((PIN_TURN_SPRING * arm.0 * shortest(trot * rot.inverse()) - PIN_TURN_DAMPER * arm.1 * ang) * stance).clamp_length_max(PIN_TURN_MAX * arm.2 * stance);
+                    let t = implicit(inertia, PIN_TURN_SPRING * arm.0 * stance, PIN_TURN_DAMPER * arm.1 * stance, shortest(trot * rot.inverse()), ang, STEP);
+                    torques[i] += t.clamp_length_max(PIN_TURN_MAX * arm.2 * stance);
                 }
                 // Down: each part keeps its pose on its parent, weakly (the loose rotation pins).
                 if let Some(parent) = anim::PARENT[i].filter(|_| !cut && loose > 0.0) {
                     let (_, prot, _, pang) = poses[parent];
                     let want = prot * pose.turn[i];
-                    let t = (PIN_TURN_SPRING * loose * shortest(want * rot.inverse()) - PIN_TURN_DAMPER * LOOSE_TURN_DAMPER * (ang - pang)).clamp_length_max(PIN_TURN_MAX);
+                    let t = implicit(masses[i].1, PIN_TURN_SPRING * loose, PIN_TURN_DAMPER * LOOSE_TURN_DAMPER, shortest(want * rot.inverse()), ang - pang, STEP).clamp_length_max(PIN_TURN_MAX);
                     torques[i] += t;
                     torques[parent] -= t;
                 }
@@ -1106,6 +1118,14 @@ pub fn limb_of(part: usize) -> u32 {
         9 | 11 => LIMB_THIGH,
         _ => LIMB_CALF,
     }
+}
+
+/// A pin's pull as a joint drive pulls (implicitly: stable however stiff the spring, however light
+/// the part): the force (or torque) that takes `m` at velocity `vel`, `err` off its target, to
+/// where a spring `k` and damper `c` would have it at the end of a step of `dt`.
+fn implicit(m: f32, k: f32, c: f32, err: V3, vel: V3, dt: f32) -> V3 {
+    let next = (vel * m + err * k * dt) / (m + c * dt + k * dt * dt);
+    (next - vel) * m / dt
 }
 
 fn smooth(x: f32) -> f32 {

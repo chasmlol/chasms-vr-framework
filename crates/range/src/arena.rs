@@ -28,6 +28,9 @@ pub const FIGHTER_ID: u32 = 7201;
 /// The fighters' weapons' and shields' object ids.
 pub const NPC_ITEM_BASE: u32 = 0x9000;
 
+/// Fighters keep this far apart (m).
+const SPACING: f32 = 0.9;
+
 /// What the pool holds: (the arsenal's key, how many).
 const POOL: [(&str, usize); 4] = [("builtin_sword", 6), ("kit_shield", 2), ("kit_mace", 1), ("kit_axe", 1)];
 
@@ -200,6 +203,22 @@ impl People {
                 if brain::within_reach(hand_at, self.dummies.item_pose(k).0) && self.dummies.people[f.person].hands[1].is_none() {
                     self.dummies.pick_up(f.person, 1, k);
                     tracing::info!("range: fighter {} takes up a weapon", self.dummies.people[f.person].id);
+                }
+            }
+        }
+        // Fighters keep a body's width apart (they strafe and close in round the player, not
+        // through each other).
+        let n = self.fighters.len();
+        for i in 0..n {
+            for j in i + 1..n {
+                let (a, b) = (self.fighters[i].person, self.fighters[j].person);
+                let (pa, pb) = (self.dummies.people[a].at.0, self.dummies.people[b].at.0);
+                let d = (pb - pa).with_y(0.0);
+                let gap = d.length();
+                if gap < SPACING && gap > 1e-3 {
+                    let push = d / gap * (SPACING - gap) * 0.5 * (dt * 8.0).min(1.0);
+                    self.dummies.people[a].at.0 -= push;
+                    self.dummies.people[b].at.0 += push;
                 }
             }
         }

@@ -363,8 +363,9 @@ pub struct Brain {
     pub block: f32,
     /// Strafing: which way, until when.
     strafe: (f32, f64),
-    /// Which hand swings next (dual wield alternates).
+    /// Which hand swings next (dual wield alternates), and the move it last made.
     next_hand: usize,
+    last_move: Option<usize>,
     rng: u32,
 }
 
@@ -386,6 +387,8 @@ const STRAFE: f32 = 0.8;
 const RUN: f32 = 3.0;
 /// A thing within an arm's reach of its hand it can pick up.
 const REACH: f32 = 0.45;
+/// The reach the moves' ranges are for: an arming sword's blade (m).
+const SWORD_REACH: f32 = 0.8;
 
 impl Brain {
     pub fn new(tier: Tier, stance: Stance, seed: u32) -> Brain {
@@ -404,6 +407,7 @@ impl Brain {
             block: 0.0,
             strafe: (1.0, 0.0),
             next_hand: 1,
+            last_move: None,
             rng: seed.wrapping_mul(2_654_435_761).max(1),
         }
     }
@@ -610,20 +614,32 @@ impl Brain {
                 let in_danger = self.danger > 0.0 && now - self.hurt_at > 0.75 && self.rand() < self.danger * dt * 4.0;
                 if self.swing.is_none() && !staggered && now >= self.next_attack && !in_danger {
                     // The move whose reach fits where the player will be at its strike.
-                    let weapon_reach = hands.iter().flatten().filter(|h| !h.shield).map(|h| h.reach).fold(0.0f32, f32::max);
+                    // (The moves' ranges are where the blade lands with an arming sword's reach; a longer
+                    // or shorter blade shifts them by the difference.)
+                    let weapon_reach = hands.iter().flatten().filter(|h| !h.shield).map(|h| h.reach).fold(0.0f32, f32::max) - SWORD_REACH;
                     let hand = self.attack_hand(hands);
                     let ahead = dist + (sight.vel.dot(-flat.normalize_or_zero())) * -0.3;
-                    let best = MOVES
+                    // It weighs each move that fits by how well it fits, the last one used at 1%, and
+                    // picks at random by weight.
+                    let fits: Vec<(usize, f32)> = MOVES
                         .iter()
                         .enumerate()
                         .filter(|(_, m)| m.difficulty <= d.level && (!m.thrust || hands[hand].is_some_and(|h| h.reach > 0.5)))
                         .map(|(i, m)| (i, (m.range + weapon_reach * 0.75 - ahead).abs()))
                         .filter(|(_, miss)| *miss < 0.45)
-                        .min_by(|a, b| a.1.total_cmp(&b.1));
+                        .map(|(i, miss)| (i, (1.0 - miss / 0.45) * if Some(i) == self.last_move { 0.01 } else { 1.0 }))
+                        .collect();
+                    let total: f32 = fits.iter().map(|(_, w)| w).sum();
+                    let mut pick = self.rand() * total;
+                    let best = fits.iter().find(|(_, w)| {
+                        pick -= w;
+                        pick <= 0.0
+                    }).or(fits.last()).copied();
                     if let Some((mv, _)) = best {
                         let mass = hands[hand].map_or(1.5, |h| h.mass);
                         let speed = d.speed * (1.5 / mass.max(0.1)).clamp(0.7, 1.0);
                         self.swing = Some(Swing { mv, t0: now, speed, hand, back: None });
+                        self.last_move = Some(mv);
                         self.chains = 1;
                         tracing::info!("brain: attacks: {} with the {} hand at {dist:.2} m", MOVES[mv].name, if hand == 0 { "left" } else { "right" });
                     }

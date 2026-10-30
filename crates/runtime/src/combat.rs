@@ -1239,7 +1239,11 @@ impl Combat {
                         if p.distance(q) > r + cr {
                             continue;
                         }
-                        let vel = (p1 - p0) / dt / inp.map.world_per_meter;
+                        // How fast it moves there, as the game has it move (its own physics': the
+                        // game's poses come at its own pace, so their steps would jump).
+                        let centre = inp.rig.object_world_pose(item.id).map_or(p, |(c, _)| c);
+                        let vel = (Vec3::from_array(item.vel) + Vec3::from_array(item.ang_vel).cross(p - centre)) / inp.map.world_per_meter;
+                        let _ = dt;
                         let normal = (p - q).normalize_or(-vel.normalize_or_zero());
                         let along = (b - a).normalize_or_zero();
                         let mut free = blade;
