@@ -1362,7 +1362,18 @@ impl Rig {
             let place = b.place(k, n);
             let at = Vec3::new(place.x - mid.x, place.y + down * scale - mid.y, place.z - mid.z);
             o.holder = Holder::InBowl { bowl, at, rot, grinder: false };
+            // What a hand reaching in meets of it: a ball as big as it's drawn, about its middle.
+            let (c, r) = (o.collider, half.max_element() * scale);
+            self.physics.set_ball(c, rot * centre * scale, r.max(0.008));
         }
+    }
+
+    /// Out of its bowl (taken, or loose): its own collision again (a ball as it's drawn while in).
+    fn out_of_bowl(&mut self, id: u32) {
+        let Some(o) = self.objects.get(&id).filter(|o| matches!(o.holder, Holder::InBowl { grinder: false, .. })) else { return };
+        let (c, d) = (o.collider, o.desc);
+        let hulls = self.game_hulls.get(&id).cloned().unwrap_or_default();
+        self.physics.set_object_shape(c, &d, &hulls);
     }
 
     /// The bowl's grinder lies where it rests in it.
@@ -1468,6 +1479,7 @@ impl Rig {
 
     /// A loose dynamic body again: gravity, normal damping, colliding with everything.
     fn free_body(&mut self, id: u32, groups: rapier3d::prelude::InteractionGroups) {
+        self.out_of_bowl(id);
         let Some(o) = self.objects.get_mut(&id) else { return };
         o.holder = Holder::Free;
         o.free_since = self.now;
@@ -2090,8 +2102,14 @@ impl Rig {
                 _ => None,
             };
             let mut best: Option<(u32, f32)> = None;
+            // A hand reaching into a bowl with something in it is after what's in it (not the bowl,
+            // or its grinder lying in it).
+            let reaching_into = self.bowls.values().find(|r| self.in_bowl_space(r.id, palm).is_some_and(|p| Bowl::of(r).in_mouth(p, 0.02, 0.0)) && !self.contents(r.id).is_empty()).map(|r| r.id);
             for (id, o) in &self.objects {
                 if o.desc.flags & OBJF_GRABBABLE == 0 || !matches!(o.holder, Holder::Free | Holder::Pulled { .. } | Holder::Stuck { .. } | Holder::InBowl { .. }) {
+                    continue;
+                }
+                if reaching_into.is_some_and(|b| !matches!(o.holder, Holder::InBowl { bowl, grinder: false, .. } if bowl == b)) {
                     continue;
                 }
                 // What's in a bowl is taken out by a hand reaching into it (above it, the hand is
@@ -2415,6 +2433,7 @@ impl Rig {
             Attach::Fixed(p, q) => compose((palm, grip_rot), (p, q)).0,
             Attach::Gun => palm,
         };
+        self.out_of_bowl(id);
         let o = self.objects.get_mut(&id).unwrap();
         o.attach = attach;
         o.blend = Some((pos, rot, self.now, pos.distance(to)));

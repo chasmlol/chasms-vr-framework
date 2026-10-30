@@ -238,6 +238,14 @@ impl Physics {
         true
     }
 
+    /// Gives an object's collider the shape of a ball, `radius` about `centre` (object space).
+    pub fn set_ball(&mut self, c: ColliderHandle, centre: V3, radius: f32) {
+        if let Some(col) = self.world.colliders.get_mut(c) {
+            col.set_shape(SharedShape::ball(radius.max(0.001)));
+            col.set_translation_wrt_parent(to_v(centre));
+        }
+    }
+
     /// Gives an object's collider back the shape its description gives it (`hulls`: its convex
     /// parts, for [`SHAPE_HULL`]).
     pub fn set_object_shape(&mut self, c: ColliderHandle, d: &ObjectDesc, hulls: &[Vec<V3>]) {
