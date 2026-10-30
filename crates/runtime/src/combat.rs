@@ -661,7 +661,9 @@ impl Combat {
                     for k in 0..SAMPLES {
                         let t = k as f32 / (SAMPLES - 1) as f32;
                         let (full, power) = full_and_power_at(d.kind, d.full_a + (d.full_b - d.full_a) * t, desc.power);
-                        let r = (vels[di][k].length() / full).min(arm / DEFAULT_GRIP_SPEED);
+                        // (A point swings only as it stabs: its speed along the blade.)
+                        let speed = if d.kind == DMG_PIERCE { vels[di][k].dot(along).max(0.0) } else { vels[di][k].length() };
+                        let r = (speed / full).min(arm / DEFAULT_GRIP_SPEED);
                         if r > fastest.0 {
                             // (A power swing wants the arm too.)
                             fastest = (r, vels[di][k], along, if arm >= grip { power / full } else { f32::INFINITY });
