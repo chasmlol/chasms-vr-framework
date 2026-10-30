@@ -92,21 +92,24 @@ const NEAR_PAGE: f32 = 0.12;
 /// round its cover.
 const FACING_LIFT: f32 = 0.03;
 /// A flick is the free hand this fast sideways (metres a second: a light flick; a hand at rest, or
-/// reaching for a button, moves sideways at a fraction of it), most of its speed sideways (this
-/// share), and it flicks again once it's slowed below this share of it. None counts this long after
-/// the pages appear (the hands are still settling the book).
+/// reaching for a button, moves sideways at a fraction of it), half its speed sideways at least (a
+/// flick of the wrist arcs), and it flicks again once its sideways speed is below this share of it
+/// (slowing to come back: it needn't stop). None counts this long after the pages appear (the hands
+/// are still settling the book).
 const FLICK_SPEED: f32 = 0.45;
-const FLICK_SIDEWAYS: f32 = 0.6;
-const FLICK_REARM: f32 = 0.4;
+const FLICK_SIDEWAYS: f32 = 0.5;
+const FLICK_REARM: f32 = 0.5;
 const FLICK_SETTLE: f64 = 0.4;
 /// A flick counts with the hand this far in front of the pages at most (metres), this far behind
-/// them, and out past their sides, top and bottom by this share of their width and height.
+/// them (a hand that goes through them), and out past their sides, top and bottom by this share of
+/// their width and height.
 const FLICK_NEAR: f32 = 0.3;
-const FLICK_BEHIND: f32 = 0.12;
-const FLICK_MARGIN: f32 = 0.4;
+const FLICK_BEHIND: f32 = 0.25;
+const FLICK_MARGIN: f32 = 0.5;
 /// A fingertip presses a piece this near it (metres in front: the finger's skin on it), comes off
 /// it this far out, and is over it (the cursor following it) within this far in front. A fingertip
-/// sweeping across faster than this (metres a second) isn't pressing (a flick brushing the pages).
+/// sweeping across faster than this (metres a second), or more across than into it, isn't pressing
+/// (a flick brushing the pages).
 const POKE_ON: f32 = 0.01;
 const POKE_OFF: f32 = 0.025;
 const POKE_NEAR: f32 = 0.06;
@@ -181,6 +184,8 @@ struct Lie {
     /// frame.
     poke: Option<Vec2>,
     tip_z: Option<f32>,
+    /// When a flick that didn't count was last logged.
+    told: f64,
 }
 
 /// The held menus' places, kept between frames.
@@ -336,6 +341,7 @@ impl HeldMenus {
                         drag: None,
                         poke: None,
                         tip_z: None,
+                        told: 0.0,
                     });
                     self.lies.len() - 1
                 }
@@ -446,7 +452,8 @@ impl HeldMenus {
                 });
                 let under = |p: Vec3| pieces.iter().find_map(|pc| pc.hit(p + normal * 0.3, -normal).map(|(_, uv)| uv));
                 let v = hands[free].vel;
-                let sweeping = (v - normal * v.dot(normal)).length() > POKE_SIDEWAYS;
+                let across = (v - normal * v.dot(normal)).length();
+                let sweeping = across > POKE_SIDEWAYS || across > -v.dot(normal);
                 match (lie.poke, tip) {
                     (Some(uv), Some((p, _, z))) if z < POKE_OFF => {
                         // (Held down, it follows the finger: off the button before it's lifted,
@@ -491,12 +498,12 @@ impl HeldMenus {
                 };
                 let v = hands[free].vel;
                 let sideways = v.dot(eye_right);
-                if v.length() < FLICK_SPEED * FLICK_REARM {
+                if sideways.abs() < FLICK_SPEED * FLICK_REARM {
                     lie.armed = true;
                 }
-                // (A hand holding something, taking hold or pressing a button isn't flicking; nor one
-                // away from the pages.)
-                let empty = hands[free].grip.is_some() && !grip && lie.poke.is_none() && !things.iter().any(|t| t.hand == free) && !matches!(lie.hold, Some(Hold::Both));
+                // (A hand holding something or taking hold isn't flicking; nor one away from the
+                // pages.)
+                let empty = hands[free].grip.is_some() && !grip && !things.iter().any(|t| t.hand == free) && !matches!(lie.hold, Some(Hold::Both));
                 let (w, h) = (fp[2] - fp[0], fp[3] - fp[1]);
                 let by = on.is_some_and(|(xy, z)| {
                     z > -FLICK_BEHIND
@@ -506,8 +513,23 @@ impl HeldMenus {
                         && xy.y > fp[1] - h * FLICK_MARGIN
                         && xy.y < fp[3] + h * FLICK_MARGIN
                 });
-                let flick = (empty && by && lie.armed && now - lie.since > FLICK_SETTLE && sideways.abs() > FLICK_SPEED && sideways.abs() > v.length() * FLICK_SIDEWAYS)
+                let fast = sideways.abs() > FLICK_SPEED;
+                let flick = (empty && by && lie.armed && now - lie.since > FLICK_SETTLE && fast && sideways.abs() > v.length() * FLICK_SIDEWAYS)
                     .then_some(if sideways < 0.0 { Action::PageNext } else { Action::PagePrev });
+                if fast && flick.is_none() && now - lie.told > 0.25 {
+                    // (What stopped a hand fast enough, for tuning from the log.)
+                    lie.told = now;
+                    let z = on.map_or(f32::NAN, |(_, z)| z);
+                    tracing::info!(
+                        "held menus: a flick at {:.2} m/s didn't count: {}{}{}{}{} (the hand {z:.2} m in front of the pages)",
+                        sideways.abs(),
+                        if empty { "" } else { "the hand holds or grips; " },
+                        if by { "" } else { "away from the pages; " },
+                        if lie.armed { "" } else { "not slowed since the last; " },
+                        if now - lie.since > FLICK_SETTLE { "" } else { "the pages just appeared; " },
+                        if sideways.abs() > v.length() * FLICK_SIDEWAYS { "" } else { "not sideways enough" },
+                    );
+                }
                 let pulled = match near {
                     Some((xy, _)) => {
                         let x = (xy.x - mid_x) / half_w.max(1e-4);
@@ -525,7 +547,9 @@ impl HeldMenus {
                 };
                 if let Some(a) = flick.or(pulled) {
                     let shut = lie.turned.is_some_and(|(b, t)| now - t < if a == b { AGAIN_AFTER } else { BACK_AFTER });
-                    if !shut {
+                    if shut {
+                        tracing::info!("held menus: a flick at {:.2} m/s didn't count: the way back is shut just after a turn", sideways.abs());
+                    } else {
                         tracing::info!("held menus: {:#x}'s page turned by the free hand: {}", g.id, if flick.is_some() { format!("a flick at {:.2} m/s", sideways.abs()) } else { "a pinch pulled across".into() });
                         out.presses.push(a);
                         out.haptics.push((free, 0.02, 120.0, 0.45));
