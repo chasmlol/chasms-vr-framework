@@ -181,6 +181,11 @@ struct Obj {
     valve_shape: Vec<Vec3>,
     /// Stuck in something it chopped or stabbed into ([`embed`]).
     embed: Option<embed::Embedded>,
+    /// Held: how the hand swung it this step, as its weight let it (before anything stopped it):
+    /// the velocity of its centre and its spin ([`Rig::swing`]).
+    motion: Option<(Vec3, Vec3)>,
+    /// Held: the creatures it cut clean and goes on through (their bodies don't stop it), since when.
+    passing: Vec<(u32, f64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -450,6 +455,28 @@ pub struct RigDebug {
 enum Push {
     Blast { at: Vec3, radius: f32, impulse: f32 },
     One { id: u32, impulse: Vec3, at: Vec3 },
+    /// A blow on something a hand holds (a creature's swing met by it): it's knocked, and the
+    /// hand's hold brings it back at its own pace.
+    Blow { id: u32, impulse: Vec3, at: Vec3 },
+}
+
+/// How a held thing is swinging (world): where it is (after the step) and how the hand swung it in
+/// it, before anything stopped it, as its weight let it: the velocity of its centre and its spin.
+#[derive(Clone, Copy, Debug)]
+pub struct Swing {
+    pub pos: Vec3,
+    pub rot: Quat,
+    /// Its centre of mass (world).
+    pub com: Vec3,
+    pub vel: Vec3,
+    pub ang: Vec3,
+}
+
+impl Swing {
+    /// How fast its point `p` (world) moves.
+    pub fn velocity_at(&self, p: Vec3) -> Vec3 {
+        self.vel + self.ang.cross(p - self.com)
+    }
 }
 
 pub struct RigInput<'a> {
@@ -621,6 +648,17 @@ const SNAP_MOVE: f32 = 1.0;
 /// The least a held thing speeds up and spins up, however heavy (m/s^2, rad/s^2).
 const MIN_HELD_ACCEL: f32 = 15.0;
 const MIN_HELD_ANG_ACCEL: f32 = 40.0;
+/// The torque one arm turns a held melee weapon with (N m): its turning is this over its inertia
+/// about the hand, so a long or top-heavy weapon turns slowly and a dagger with the wrist. Chosen so
+/// a 1.3 kg one-handed sword turns as every held thing always has (its mass alone gave it about
+/// 220 rad/s^2): only the weight's place along it is new. Two hands turn it three times as hard.
+const ARM_TORQUE: f32 = 47.0;
+/// A blade cutting clean through a creature goes on through it for at least this long (s), until
+/// it's out of it, and for no longer than `PASS_MAX`.
+const PASS_MIN: f64 = 0.12;
+const PASS_MAX: f64 = 1.5;
+/// A second hand on a melee weapon's haft slides along it while its trigger is held past this.
+const SLIDE_TRIGGER: f32 = 0.5;
 const BLOCKED: f32 = 0.04;
 const FOREGRIP_REACH: f32 = 0.14;
 /// The palm, from the controller's grip pose: this far towards the back of the hand (metres). A
@@ -695,6 +733,8 @@ pub struct Rig {
     pushes: Vec<Push>,
     /// What each hand's fingers close on this frame (tracking space).
     grasps: [Option<rustvr_avatar::Grasp>; 2],
+    /// How strong the arms are, as the game says (1: the runtime's own).
+    arm: f32,
 }
 
 impl Default for Rig {
@@ -723,6 +763,7 @@ impl Default for Rig {
             kicks: HashMap::new(),
             pushes: Vec::new(),
             grasps: [None, None],
+            arm: 1.0,
         }
     }
 }
@@ -1024,6 +1065,10 @@ impl Rig {
             seen.push(d.id);
             match self.objects.get_mut(&d.id) {
                 Some(o) => {
+                    // (Its weight as the game has it now: a new weapon in the same place.)
+                    if o.desc.mass != d.mass {
+                        self.physics.set_mass(o.collider, d.mass);
+                    }
                     o.desc = *d;
                     if let Some(t) = &mut o.throw {
                         t.flags = d.throw_flags;
@@ -1098,6 +1143,8 @@ impl Rig {
                 }),
                 valve_shape: Vec::new(),
                 embed: None,
+                motion: None,
+                passing: Vec::new(),
             },
         );
         // A valve's wheel turns on its axle, never anywhere else.
@@ -1528,6 +1575,33 @@ impl Rig {
             if let Some((b, ..)) = self.proxies.remove(&k) {
                 self.physics.remove(b);
             }
+        }
+        // A blade that cut clean through a creature goes on through it until it's out of it (for at
+        // least `PASS_MIN`, at most `PASS_MAX`): that creature's parts don't stop that hand's things.
+        let now = self.now;
+        let mut through: HashMap<u32, u32> = HashMap::new();
+        let ids: Vec<u32> = self.objects.iter().filter(|(_, o)| !o.passing.is_empty()).map(|(id, _)| *id).collect();
+        for id in ids {
+            let o = &self.objects[&id];
+            let (collider, holder) = (o.collider, o.holder);
+            let Holder::Held(hand) = holder else {
+                self.objects.get_mut(&id).unwrap().passing.clear();
+                continue;
+            };
+            let mut keep = Vec::new();
+            for &(actor, since) in &o.passing {
+                let inside = self.proxies.iter().any(|(&(a, _), &(_, c, ..))| a == actor && self.physics.distance_between(collider, c) < 0.01);
+                if now - since < PASS_MAX && (now - since < PASS_MIN || inside) {
+                    keep.push((actor, since));
+                    *through.entry(actor).or_default() |= physics::G_HELD[hand].bits();
+                }
+            }
+            self.objects.get_mut(&id).unwrap().passing = keep;
+        }
+        for (&(actor, _), &(_, c, ..)) in &self.proxies {
+            let g = physics::groups_actor();
+            let not = rapier3d::prelude::Group::from_bits_truncate(through.get(&actor).copied().unwrap_or(0));
+            self.physics.set_groups(c, rapier3d::prelude::InteractionGroups::new(g.memberships, g.filter - not, rapier3d::prelude::InteractionTestMode::And));
         }
         for (&k, &(a, b, radius)) in &self.actor_parts {
             let half = 0.5 * a.distance(b);
@@ -2094,6 +2168,38 @@ impl Rig {
         // hand anywhere along it. Drawn from a holster or caught (`snap`), a gun or a rigged
         // weapon goes into the hand by its grip whatever.
         let rigged = gun || (authored(d.grip_rot).is_some() && matches!(d.kind, OBJ_THROWABLE | OBJ_MELEE));
+        // A melee weapon taken by its handle where it lies (not drawn from a holster) is held just
+        // as it is: the hand closes on the handle where it is, turned as it is, and the weapon
+        // doesn't move (grabs never snap).
+        if !snap
+            && d.kind == OBJ_MELEE
+            && let Some(on_handle) = self.handle_of(&d, i, On::Grip).and_then(|h| h.take_turned(local.0, local.1))
+        {
+            let rel = compose(inverse((palm, grip_rot)), (pos, rot));
+            let o = self.objects.get_mut(&id).unwrap();
+            o.attach = Attach::Fixed(rel.0, rel.1);
+            o.blend = None;
+            if let Holder::Holstered(slot) = o.holder {
+                o.home_slot = Some(slot);
+            }
+            (o.carry, o.carried) = (None, (Vec3::ZERO, Vec3::ZERO));
+            o.holder = Holder::Held(i);
+            o.handled = true;
+            o.hovered = false;
+            self.physics.set_kinematic(o.body, false);
+            self.physics.set_gravity(o.body, 1.0);
+            self.physics.set_angular_damping(o.body, 0.2);
+            self.physics.set_groups(o.collider, groups_held(i));
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            h.holding = Some(id);
+            h.on = On::Grip;
+            h.hold = Some(on_handle);
+            h.glove = Glove::Idle;
+            self.physics.set_groups(h.collider, groups_none());
+            self.debug.grabs += 1;
+            self.emit(Cue::Grab, Some(i), Some(id), palm, 1.0);
+            return;
+        }
         let hold = self.handle_of(&d, i, On::Grip).and_then(|h| match h.take(local.0, local.1) {
             Some(hold) => Some(hold),
             None if snap && rigged => Some((h.at, h.rot)),
@@ -2210,7 +2316,9 @@ impl Rig {
             self.emit(Cue::Grab, Some(i), Some(id), palm, 1.0);
             return;
         }
-        let (at, rot, on) = match self.handle_hold(i, id, On::Foregrip) {
+        let melee = self.objects.get(&id).is_some_and(|o| o.desc.kind == OBJ_MELEE);
+        let hold = if melee { self.turned_hold(i, id, On::Foregrip) } else { self.handle_hold(i, id, On::Foregrip) };
+        let (at, rot, on) = match hold {
             Some((at, rot)) => (at, rot, On::Foregrip),
             None => {
                 // Anywhere: just where the hand is drawn on it now (neither moves).
@@ -2255,6 +2363,15 @@ impl Rig {
         let (op, oq) = self.physics.pose(o.body);
         let (palm, rot) = self.hands.as_ref()?[i].target;
         self.handle_of(&o.desc, i, which)?.take(oq.inverse() * (palm - op), (oq.inverse() * rot).normalize())
+    }
+
+    /// The hold hand `i` takes on thing `id`'s handle `which` closing where it is, turned as it is
+    /// ([`grips::Handle::take_turned`]: a hand on a melee weapon's haft), if it's near it now.
+    fn turned_hold(&self, i: usize, id: u32, which: On) -> Option<(Vec3, Quat)> {
+        let o = self.objects.get(&id)?;
+        let (op, oq) = self.physics.pose(o.body);
+        let (palm, rot) = self.hands.as_ref()?[i].target;
+        self.handle_of(&o.desc, i, which)?.take_turned(oq.inverse() * (palm - op), (oq.inverse() * rot).normalize())
     }
 
     /// Where hand `i` holds thing `id` that it holds (its controller grip pose in the thing's space).
@@ -3322,6 +3439,11 @@ impl Rig {
                         self.physics.apply_impulse(o.body, impulse, at);
                     }
                 }
+                Push::Blow { id, impulse, at } => {
+                    if let Some(o) = self.objects.get(&id).filter(|o| matches!(o.holder, Holder::Held(_)) && o.embed.is_none()) {
+                        self.physics.apply_impulse(o.body, impulse, at);
+                    }
+                }
             }
         }
     }
@@ -3658,6 +3780,7 @@ impl Rig {
         let ids: Vec<u32> = self.objects.keys().copied().collect();
         for id in &ids {
             let holder = self.objects[id].holder;
+            self.objects.get_mut(id).unwrap().motion = None;
             match holder {
                 Holder::Held(hand) => {
                     let target = match self.objects[id].attach {
@@ -3691,14 +3814,23 @@ impl Rig {
                     // However heavy (a game's prop can weigh 80 kg), it still follows the hand, a
                     // little behind: a hand can't feel a weight it can't lift.
                     let heft = (1.0 + 2.0 * s.interaction.weight * mass).powi(2);
-                    let max_accel = (600.0 * if two { 2.2 } else { 1.0 } / heft).max(MIN_HELD_ACCEL);
-                    let max_ang_accel = (1200.0 * if two { 3.0 } else { 1.0 } / heft).max(MIN_HELD_ANG_ACCEL);
+                    // (As strong as the game says the arms are.)
+                    let max_accel = (600.0 * self.arm * if two { 2.2 } else { 1.0 } / heft).max(MIN_HELD_ACCEL);
+                    let mut max_ang_accel = (1200.0 * self.arm * if two { 3.0 } else { 1.0 } / heft).max(MIN_HELD_ANG_ACCEL);
                     // Where the hand holds it: the point driven onto the hand, the one it turns about.
                     let pivot = match o.attach {
                         Attach::Gun => v3(o.desc.grip),
                         Attach::Fixed(p, q) => inverse((p, q)).0,
                     };
                     let (now_pos, now_rot) = self.physics.pose(o.body);
+                    // A melee weapon turns as its weight's place says: its inertia about the hand (a
+                    // two-hander in one hand has one arm's torque against its whole length).
+                    if o.desc.kind == OBJ_MELEE {
+                        let inertia = self.physics.inertia_about(o.body, now_pos + now_rot * pivot) * s.interaction.weight * 2.0;
+                        if inertia > 1e-5 {
+                            max_ang_accel = (ARM_TORQUE * self.arm * if two { 3.0 } else { 1.0 } / inertia).max(MIN_HELD_ANG_ACCEL);
+                        }
+                    }
                     {
                         let o = self.objects.get_mut(id).unwrap();
                         o.aim = Some(target);
@@ -3719,7 +3851,12 @@ impl Rig {
                     let drive = physics::Drive { pivot, carry, carried, gain: 1.0, max_accel, ang_gain: 1.0, max_ang_accel };
                     let body = o.body;
                     let carried = self.physics.track(body, target.0, target.1, dt, &drive);
-                    self.objects.get_mut(id).unwrap().carried = carried;
+                    // How the hand swings it this step, as its weight lets it (less the player's
+                    // own walk and turn, which carry it without swinging it).
+                    let motion = self.physics.motion(body).map(|(_, v, w)| (v - carried.0, w - carried.1));
+                    let o = self.objects.get_mut(id).unwrap();
+                    o.carried = carried;
+                    o.motion = motion;
                     self.physics.set_gravity(body, 0.0);
                 }
                 Holder::Holstered(slot) => {
@@ -4145,6 +4282,18 @@ impl Rig {
                 self.emit(Cue::Release, Some(i), Some(sup.id), target, 0.6);
                 continue;
             }
+            // On a melee weapon's haft, its trigger held, it slides along it with the controller
+            // (a sliding handle); let go of the trigger, it holds where it is.
+            let sliding = sup.on == On::Foregrip && o.desc.kind == OBJ_MELEE && self.hands.as_ref().unwrap()[i].trigger > SLIDE_TRIGGER;
+            let d = o.desc;
+            let on_it = match self.handle_of(&d, i, On::Foregrip).filter(|_| sliding) {
+                Some(handle) => {
+                    let at = handle.slide_to(wr.inverse() * (ctrl.0 - wp));
+                    self.hands.as_mut().unwrap()[i].support.as_mut().unwrap().at = at;
+                    wp + wr * at
+                }
+                None => on_it,
+            };
             let h = &self.hands.as_ref().unwrap()[i];
             let (body, collider) = (h.body, h.collider);
             self.physics.set_groups(collider, groups_none());
@@ -4491,6 +4640,57 @@ impl Rig {
 
     pub fn held(&self, hand: usize) -> Option<u32> {
         self.hands.as_ref()?[hand].holding
+    }
+
+    /// How a held thing swings ([`Swing`]): where it is now, and the motion the hand gave it this
+    /// step as its weight let it (not where the controller would have it: a heavy thing can't be
+    /// flicked about). None for anything not in a hand, or stuck in something.
+    pub fn swing(&self, id: u32) -> Option<Swing> {
+        let o = self.objects.get(&id)?;
+        let (vel, ang) = o.motion?;
+        let (pos, rot) = self.physics.pose(o.body);
+        let (local_com, ..) = self.physics.motion(o.body)?;
+        Some(Swing { pos, rot, com: pos + rot * local_com, vel, ang })
+    }
+
+    /// How hard thing `id` is to swing about world point `p` (kg m^2), as [`Physics::inertia_about`].
+    pub fn inertia_about(&self, id: u32, p: Vec3) -> f32 {
+        self.objects.get(&id).map_or(0.0, |o| self.physics.inertia_about(o.body, p))
+    }
+
+    /// Thing `id`'s mass (kg), as it's simulated.
+    pub fn mass_of(&self, id: u32) -> f32 {
+        self.objects.get(&id).map_or(0.0, |o| o.desc.mass)
+    }
+
+    /// Held thing `object` cut clean into creature `actor`: it goes on through it (its body doesn't
+    /// stop it) until it's come out.
+    pub fn pass_through(&mut self, object: u32, actor: u32) {
+        let now = self.now;
+        if let Some(o) = self.objects.get_mut(&object).filter(|o| matches!(o.holder, Holder::Held(_))) {
+            o.passing.retain(|(a, _)| *a != actor);
+            o.passing.push((actor, now));
+        }
+    }
+
+    /// A blow on held thing `id` (N s at world point `at`): a creature's swing met by it. It's
+    /// knocked, and the hold brings it back at its own pace (a heavy thing is knocked less, and
+    /// comes back slower).
+    pub fn blow(&mut self, id: u32, impulse: Vec3, at: Vec3) {
+        if impulse.is_finite() && at.is_finite() {
+            self.pushes.push(Push::Blow { id, impulse: impulse.clamp_length_max(60.0), at });
+        }
+    }
+
+    /// How strong the arms are, as the game says (1: the runtime's own).
+    pub fn set_arm(&mut self, arm: f32) {
+        self.arm = if arm.is_finite() && arm > 0.05 { arm.clamp(0.25, 4.0) } else { 1.0 };
+    }
+
+    /// Both hands are on thing `id` (it's held, and the other hand supports it).
+    pub fn two_hands_on(&self, id: u32) -> bool {
+        let Some(h) = self.hands.as_ref() else { return false };
+        (h[0].holding == Some(id) && h[1].supporting() == Some(id)) || (h[1].holding == Some(id) && h[0].supporting() == Some(id))
     }
 
     pub fn holstered(&self, slot: u32) -> Option<u32> {

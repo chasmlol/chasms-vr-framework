@@ -2721,10 +2721,11 @@ fn a_handle_takes_the_hand_anywhere_along_it_and_the_blade_where_it_is() {
     assert!((rot * Vec3::Z).dot(held * Vec3::Z) < -0.99, "reversed: {rot:?}");
     s.grip(1, 0.0);
     s.step(90);
-    // By the blade, well off the handle: held there, as it lies.
+    // By the blade, well off the handle: held there, as it lies (once it lies: let go as it was
+    // held, it falls).
     s.set_rot(1, Quat::IDENTITY);
     s.move_hand(1, Vec3::new(0.3, 1.3, 0.2), 30);
-    s.step(60);
+    s.step(240);
     let before = s.rot(SWORD);
     s.reach(1, s.on(SWORD, Vec3::new(0.0, 0.0, 0.35)) + Vec3::Y * 0.04);
     s.grip(1, 1.0);

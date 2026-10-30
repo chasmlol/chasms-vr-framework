@@ -80,6 +80,9 @@ pub const ACT_ATTACKING: u32 = 1 << 2;
 pub const ACT_BLOCKING: u32 = 1 << 3;
 /// Lying down, knocked over or ragdolled.
 pub const ACT_DOWN: u32 = 1 << 4;
+/// Its attack is a power attack (the game's heavy blow): it lands harder, and a guard it meets is
+/// shoved harder.
+pub const ACT_POWER_ATTACK: u32 = 1 << 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -94,10 +97,13 @@ pub struct Actor {
     pub weapon_a: [f32; 3],
     pub weapon_radius: f32,
     pub weapon_b: [f32; 3],
-    pub _p0: f32,
+    /// Its weapon's mass (kg; 0: a fist or not known): what its blow pushes a guard with.
+    pub weapon_mass: f32,
     /// How fast it moves (metres per second): a hit's speed is the blade's relative to the body.
     pub velocity: [f32; 3],
-    pub _p1: f32,
+    /// How many of its blows have landed on the player, counting up from when it was first sent:
+    /// one more is a blow that just landed (the game's own hit on the player, blocked or not).
+    pub blows: u32,
     pub parts: [ActorPart; MAX_ACTOR_PARTS],
 }
 
@@ -109,7 +115,11 @@ pub struct Actors {
     pub count: u32,
     /// The game frame they're from.
     pub frame: u64,
-    pub _pad: [u32; 12],
+    /// How the creatures' blows are taken against the player's own arm (0: as they are): a game's
+    /// characters swing faster than an arm in VR does, so their blows count at this share of their
+    /// speed, the share the game's own swings are taken at for the player's full and power hits.
+    pub blow_scale: f32,
+    pub _pad: [u32; 11],
     pub actors: [Actor; MAX_ACTORS],
 }
 
@@ -126,6 +136,12 @@ pub const DMG_PIERCE: u32 = 2;
 pub const DMG_BLUNT: u32 = 3;
 /// A fist (the hand itself).
 pub const DMG_PUNCH: u32 = 4;
+
+/// The runtime's own speed of a full-strength cut (m/s): a one-handed sword's edge
+/// at the middle of its blade. A game that measures its own swings scales them onto this, so its
+/// weapons keep their proportions (a heavier, slower one needs less speed) and a VR arm can swing
+/// them.
+pub const FULL_SLASH_SPEED: f32 = 7.0;
 
 /// Cuts both ways along `edge` (a double-edged blade).
 pub const DMGF_BOTH_WAYS: u32 = 1 << 0;
@@ -146,9 +162,13 @@ pub struct Damager {
     pub depth: f32,
     pub radius: f32,
     pub a: [f32; 3],
-    pub _p0: f32,
+    /// How fast a full-strength hit moves at `a` and at `b` (m/s; in between, in proportion): the
+    /// game's own swing of this weapon there. 0: the runtime's own for the
+    /// damage type. A hit slower than this is weaker, a faster one no stronger until it's a power
+    /// hit ([`MeleeDesc::power`]).
+    pub full_a: f32,
     pub b: [f32; 3],
-    pub _p1: f32,
+    pub full_b: f32,
     /// The direction it cuts in (slash), model space.
     pub edge: [f32; 3],
     pub _p2: f32,
@@ -164,6 +184,14 @@ pub struct MeleeDesc {
     pub damage: f32,
     /// How far it reaches from the grip, metres.
     pub reach: f32,
+    /// How fast the hand holding it moves in a full-strength swing (m/s; the game's own swing's
+    /// grip): a hit counts for no more than the arm behind it, so a still hand spinning the weapon
+    /// with its wrist is a weak hit, however fast the tip goes. 0: the runtime's own.
+    pub grip_speed: f32,
+    /// How much faster than a full hit a power hit (the game's heavy blow) moves (0: the runtime's
+    /// own, 8 against 7 m/s).
+    pub power: f32,
+    pub _p0: [f32; 2],
     pub damagers: [Damager; MAX_DAMAGERS],
 }
 
@@ -172,7 +200,10 @@ pub struct MeleeDesc {
 pub struct MeleeTable {
     pub seq: u32,
     pub count: u32,
-    pub _pad: [u32; 14],
+    /// How strong the player's arms are, as the game has them (1: the runtime's own arm, an adult's;
+    /// 0: not said): how hard they swing and turn what they hold.
+    pub arm: f32,
+    pub _pad: [u32; 13],
     pub weapons: [MeleeDesc; MAX_MELEE],
 }
 
@@ -240,6 +271,11 @@ pub const CE_BLOCK: u32 = 2;
 /// A spell cast: `spell` from `hand` (0 left, 1 right), from `point` along `dir`; `actor` the one a
 /// touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1).
 pub const CE_CAST: u32 = 3;
+/// A swing: `object` in `hand` swung at least as fast as a full hit (`strength` its peak, 1 a full
+/// hit; with `CEF_POWER` as fast as a power hit), `swing` which way, over once it slowed; `actor` the
+/// first creature it hit (0: it hit nothing). The game's own attack: its fatigue, and its swing when
+/// it missed.
+pub const CE_SWING: u32 = 4;
 
 /// A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
 pub const CEF_GLANCING: u32 = 1 << 0;
@@ -252,6 +288,22 @@ pub const CEF_POWER: u32 = 1 << 3;
 pub const CEF_PARRY: u32 = 1 << 4;
 /// From behind the creature.
 pub const CEF_BACK: u32 = 1 << 5;
+/// A hit on its guard (its shield or weapon, `part` that part) while it holds its guard up: the
+/// game's own block decides what it does.
+pub const CEF_GUARD: u32 = 1 << 6;
+
+/// Which way a swing went ([`CombatEvent::swing`]), in the player's own frame (the way the body
+/// faces): the game picks its kind of attack by it.
+pub const SWING_NONE: u32 = 0;
+/// Down: a chop from above.
+pub const SWING_DOWN: u32 = 1;
+/// Up: a rising cut.
+pub const SWING_UP: u32 = 2;
+/// Across to the player's left, and to the right.
+pub const SWING_LEFT: u32 = 3;
+pub const SWING_RIGHT: u32 = 4;
+/// Forward along the blade: a thrust.
+pub const SWING_THRUST: u32 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
@@ -267,7 +319,9 @@ pub struct CombatEvent {
     pub material: u32,
     pub strength: f32,
     pub speed: f32,
-    pub _p0: [f32; 2],
+    /// Hits and swings: which way the swing went (`SWING_*`).
+    pub swing: u32,
+    pub _p0: f32,
     pub point: [f32; 3],
     pub _p1: f32,
     pub dir: [f32; 3],
@@ -290,7 +344,7 @@ const _: () = {
     assert!(size_of::<ActorPart>() == 48);
     assert!(size_of::<Actor>() == 64 + 48 * MAX_ACTOR_PARTS);
     assert!(size_of::<Damager>() == 64);
-    assert!(size_of::<MeleeDesc>() == 16 + 64 * MAX_DAMAGERS);
+    assert!(size_of::<MeleeDesc>() == 32 + 64 * MAX_DAMAGERS);
     assert!(size_of::<Spell>() == 64);
     assert!(size_of::<CombatEvent>() == 80);
     assert!(OFF_COMBAT >= crate::OFF_GAME_HULLS + size_of::<crate::GameHulls>());

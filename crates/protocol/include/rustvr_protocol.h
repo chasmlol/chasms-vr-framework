@@ -8,7 +8,7 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 11
+#define RVR_VERSION 12
 
 #define RVR_MAPPING_BYTES 5373952
 
@@ -95,6 +95,11 @@
 #define RVR_CTRL_TOUCH_B (1 << 8)
 
 #define RVR_CTRL_TOUCH_STICK (1 << 9)
+
+/**
+ * The thumb rests on the thumbrest (Touch controllers).
+ */
+#define RVR_CTRL_TOUCH_REST (1 << 10)
 
 #define RVR_HAND_LEFT 0
 
@@ -389,6 +394,12 @@
  */
 #define RVR_ACT_DOWN (1 << 4)
 
+/**
+ * Its attack is a power attack (the game's heavy blow): it lands harder, and a guard it meets is
+ * shoved harder.
+ */
+#define RVR_ACT_POWER_ATTACK (1 << 5)
+
 #define RVR_MAX_MELEE 32
 
 #define RVR_MAX_DAMAGERS 4
@@ -412,6 +423,14 @@
  * A fist (the hand itself).
  */
 #define RVR_DMG_PUNCH 4
+
+/**
+ * The runtime's own speed of a full-strength cut (m/s): a one-handed sword's edge
+ * at the middle of its blade. A game that measures its own swings scales them onto this, so its
+ * weapons keep their proportions (a heavier, slower one needs less speed) and a VR arm can swing
+ * them.
+ */
+#define RVR_FULL_SLASH_SPEED 7.0
 
 /**
  * Cuts both ways along `edge` (a double-edged blade).
@@ -488,6 +507,14 @@
 #define RVR_CE_CAST 3
 
 /**
+ * A swing: `object` in `hand` swung at least as fast as a full hit (`strength` its peak, 1 a full
+ * hit; with `CEF_POWER` as fast as a power hit), `swing` which way, over once it slowed; `actor` the
+ * first creature it hit (0: it hit nothing). The game's own attack: its fatigue, and its swing when
+ * it missed.
+ */
+#define RVR_CE_SWING 4
+
+/**
  * A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
  */
 #define RVR_CEF_GLANCING (1 << 0)
@@ -513,6 +540,40 @@
  * From behind the creature.
  */
 #define RVR_CEF_BACK (1 << 5)
+
+/**
+ * A hit on its guard (its shield or weapon, `part` that part) while it holds its guard up: the
+ * game's own block decides what it does.
+ */
+#define RVR_CEF_GUARD (1 << 6)
+
+/**
+ * Which way a swing went ([`CombatEvent::swing`]), in the player's own frame (the way the body
+ * faces): the game picks its kind of attack by it.
+ */
+#define RVR_SWING_NONE 0
+
+/**
+ * Down: a chop from above.
+ */
+#define RVR_SWING_DOWN 1
+
+/**
+ * Up: a rising cut.
+ */
+#define RVR_SWING_UP 2
+
+/**
+ * Across to the player's left, and to the right.
+ */
+#define RVR_SWING_LEFT 3
+
+#define RVR_SWING_RIGHT 4
+
+/**
+ * Forward along the blade: a thrust.
+ */
+#define RVR_SWING_THRUST 5
 
 
 
@@ -803,20 +864,22 @@
 #define RVR_SHAPE_SPHERE 2
 
 /**
- * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
- * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ * The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+ * collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+ * Until its points arrive, the box `half_extents` about `center`.
  */
 #define RVR_SHAPE_HULL 3
 
 /**
  * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
- * whenever the objects offered change (before they're published).
+ * whenever the objects offered change (before they're published). An object with several convex
+ * parts has an entry for each.
  */
 #define RVR_OFF_GAME_HULLS 5046272
 
-#define RVR_MAX_GAME_HULLS 48
+#define RVR_MAX_GAME_HULLS 240
 
-#define RVR_MAX_HULL_POINTS 128
+#define RVR_MAX_HULL_POINTS 32
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 

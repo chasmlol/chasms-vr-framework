@@ -70,6 +70,26 @@ impl Handle {
         Some((at, rot))
     }
 
+    /// The hold a hand at `pos` turned `rot` takes on this handle closing where it is (a melee
+    /// weapon's haft, a second hand on it): the nearest place along it, turned as the hand is turned,
+    /// its fist's axis laid along the handle whichever way it already runs. Nothing moves to fit the
+    /// hand but the hand itself onto the handle; None if it isn't near enough.
+    pub fn take_turned(&self, pos: Vec3, rot: Quat) -> Option<(Vec3, Quat)> {
+        let along = (pos - self.at).dot(self.dir).clamp(self.min, self.max);
+        let at = self.at + self.dir * along;
+        if !(at.distance(pos) <= self.reach) {
+            return None;
+        }
+        let fist = rot * Vec3::Z;
+        let axis = if fist.dot(self.dir) >= 0.0 { self.dir } else { -self.dir };
+        Some((at, (Quat::from_rotation_arc(fist, axis) * rot).normalize()))
+    }
+
+    /// Where along the handle a hand at `pos` would be (clamped to its ends), for a hold sliding along it.
+    pub fn slide_to(&self, pos: Vec3) -> Vec3 {
+        self.at + self.dir * (pos - self.at).dot(self.dir).clamp(self.min, self.max)
+    }
+
     /// A hold at `at` is on this handle (anywhere along it).
     pub fn holds(&self, at: Vec3) -> bool {
         let along = (at - self.at).dot(self.dir);

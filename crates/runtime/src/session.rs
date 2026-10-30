@@ -714,10 +714,18 @@ impl Session {
             for ev in &combat {
                 self.link.push_combat_event(ev);
             }
-            // Blades that went in and stay in.
+            // Blades that went in and stay in; clean cuts that go on through; blows on what the
+            // hands hold; the arms as strong as the game says.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);
             }
+            for (object, actor) in std::mem::take(&mut self.combat.passes) {
+                self.rig.pass_through(object, actor);
+            }
+            for (object, impulse, at) in std::mem::take(&mut self.combat.blows) {
+                self.rig.blow(object, impulse, at);
+            }
+            self.rig.set_arm(self.combat.arm());
             for p in &self.combat.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }

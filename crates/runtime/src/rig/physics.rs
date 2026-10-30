@@ -576,6 +576,32 @@ impl Physics {
         (carry_v, carry_w)
     }
 
+    /// How hard body `b` is to turn about world point `p` (kg m^2): its inertia about its own centre
+    /// on its slowest-turning axis (a blade's across it, not along it), plus its mass at the distance
+    /// from `p` (a long weapon held at one end is far harder to swing than its mass says).
+    pub fn inertia_about(&self, b: RigidBodyHandle, p: V3) -> f32 {
+        let Some(rb) = self.world.bodies.get(b) else { return 0.0 };
+        let props = rb.mass_properties().local_mprops;
+        let inv = from_v(props.inv_principal_inertia);
+        let principal = [inv.x, inv.y, inv.z].iter().map(|&k| if k > 1e-9 { 1.0 / k } else { 0.0 }).fold(0.0f32, f32::max);
+        let com = from_v(rb.center_of_mass());
+        principal + rb.mass() * com.distance_squared(p)
+    }
+
+    /// Collider `c` weighs `mass` (kg) from now on.
+    pub fn set_mass(&mut self, c: ColliderHandle, mass: f32) {
+        if let Some(col) = self.world.colliders.get_mut(c) {
+            col.set_mass(mass.max(0.02));
+        }
+    }
+
+    /// The pose and the velocity (its centre's, and its spin) body `b` moves with now, and where its
+    /// centre is in its own space.
+    pub fn motion(&self, b: RigidBodyHandle) -> Option<(V3, V3, V3)> {
+        let rb = self.world.bodies.get(b)?;
+        Some((from_v(rb.local_center_of_mass()), from_v(rb.linvel()), from_v(rb.angvel())))
+    }
+
     /// Collider `c`, where it is now, overlaps the static world.
     pub fn in_world(&self, c: ColliderHandle) -> bool {
         let Some(col) = self.world.colliders.get(c) else { return false };
