@@ -415,7 +415,7 @@ impl PlayerBody {
         std::thread::spawn(move || {
             let t = std::time::Instant::now();
             let built = rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps, face.as_ref());
-            tracing::info!("runtime: the game's body put together in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
+            tracing::debug!("runtime: the game's body put together in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
             let _ = tx.send(built);
         });
         self.game_body = Some(rx);
@@ -433,10 +433,14 @@ impl PlayerBody {
             self.game_body = None;
             self.avatar_tried = true;
             let t = std::time::Instant::now();
-            match built.and_then(|source| Avatar::new(gpu, source)) {
-                Ok(a) => {
-                    tracing::info!("runtime: drawing the game's body (on the GPU in {:.0} ms)", t.elapsed().as_secs_f32() * 1000.0);
-                    self.avatar = Some(a);
+            // (A body already drawn keeps its renderer: only the new body goes onto the GPU.)
+            let made = match self.avatar.as_mut() {
+                Some(a) => built.and_then(|source| a.set_source(gpu, source)),
+                None => built.and_then(|source| Avatar::new(gpu, source)).map(|a| self.avatar = Some(a)),
+            };
+            match made {
+                Ok(()) => {
+                    tracing::debug!("runtime: drawing the game's body (on the GPU in {:.0} ms)", t.elapsed().as_secs_f32() * 1000.0);
                     self.take_proportions();
                 }
                 Err(e) => tracing::error!("runtime: the game's body: {e:#}"),

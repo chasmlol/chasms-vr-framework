@@ -448,14 +448,17 @@ impl Mirror {
     }
 }
 
-/// Where a menu shown beside the mirror stands (a character creator's): to the glass's left as the
-/// player faces it, a little in front of it, 0.85 m tall (`aspect` wide for each of that), at about
-/// the head's height and turned to face the head.
+/// Where a menu shown beside the mirror stands (a character creator's): its edge at the glass's
+/// left edge as the player faces it, a hand in front of the glass, 0.85 m tall (`aspect` wide for
+/// each of that), at about the head's height and turned to face the head: a short turn of the head
+/// from the mirror to the menu and back.
 pub fn beside(g: &Glass, head: Vec3, aspect: f32) -> crate::panels::Panel {
     let height = 0.85;
     let width = height * aspect.max(0.1);
-    let side = g.right.normalize_or_zero();
-    let mut center = g.center - g.right - side * (width * 0.5 + 0.1) + g.normal() * 0.3;
+    let edge = g.center - g.right + g.normal() * 0.12;
+    let to_edge = edge - head;
+    let side = Quat::from_rotation_y(to_edge.x.atan2(to_edge.z)) * Vec3::X;
+    let mut center = edge - side * (width * 0.5 + 0.04);
     center.y = head.y - 0.2;
     let to = center - head;
     crate::panels::Panel::facing(center, to.x.atan2(to.z), 0.0, width, aspect)

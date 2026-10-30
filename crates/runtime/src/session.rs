@@ -121,8 +121,10 @@ pub struct Session {
     item_card: crate::item_card::ItemCard,
     /// OBS's window in the headset (over the left wrist, or pinned with F9): only the headset.
     obs: crate::obs_view::ObsView,
-    /// The mirror the player or the game's character creator has up (`crate::mirror`).
+    /// The mirror the player or the game's character creator has up (`crate::mirror`), and whether
+    /// where the game's menu stands beside it was said.
     mirror: crate::mirror::Mirror,
+    menu_beside_said: bool,
     card: Option<(panels::Panel, f32)>,
     layout: panels::Layout,
     targets: Option<SharedTargets>,
@@ -266,6 +268,7 @@ impl Session {
             item_card: crate::item_card::ItemCard::new(&gpu)?,
             obs: crate::obs_view::ObsView::default(),
             mirror: crate::mirror::Mirror::default(),
+            menu_beside_said: false,
             card: None,
             gpu,
             link,
@@ -549,7 +552,14 @@ impl Session {
         }
         let menu_uv = self.game.as_ref().map(|g| g.menu_uv).filter(|uv| uv[2] > uv[0] && uv[3] > uv[1]).unwrap_or([0.0, 0.0, 1.0, 1.0]);
         if let (true, Some(g), Some(aspect)) = (menu_in_world, self.mirror.glass(), menu_panel) {
-            layout.game_menu = Some(crate::mirror::beside(&g, head_pos, aspect * (menu_uv[2] - menu_uv[0]) / (menu_uv[3] - menu_uv[1])));
+            let p = crate::mirror::beside(&g, head_pos, aspect * (menu_uv[2] - menu_uv[0]) / (menu_uv[3] - menu_uv[1]));
+            if !self.menu_beside_said {
+                self.menu_beside_said = true;
+                tracing::info!("mirror: the game's menu stands beside it at {:.2?}, {:.2} x {:.2} m, the part {menu_uv:.3?} of its picture", p.center, p.width, p.height);
+            }
+            layout.game_menu = Some(p);
+        } else {
+            self.menu_beside_said = false;
         }
         let hand = &frame.hands[dom];
         let laser_origin = Vec3::from_array(hand.aim.pos);

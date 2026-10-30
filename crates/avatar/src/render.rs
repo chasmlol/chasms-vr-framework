@@ -479,6 +479,11 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
         base.rgb = 4 * detail * (base.rgb + 2 * (morphs - 0.5));
     }
     bool hair = (uint)material.z == GB_HAIR;
+    // The hair's layer map: its strands over the base, by their alpha.
+    if (hair && options.y > 0) {
+        float4 layer = detail_tex.Sample(samp, i.uv);
+        base.rgb = lerp(base.rgb, layer.rgb, layer.a);
+    }
     // The base times the vertex colour (the game's are grey: the vertex's AO byte holds it); the
     // hair's vertex colour is its tint's mask instead (gamebryo.rs `hair_tint`), its tint the
     // wearer's hair colour.

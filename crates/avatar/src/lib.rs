@@ -199,6 +199,20 @@ impl Avatar {
     /// mannequin, with a warning.
     pub fn new(gpu: &Gpu, source: AvatarSource) -> Result<Avatar> {
         let renderer = render::Renderer::new(gpu)?;
+        let (body, arms) = Self::characters(gpu, source)?;
+        Ok(Avatar { renderer, body, arms })
+    }
+
+    /// Draws another body from now on (the game's, put together again: something put on, a face
+    /// changed), keeping the renderer (its shaders take a second to compile: a character creator's
+    /// every change would hold the frame that long).
+    pub fn set_source(&mut self, gpu: &Gpu, source: AvatarSource) -> Result<()> {
+        (self.body, self.arms) = Self::characters(gpu, source)?;
+        Ok(())
+    }
+
+    /// The body (and first-person arms) a source makes, the mannequin when its model fails.
+    fn characters(gpu: &Gpu, source: AvatarSource) -> Result<(render::Character, Option<render::Character>)> {
         let (body, arms) = match source {
             AvatarSource::Procedural => (None, None),
             AvatarSource::Built { model, textures } => {
@@ -223,7 +237,7 @@ impl Avatar {
             Some(b) => b,
             None => render::Character::new(gpu, procedural::mannequin()).context("the built-in mannequin")?,
         };
-        Ok(Avatar { renderer, body, arms })
+        Ok((body, arms))
     }
 
     /// Draws the hands this size: wrist to the middle finger's knuckle, metres (None: the model's
@@ -577,6 +591,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         for (i, mut m) in part.meshes.into_iter().enumerate() {
             swap(&mut m.texture);
             swap(&mut m.material.bump);
+            swap(&mut m.material.detail);
             let mut x = MeshExtras::default();
             if let Some(f) = face {
                 if face_tex.as_ref().is_some_and(|(mesh, _)| *mesh == i) {

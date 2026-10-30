@@ -128,7 +128,8 @@ pub enum Shader {
     GamebryoSkin,
     /// Gamebryo's hair (Oblivion's `HairShader`): lit as [`Shader::GamebryoSkin`], its base texture
     /// tinted by the hair's colour where [`Vertex::ao`] (the vertex colour's green, its mask) says:
-    /// `base · 2 · (0.5 + ao · (tint − 0.5))`. The tint is the wearer's, not the model's.
+    /// `base · 2 · (0.5 + ao · (tint − 0.5))`. The tint is the wearer's, not the model's. Its
+    /// [`Material::detail`] is its layer map (its strands, laid over the base by their alpha).
     GamebryoHair,
 }
 
