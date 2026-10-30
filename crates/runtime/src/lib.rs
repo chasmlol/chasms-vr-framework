@@ -12,6 +12,7 @@ pub mod compositor;
 pub mod mechanics;
 pub mod menu;
 pub mod obs_view;
+pub mod held_cards;
 pub mod held_objects;
 pub mod hud;
 pub mod item_card;

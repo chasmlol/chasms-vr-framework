@@ -1791,12 +1791,19 @@ impl Rig {
         thing.map_or([actor, pocket, 0, 0], |t| [actor, pocket, t.id, t.object])
     }
 
-    /// The thing a hand's fingers are on in a pocket (its template) and where that hand is (world):
-    /// the latest hand to come on one, for the card of it.
-    pub fn feeling(&self) -> Option<(u32, Vec3)> {
-        let hands = self.hands.as_ref()?;
-        let i = (0..2).filter(|&i| hands[i].felt[3] != 0).max_by(|&a, &b| hands[a].felt_since.total_cmp(&hands[b].felt_since))?;
-        Some((hands[i].felt[3], self.physics.pose(hands[i].body).0))
+    /// The thing hand `i`'s fingers are on in a pocket (its template) and where the hand is (world),
+    /// for the card of it.
+    pub fn feeling(&self, i: usize) -> Option<(u32, Vec3)> {
+        let h = &self.hands.as_ref()?[i];
+        (h.felt[3] != 0).then(|| (h.felt[3], self.physics.pose(h.body).0))
+    }
+
+    /// The hand pulling object `id` to it (the gloves), if one is.
+    pub fn puller(&self, id: u32) -> Option<usize> {
+        match self.objects.get(&id)?.holder {
+            Holder::Pulled { hand, .. } => Some(hand),
+            _ => None,
+        }
     }
 
     /// How far hand `i` is from a point: from the nearest of it, its palm or a finger.

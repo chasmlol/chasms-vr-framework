@@ -47,9 +47,9 @@ pub struct Attach {
     pub gun: Option<(Mat4, Vec3, Vec3)>,
     /// The off hand's controller grip pose.
     pub off_hand: Option<(Vec3, Quat)>,
-    /// The point just over the thing in a hand that its card stands on (eased), and how strongly it
-    /// shows.
-    pub held: Option<(Vec3, f32)>,
+    /// A hand has a card over it: a game's own card ([`HUD_HELD`]) is drawn there from pictures of it
+    /// (`crate::held_cards`), not itself.
+    pub held: bool,
 }
 
 /// How wide the game's whole HUD would be at the scale of its own card of a thing in a hand
@@ -169,12 +169,7 @@ impl HudPlacer {
                     panel.height = panel.width * dv / du / aspect;
                     Some((panel, 1.0))
                 }
-                // (Not while the game's card is still of something else.)
-                HUD_HELD if at.held.is_some() => at.held.filter(|_| layout.flags & HUDL_HELD_PENDING == 0).map(|(c, opacity)| {
-                    // Standing on the point: just over the thing, however tall the game's card is.
-                    let (w, h) = sized(HELD_SCALE, f32::MAX);
-                    (facing_eye(c + Vec3::Y * h * 0.5, head_pos, w, h), opacity)
-                }),
+                HUD_HELD if at.held => None,
                 HUD_HIDDEN => None,
                 // The centre, and anything else: where it was on the flat screen.
                 _ => {
@@ -194,6 +189,15 @@ impl HudPlacer {
         }
         out
     }
+}
+
+/// A picture of the game's card of a thing in a hand (`du`: its share of the HUD's width; `aspect`:
+/// its width / height), standing on `c` (just over the thing, however tall the card is), turned to
+/// the eye at `eye`, at one scale ([`HELD_SCALE`]).
+pub fn held_card(c: Vec3, eye: Vec3, du: f32, aspect: f32) -> Panel {
+    let w = du * HELD_SCALE;
+    let h = w / aspect.max(1e-4);
+    facing_eye(c + Vec3::Y * h * 0.5, eye, w, h)
 }
 
 /// A `w` x `h` panel at `c`, upright, turned to face the eye at `eye`.
@@ -293,7 +297,7 @@ mod tests {
         let gun = Mat4::from_translation(Vec3::new(0.15, 1.35, 0.35));
         let sight = Vec3::new(0.15, 1.40, 0.30);
         let wrist_ahead = (Vec3::new(-0.05, 1.45, 0.35), Quat::IDENTITY);
-        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), held: None };
+        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), held: false };
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
         let ammo = p.iter().find(|p| p.role == HUD_AMMO).unwrap();
         assert!(ammo.panel.center.distance(sight) < 0.15 && ammo.panel.center.x < sight.x, "{:?}", ammo.panel.center);

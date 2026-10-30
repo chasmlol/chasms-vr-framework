@@ -37,18 +37,20 @@ pub struct ItemCard {
     /// What's painted on it now (painted again only when that changes).
     painted: Option<ItemInfo>,
     /// The thing it's over, and the point just over it that the card stands on (tracking space,
-    /// eased).
+    /// eased); the id the game's card of it is known by.
     shown: Option<u32>,
     at: Option<Vec3>,
+    key: Option<u32>,
     opacity: f32,
 }
 
-/// The thing to show a card for: one a hand holds or pulls that the game says what it is (itself, or
-/// the template it's a copy of: a thing out of a pocket): the one shown already while a hand still
-/// has it, else one held, else the one a hand's fingers are on in a pocket (`felt`: its template,
-/// and where the hand is), else one flying in. Where it is (tracking space) and how far the top of
-/// it, as it's turned now, is over that.
-pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, infos: &ItemInfos, map: Option<&WorldMap>, felt: Option<(u32, Vec3)>) -> Option<(u32, Vec3, f32)> {
+/// The thing to show hand `hand`'s card for: one it holds or pulls (`hand_of`: which hand has a
+/// thing) that the game says what it is (itself, or the template it's a copy of: a thing out of a
+/// pocket): the one shown already while the hand still has it, else one held, else the one its
+/// fingers are on in a pocket (`felt`: its template, and where the hand is), else one flying in.
+/// Where it is (tracking space) and how far the top of it, as it's turned now, is over that.
+#[allow(clippy::too_many_arguments)]
+pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, infos: &ItemInfos, map: Option<&WorldMap>, hand: usize, hand_of: impl Fn(&ObjectState) -> Option<usize>, felt: Option<(u32, Vec3)>) -> Option<(u32, Vec3, f32)> {
     let states = &states.states[..(states.count as usize).min(MAX_OBJECTS)];
     let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
     let place = |s: &ObjectState| -> Option<(u32, Vec3, f32)> {
@@ -67,8 +69,8 @@ pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, in
         let top = (0..8).map(|k| (q * corner(k)).y).fold(f32::MIN, f32::max);
         Some((s.id, at, top / world_per_metre.max(1e-6)))
     };
-    let held = |s: &&ObjectState| s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) != 0;
-    let pulled = |s: &&ObjectState| s.flags & OS_PULLED != 0;
+    let held = |s: &&ObjectState| s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) != 0 && hand_of(s) == Some(hand);
+    let pulled = |s: &&ObjectState| s.flags & OS_PULLED != 0 && hand_of(s) == Some(hand);
     if let Some(id) = shown
         && let Some(s) = states.iter().find(|s| s.id == id).filter(|s| held(s) || pulled(s))
         && let Some(p) = place(s)
@@ -83,8 +85,14 @@ pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, in
 /// What the game says a thing is: the thing shown, by its own card or its template's; or a template
 /// (a thing felt in a pocket).
 fn info_for<'a>(infos: &'a ItemInfos, states: &ObjectStates, id: u32) -> Option<&'a ItemInfo> {
+    infos.get(info_key(infos, states, id))
+}
+
+/// The id the game's card of a thing is known by: its own, or its template's (a thing out of a
+/// pocket); a template's is its own.
+fn info_key(infos: &ItemInfos, states: &ObjectStates, id: u32) -> u32 {
     let states = &states.states[..(states.count as usize).min(MAX_OBJECTS)];
-    states.iter().find(|s| s.id == id).map_or_else(|| infos.get(id), |s| info_of(infos, s))
+    states.iter().find(|s| s.id == id).map_or(id, |s| if infos.get(s.id).is_some() || s.desc == 0 { s.id } else { s.desc })
 }
 
 /// What the game says a thing is: its own card, or its template's.
@@ -113,6 +121,7 @@ impl ItemCard {
             painted: None,
             shown: None,
             at: None,
+            key: None,
             opacity: 0.0,
         })
     }
@@ -128,16 +137,18 @@ impl ItemCard {
         }
     }
 
-    /// This frame's card: where it goes and how strongly it shows (None: not shown). `head`: the
-    /// eyes' middle (tracking space).
-    pub fn update(&mut self, gpu: &Gpu, states: &ObjectStates, objects: &ObjectTable, map: Option<&WorldMap>, felt: Option<(u32, Vec3)>, head: Vec3, dt: f32) -> Result<Option<(Panel, f32)>> {
-        let now = pick(self.shown, states, objects, &self.infos, map, felt);
+    /// This frame's card of hand `hand`'s thing ([`pick`]): where it goes and how strongly it shows
+    /// (None: not shown). `head`: the eyes' middle (tracking space).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, gpu: &Gpu, states: &ObjectStates, objects: &ObjectTable, map: Option<&WorldMap>, hand: usize, hand_of: impl Fn(&ObjectState) -> Option<usize>, felt: Option<(u32, Vec3)>, head: Vec3, dt: f32) -> Result<Option<(Panel, f32)>> {
+        let now = pick(self.shown, states, objects, &self.infos, map, hand, hand_of, felt);
         match now {
             Some((id, at, top)) => {
                 if self.shown != Some(id) {
                     self.at = None;
                 }
                 self.shown = Some(id);
+                self.key = Some(info_key(&self.infos, states, id));
                 let toward = (head - at).normalize_or(Vec3::Z);
                 let want = at + Vec3::Y * (top + ABOVE) + toward * TOWARDS;
                 let k = 1.0 - (-dt / FOLLOW).exp();
@@ -154,6 +165,7 @@ impl ItemCard {
                 if self.opacity == 0.0 {
                     self.shown = None;
                     self.at = None;
+                    self.key = None;
                 }
             }
         }
@@ -170,6 +182,11 @@ impl ItemCard {
     /// game's own card stands there too.
     pub fn over(&self) -> Option<Vec3> {
         self.at.filter(|_| self.opacity > 0.0 && self.painted.is_some())
+    }
+
+    /// The id the game's card of the shown thing is known by, while it shows.
+    pub fn key(&self) -> Option<u32> {
+        self.key.filter(|_| self.over().is_some())
     }
 
     fn paint(&mut self, gpu: &Gpu, info: &ItemInfo) -> Result<()> {
@@ -261,18 +278,19 @@ mod tests {
     #[test]
     fn the_card_is_for_a_held_thing_the_game_names_then_one_flying_in() {
         let (mut states, objects, infos) = tables();
+        let right = |s: &ObjectState| if s.flags & OS_HELD_LEFT != 0 { Some(0) } else { Some(1) };
         let map = WorldMap::IDENTITY;
         // Held (3) beats pulled (2); the held one without a name (4) has none.
-        let (id, at, top) = pick(None, &states, &objects, &infos, Some(&map), None).unwrap();
+        let (id, at, top) = pick(None, &states, &objects, &infos, Some(&map), 1, right, None).unwrap();
         assert_eq!(id, 3);
         assert_eq!(at, Vec3::new(3.0, 1.0, 0.0));
         assert!((top - 0.1).abs() < 1e-6);
         // Shown already and still pulled: it stays.
-        assert_eq!(pick(Some(2), &states, &objects, &infos, Some(&map), None).unwrap().0, 2);
+        assert_eq!(pick(Some(2), &states, &objects, &infos, Some(&map), 1, right, None).unwrap().0, 2);
         // Nothing held: the one flying in.
         states.states[2].flags = 0;
-        assert_eq!(pick(Some(3), &states, &objects, &infos, Some(&map), None).unwrap().0, 2);
+        assert_eq!(pick(Some(3), &states, &objects, &infos, Some(&map), 1, right, None).unwrap().0, 2);
         states.states[1].flags = 0;
-        assert!(pick(None, &states, &objects, &infos, Some(&map), None).is_none());
+        assert!(pick(None, &states, &objects, &infos, Some(&map), 1, right, None).is_none());
     }
 }

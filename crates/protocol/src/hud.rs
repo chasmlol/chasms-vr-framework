@@ -35,9 +35,10 @@ pub const HUD_CENTER: u32 = 7;
 /// Not drawn at all (e.g. the crosshair).
 pub const HUD_HIDDEN: u32 = 8;
 /// What the game says about the thing in a hand (its own panel of a thing's name and numbers): over
-/// the thing a hand holds or pulls, turned to the eyes, fading with it; with nothing in a hand,
-/// where it is on the flat screen. A game with this piece has its own card for what's held, so the
-/// runtime draws none of its own ([`crate::ItemInfos`]).
+/// the thing a hand holds or pulls, turned to the eyes, fading with it, each hand its own (drawn
+/// from pictures of it: [`HudLayout::held`]); with nothing in a hand, where it is on the flat
+/// screen. A game with this piece has its own card for what's held, so the runtime draws none of its
+/// own ([`crate::ItemInfos`]).
 pub const HUD_HELD: u32 = 9;
 
 // ---- layout flags -------------------------------------------------------------------------------
@@ -46,10 +47,7 @@ pub const HUDL_REST_HIDDEN: u32 = 1 << 0;
 /// The HUD texture's colour is added to the view (it has no usable alpha): every element is
 /// blended additively.
 pub const HUDL_ADDITIVE: u32 = 1 << 1;
-/// The game's card ([`HUD_HELD`]) isn't of the thing in a hand yet: a game takes a moment to show a
-/// new thing on it, and meanwhile it's of whatever it was (what was looked at). It isn't drawn over
-/// the hand till it is.
-pub const HUDL_HELD_PENDING: u32 = 1 << 2;
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
@@ -72,7 +70,14 @@ pub struct HudLayout {
     /// Entries in use are `elements[..count]`.
     pub count: u32,
     pub flags: u32, // HUDL_*
-    pub _pad: [u32; 13],
+    /// What the game's card ([`HUD_HELD`]) is of now, once it shows it: a thing in a hand, by the id
+    /// its card is known by ([`crate::ItemInfos`]: the thing's own, or its template's). 0: none (it's
+    /// of what's looked at, or still laying out a new thing: a game takes a moment, and meanwhile
+    /// it's of what it was). The runtime keeps a picture of the card for each thing it's been of and
+    /// draws each hand's from its thing's: both hands have theirs, though the card is of one thing
+    /// at a time.
+    pub held: u32,
+    pub _pad: [u32; 12],
     pub elements: [HudElement; MAX_HUD_ELEMENTS],
 }
 

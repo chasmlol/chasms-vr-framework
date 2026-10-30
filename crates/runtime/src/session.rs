@@ -117,11 +117,13 @@ pub struct Session {
     /// The rig ran this step (there's a physics world to show).
     rig_active_last: bool,
     menu: RuntimeMenu,
-    /// The card beside a thing in the hand, and this frame's place for it (and how strongly).
-    item_card: crate::item_card::ItemCard,
+    /// The card beside the thing in each hand, and this frame's place for it (and how strongly); a
+    /// game's own card, as pictures of it.
+    item_cards: [crate::item_card::ItemCard; 2],
+    held_cards: crate::held_cards::HeldCards,
     /// OBS's window in the headset (over the left wrist, or pinned with F9): only the headset.
     obs: crate::obs_view::ObsView,
-    card: Option<(panels::Panel, f32)>,
+    cards: [Option<(panels::Panel, f32)>; 2],
     layout: panels::Layout,
     targets: Option<SharedTargets>,
     generation: u32,
@@ -263,9 +265,10 @@ impl Session {
             physics_tris: Vec::new(),
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
-            item_card: crate::item_card::ItemCard::new(&gpu)?,
+            item_cards: [crate::item_card::ItemCard::new(&gpu)?, crate::item_card::ItemCard::new(&gpu)?],
+            held_cards: Default::default(),
             obs: crate::obs_view::ObsView::default(),
-            card: None,
+            cards: [None; 2],
             gpu,
             link,
             sec: Security::for_this_user(),
@@ -710,11 +713,19 @@ impl Session {
                 self.link.push_pocket_event(&ev);
             }
             self.rig.write_states(&mut self.states);
-            // What the thing in a hand is (or the thing its fingers are on in a pocket), on a card
+            // What the thing in each hand is (or the thing its fingers are on in a pocket), on a card
             // beside it.
-            self.item_card.read(&self.link);
-            let felt = self.rig.feeling().map(|(t, palm)| (t, rig_map.inv_point(palm)));
-            self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), felt, Vec3::from_array(frame.hmd.pos), frame.dt)?;
+            let rig = &self.rig;
+            let hand_of = |s: &ObjectState| match s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) {
+                OS_HELD_LEFT => Some(0),
+                OS_HELD_RIGHT => Some(1),
+                _ => rig.puller(s.id),
+            };
+            for (i, card) in self.item_cards.iter_mut().enumerate() {
+                card.read(&self.link);
+                let felt = rig.feeling(i).map(|(t, palm)| (t, rig_map.inv_point(palm)));
+                self.cards[i] = card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), i, hand_of, felt, Vec3::from_array(frame.hmd.pos), frame.dt)?;
+            }
             // The body the game makes up, when it changes.
             self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
@@ -751,7 +762,7 @@ impl Session {
             self.held_objects.update(&self.objects, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
             self.held_objects.clear();
-            self.card = None;
+            self.cards = [None; 2];
         }
         if let (true, Some(a)) = (self.opts.offline_audio && !self.opts.audio, &self.audio) {
             a.render((frame.dt.clamp(0.0, 0.1) * OFFLINE_RATE as f32).round() as usize);
@@ -1297,9 +1308,14 @@ impl Session {
                         let at = crate::hud::Attach {
                             gun,
                             off_hand: (off.connected != 0).then(|| (Vec3::from_array(off.grip.pos), quat(off.grip.rot))),
-                            held: self.card.zip(self.item_card.over()).map(|((_, opacity), at)| (at, opacity)),
+                            held: self.cards.iter().any(|c| c.is_some()),
                         };
                         let aspect = p.width / p.height.max(1e-4);
+                        // The game's card, while it's of a thing in a hand: that thing's picture.
+                        self.held_cards.next_frame();
+                        if info.flags & SLOT_STEREO != 0 {
+                            self.held_cards.cut(&self.gpu, hud, &self.hud_layout);
+                        }
                         let pieces = self.hud.place(
                             s,
                             Vec3::from_array(frame.hmd.pos),
@@ -1327,10 +1343,25 @@ impl Session {
         if !hud_shown {
             self.hud.reset();
         }
-        // (A game with its own card of what's held, `HUD_HELD`, has it placed there instead.)
+        // Each hand's card: a game's own (`HUD_HELD`) from its picture of the hand's thing, else the
+        // runtime's.
         let game_card = self.hud_layout.entries().iter().any(|e| e.role == HUD_HELD);
-        if let Some((p, opacity)) = self.card.filter(|_| !menu_mode && !game_card) {
-            layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, self.item_card.srv()) });
+        let head = Vec3::from_array(frame.hmd.pos);
+        for (card, item) in self.cards.iter().zip(&self.item_cards) {
+            if let (Some(_), Some(key)) = (card, item.key()) {
+                self.held_cards.touch(key);
+            }
+        }
+        for (card, item) in self.cards.iter().zip(&self.item_cards) {
+            let Some((p, opacity)) = card.filter(|_| !menu_mode) else { continue };
+            if !game_card {
+                layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, item.srv()) });
+            } else if let (Some(at), Some(key)) = (item.over(), item.key())
+                && let Some((srv, du, aspect)) = self.held_cards.picture(key)
+            {
+                let additive = self.hud_layout.flags & HUDL_ADDITIVE != 0;
+                layers.panels.push(PanelLayer { panel: crate::hud::held_card(at, head, du, aspect), srv, opacity, uv: [0.0, 0.0, 1.0, 1.0], additive });
+            }
         }
         if let Some(p) = layout.runtime_menu {
             layers.panels.push(PanelLayer::whole(p, self.menu.srv()));
