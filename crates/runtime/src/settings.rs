@@ -41,10 +41,14 @@ pub struct Riding {
     /// Fade out while the game's own animation puts you in the saddle or takes you down (it moves
     /// the view in ways you don't).
     pub fade_on_off: bool,
+    /// How far a rein moves from where it was taken before it does anything (metres): hands
+    /// resting on the reins drift, and do nothing.
+    pub rein_dead: f32,
     /// How far a rein is pulled (or the reins moved to one side) for the mount's hardest turn,
     /// metres.
     pub rein_travel: f32,
-    /// Both reins pulled back this far (metres) slows the mount a gait; held, it stops and backs.
+    /// Both reins pulled back this far (metres) slows the mount a gait; held, it slows to a stand.
+    /// From a stand, eased and pulled again and held, it backs.
     pub rein_pull: f32,
     /// A flick of the reins spurs the mount on (as well as the trigger of a hand on the reins).
     pub flick: bool,
@@ -57,7 +61,7 @@ pub struct Riding {
 
 impl Default for Riding {
     fn default() -> Self {
-        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_travel: 0.12, rein_pull: 0.07, flick: true, coast: 2.5, stride_haptics: true }
+        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_dead: 0.05, rein_travel: 0.17, rein_pull: 0.10, flick: true, coast: 2.5, stride_haptics: true }
     }
 }
 

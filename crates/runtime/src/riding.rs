@@ -10,17 +10,23 @@
 //! * **The reins** are where the game's rider holds them ([`Riding::reins`]). A free hand gripping
 //!   near them takes the rein on its side, and where it took it is that rein's rest. From there,
 //!   in the rider's own frame (tracking space turned to the mount as it was when the reins were
-//!   taken, so the view turning with the mount in steps never moves them):
+//!   taken, so the view turning with the mount in steps never moves them), and only past the dead
+//!   zone (`rein_dead`: hands resting on the reins do nothing; while a hand stays inside it its
+//!   rest follows it over [`REST_FOLLOW`], so a resting hand's drift never adds up to anything):
 //!   - one rein pulled back further than the other, or both moved to one side (laid on the neck,
-//!     or a rein opened out), turns the mount that way, as hard as the game turns it at
-//!     `rein_travel`;
+//!     or a rein opened out), turns the mount that way: gently at first, as hard as the game turns
+//!     it at `rein_travel`;
 //!   - both pulled back past `rein_pull` slow it a gait; held, a gait every [`PULL_REPEAT`] to a
-//!     stand, then it backs up;
+//!     stand, and there it stays. Backing up is asked for on its own, from a stand: the reins
+//!     eased and pulled back again, and held for [`BACK_AFTER`]; eased, it stands;
 //!   - a flick of the reins (a hand snapped down and stopped, either or both: the whip of Rival
 //!     Stars and DovaVR's stroke) or the trigger of a hand on a rein (a squeeze of the heels)
-//!     spurs it on a gait, up to its fastest.
+//!     spurs it on a gait, up to its fastest, whatever the reins are doing: reins held back are
+//!     given (where the hands are is their rest from then on).
 //!
 //!   One hand alone holds both reins, as on a western saddle: to the side it turns, back it slows.
+//!   What the hands did and what the mount was told goes into the log twice a second while a rein
+//!   is held, and each time the reins start or stop turning it.
 //! * **Let go** of the reins, the mount keeps its gait for `coast` seconds, then slows a gait every
 //!   [`COAST_STEP`] to a stand (the game's own slowing from one gait to the next).
 //! * **The stick** rides too: pushed, it's the gait (forward walks, at the push; with sprint the
@@ -42,12 +48,15 @@ use crate::settings::Settings;
 
 /// A hand takes a rein this close to where the game's rider holds it (metres).
 const REIN_REACH: f32 = 0.15;
-/// A rein moved less than this from its rest does nothing (metres): a resting hand drifts.
-const DEAD: f32 = 0.025;
-/// Held pulled back, the mount slows another gait this often (seconds), and once standing backs
-/// up after this long.
+/// A hand inside the dead zone carries its rein's rest along this slowly (seconds to close most of
+/// the way): drift is taken up, a deliberate move (a few tenths of a second) isn't.
+pub const REST_FOLLOW: f32 = 1.5;
+/// Held pulled back, the mount slows another gait this often (seconds); a pull begun at a stand
+/// and held this long backs it up.
 pub const PULL_REPEAT: f64 = 0.9;
-const BACK_AFTER: f64 = 1.0;
+pub const BACK_AFTER: f64 = 1.2;
+/// The reins' log while they're held, this often (seconds).
+const LOG_EVERY: f64 = 0.5;
 /// Let go of the reins, past the coast the mount slows a gait this often (seconds).
 pub const COAST_STEP: f64 = 1.5;
 /// A flick: a rein hand snapped down faster than this (m/s), then stopped (slower than
@@ -101,10 +110,14 @@ pub struct Riding {
     frame_yaw: f32,
     /// The gait asked for (as `Riding::gait`).
     gait: i32,
-    /// Both reins pulled back since; when the next gait down is; when the mount stood.
+    /// Both reins pulled back since; when the next gait down is; whether the pull began with the
+    /// mount standing (the reins eased since it stopped): held, it backs.
     pulling: Option<f64>,
     pull_step_at: f64,
-    stood_at: f64,
+    from_stand: bool,
+    /// The reins' last log, and which way they last turned the mount (-1, 0, 1).
+    logged_at: f64,
+    reins_turning: i32,
     /// The reins let go at; when the next gait down is.
     let_go_at: Option<f64>,
     coast_step_at: f64,
@@ -241,28 +254,48 @@ impl Riding {
             out.flags |= if self.reins[h].unwrap().side == 0 { RR_REIN_LEFT } else { RR_REIN_RIGHT };
         }
 
-        // Where the reins are from their rest, in the rider's frame (x right, y up, z ahead).
+        // Where the reins are from their rest, in the rider's frame (x right, y up, z ahead). A hand
+        // inside the dead zone carries its rest along: what a resting hand drifts is taken up.
         let turn = Quat::from_rotation_y(-self.frame_yaw);
-        let moved = |h: usize| self.reins[h].map_or(Vec3::ZERO, |rein| turn * (pos(h) - rein.rest));
-        let travel = s.rein_travel.max(0.03);
-        let (mut steer, pull) = match held.as_slice() {
-            [_, _] => {
-                let (l, rt) = (moved(0), moved(1));
-                // The right rein back further turns right, as do both reins moved right.
-                ((dead(rt.z - l.z) * -1.0 + dead(0.5 * (l.x + rt.x))) / travel, -l.z.max(rt.z))
+        let dead_zone = s.rein_dead.clamp(0.01, 0.15);
+        let follow = 1.0 - (-dt / REST_FOLLOW).exp();
+        for &h in &held {
+            if let Some(rein) = self.reins[h].as_mut() {
+                let m = turn * (pos(h) - rein.rest);
+                if m.x.abs() < dead_zone && m.z.abs() < dead_zone {
+                    rein.rest += (pos(h) - rein.rest) * follow;
+                }
             }
-            [h] => {
-                let m = moved(*h);
-                (dead(m.x) / travel, -m.z)
+        }
+        let reins_now = self.reins;
+        let moved = |h: usize| reins_now[h].map_or(Vec3::ZERO, |rein| turn * (pos(h) - rein.rest));
+        let on_side = |side: usize| (0..2).find(|&h| reins_now[h].is_some_and(|r| r.side == side));
+        let travel = s.rein_travel.max(dead_zone + 0.03);
+        // A move past the dead zone as a share of a full turn: gently at first, all of it at
+        // `rein_travel`.
+        let share = |d: f32| {
+            let x = ((d.abs() - dead_zone) / (travel - dead_zone)).clamp(0.0, 1.0);
+            d.signum() * (0.5 * x + 0.5 * x * x)
+        };
+        let (mut steer, pull) = match (on_side(0), on_side(1)) {
+            (Some(lh), Some(rh)) => {
+                let (l, rt) = (moved(lh), moved(rh));
+                // The right rein back further turns right, as do both reins moved right.
+                (share(l.z - rt.z) + share(0.5 * (l.x + rt.x)), -l.z.max(rt.z))
+            }
+            (Some(h), None) | (None, Some(h)) => {
+                let m = moved(h);
+                (share(m.x), -m.z)
             }
             _ => (0.0, 0.0),
         };
+        let rein_steer = steer;
 
         // A flick of a rein hand, or the trigger of one: a spur.
-        let mut spur = false;
+        let mut spur = None;
         for &h in &held {
             if triggered[h] && !self.trig_was[h] {
-                spur = true;
+                spur = Some("the trigger");
             }
             if s.flick {
                 match self.flick[h] {
@@ -270,7 +303,7 @@ impl Riding {
                     Some((t, _)) if now - t > FLICK_WINDOW => self.flick[h] = None,
                     Some((_, y0)) if velocity[h] > -FLICK_STOP => {
                         if y0 - pos(h).y >= FLICK_TRAVEL {
-                            spur = true;
+                            spur = Some("a flick");
                             tracing::info!("riding: a flick of the reins ({} hand, {:.2} m)", side_name(h), y0 - pos(h).y);
                         }
                         self.flick[h] = None;
@@ -287,27 +320,53 @@ impl Riding {
 
         // The gait from the reins.
         let was = self.gait;
+        let mut why = "";
         if !held.is_empty() {
             self.let_go_at = None;
-            let on = s.rein_pull.max(0.02);
-            if pull > on {
+            let on = s.rein_pull.max(dead_zone + 0.02);
+            if let Some(how) = spur.filter(|_| now - self.spur_at > SPUR_COOLDOWN) {
+                // A spur is always heard: reins held back are given, and where the hands are now
+                // is their rest.
+                self.spur_at = now;
+                self.gait = (self.gait.max(0) + 1).min(gaits);
+                why = how;
+                if self.pulling.take().is_some() {
+                    for &h in &held {
+                        if let Some(rein) = self.reins[h].as_mut() {
+                            rein.rest = pos(h);
+                        }
+                    }
+                    tracing::info!("riding: spurred with the reins held back ({:.2} m): the reins given", pull);
+                }
+                for &h in &held {
+                    self.haptics.push((h, 0.08, 80.0, 0.8));
+                }
+            } else if pull > on {
                 match self.pulling {
                     None => {
                         self.pulling = Some(now);
-                        self.slow(now);
+                        self.from_stand = self.gait == 0;
+                        tracing::info!("riding: the reins pulled back {:.2} m{}", pull, if self.from_stand { " at a stand (held, it backs)" } else { "" });
+                        if self.gait > 0 {
+                            self.slow(now);
+                            why = "the reins pulled";
+                        }
                     }
-                    Some(_) if now >= self.pull_step_at && self.gait > 0 => self.slow(now),
-                    Some(_) if self.gait == 0 && now - self.stood_at >= BACK_AFTER => self.gait = -1,
+                    Some(_) if self.gait > 0 && now >= self.pull_step_at => {
+                        self.slow(now);
+                        why = "the reins held back";
+                    }
+                    Some(since) if self.gait == 0 && self.from_stand && now - since >= BACK_AFTER => {
+                        self.gait = -1;
+                        why = "the reins held back at a stand";
+                    }
                     _ => {}
                 }
-            } else if pull < on * 0.5 && self.pulling.take().is_some() && self.gait < 0 {
-                self.gait = 0;
-            }
-            if spur && self.pulling.is_none() && now - self.spur_at > SPUR_COOLDOWN {
-                self.spur_at = now;
-                self.gait = (self.gait.max(0) + 1).min(gaits);
-                for &h in &held {
-                    self.haptics.push((h, 0.08, 80.0, 0.8));
+            } else if pull < on * 0.5 && self.pulling.take().is_some() {
+                tracing::info!("riding: the reins eased ({:.2} m back)", pull.max(0.0));
+                if self.gait < 0 {
+                    self.gait = 0;
+                    why = "the reins eased";
                 }
             }
         } else {
@@ -359,8 +418,51 @@ impl Riding {
         let by_stick = stick_on || self.stick_was;
         self.stick_was = stick_on;
         out.steer = steer.clamp(-1.0, 1.0);
+
+        // What the hands did and what the mount was told: twice a second while a rein is held,
+        // and whenever the reins start turning it, change the way they turn it, or stop.
+        let reins_way = if rein_steer.abs() > 1e-3 && !stick_on { rein_steer.signum() as i32 } else { 0 };
+        let reins_now = self.reins;
+        let hand = |h: usize| match reins_now[h] {
+            Some(r) => {
+                let m = turn * (pos(h) - r.rest);
+                format!("{} hand ({} rein) {:+.2} across {:+.2} back", side_name(h), side_name(r.side), m.x, -m.z)
+            }
+            None => format!("{} hand free", side_name(h)),
+        };
+        if !held.is_empty() && (reins_way != self.reins_turning || now - self.logged_at >= LOG_EVERY) {
+            if reins_way != self.reins_turning {
+                match reins_way {
+                    0 => tracing::info!("riding: the reins stop turning the mount"),
+                    t => tracing::info!("riding: the reins turn the mount {} ({:.2} of a full turn)", if t < 0 { "left" } else { "right" }, rein_steer.abs()),
+                }
+            }
+            tracing::info!(
+                "riding: reins: {}, {}; pull {:.2} (slows at {:.2}){} -> gait {} pace {:.2} steer {:+.2}{}",
+                hand(0),
+                hand(1),
+                pull,
+                s.rein_pull.max(dead_zone + 0.02),
+                if self.pulling.is_some() { ", held" } else { "" },
+                out.gait,
+                out.pace,
+                out.steer,
+                if out.flags & RR_STICK != 0 { " (the stick)" } else { "" }
+            );
+            self.logged_at = now;
+        }
+        self.reins_turning = if held.is_empty() { 0 } else { reins_way };
         if self.gait != was {
-            tracing::info!("riding: gait {} -> {} ({})", was, self.gait, if by_stick { "the stick" } else if spur { "spurred on" } else if !held.is_empty() { "the reins pulled" } else { "the reins let go" });
+            let why = if by_stick {
+                "the stick"
+            } else if !why.is_empty() {
+                why
+            } else if !held.is_empty() {
+                "the reins"
+            } else {
+                "the reins let go"
+            };
+            tracing::info!("riding: gait {} -> {} ({})", was, self.gait, why);
             if self.gait < was {
                 for &h in &held {
                     self.haptics.push((h, 0.05, 60.0, 0.5));
@@ -440,12 +542,7 @@ impl Riding {
 
     /// Down a gait (not past standing), and the next one after `PULL_REPEAT` if the pull's held.
     fn slow(&mut self, now: f64) {
-        if self.gait > 0 {
-            self.gait -= 1;
-            if self.gait == 0 {
-                self.stood_at = now;
-            }
-        }
+        self.gait = (self.gait - 1).max(0);
         self.pull_step_at = now + PULL_REPEAT;
     }
 }
@@ -457,11 +554,6 @@ fn side_name(h: usize) -> &'static str {
 fn quat(q: [f32; 4]) -> Quat {
     let q = Quat::from_array(q);
     if q.length_squared() < 1e-8 { Quat::IDENTITY } else { q.normalize() }
-}
-
-/// A rein's move past the dead zone (its sign kept).
-fn dead(x: f32) -> f32 {
-    x.signum() * (x.abs() - DEAD).max(0.0)
 }
 
 fn deadzone(x: f32, dz: f32) -> f32 {
