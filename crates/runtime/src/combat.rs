@@ -374,6 +374,11 @@ impl Combat {
             .collect()
     }
 
+    /// The creatures near the player, as the game last sent them.
+    pub fn actors(&self) -> &Actors {
+        &self.actors
+    }
+
     /// The tables the game wrote (reads the link once a frame; what's unchanged stays).
     #[cfg(windows)]
     pub fn read(&mut self, link: &rustvr_protocol::link::Link) {
@@ -482,8 +487,8 @@ impl Combat {
                     self.blocks(inp, h, id, &desc, &prev, &now, dt, &mut events);
                 }
                 seen.insert(id, now);
-            } else if held.is_none() {
-                // An empty hand closed into a fist punches.
+            } else if held.is_none() && inp.rig.holds_creature(h).is_none() {
+                // An empty hand closed into a fist punches (not one closed on a creature it holds).
                 let hs = &inp.out.hands[h];
                 let fist = inp.frame.hands[h].squeeze > FIST_SQUEEZE && hs.flags & HAND_TRACKED != 0;
                 let (hp, hq) = (Vec3::from_array(hs.pose.pos), Quat::from_array(hs.pose.rot));

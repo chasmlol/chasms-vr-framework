@@ -307,6 +307,20 @@ impl Link {
     pub fn read_actors_into(&self, out: &mut Actors) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_ACTORS), out) }
     }
+    /// Adapter: what grabbing the creatures needs (see [`ActorBodies`]), every frame with them.
+    pub fn write_actor_bodies(&self, v: &ActorBodies) {
+        unsafe { seq_write(self.base.add(OFF_ACTOR_BODIES), v) }
+    }
+    pub fn read_actor_bodies_into(&self, out: &mut ActorBodies) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_ACTOR_BODIES), out) }
+    }
+    /// Runtime: each hand's grab of a creature (see [`CreatureGrabs`]), every frame.
+    pub fn write_creature_grabs(&self, v: &CreatureGrabs) {
+        unsafe { seq_write(self.base.add(OFF_CREATURE_GRABS), v) }
+    }
+    pub fn read_creature_grabs_into(&self, out: &mut CreatureGrabs) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_CREATURE_GRABS), out) }
+    }
     /// Adapter: the blades of the melee weapons it offers.
     pub fn write_melee(&self, v: &MeleeTable) {
         unsafe { seq_write(self.base.add(OFF_MELEE), v) }

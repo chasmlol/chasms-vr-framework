@@ -96,6 +96,11 @@
 
 #define RVR_CTRL_TOUCH_STICK (1 << 9)
 
+/**
+ * The thumb rests on the thumbrest (Touch controllers).
+ */
+#define RVR_CTRL_TOUCH_REST (1 << 10)
+
 #define RVR_HAND_LEFT 0
 
 #define RVR_HAND_RIGHT 1
@@ -514,6 +519,44 @@
  */
 #define RVR_CEF_BACK (1 << 5)
 
+#define RVR_OFF_ACTOR_BODIES 5308416
+
+/**
+ * The hands may take hold of it.
+ */
+#define RVR_BODY_GRABBABLE (1 << 0)
+
+/**
+ * All of it is physics now (dead, knocked down, lifted off its feet): nothing of it stands.
+ */
+#define RVR_BODY_RAGDOLL (1 << 1)
+
+/**
+ * Alive and awake enough to struggle (not dead, not knocked out).
+ */
+#define RVR_BODY_CONSCIOUS (1 << 2)
+
+/**
+ * Held now. Without it the grab has been let go of: its last word, with the throw (`vel`), kept
+ * until the hand takes hold of something else.
+ */
+#define RVR_GRAB_HELD (1 << 0)
+
+/**
+ * On the throat: `squeeze` chokes.
+ */
+#define RVR_GRAB_THROAT (1 << 1)
+
+/**
+ * The other hand holds the same creature.
+ */
+#define RVR_GRAB_TWO_HANDS (1 << 2)
+
+/**
+ * The grip slipped (the hand was pulled past its reach): let go without a throw.
+ */
+#define RVR_GRAB_SLIPPED (1 << 3)
+
 
 
 #define RVR_MAX_HUD_ELEMENTS 32
@@ -803,20 +846,22 @@
 #define RVR_SHAPE_SPHERE 2
 
 /**
- * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
- * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ * The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+ * collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+ * Until its points arrive, the box `half_extents` about `center`.
  */
 #define RVR_SHAPE_HULL 3
 
 /**
  * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
- * whenever the objects offered change (before they're published).
+ * whenever the objects offered change (before they're published). An object with several convex
+ * parts has an entry for each.
  */
 #define RVR_OFF_GAME_HULLS 5046272
 
-#define RVR_MAX_GAME_HULLS 48
+#define RVR_MAX_GAME_HULLS 240
 
-#define RVR_MAX_HULL_POINTS 128
+#define RVR_MAX_HULL_POINTS 32
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 
@@ -1488,6 +1533,8 @@ typedef uint32_t RVR_Joint;
 #endif // __cplusplus
 
 #define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, RVR_TexKind_BloomLeft, RVR_TexKind_BloomRight, RVR_TexKind_LensLeft, RVR_TexKind_LensRight, }
+
+
 
 
 

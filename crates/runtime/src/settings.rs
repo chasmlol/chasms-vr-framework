@@ -243,6 +243,9 @@ pub struct Interaction {
     pub mechanism_stiffness: f32,
     /// Multiplies throw speed (on top of the speed-dependent gain every throw gets).
     pub throw_scale: f32,
+    /// The most a hand pulls a creature it holds with (N), times the game's own strength for the
+    /// player (1 for an average person): at 1500 one hand lifts a person by the throat, slowly.
+    pub creature_strength: f32,
     /// How grenades arm: the other hand pulls the pin, or a button on the hand holding it.
     pub grenade_arming: GrenadeArming,
     /// Throwing knives stick more forgivingly (the blade within 72 degrees of its flight, not 60).
@@ -434,6 +437,7 @@ impl Default for Interaction {
             weight: 0.5,
             mechanism_stiffness: 1.0,
             throw_scale: 1.0,
+            creature_strength: 1500.0,
             grenade_arming: GrenadeArming::Pin,
             knife_assist: true,
             virtual_stock: false,

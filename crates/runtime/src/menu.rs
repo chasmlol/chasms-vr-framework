@@ -412,6 +412,7 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
     slider(ui, "Weight (heavy things lag)", &mut h.weight, 0.0, 1.0, "", 2);
     slider(ui, "Mechanisms' stiffness (valves, switches)", &mut h.mechanism_stiffness, 0.25, 2.0, "x", 2);
     slider(ui, "Throw strength", &mut h.throw_scale, 0.6, 2.0, "x", 2);
+    slider(ui, "Strength on creatures (a hand's pull)", &mut h.creature_strength, 400.0, 4000.0, " N", 0);
     ui.horizontal(|ui| {
         ui.label("Grenades");
         ui.selectable_value(&mut h.grenade_arming, GrenadeArming::Pin, "Pull the pin with the other hand");

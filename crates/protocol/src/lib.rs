@@ -61,6 +61,7 @@ use bytemuck::{Pod, Zeroable};
 pub mod link;
 pub mod avatar;
 pub mod combat;
+pub mod grab;
 pub mod hud;
 pub mod items;
 pub mod sound;
@@ -70,6 +71,7 @@ pub mod player;
 
 pub use avatar::*;
 pub use combat::*;
+pub use grab::*;
 pub use hud::*;
 pub use items::*;
 pub use sound::*;
