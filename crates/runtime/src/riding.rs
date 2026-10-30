@@ -14,20 +14,21 @@
 //!   rest (a soft tick says so). A trigger squeezed with the grip as the rein is taken isn't a
 //!   spur. From there,
 //!   in the rider's own frame (tracking space turned to the mount as it was when the reins were
-//!   taken, so the view turning with the mount in steps never moves them), and only past the dead
-//!   zone (`rein_dead`: hands resting on the reins do nothing; while a hand stays inside it its
-//!   rest follows it over [`REST_FOLLOW`], so a resting hand's drift never adds up to anything):
+//!   taken, so the view turning with the mount in steps never moves them):
 //!   - one rein pulled back further than the other, or both moved to one side (laid on the neck,
-//!     or a rein opened out), turns the mount that way: gently at first, as hard as the game turns
-//!     it at `rein_travel`;
+//!     or a rein opened out), turns the mount that way, finely: past [`STEER_DEAD`] (a resting
+//!     hand's tremor; while a hand stays inside it its rest follows it over [`REST_FOLLOW`], so
+//!     drift never adds up), gently at first, as hard as the game turns it at `rein_travel`,
+//!     smoothed over [`STEER_SMOOTH`];
 //!   - its speed is a share of its full gallop, and fluid: a flick of the reins (a hand snapped
 //!     down and stopped, either or both: the whip of Rival Stars and DovaVR's stroke) or the
-//!     trigger of a hand on a rein (a squeeze of the heels) spurs it: it surges to its full gallop
-//!     (rising at [`ACCEL`]), and the surge fades slowly (over `spur_fade`) to a cruise (`cruise`
-//!     of its gallop): to keep it at full, keep spurring. Reins held back are given by a spur
-//!     (where the hands are is their rest from then on);
-//!   - both pulled back slow it, as hard as they're pulled: nothing at the dead zone, [`BRAKE`] a
-//!     second at `rein_pull`. Where it's slowed to when they're eased, it stays (a walk, a stand).
+//!     trigger of a hand on a rein (a squeeze of the heels) spurs it, as hard as it's done (the
+//!     flick's speed, the squeeze's depth): it surges by that much, up to a full gallop for the
+//!     hardest (rising at [`ACCEL`]), and the surge fades slowly (over `spur_fade`) to `cruise` of
+//!     it: a light spur from a stand walks it slowly; to keep it at full, keep spurring hard. Reins
+//!     held back are given by a spur (where the hands are is their rest from then on);
+//!   - both pulled back slow it, as hard as they're pulled: nothing at the dead zone (`rein_dead`:
+//!     hands resting on the reins don't slow it), [`BRAKE`] a second at `rein_pull`. Where it's slowed to when they're eased, it stays (a walk, a stand).
 //!     Backing up is asked for on its own, from a stand: the reins eased and pulled right back
 //!     again, and held for [`BACK_AFTER`]; eased, it stands;
 //!
@@ -57,9 +58,13 @@ use crate::settings::Settings;
 
 /// A hand takes a rein this close to where the game's rider holds it (metres).
 const REIN_REACH: f32 = 0.15;
-/// A hand inside the dead zone carries its rein's rest along this slowly (seconds to close most of
-/// the way): drift is taken up, a deliberate move (a few tenths of a second) isn't.
+/// A rein moved less than this from its rest doesn't steer (metres): a resting hand's tremor. A hand
+/// inside it carries its rein's rest along `REST_FOLLOW` slowly (seconds to close most of the
+/// way): drift is taken up, a deliberate move (a few tenths of a second) isn't. The reins' steering
+/// is smoothed over `STEER_SMOOTH` (seconds).
+pub const STEER_DEAD: f32 = 0.015;
 pub const REST_FOLLOW: f32 = 1.5;
+pub const STEER_SMOOTH: f32 = 0.08;
 /// A full pull begun at a stand and held this long backs the mount up (seconds).
 pub const BACK_AFTER: f64 = 1.2;
 /// The rider's speed (a share of the mount's full gallop): a spur's surge rises to it at `ACCEL` a
@@ -84,8 +89,17 @@ const TAKE_TRIGGER: f64 = 0.4;
 /// The reins turn the mount (for the log) past this share of a full turn.
 const LOG_TURNING: f32 = 0.05;
 /// A flick: a rein hand snapped down faster than this (m/s), then stopped (slower than
-/// `FLICK_STOP` down) within `FLICK_WINDOW`, `FLICK_TRAVEL` or more lower.
+/// `FLICK_STOP` down) within `FLICK_WINDOW`, `FLICK_TRAVEL` or more lower; as hard as a spur gets
+/// at `FLICK_HARD` (m/s at its fastest).
 const FLICK_DOWN: f32 = 1.1;
+const FLICK_HARD: f32 = 3.5;
+/// A squeeze of a rein hand's trigger: past `SQUEEZE` (of its travel), as deep as it goes in
+/// `SQUEEZE_TIME` (seconds): that deep, that hard a spur.
+const SQUEEZE: f32 = 0.3;
+const SQUEEZE_TIME: f64 = 0.12;
+/// The lightest spur adds this much of a full gallop (a slow walk, from a stand); the hardest, all
+/// of it.
+const SPUR_LEAST: f32 = 0.1;
 const FLICK_STOP: f32 = 0.25;
 const FLICK_WINDOW: f64 = 0.3;
 const FLICK_TRAVEL: f32 = 0.04;
@@ -159,7 +173,11 @@ pub struct Riding {
     /// and since when it's been still (taking up a rein).
     last_pos: [Option<Vec3>; 2],
     still_since: [Option<f64>; 2],
-    flick: [Option<(f64, f32)>; 2],
+    flick: [Option<(f64, f32, f32)>; 2],
+    /// A rein hand's trigger squeezed since, and how deep yet.
+    squeeze: [Option<(f64, f32)>; 2],
+    /// The reins' steering, smoothed.
+    steer: f32,
     grip_was: [bool; 2],
     trig_was: [bool; 2],
     /// The trigger held since, and whether this hold already asked to get off.
@@ -278,6 +296,8 @@ impl Riding {
                         }
                         self.reins[h] = Some(Rein { side, rest: pos(h), taken_at: now, settled: false });
                         self.still_since[h] = None;
+                        // (A trigger squeezed as the rein's taken is let go before it spurs.)
+                        self.squeeze[h] = Some((f64::INFINITY, 0.0));
                         self.haptics.push((h, 0.04, 120.0, 0.5));
                         tracing::info!("riding: the {} hand took the {} rein ({:.2} m from it)", side_name(h), side_name(side), d);
                     }
@@ -314,7 +334,7 @@ impl Riding {
         for &h in &held {
             if let Some(rein) = self.reins[h].as_mut() {
                 let m = turn * (pos(h) - rein.rest);
-                if m.x.abs() < dead_zone && m.z.abs() < dead_zone {
+                if m.x.abs() < STEER_DEAD && m.z.abs() < STEER_DEAD {
                     rein.rest += (pos(h) - rein.rest) * follow;
                 }
             }
@@ -322,14 +342,14 @@ impl Riding {
         let reins_now = self.reins;
         let moved = |h: usize| reins_now[h].map_or(Vec3::ZERO, |rein| turn * (pos(h) - rein.rest));
         let on_side = |side: usize| (0..2).find(|&h| reins_now[h].is_some_and(|r| r.side == side));
-        let travel = s.rein_travel.max(dead_zone + 0.03);
-        // A move past the dead zone as a share of a full turn: gently at first, all of it at
-        // `rein_travel`.
+        let travel = s.rein_travel.max(STEER_DEAD + 0.03);
+        // A move past the steering's dead zone as a share of a full turn: gently at first, all of
+        // it at `rein_travel`.
         let share = |d: f32| {
-            let x = ((d.abs() - dead_zone) / (travel - dead_zone)).clamp(0.0, 1.0);
+            let x = ((d.abs() - STEER_DEAD) / (travel - STEER_DEAD)).clamp(0.0, 1.0);
             d.signum() * (0.5 * x + 0.5 * x * x)
         };
-        let (mut steer, pull) = match (on_side(0), on_side(1)) {
+        let (rein_steer, pull) = match (on_side(0), on_side(1)) {
             (Some(lh), Some(rh)) => {
                 let (l, rt) = (moved(lh), moved(rh));
                 // The right rein back further turns right, as do both reins moved right.
@@ -341,26 +361,48 @@ impl Riding {
             }
             _ => (0.0, 0.0),
         };
-        let rein_steer = steer;
+        // (Smoothed: a trembling hand's turn doesn't jitter.)
+        self.steer += (rein_steer - self.steer) * (1.0 - (-dt / STEER_SMOOTH).exp());
+        let rein_steer = if held.is_empty() { 0.0 } else { self.steer };
+        let mut steer = rein_steer;
 
-        // A flick of a rein hand, or the trigger of one: a spur.
-        let mut spur = None;
+        // A flick of a rein hand, or a squeeze of its trigger: a spur, as hard as it's done (0..1).
+        let mut spur: Option<(&str, f32)> = None;
+        let mut spurred = |how: &'static str, hard: f32| {
+            if spur.is_none_or(|(_, was)| hard > was) {
+                spur = Some((how, hard));
+            }
+        };
         for &h in &held {
             // (A trigger squeezed with the grip as the rein is taken isn't a spur.)
-            if triggered[h] && !self.trig_was[h] && self.reins[h].is_some_and(|r| now - r.taken_at >= TAKE_TRIGGER) {
-                spur = Some("the trigger");
+            let trigger = if live(h) { f.hands[h].trigger } else { 0.0 };
+            let taking = self.reins[h].is_some_and(|r| now - r.taken_at < TAKE_TRIGGER);
+            match self.squeeze[h] {
+                None if trigger > SQUEEZE && !taking => self.squeeze[h] = Some((now, trigger)),
+                Some((t, deepest)) if now - t >= SQUEEZE_TIME => {
+                    let hard = ((deepest.max(trigger) - SQUEEZE) / (1.0 - SQUEEZE)).clamp(0.0, 1.0);
+                    spurred("the trigger", hard);
+                    tracing::info!("riding: a squeeze of the {} hand's trigger ({:.0}% of it: {:.0}% of the hardest spur)", side_name(h), deepest.max(trigger) * 100.0, hard * 100.0);
+                    // (Held, it's one squeeze: the next starts once it's let go.)
+                    self.squeeze[h] = Some((f64::INFINITY, 0.0));
+                }
+                Some((t, deepest)) if t.is_finite() => self.squeeze[h] = Some((t, deepest.max(trigger))),
+                Some(_) if trigger < SQUEEZE * 0.5 => self.squeeze[h] = None,
+                _ => {}
             }
             if s.flick {
                 match self.flick[h] {
-                    None if velocity[h] < -FLICK_DOWN => self.flick[h] = Some((now, pos(h).y)),
-                    Some((t, _)) if now - t > FLICK_WINDOW => self.flick[h] = None,
-                    Some((_, y0)) if velocity[h] > -FLICK_STOP => {
+                    None if velocity[h] < -FLICK_DOWN => self.flick[h] = Some((now, pos(h).y, -velocity[h])),
+                    Some((t, _, _)) if now - t > FLICK_WINDOW => self.flick[h] = None,
+                    Some((_, y0, fastest)) if velocity[h] > -FLICK_STOP => {
                         if y0 - pos(h).y >= FLICK_TRAVEL {
-                            spur = Some("a flick");
-                            tracing::info!("riding: a flick of the reins ({} hand, {:.2} m)", side_name(h), y0 - pos(h).y);
+                            let hard = ((fastest - FLICK_DOWN) / (FLICK_HARD - FLICK_DOWN)).clamp(0.0, 1.0);
+                            spurred("a flick", hard);
+                            tracing::info!("riding: a flick of the reins ({} hand, {:.2} m at {:.1} m/s: {:.0}% of the hardest spur)", side_name(h), y0 - pos(h).y, fastest, hard * 100.0);
                         }
                         self.flick[h] = None;
                     }
+                    Some((t, y0, fastest)) => self.flick[h] = Some((t, y0, fastest.max(-velocity[h]))),
                     _ => {}
                 }
             }
@@ -368,6 +410,7 @@ impl Riding {
         for h in 0..2 {
             if self.reins[h].is_none() {
                 self.flick[h] = None;
+                self.squeeze[h] = None;
             }
         }
 
@@ -380,12 +423,12 @@ impl Riding {
             let full = s.rein_pull.max(dead_zone + 0.03);
             // (How hard the reins are pulled: nothing at the dead zone, all of it at `rein_pull`.)
             let brake = ((pull - dead_zone) / (full - dead_zone)).clamp(0.0, 1.0);
-            if let Some(how) = spur.filter(|_| now - self.spur_at > SPUR_COOLDOWN) {
+            if let Some((how, hard)) = spur.filter(|_| now - self.spur_at > SPUR_COOLDOWN) {
                 // A spur is always heard: reins held back are given, and where the hands are now
-                // is their rest.
+                // is their rest. It surges as hard as it's done, and settles to its share of that.
                 self.spur_at = now;
-                self.surge = 1.0;
-                self.cruise = self.cruise.max(s.cruise.clamp(0.05, 1.0));
+                self.surge = (self.surge.max(self.speed) + SPUR_LEAST + (1.0 - SPUR_LEAST) * hard).min(1.0);
+                self.cruise = self.cruise.max(self.surge * s.cruise.clamp(0.05, 1.0));
                 self.gait = self.gait.max(0);
                 why = how;
                 if self.pulling.take().is_some() || brake > 0.0 {
@@ -397,7 +440,7 @@ impl Riding {
                     tracing::info!("riding: spurred with the reins held back ({:.2} m): the reins given", pull);
                 }
                 self.braking = false;
-                tracing::info!("riding: {}: a surge to a full gallop (from {:.2} of it), settling at {:.2}", how, self.speed, self.cruise);
+                tracing::info!("riding: {} ({:.0}% of the hardest): a surge to {:.2} of a gallop (from {:.2}), settling at {:.2}", how, hard * 100.0, self.surge, self.speed, self.cruise);
                 for &h in &held {
                     self.haptics.push((h, 0.08, 80.0, 0.8));
                 }
