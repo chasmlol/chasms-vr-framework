@@ -366,6 +366,8 @@ pub struct Combat {
     /// spells are fire (the damage tables' fire rows).
     pub imbues: HashMap<u32, Imbue>,
     pub fire_spells: Vec<u32>,
+    /// The hits heard this frame: (cue, where (world), how hard 0..1, the weapon).
+    pub sounds: Vec<(crate::rig::feedback::Cue, Vec3, f32, u32)>,
     /// The creatures' swinging weapons' blades last frame (world), and when each may strike the
     /// player again.
     item_prev: HashMap<u32, Vec<(Vec3, Vec3)>>,
@@ -403,6 +405,7 @@ impl Default for Combat {
             fire_spells: Vec::new(),
             item_prev: HashMap::new(),
             struck_until: HashMap::new(),
+            sounds: Vec::new(),
             prev: HashMap::new(),
             prev_parts: HashMap::new(),
             touching: Default::default(),
@@ -932,6 +935,19 @@ impl Combat {
         true
     }
 
+    /// What a hit sounds like (by the two materials and the damage type): metal on metal clashes, a
+    /// blade into wood chops, flesh is cut, stabbed or thumped.
+    fn hit_cue(kind: u32, material: u32) -> crate::rig::feedback::Cue {
+        use crate::rig::feedback::Cue;
+        match (material, kind) {
+            (MAT_CHAINMAIL | MAT_PLATE | MAT_STONE, _) => Cue::Clash,
+            (MAT_WOOD | MAT_BONE, DMG_SLASH | DMG_PIERCE) => Cue::Chop,
+            (_, DMG_SLASH) => Cue::HitCut,
+            (_, DMG_PIERCE) => Cue::HitStab,
+            _ => Cue::HitBlunt,
+        }
+    }
+
     /// The older table's damagers for a weapon described in [`MeleeWeapons`] (for the blocks).
     fn as_desc(w: &MeleeWeapon) -> MeleeDesc {
         let mut d = MeleeDesc { id: w.id, ..Default::default() };
@@ -1061,6 +1077,7 @@ impl Combat {
                 self.pulses.push(Pulse { hand: h, seconds: 0.05 + 0.15 * k, frequency: if judged.kind == DMG_BLUNT { 70.0 } else { 120.0 }, amplitude: (0.3 + 0.7 * k).min(1.0) });
             }
         }
+        self.sounds.push((Self::hit_cue(judged.kind, body.part.material), point, k, object));
         events.push(ev);
         Some(JudgedHit { actor: body.actor.id, index: body.index, part_kind: body.part.kind, radius: body.part.radius, point, vel, normal, judged })
     }
@@ -1207,6 +1224,7 @@ impl Combat {
                     // The clash in the hand: as hard as it was.
                     let k = rustvr_melee::intensity(speed);
                     self.pulses.push(Pulse { hand, seconds: 0.06 + 0.1 * k, frequency: 80.0, amplitude: (0.4 + 0.6 * k).min(1.0) });
+                    self.sounds.push((crate::rig::feedback::Cue::Clash, p, k.max(0.1), object));
                     events.push(ev);
                     break 'mine;
                 }
@@ -1259,6 +1277,7 @@ impl Combat {
                         for h in 0..2 {
                             self.pulses.push(Pulse { hand: h, seconds: 0.15, frequency: 60.0, amplitude: 1.0 });
                         }
+                        self.sounds.push((Self::hit_cue(j.kind, MAT_FLESH), p, rustvr_melee::intensity(j.speed), item.id));
                         events.push(ev);
                         break 'blades;
                     }

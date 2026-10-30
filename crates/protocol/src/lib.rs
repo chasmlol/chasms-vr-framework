@@ -978,6 +978,13 @@ pub const EV_MIRROR_CAST: u32 = 7;
 /// The game's effect for the mirror's summons `a` ([`MirrorView::summons`]) reached its moment:
 /// the glass appears (or goes) now, as a summoned creature appears at its effect's "Hit".
 pub const EV_MIRROR_HIT: u32 = 8;
+/// One of the game's creatures cries out (a grunt as it's hit, a shout as it swings, its last
+/// breath), for a game with no voices of its own: `a` which (`VOICE_*`), f0..f2 where (world), f3
+/// how loud (0..1).
+pub const EV_VOICE: u32 = 9;
+pub const VOICE_HURT: u32 = 1;
+pub const VOICE_ATTACK: u32 = 2;
+pub const VOICE_DEATH: u32 = 3;
 
 pub const HAPTIC_LEFT: u32 = 0;
 pub const HAPTIC_RIGHT: u32 = 1;

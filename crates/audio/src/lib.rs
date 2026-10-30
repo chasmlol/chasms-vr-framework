@@ -85,10 +85,20 @@ pub enum Sound {
     ShotShotgun,
     /// A melee hit; `intensity` is the swing speed mapped to 0..1.
     Melee,
+    /// An edge cutting flesh: a wet slice with a thud under it.
+    Cut,
+    /// A point going into flesh: a dull thud and a squelch.
+    Stab,
+    /// Metal on metal (blade on blade, on armour): a struck, inharmonic ring.
+    Clash,
+    /// A blade biting into wood: a hollow knock.
+    Chop,
+    /// A creature's grunt (a game with no voices of its own asks for it).
+    Grunt,
 }
 
 impl Sound {
-    pub const ALL: [Sound; 24] = [
+    pub const ALL: [Sound; 29] = [
         Sound::Grab,
         Sound::Release,
         Sound::HolsterIn,
@@ -113,6 +123,11 @@ impl Sound {
         Sound::ShotRifle,
         Sound::ShotShotgun,
         Sound::Melee,
+        Sound::Cut,
+        Sound::Stab,
+        Sound::Clash,
+        Sound::Chop,
+        Sound::Grunt,
     ];
 }
 
@@ -169,10 +184,17 @@ pub enum Event {
     /// swallowing (the runtime has no sound of its own for them).
     Bite,
     Gulp,
+    /// Melee: an edge cutting, a point stabbing, metal clashing, a blade biting wood, a creature
+    /// grunting (`docs/MELEE.md`).
+    HitCut,
+    HitStab,
+    Clash,
+    Chop,
+    Grunt,
 }
 
 impl Event {
-    pub const COUNT: usize = 34;
+    pub const COUNT: usize = 39;
     pub const ALL: [Event; Event::COUNT] = [
         Event::Grab,
         Event::Release,
@@ -208,6 +230,11 @@ impl Event {
         Event::KnifeStick,
         Event::Bite,
         Event::Gulp,
+        Event::HitCut,
+        Event::HitStab,
+        Event::Clash,
+        Event::Chop,
+        Event::Grunt,
     ];
 
     /// Its key in `sounds.toml`.
@@ -247,6 +274,11 @@ impl Event {
             Event::KnifeStick => "knife_stick",
             Event::Bite => "bite",
             Event::Gulp => "gulp",
+            Event::HitCut => "hit_cut",
+            Event::HitStab => "hit_stab",
+            Event::Clash => "clash",
+            Event::Chop => "chop",
+            Event::Grunt => "grunt",
         }
     }
 
@@ -287,6 +319,11 @@ impl Event {
             Event::GrenadeThrow | Event::KnifeThrow => Sound::GloveFlick,
             Event::Explosion => Sound::ShotShotgun,
             Event::KnifeStick => Sound::Impact,
+            Event::HitCut => Sound::Cut,
+            Event::HitStab => Sound::Stab,
+            Event::Clash => Sound::Clash,
+            Event::Chop => Sound::Chop,
+            Event::Grunt => Sound::Grunt,
             Event::FireTail | Event::Casing | Event::Bite | Event::Gulp => return None,
         })
     }
@@ -319,6 +356,9 @@ impl Event {
             Event::FireTail => 0.25,
             Event::Casing => 0.2,
             Event::Bite | Event::Gulp => 0.25,
+            Event::HitCut | Event::HitStab | Event::Chop => 0.42,
+            Event::Clash => 0.5,
+            Event::Grunt => 0.4,
         }
     }
 }

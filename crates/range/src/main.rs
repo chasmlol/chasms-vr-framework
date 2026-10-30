@@ -702,7 +702,12 @@ impl Game {
         if self.time - self.struck_at > 5.0 {
             self.player_health = (self.player_health + 2.0 * dt).min(rustvr_melee::body::PLAYER_HEALTH);
         }
-        for h in self.people.happened() {
+        let happened = self.people.happened();
+        for (voice, at) in std::mem::take(&mut self.people.said) {
+            let loud = if voice == VOICE_DEATH { 1.0 } else { 0.7 };
+            self.adapter.push_event(Event { kind: EV_VOICE, a: voice, f: [at.x, at.y, at.z, loud, 0.0, 0.0] });
+        }
+        for h in happened {
             if let ragdoll::Happened::Severed { id, part, at, out, radius } = h {
                 let ev = GoreEvent { kind: GE_SEVER, actor: id, limb: ragdoll::limb_of(part), at: at.to_array(), radius, out: out.to_array(), blood: 0, strength: 1.0, push_speed: rustvr_melee::SLICE_PUSH, push: out.to_array(), ..Default::default() };
                 self.adapter.push_gore_event(&ev);

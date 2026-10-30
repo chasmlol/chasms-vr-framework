@@ -156,7 +156,88 @@ fn design(sound: Sound, index: usize, rate: f32) -> Variation {
         Sound::ShotRifle => shot(&mut v, &RIFLE),
         Sound::ShotShotgun => shot(&mut v, &SHOTGUN),
         Sound::Melee => melee(&mut v),
+        Sound::Cut => cut(&mut v),
+        Sound::Stab => stab(&mut v),
+        Sound::Clash => clash(&mut v),
+        Sound::Chop => chop(&mut v),
+        Sound::Grunt => grunt(&mut v),
     }
+}
+
+/// An edge through flesh: a wet slice (a quick band of noise falling as it goes, a crackle of
+/// wet clicks) over a low thud of the body taking it; a hard one adds a sharper tear.
+fn cut(v: &mut Vary) -> Variation {
+    let mut body = v.buf();
+    body.mode(0.0, v.partial(110.0), v.s(0.05), v.amp(0.8));
+    body.noise(0.0, v.amp(1.0), Noise::band(v.hz(1700.0), 0.8), Env::new(0.003, 0.0, v.s(0.07)));
+    body.noise(0.01, v.amp(0.5), Noise::band(v.hz(900.0), 0.7), Env::new(0.004, 0.0, v.s(0.09)));
+    for _ in 0..5 + v.rng.below(4) {
+        let at = v.rng.range(0.0, 0.08) * v.time;
+        body.noise(at, v.rng.range(0.1, 0.3), Noise::band(v.rng.range(2500.0, 4500.0), 1.2), Env::hit(v.rng.range(0.001, 0.003)));
+    }
+    let mut hard = v.buf();
+    hard.noise(0.0, v.amp(1.0), Noise::band(v.hz(3200.0), 0.6), Env::new(0.0005, 0.0, v.s(0.03)));
+    hard.mode(0.0, v.partial(230.0), v.s(0.03), v.amp(0.4));
+    Variation::from_layers(body.finish(0.4), hard.finish(0.3), Vec::new(), false)
+}
+
+/// A point going in: a dull thud and a short, falling squelch.
+fn stab(v: &mut Vary) -> Variation {
+    let mut body = v.buf();
+    body.mode(0.0, v.partial(85.0), v.s(0.07), v.amp(1.0));
+    body.mode(0.0, v.partial(160.0), v.s(0.04), v.amp(0.5));
+    body.noise(0.0, v.amp(0.6), Noise::low(v.hz(700.0)), Env::new(0.002, 0.0, v.s(0.05)));
+    body.tone(0.01, v.amp(0.35), v.hz(420.0), v.hz(230.0), 0.06, Env::new(0.004, 0.0, v.s(0.07)));
+    body.noise(0.015, v.amp(0.4), Noise::band(v.hz(1300.0), 1.0), Env::new(0.004, 0.0, v.s(0.06)));
+    let mut hard = v.buf();
+    hard.noise(0.0, v.amp(0.8), Noise::band(v.hz(2200.0), 0.8), Env::new(0.0005, 0.0, v.s(0.02)));
+    Variation::from_layers(body.finish(0.42), hard.finish(0.26), Vec::new(), false)
+}
+
+/// Metal struck on metal: a bright tick and a ring of inharmonic partials (a blade's, an
+/// armour plate's), the hard layer longer and brighter (the soft and hard layers mixed by
+/// intensity).
+fn clash(v: &mut Vary) -> Variation {
+    let mut soft = v.buf();
+    soft.noise(0.0, v.amp(0.6), Noise::band(v.hz(4000.0), 1.0), Env::new(0.0003, 0.0, 0.004));
+    for (freq, decay, level) in [(1180.0, 0.12, 0.5), (1890.0, 0.09, 0.35), (2730.0, 0.07, 0.25)] {
+        soft.mode(0.0, v.partial(freq), v.s(decay), v.amp(level));
+    }
+    let mut hard = v.buf();
+    hard.noise(0.0, v.amp(1.0), Noise::band(v.hz(6000.0), 0.8), Env::new(0.0002, 0.0, 0.006));
+    for (freq, decay, level) in [(1170.0, 0.6, 0.6), (1830.0, 0.45, 0.5), (2610.0, 0.38, 0.4), (3480.0, 0.3, 0.3), (4720.0, 0.22, 0.25), (6150.0, 0.15, 0.15)] {
+        hard.mode(0.0, v.partial(freq), v.s(decay), v.amp(level));
+    }
+    Variation::from_layers(soft.finish(0.32), hard.finish(0.45), Vec::new(), false)
+}
+
+/// A blade biting wood: a hollow knock and a splintery crack.
+fn chop(v: &mut Vary) -> Variation {
+    let mut body = v.buf();
+    body.mode(0.0, v.partial(180.0), v.s(0.06), v.amp(1.0));
+    body.mode(0.0, v.partial(420.0), v.s(0.04), v.amp(0.6));
+    body.mode(0.0, v.partial(910.0), v.s(0.025), v.amp(0.35));
+    body.noise(0.0, v.amp(0.6), Noise::band(v.hz(1200.0), 0.9), Env::new(0.001, 0.0, v.s(0.03)));
+    let mut hard = v.buf();
+    hard.noise(0.0, v.amp(1.0), Noise::band(v.hz(3400.0), 0.7), Env::new(0.0003, 0.0, v.s(0.012)));
+    for _ in 0..3 + v.rng.below(3) {
+        let at = v.rng.range(0.005, 0.05) * v.time;
+        hard.noise(at, v.rng.range(0.1, 0.3), Noise::band(v.rng.range(2500.0, 5000.0), 1.4), Env::hit(0.002));
+    }
+    Variation::from_layers(body.finish(0.42), hard.finish(0.3), Vec::new(), false)
+}
+
+/// A man's grunt: a short voiced "hn", its pitch falling, a breath round it.
+fn grunt(v: &mut Vary) -> Variation {
+    let mut b = v.buf();
+    let f0 = v.hz(135.0);
+    let env = Env::new(0.02, 0.06, v.s(0.18));
+    // The voice's harmonics, loudest round its first formants (a closed "uh").
+    for (k, level) in [(1.0, 1.0), (2.0, 0.8), (3.0, 0.55), (4.0, 0.35), (5.0, 0.3), (6.0, 0.18), (8.0, 0.1)] {
+        b.tone(0.0, v.amp(level * 0.45), f0 * k, f0 * k * 0.82, 0.25, env);
+    }
+    b.noise(0.0, v.amp(0.25), Noise::band(v.hz(700.0), 0.6), Env::new(0.01, 0.05, v.s(0.15)));
+    Variation::single(b.finish(0.4))
 }
 
 /// A soft, short "tuck": the glove meeting the object (a mid noise burst) over the object's low

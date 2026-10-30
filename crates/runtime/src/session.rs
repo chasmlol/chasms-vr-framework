@@ -395,8 +395,12 @@ impl Session {
             pointer: 1,
             sheets_drawn: 0,
             menu_pieces: Vec::new(),
-            audio: if opts.audio {
+            // (`RUSTVR_SILENT=1`: an unattended test run on the emulated headset mixes its sounds
+            // offline rather than out of the speakers.)
+            audio: if opts.audio && !std::env::var("RUSTVR_SILENT").is_ok_and(|v| v == "1") {
                 Some(rustvr_audio::Audio::new())
+            } else if opts.audio {
+                Some(rustvr_audio::Audio::offline(OFFLINE_RATE))
             } else {
                 opts.offline_audio.then(|| rustvr_audio::Audio::offline(OFFLINE_RATE))
             },
@@ -597,6 +601,13 @@ impl Session {
                 // The game's mirror spell, and its effect's moment.
                 EV_MIRROR_CAST => self.mirror.cast(),
                 EV_MIRROR_HIT => self.mirror.hit(ev.a),
+                // A creature's voice the game has none of its own for: the runtime's grunt there.
+                EV_VOICE => {
+                    if let (Some(map), true) = (self.map_now, self.settings.current.sound.enabled) {
+                        let fb = feedback::Feedback { cue: feedback::Cue::Grunt, hand: None, object: None, pos: map.inv_point(Vec3::new(ev.f[0], ev.f[1], ev.f[2])), intensity: ev.f[3].clamp(0.1, 1.0) };
+                        self.play_cue(&fb);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1108,6 +1119,14 @@ impl Session {
             for p in &self.combat.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
+            // The hits heard: by what met what, as loud as they were hard.
+            if self.settings.current.sound.enabled {
+                for (cue, at, intensity, object) in std::mem::take(&mut self.combat.sounds) {
+                    let fb = feedback::Feedback { cue, hand: None, object: (object != 0).then_some(object), pos: rig_map.inv_point(at), intensity };
+                    self.play_cue(&fb);
+                }
+            }
+            self.combat.sounds.clear();
             self.spell_hands = self.combat.spell_hands(self.settings.current.dominant());
             // Where the hands push the game's own props.
             self.game_pushes.count = self.rig.game_pushes.len().min(MAX_GAME_PUSHES) as u32;
@@ -2507,6 +2526,12 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audi
         C::Grind | C::GrindStroke => return None,
         // And what a touch on its page does.
         C::Touch | C::Slide => return None,
+        C::HitCut => (E::HitCut, S::Cut),
+        C::HitStab => (E::HitStab, S::Stab),
+        C::HitBlunt => (E::Melee, S::Melee),
+        C::Clash => (E::Clash, S::Clash),
+        C::Chop => (E::Chop, S::Chop),
+        C::Grunt => (E::Grunt, S::Grunt),
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

@@ -50,6 +50,10 @@ pub struct People {
     wave: u32,
     next_wave: Option<f64>,
     next_id: u32,
+    /// What the people cried out this frame (`VOICE_*`, where), for the runtime's voices; and when
+    /// each last spoke (a voice says one line at a time).
+    pub said: Vec<(u32, Vec3)>,
+    spoke: std::collections::HashMap<u32, f64>,
 }
 
 /// The arsenal's weapon of `key` as a held thing: its mass, its boxes, its grip and blade.
@@ -95,7 +99,7 @@ impl People {
             }
         }
         let made = vec![None; pool.len()];
-        let mut people = People { dummies, fighters: Vec::new(), pool, made, wave: 0, next_wave: Some(0.0), next_id: FIGHTER_ID };
+        let mut people = People { dummies, fighters: Vec::new(), pool, made, wave: 0, next_wave: Some(0.0), next_id: FIGHTER_ID, said: Vec::new(), spoke: Default::default() };
         people.next_wave(0.0);
         people
     }
@@ -177,7 +181,13 @@ impl People {
                 brain::Hold { reach: item.blade.1.length(), mass: item.mass, shield: item.shield }
             }));
             let staggered = p.stagger.is_some_and(|s| now - s.since < 0.6 / f.brain.tier.difficulty().recovery as f64);
+            let swinging = f.brain.swing.is_some();
             let t = f.brain.think(now, dt, at, face, hands, &sight, staggered);
+            // A shout as it swings, seven times in ten.
+            if !swinging && f.brain.swing.is_some() && (now * 7919.0).fract() < 0.7 {
+                let head = self.dummies.part_pose(f.person, anim::HEAD).0;
+                self.said.push((VOICE_ATTACK, head));
+            }
             let p = &mut self.dummies.people[f.person];
             p.pose = t.pose;
             p.doing = f.brain.doing(now);
@@ -269,9 +279,26 @@ impl People {
         self.dummies.held_items(attacking, blocking)
     }
 
-    /// What happened, for the game's side (sounds, blood); drained.
+    /// What happened, for the game's side (sounds, blood); drained. The people cry out at it: a
+    /// grunt at every hurt, a last breath dying, one line at a time.
     pub fn happened(&mut self) -> Vec<Happened> {
-        std::mem::take(&mut self.dummies.happened)
+        let out = std::mem::take(&mut self.dummies.happened);
+        let now = self.dummies.time;
+        for h in &out {
+            let (id, voice) = match *h {
+                Happened::Hurt { id, .. } => (id, VOICE_HURT),
+                Happened::Died { id, .. } => (id, VOICE_DEATH),
+                _ => continue,
+            };
+            if self.spoke.get(&id).is_some_and(|&t| now - t < 0.4) && voice != VOICE_DEATH {
+                continue;
+            }
+            self.spoke.insert(id, now);
+            if let Some(k) = self.dummies.find(id) {
+                self.said.push((voice, self.dummies.part_pose(k, anim::HEAD).0));
+            }
+        }
+        out
     }
 }
 

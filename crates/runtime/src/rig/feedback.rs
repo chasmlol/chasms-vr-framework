@@ -131,6 +131,15 @@ pub enum Cue {
     /// A hand sliding along a weapon's handle ([`super::melee`]): a buzz while it runs, the
     /// stronger the faster (felt only).
     Slide,
+    /// Melee hits, heard by what met what (`crate::combat`; their pulses are the combat's own): an
+    /// edge cutting flesh, a point going in, a blunt blow, metal on metal (blades, armour), a blade
+    /// biting wood; and a creature's grunt.
+    HitCut,
+    HitStab,
+    HitBlunt,
+    Clash,
+    Chop,
+    Grunt,
 }
 
 impl Cue {
@@ -209,6 +218,12 @@ impl Cue {
             Cue::GrindStroke => "grind_stroke",
             Cue::Touch => "touch",
             Cue::Slide => "slide",
+            Cue::HitCut => "hit_cut",
+            Cue::HitStab => "hit_stab",
+            Cue::HitBlunt => "melee",
+            Cue::Clash => "clash",
+            Cue::Chop => "chop",
+            Cue::Grunt => "grunt",
         }
     }
 }
@@ -325,6 +340,8 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::Touch => (0.012, 220.0, 0.3),
         // Wood or leather running through a loose fist: a fine, rising buzz.
         Cue::Slide => (0.015, 180.0 + 120.0 * i, (0.08 + 0.3 * i).min(0.4)),
+        // (The combat feels its hits itself; a grunt isn't felt.)
+        Cue::HitCut | Cue::HitStab | Cue::HitBlunt | Cue::Clash | Cue::Chop | Cue::Grunt => return None,
     })
 
 }
