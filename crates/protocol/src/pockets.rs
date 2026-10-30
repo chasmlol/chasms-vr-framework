@@ -154,8 +154,9 @@ impl Pocket {
 pub const OFF_POCKET_EVENTS: usize = (OFF_POCKETS + size_of::<Pockets>()).next_multiple_of(64);
 pub const POCKET_EVENT_SLOTS: usize = 64;
 
-/// A hand went into one of `actor`'s pockets (`pocket`) when none had been in any of them: the
-/// game's pickpocketing of it opens.
+/// A hand has been in `actor`'s pockets a moment (`pocket` the one it's in), or is taking a thing
+/// out of one or planting one, or found them shut: the game's pickpocketing of it opens (shut, the
+/// game's refusal). A quicker look is only feeling, and the game has no part in it.
 pub const PE_OPEN: u32 = 1;
 /// The hands have been away from all of `actor`'s pockets a moment (or its pockets went), nothing
 /// waiting on the game: its pickpocketing closes.

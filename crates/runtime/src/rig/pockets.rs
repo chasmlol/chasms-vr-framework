@@ -30,6 +30,11 @@ pub const OUT: f32 = 0.03;
 /// edge), and closes once none has been for [`SESSION_GAP`] seconds.
 pub const NEAR: f32 = 0.12;
 pub const SESSION_GAP: f64 = 0.75;
+/// A hand in a creature's pockets this long (seconds, gaps shorter than [`SESSION_GAP`] in it) has
+/// opened its pickpocketing: the game's menu, which closed having taken nothing is the game's
+/// rummaging check, a chance of being caught. A shorter look is only feeling. Taking a thing out or
+/// planting one opens it at once.
+pub const OPEN_AFTER: f64 = 1.0;
 /// How long the runtime waits for the game's answer before giving up on it (seconds): a take
 /// unanswered is as if it failed (the thing stays where it was), a drop as if done.
 pub const ANSWER_WAIT: f64 = 3.0;
