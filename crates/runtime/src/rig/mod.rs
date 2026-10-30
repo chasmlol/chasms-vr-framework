@@ -352,6 +352,9 @@ struct Hand {
     /// Laid slowly on something it could take: it rests on it without shoving it (see
     /// [`Rig::rest_on`]).
     yielding: bool,
+    /// Pressed on a part that swings through the room last frame (a door's leaf it's pushing):
+    /// gripping takes it, however fast it's swinging away from the palm.
+    pressing: Option<u32>,
 }
 
 impl Hand {
@@ -1531,12 +1534,19 @@ impl Rig {
             }
             // The empty hands pressed on it (resting on its surface, their controllers past it):
             // each pushes it there, as far as its controller is past the hand.
-            if panel && let Some(hands) = &self.hands {
-                for h in hands.iter().filter(|h| h.holding.is_none() && h.support.is_none() && h.valve.is_none() && h.barrels.is_none() && h.pin.is_none() && h.returning.is_none()) {
+            if panel && let Some(hands) = &mut self.hands {
+                for h in hands.iter_mut() {
+                    if h.pressing == Some(id) {
+                        h.pressing = None;
+                    }
+                    if h.holding.is_some() || h.support.is_some() || h.valve.is_some() || h.barrels.is_some() || h.pin.is_some() || h.returning.is_some() {
+                        continue;
+                    }
                     let Some((at, normal, gap)) = self.physics.touch(h.collider, collider, PRESS_GAP * self.map.world_per_meter) else { continue };
                     let depth = (h.target.0 - self.physics.pose(h.body).0).dot(normal) - gap.max(0.0);
                     if depth > 0.0 {
                         pulls.push(valve::Pull::Press { at: v.local(at), normal, depth: depth / self.map.world_per_meter });
+                        h.pressing = Some(id);
                     }
                 }
             }
@@ -1769,6 +1779,7 @@ impl Rig {
                 returning: None,
                 grasp: GraspState::default(),
                 yielding: false,
+                pressing: None,
             }
         };
         let l = mk(&mut self.physics, 0);
@@ -1922,16 +1933,17 @@ impl Rig {
         // A valve's rim within reach; a part of one the game draws (a door's leaf, the game's own
         // shape of it) anywhere the hand is on it, as a thing is taken.
         if hover == Hover::None {
-            let near = |o: &Obj| -> Option<f32> {
+            let pressing = self.hands.as_ref().unwrap()[i].pressing;
+            let near = |(id, o): (&u32, &Obj)| -> Option<f32> {
                 let v = o.valve.as_ref()?;
                 if Self::taken_anywhere(o) {
                     let d = self.physics.distance_between(hand_c, o.collider);
-                    return (d < TOUCH).then_some(d);
+                    return (d < TOUCH || pressing == Some(*id)).then_some(d);
                 }
                 let d = v.nearest_on(&o.valve_shape, palm).1;
                 (d < valve::REACH).then_some(d)
             };
-            let rim = self.objects.iter().filter_map(|(id, o)| Some((*id, near(o)?))).min_by(|a, b| a.1.total_cmp(&b.1));
+            let rim = self.objects.iter().filter_map(|(id, o)| Some((*id, near((id, o))?))).min_by(|a, b| a.1.total_cmp(&b.1));
             if let Some((id, _)) = rim {
                 hover = Hover::Valve(id);
             }
