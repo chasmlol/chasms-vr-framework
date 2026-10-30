@@ -31,6 +31,8 @@ const VELOCITY_TAU: f32 = 0.15;
 /// A hand further than this many arm lengths from the eyes is tracking gone wrong, not a pose:
 /// no prediction.
 const MAX_REACH: f32 = 2.5;
+/// The widest layer the network may have (its activations live on the stack).
+const WIDEST: usize = 256;
 /// The network's inputs are kept within this many of the training set's standard deviations.
 const MAX_SIGMA: f32 = 5.0;
 
@@ -178,7 +180,7 @@ impl Prior {
         let mut inputs = FEATURES;
         for _ in 0..count {
             let (i, o) = (r.word()? as usize, r.word()? as usize);
-            if i != inputs || o == 0 || o > 1024 {
+            if i != inputs || o == 0 || o > WIDEST {
                 return None;
             }
             let weights = r.floats(i * o)?;
@@ -191,18 +193,18 @@ impl Prior {
 
     /// The network's raw outputs for some features.
     pub fn run(&self, features: &[f32; FEATURES]) -> [f32; OUTPUTS] {
-        let mut x: Vec<f32> = (0..FEATURES).map(|k| ((features[k] - self.mean[k]) * self.scale[k]).clamp(-MAX_SIGMA, MAX_SIGMA)).collect();
+        let (mut x, mut y) = ([0.0f32; WIDEST], [0.0f32; WIDEST]);
+        for k in 0..FEATURES {
+            x[k] = ((features[k] - self.mean[k]) * self.scale[k]).clamp(-MAX_SIGMA, MAX_SIGMA);
+        }
         for (n, layer) in self.layers.iter().enumerate() {
             let last = n + 1 == self.layers.len();
-            let mut y = layer.biases.clone();
-            for (o, out) in y.iter_mut().enumerate() {
+            for (o, out) in y[..layer.biases.len()].iter_mut().enumerate() {
                 let row = &layer.weights[o * layer.inputs..(o + 1) * layer.inputs];
-                *out += row.iter().zip(&x).map(|(w, v)| w * v).sum::<f32>();
-                if !last {
-                    *out = out.max(0.0);
-                }
+                let v = layer.biases[o] + row.iter().zip(&x[..layer.inputs]).map(|(w, v)| w * v).sum::<f32>();
+                *out = if last { v } else { v.max(0.0) };
             }
-            x = y;
+            std::mem::swap(&mut x, &mut y);
         }
         let mut out = [0.0; OUTPUTS];
         out.copy_from_slice(&x[..OUTPUTS]);
