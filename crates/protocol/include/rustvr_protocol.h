@@ -802,6 +802,13 @@
 #define RVR_HUDE_SOLID (1 << 2)
 
 /**
+ * Its coverage is its colour's: the game draws its colour there but not its coverage (Oblivion's
+ * book and map pages, added as light over what's there), so what it drew is solid and what it left
+ * black (the HUD texture's clear) is clear.
+ */
+#define RVR_HUDE_OPAQUE (1 << 3)
+
+/**
  * Beside a thing in the world (`HudGroup::at`, `radius`): a container, a merchant, a speaker. At the
  * thing's distance (within the laser's comfortable range), on its `side`, under the eyes, facing
  * them; it stays put in the world while the menu is open.
@@ -819,6 +826,65 @@
  * than what's behind it.
  */
 #define RVR_ANCHOR_POPUP 3
+
+/**
+ * On a thing in the hands (its [`HudLayout::held`]): a book's pages on the book, a map held like
+ * paper. It goes where the hands take it, every frame, and it's drawn with the body (a hand in
+ * front of a page covers it; the fingers behind a sheet don't show through it). There's no laser
+ * on it: the free hand's fingertip presses its buttons (`Intents::cursor_uv`; in a menu the game's
+ * cursor and click). A game may hold one with no menu open (a book read as it plays on).
+ */
+#define RVR_ANCHOR_HELD 4
+
+/**
+ * On the thing's broad face, the one turned to the eyes as it appears (a book's cover): its middle
+ * on the face's, upright along the face's longer side, a few millimetres out from it.
+ */
+#define RVR_HELD_FACE (1 << 0)
+
+/**
+ * Held like a sheet of paper: the hand at its middle, the sheet a hand's depth in front of it
+ * (no finger holding it comes through) turned to the eyes. The other
+ * hand's grip near either side spreads it between the two (the points of it the hands took stay in
+ * them, within reason): pulling them apart makes it bigger.
+ */
+#define RVR_HELD_SHEET (1 << 1)
+
+/**
+ * Its pages turn by hand: the free hand's grip near them, moved across them (a page every few
+ * centimetres), presses [`crate::Action::PageNext`] (leftwards) or
+ * [`crate::Action::PagePrev`].
+ */
+#define RVR_HELD_PAGES (1 << 2)
+
+/**
+ * The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on
+ * it, its button down, as the hand moves (a map's pan), until the grip opens.
+ */
+#define RVR_HELD_DRAG (1 << 3)
+
+/**
+ * Its thing comes to the hand (`hand`) if no hand has it: a book read where it lies (activated on a
+ * shelf) flies into the off hand, as the gloves would bring it, and opens there.
+ */
+#define RVR_HELD_BRING (1 << 4)
+
+/**
+ * [`HudHeld::centre`] says where the thing's faces are centred.
+ */
+#define RVR_HELD_CENTRE (1 << 5)
+
+/**
+ * On the thing but turned to the eyes from its middle, upright, just in front of it as the eyes
+ * see it (instead of [`HELD_FACE`]): however the hand turns it, it's read face on (a book's pages
+ * over the book).
+ */
+#define RVR_HELD_FACING (1 << 6)
+
+/**
+ * [`HudHeld::hand`]: whichever hand the laser doesn't come from (the player's off hand).
+ */
+#define RVR_HELD_OFF_HAND 2
 
 #define RVR_SIDE_RIGHT 0
 
@@ -1136,6 +1202,20 @@
  * it's let go.
  */
 #define RVR_OBJF_CONSTRAINED (1 << 14)
+
+/**
+ * It opens in the hands (a book, a note): while one hand holds it, the other hand's grip on it
+ * doesn't take it but opens it, and the next grip shuts it. Each is one more of its state's
+ * `shots`, for the game to open what's inside it (its menu, on it: `hud::ANCHOR_HELD`) or shut it
+ * if it's open; the game says which by whether its menu is up.
+ */
+#define RVR_OBJF_OPENS (1 << 15)
+
+/**
+ * Kept on the body: let go anywhere but a slot, it glides back to the slot it was drawn from (a
+ * map to its place on the belt), as a holstered gun does.
+ */
+#define RVR_OBJF_KEPT (1 << 16)
 
 /**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.

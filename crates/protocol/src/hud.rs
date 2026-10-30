@@ -17,6 +17,9 @@
 //! where it points is where the game's own cursor goes: the game keeps its selection, scrolling and
 //! clicks. Nothing is drawn but the game's own UI: a piece is a rectangle of what the game drew.
 //!
+//! A group can be held in the hands too ([`ANCHOR_HELD`]): a book's pages lying on the book a hand
+//! holds, turned by the other hand, or a map held like paper between them, panned by a hand's grip.
+//!
 //! The game stays the source of truth for *when* a piece shows: the runtime draws a rectangle
 //! every frame, so it appears and fades exactly as the game draws and fades it.
 
@@ -72,6 +75,10 @@ pub const HUDE_SOFT: u32 = 1 << 1;
 /// coverage the game's blending left in the HUD texture's alpha. Where it drew half or more it's
 /// opaque, in its own colour; fainter edges (a torn edge, a letter's) stay soft.
 pub const HUDE_SOLID: u32 = 1 << 2;
+/// Its coverage is its colour's: the game draws its colour there but not its coverage (Oblivion's
+/// book and map pages, added as light over what's there), so what it drew is solid and what it left
+/// black (the HUD texture's clear) is clear.
+pub const HUDE_OPAQUE: u32 = 1 << 3;
 
 // ---- group anchors: where a group floats (see `crates/runtime/src/hud.rs`) ----------------------
 /// Beside a thing in the world (`HudGroup::at`, `radius`): a container, a merchant, a speaker. At the
@@ -84,6 +91,40 @@ pub const ANCHOR_PLAYER: u32 = 2;
 /// A question or a count over another menu: in front of the eyes where they look, a little nearer
 /// than what's behind it.
 pub const ANCHOR_POPUP: u32 = 3;
+/// On a thing in the hands (its [`HudLayout::held`]): a book's pages on the book, a map held like
+/// paper. It goes where the hands take it, every frame, and it's drawn with the body (a hand in
+/// front of a page covers it; the fingers behind a sheet don't show through it). There's no laser
+/// on it: the free hand's fingertip presses its buttons (`Intents::cursor_uv`; in a menu the game's
+/// cursor and click). A game may hold one with no menu open (a book read as it plays on).
+pub const ANCHOR_HELD: u32 = 4;
+
+// ---- how a group lies on what holds it (`HudHeld::flags`) ----------------------------------------
+/// On the thing's broad face, the one turned to the eyes as it appears (a book's cover): its middle
+/// on the face's, upright along the face's longer side, a few millimetres out from it.
+pub const HELD_FACE: u32 = 1 << 0;
+/// Held like a sheet of paper: the hand at its middle, the sheet a hand's depth in front of it
+/// (no finger holding it comes through) turned to the eyes. The other
+/// hand's grip near either side spreads it between the two (the points of it the hands took stay in
+/// them, within reason): pulling them apart makes it bigger.
+pub const HELD_SHEET: u32 = 1 << 1;
+/// Its pages turn by hand: the free hand's grip near them, moved across them (a page every few
+/// centimetres), presses [`crate::Action::PageNext`] (leftwards) or
+/// [`crate::Action::PagePrev`].
+pub const HELD_PAGES: u32 = 1 << 2;
+/// The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on
+/// it, its button down, as the hand moves (a map's pan), until the grip opens.
+pub const HELD_DRAG: u32 = 1 << 3;
+/// Its thing comes to the hand (`hand`) if no hand has it: a book read where it lies (activated on a
+/// shelf) flies into the off hand, as the gloves would bring it, and opens there.
+pub const HELD_BRING: u32 = 1 << 4;
+/// [`HudHeld::centre`] says where the thing's faces are centred.
+pub const HELD_CENTRE: u32 = 1 << 5;
+/// On the thing but turned to the eyes from its middle, upright, just in front of it as the eyes
+/// see it (instead of [`HELD_FACE`]): however the hand turns it, it's read face on (a book's pages
+/// over the book).
+pub const HELD_FACING: u32 = 1 << 6;
+/// [`HudHeld::hand`]: whichever hand the laser doesn't come from (the player's off hand).
+pub const HELD_OFF_HAND: u32 = 2;
 
 // ---- which side of its thing a group goes (`HudGroup::side`) --------------------------------------
 pub const SIDE_RIGHT: u32 = 0;
@@ -146,6 +187,26 @@ pub struct HudGroup {
     pub height: f32,
 }
 
+/// What a group anchored in the hands ([`ANCHOR_HELD`]) is held by, and how it lies there.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
+pub struct HudHeld {
+    /// The thing it's on ([`crate::ObjectDesc::id`]: the runtime has where it is), or 0: in a hand
+    /// with nothing under it (`hand`).
+    pub object: u32,
+    /// With no object: the hand it's in ([`crate::HAND_LEFT`], [`crate::HAND_RIGHT`], or
+    /// [`HELD_OFF_HAND`]).
+    pub hand: u32,
+    pub flags: u32, // HELD_*
+    /// Pieces wholly to one side of the group's middle (x = 0) tip towards the eye about it by this
+    /// much (radians): an open book's two pages.
+    pub fold: f32,
+    /// With [`HELD_CENTRE`]: the middle of what's seen of the thing (its model's, in its own space),
+    /// where its faces are centred instead of on its box (a collision box can be off its model).
+    pub centre: [f32; 3],
+    pub _pad: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct HudLayout {
@@ -172,6 +233,8 @@ pub struct HudLayout {
     pub _pad: [u32; 1],
     pub groups: [HudGroup; MAX_HUD_GROUPS],
     pub elements: [HudElement; MAX_HUD_ELEMENTS],
+    /// What holds each group anchored in the hands (`held[group - 1]`, for [`ANCHOR_HELD`]).
+    pub held: [HudHeld; MAX_HUD_GROUPS],
 }
 
 impl HudLayout {
@@ -197,6 +260,22 @@ impl HudLayout {
         self.groups[n] = g;
         self.group_count += 1;
         self.group_count
+    }
+
+    /// Adds a group held in the hands ([`ANCHOR_HELD`], held as `held` says); its number.
+    pub fn add_held(&mut self, mut g: HudGroup, held: HudHeld) -> u32 {
+        g.anchor = ANCHOR_HELD;
+        let n = self.add_group(g);
+        if n > 0 {
+            self.held[n as usize - 1] = held;
+        }
+        n
+    }
+
+    /// What holds group `g` (one of [`HudLayout::group_entries`]), if it's held in the hands.
+    pub fn held_of(&self, group: u32) -> Option<&HudHeld> {
+        let i = (group as usize).checked_sub(1)?;
+        self.group_entries().get(i).filter(|g| g.anchor == ANCHOR_HELD).map(|_| &self.held[i])
     }
 
     /// Adds an element (if there's room).
@@ -278,7 +357,8 @@ const _: () = {
     use std::mem::size_of;
     assert!(size_of::<HudElement>() == 64);
     assert!(size_of::<HudGroup>() == 32);
-    assert!(size_of::<HudLayout>() == 64 + 32 * MAX_HUD_GROUPS + 64 * MAX_HUD_ELEMENTS);
+    assert!(size_of::<HudHeld>() == 32);
+    assert!(size_of::<HudLayout>() == 64 + 32 * MAX_HUD_GROUPS + 64 * MAX_HUD_ELEMENTS + 32 * MAX_HUD_GROUPS);
     assert!(size_of::<HudLayout>() <= 0x1000);
     assert!(OFF_HUD_LAYOUT.is_multiple_of(64));
     assert!(crate::OFF_KICKS + size_of::<crate::KickTable>() <= OFF_HUD_LAYOUT);

@@ -499,6 +499,14 @@ pub const OBJF_UPRIGHT: u32 = 1 << 13;
 /// have it, for the game to pull it there with its own physics. It follows the game as soon as
 /// it's let go.
 pub const OBJF_CONSTRAINED: u32 = 1 << 14;
+/// It opens in the hands (a book, a note): while one hand holds it, the other hand's grip on it
+/// doesn't take it but opens it, and the next grip shuts it. Each is one more of its state's
+/// `shots`, for the game to open what's inside it (its menu, on it: `hud::ANCHOR_HELD`) or shut it
+/// if it's open; the game says which by whether its menu is up.
+pub const OBJF_OPENS: u32 = 1 << 15;
+/// Kept on the body: let go anywhere but a slot, it glides back to the slot it was drawn from (a
+/// map to its place on the belt), as a holstered gun does.
+pub const OBJF_KEPT: u32 = 1 << 16;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 
@@ -693,7 +701,8 @@ pub struct ObjectState {
     pub rounds: u32,
     pub ang_vel: [f32; 3],
     /// Weapons: rounds fired so far (each increase is one shot from the muzzle). Grenades: times it
-    /// went off (each increase is one explosion at `pose`, for the game to make).
+    /// went off (each increase is one explosion at `pose`, for the game to make). Things that open
+    /// ([`OBJF_OPENS`]): times the other hand opened or shut it.
     pub shots: u32,
     /// Weapons: which chambers hold a live round and which a spent case (see
     /// [`CHAMBER_SPENT_SHIFT`]); `chambered & CHAMBER_LIVE_MASK != 0`: a round is chambered. (A gun

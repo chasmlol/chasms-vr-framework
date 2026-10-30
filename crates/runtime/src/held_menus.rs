@@ -1,0 +1,578 @@
+//! The game's menus held in the hands (`HudLayout::held`, [`ANCHOR_HELD`]): a book's pages lying on
+//! the book a hand holds, turned by the other hand; a map held like paper, spread between the hands
+//! and dragged by one. See `docs/research/books.md` in the Oblivion adapter for what players asked
+//! for, and the protocol's `hud.rs` for what a game says.
+//!
+//! - **On a thing** (`HELD_FACE`): the group lies on the thing's broad face that was turned to the
+//!   eyes when it appeared (a book's cover), its middle on the face's middle, upright along the face
+//!   side nearest the eyes' up then, a few millimetres out. It follows the thing exactly, as the rig
+//!   has it, every frame: the pages never swim on the book.
+//! - **Facing the eyes on a thing** (`HELD_FACING`): centred on the thing, turned to the eyes from
+//!   there, upright, steadied, and just in front of it as the eyes see it (so the book under the
+//!   pages, and the fingers round it, stay behind them): however the hand turns the book, its pages
+//!   are read face on.
+//! - **A sheet** (`HELD_SHEET`): held at its middle, a hand's depth in front of the hand (so no
+//!   finger of the hand holding it comes through it), always turned to the eyes from its middle,
+//!   upright, steadied. The other hand's grip near either side
+//!   spreads it between the two: the points of it the hands took stay in them, so it grows as they
+//!   part (a sheet pulled bigger stays that big) and nothing jumps when the second hand takes it,
+//!   facing the eyes from between them. Let go by the first, the second has it where it took it.
+//! - **Its size**: a line of the game's text is `menu_text_deg` at `held_distance` (0.45 m), kept
+//!   as it moves: nearer is bigger, as with a real book.
+//! - **Steadied**: where pages in one hand are, and how they're turned, go through a one-euro filter
+//!   (Casiez et al., CHI 2012): smoothed hard while the hand is nearly still (its tremor, the rig
+//!   settling the book in it: text that shakes can't be read) and less and less as it moves, so they
+//!   keep up with a deliberate move. Spread between both hands a sheet follows them exactly.
+//! - **Pages** (`HELD_PAGES`): the free hand's grip anywhere near the pages holds them, and moving
+//!   it across them turns them, a page for every few centimetres (leftwards onwards, rightwards
+//!   back), as many as it goes. Near them its grip takes nothing else, not even the book.
+//! - **Pressing** (every held menu): the free hand's index fingertip pushed onto a piece presses the
+//!   game's button there (its cursor at the fingertip, its button down, until the finger comes back
+//!   off), and near it the cursor follows the fingertip, so the game lights what's under it. There's
+//!   no laser on what's held: a book's Take and Exit, the map's tabs and places are pressed by hand.
+//! - **Dragging** (`HELD_DRAG`): the free hand's grip on the sheet's face holds the game's cursor
+//!   there, its button down, and moves it with the hand: the game drags what's on it (its map).
+//!
+//! The pieces are drawn with the body, in its depth (`rustvr_avatar::Sheet`).
+
+use glam::{Quat, Vec2, Vec3};
+use rustvr_protocol::*;
+
+use crate::hud::HudPiece;
+use crate::panels::Panel;
+use crate::settings::Settings;
+
+/// A thing a hand holds this frame, as the rig has it (tracking space).
+#[derive(Clone, Copy, Debug)]
+pub struct Thing {
+    pub id: u32,
+    pub pos: Vec3,
+    pub rot: Quat,
+    /// Its box in its own space: centre and half extents (metres).
+    pub centre: Vec3,
+    pub half: Vec3,
+    pub hand: usize,
+}
+
+/// A hand this frame: its controller's grip pose and velocity, its index fingertip (as the drawn
+/// hand has it), its grip and its trigger.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Hand {
+    pub grip: Option<(Vec3, Quat)>,
+    pub tip: Option<Vec3>,
+    pub vel: Vec3,
+    pub squeeze: f32,
+    pub trigger: f32,
+}
+
+/// What the held menus did this frame.
+#[derive(Default)]
+pub struct HeldOut {
+    /// Their pieces, where they lie now.
+    pub pieces: Vec<HudPiece>,
+    /// The hands holding one (the laser, for what floats, comes from the other).
+    pub holding: [bool; 2],
+    /// Pages the free hand turned: the actions to press.
+    pub presses: Vec<Action>,
+    /// A hand dragging what's on a sheet, or a finger pressing or over it: the game's cursor there
+    /// (the HUD texture's part), its button down while it's held; and the frame it's let go, up.
+    pub cursor: Option<(Vec2, bool)>,
+    /// Ticks in the hands: which, seconds, frequency, amplitude.
+    pub haptics: Vec<(usize, f32, f32, f32)>,
+    /// The hands on a held book's pages to turn them (near them, or gripping them): their grip takes
+    /// nothing else, not even the book.
+    pub page_hands: [bool; 2],
+}
+
+/// How far out from a thing's face its pages lie (metres): clear of the model, close enough that
+/// they look printed on it.
+const FACE_LIFT: f32 = 0.004;
+/// The free hand is on the pages within this far in front of them (and a little behind).
+const NEAR_PAGE: f32 = 0.12;
+/// Pages facing the eyes lie this far out in front of their thing (metres): clear of the fingers
+/// round its cover.
+const FACING_LIFT: f32 = 0.03;
+/// The free hand's grip holds the pages within this far in front of them or behind (metres) and out
+/// past their edges by this share of their size, and turns one for each this far (metres) it then
+/// moves across them.
+const TURN_NEAR: f32 = 0.25;
+const TURN_MARGIN: f32 = 0.5;
+const TURN_STEP: f32 = 0.05;
+/// How quickly the fingertip's speed (what tells a press from a brush across) follows it (seconds).
+const TIP_EASE: f32 = 0.03;
+/// A fingertip presses a piece this near it (metres in front: the finger's skin on it), comes off
+/// it this far out, and is over it (the cursor following it) within this far in front. A fingertip
+/// sweeping across faster than this (metres a second), or more across than into it, isn't pressing
+/// (a hand brushing the pages).
+const POKE_ON: f32 = 0.01;
+const POKE_OFF: f32 = 0.025;
+const POKE_NEAR: f32 = 0.06;
+const POKE_SIDEWAYS: f32 = 0.35;
+/// A sheet in the hands lies this far in front of them (metres, towards the eyes): a hand's depth,
+/// so the fingers holding it stay behind it.
+const SHEET_LIFT: f32 = 0.08;
+/// A hand this far behind a sheet (metres) can still take hold of it (it lies in front of the hand
+/// holding it).
+const GRIP_BEHIND: f32 = 0.14;
+/// A grip within this share of the half width of either of a sheet's sides spreads it between the
+/// hands.
+const FAR_SIDE: f32 = 0.3;
+/// A sheet spread between the hands is this many times its natural size at least and at most.
+const SPREAD: (f32, f32) = (0.6, 2.5);
+/// Steadying pages in one hand (a one-euro filter): how far behind they may follow while still (its
+/// cutoff, Hz), how much faster for each metre a second they move (and each radian a second they
+/// turn), and how quickly the speed it goes by follows (Hz). Still, they lag by a third of a second
+/// (a hand's tremor, a few hertz, all but gone); moved at half a metre a second, by a fifteenth.
+const STEADY_HZ: f32 = 0.5;
+const STEADY_BETA: f32 = 4.0;
+const STEADY_TURN_BETA: f32 = 2.0;
+const STEADY_SPEED_HZ: f32 = 1.0;
+
+/// A sheet's hold.
+#[derive(Clone, Copy, Debug)]
+enum Hold {
+    /// In one hand.
+    One,
+    /// Spread between both hands.
+    Both,
+}
+
+/// How a held group lies on what holds it, kept while it's there.
+struct Lie {
+    id: u32,
+    /// What it's on and the hand that holds that, as last placed.
+    object: u32,
+    holder: usize,
+    /// (`HELD_FACE`) the thing's face its pages lie on.
+    face: Option<Face>,
+    /// (`HELD_SHEET`) how it's held, the point of it the holding hand has (group units), and the
+    /// point the other hand took when it's spread between them.
+    hold: Option<Hold>,
+    at: Vec2,
+    other_at: Vec2,
+    /// Metres per group unit (the HUD texture's height).
+    unit: f32,
+    /// In one hand, where it's held and its right and up, steadied.
+    steady: [Option<Steady>; 3],
+    /// The free hand's grip holding the pages: where the hand was when it took them, or last turned
+    /// one.
+    turning: Option<Vec3>,
+    /// The free hand's fingertip last frame and when, and its speed (eased).
+    tip_last: Option<(Vec3, f64)>,
+    tip_vel: Vec3,
+    /// The free hand's grip last frame.
+    gripped: bool,
+    /// Dragging: where on the HUD texture the cursor is.
+    drag: Option<Vec2>,
+    /// A fingertip pressing it: where (the HUD texture's part); and how far in front it was last
+    /// frame.
+    poke: Option<Vec2>,
+    tip_z: Option<f32>,
+}
+
+/// The held menus' places, kept between frames.
+#[derive(Default)]
+pub struct HeldMenus {
+    lies: Vec<Lie>,
+    /// When where they lie was last logged.
+    logged: f64,
+}
+
+/// The extent of group `group`'s pieces (x0, y0, x1, y1 in its units, y up).
+fn footprint(layout: &HudLayout, group: u32, aspect: f32) -> Option<[f32; 4]> {
+    let mut b: Option<[f32; 4]> = None;
+    for e in layout.entries().iter().filter(|e| e.group == group) {
+        let (w, h) = piece_size(e, aspect);
+        let r = [e.offset[0] - w * 0.5, e.offset[1] - h * 0.5, e.offset[0] + w * 0.5, e.offset[1] + h * 0.5];
+        b = Some(match b {
+            None => r,
+            Some(b) => [b[0].min(r[0]), b[1].min(r[1]), b[2].max(r[2]), b[3].max(r[3])],
+        });
+    }
+    b
+}
+
+fn piece_size(e: &HudElement, aspect: f32) -> (f32, f32) {
+    let scale = if e.scale > 0.0 { e.scale } else { 1.0 };
+    ((e.uv[2] - e.uv[0]).max(1e-4) * aspect * scale, (e.uv[3] - e.uv[1]).max(1e-4) * scale)
+}
+
+/// Where on a box (centre `c`, half extents `h`, in its own space) its pages lie: its broad faces'
+/// axis and how far out they are, and their up, upright as `up` is then (whichever of the faces' two
+/// sides points most the way it does).
+#[derive(Clone, Copy, Debug)]
+struct Face {
+    centre: Vec3,
+    axis: Vec3,
+    depth: f32,
+    up: Vec3,
+}
+
+impl Face {
+    fn of(c: Vec3, h: Vec3, up: Vec3) -> Face {
+        let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+        let thin = (0..3).min_by(|&a, &b| h[a].total_cmp(&h[b])).unwrap();
+        let side = (0..3).filter(|&k| k != thin).map(|k| axes[k]).flat_map(|a| [a, -a]).max_by(|a, b| a.dot(up).total_cmp(&b.dot(up))).unwrap();
+        // (Out from the middle by the box's half thickness about that middle.)
+        Face { centre: c, axis: axes[thin], depth: h[thin] + FACE_LIFT, up: side }
+    }
+
+    /// The face turned to `eye` (in the box's space; it turns over with the book): its middle,
+    /// right and up.
+    fn toward(&self, eye: Vec3) -> (Vec3, Vec3, Vec3) {
+        let out = self.axis * if (eye - self.centre).dot(self.axis) >= 0.0 { 1.0 } else { -1.0 };
+        // (Right so the face's normal, up x right, is out of it.)
+        (self.centre + out * self.depth, out.cross(self.up), self.up)
+    }
+}
+
+/// Right and up for a sheet at `at` turned to the eye at `eye`, upright as `up` is.
+fn facing(at: Vec3, eye: Vec3, up: Vec3) -> (Vec3, Vec3) {
+    let n = (eye - at).normalize_or(Vec3::NEG_Z);
+    let u = (up - n * up.dot(n)).normalize_or(Vec3::Y);
+    (n.cross(u), u)
+}
+
+/// A point or a direction steadied as it moves (a one-euro filter): where it was last, as given and
+/// as steadied, and how fast it moves (eased).
+#[derive(Clone, Copy, Debug)]
+struct Steady {
+    raw: Vec3,
+    at: Vec3,
+    speed: f32,
+}
+
+impl Steady {
+    /// `to` steadied, following `beta` hertz faster for each unit a second it moves.
+    fn follow(s: &mut Option<Steady>, to: Vec3, dt: f32, beta: f32) -> Vec3 {
+        let dt = dt.max(1e-4);
+        if let Some(st) = s.as_mut() {
+            st.speed += (to.distance(st.raw) / dt - st.speed) * low_pass(STEADY_SPEED_HZ, dt);
+            st.at = st.at.lerp(to, low_pass(STEADY_HZ + beta * st.speed, dt));
+            st.raw = to;
+            return st.at;
+        }
+        *s = Some(Steady { raw: to, at: to, speed: 0.0 });
+        to
+    }
+}
+
+/// How far a low-pass filter at `hz` moves towards its input in `dt` seconds.
+fn low_pass(hz: f32, dt: f32) -> f32 {
+    let tau = 1.0 / (std::f32::consts::TAU * hz);
+    1.0 / (1.0 + tau / dt)
+}
+
+/// Right and up as given, steadied (`lie.steady[1..]`), square again.
+fn steady_turn(steady: &mut [Option<Steady>; 3], r: Vec3, u: Vec3, dt: f32) -> (Vec3, Vec3) {
+    let sr = Steady::follow(&mut steady[1], r, dt, STEADY_TURN_BETA).normalize_or(r);
+    let su = Steady::follow(&mut steady[2], u, dt, STEADY_TURN_BETA);
+    (sr, (su - sr * su.dot(sr)).normalize_or(u))
+}
+
+impl HeldMenus {
+    /// The things spread between both hands (a map): each, and the hand that has it (the other only
+    /// holds the sheet). Let go by that hand, the other has it.
+    pub fn spread(&self) -> Vec<(u32, usize)> {
+        self.lies.iter().filter(|l| l.object != 0 && matches!(l.hold, Some(Hold::Both))).map(|l| (l.object, l.holder)).collect()
+    }
+
+    /// This frame's held menus. `things`: what the hands hold; `hands`: both hands; `aspect`: the
+    /// HUD texture's width / height.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, s: &Settings, head_pos: Vec3, head_rot: Quat, dt: f32, now: f64, aspect: f32, layout: &HudLayout, things: &[Thing], hands: &[Hand; 2]) -> HeldOut {
+        let mut out = HeldOut::default();
+        let groups = layout.group_entries();
+        self.lies.retain(|l| groups.iter().any(|g| g.anchor == ANCHOR_HELD && g.id == l.id));
+        let text = if layout.text_height > 0.0 { layout.text_height } else { 0.025 };
+        let natural = s.ui.held_distance * s.ui.menu_text_deg.to_radians().tan() / text;
+        let head_up = head_rot * Vec3::Y;
+        for (i, g) in groups.iter().enumerate() {
+            let n = i as u32 + 1;
+            let Some(held) = layout.held_of(n).copied() else { continue };
+            let Some(fp) = footprint(layout, n, aspect) else { continue };
+            let thing = (held.object != 0).then(|| things.iter().find(|t| t.id == held.object)).flatten();
+            if held.object != 0 && thing.is_none() && held.flags & HELD_BRING == 0 {
+                // (Not in a hand this frame: nowhere to put it. One coming to the hand is held in it
+                // as a sheet until it's there.)
+                continue;
+            }
+            // The hand that holds it, and the other.
+            let in_hand = if held.hand == HELD_OFF_HAND { s.dominant() ^ 1 } else { held.hand as usize & 1 };
+            let holder = thing.map_or(in_hand, |t| t.hand);
+            let free = holder ^ 1;
+            let k = match self.lies.iter().position(|l| l.id == g.id) {
+                Some(k) => k,
+                None => {
+                    self.lies.push(Lie {
+                        id: g.id,
+                        object: held.object,
+                        holder,
+                        face: None,
+                        hold: None,
+                        at: Vec2::ZERO,
+                        other_at: Vec2::ZERO,
+                        unit: natural,
+                        steady: [None; 3],
+                        turning: None,
+                        tip_last: None,
+                        tip_vel: Vec3::ZERO,
+                        gripped: false,
+                        drag: None,
+                        poke: None,
+                        tip_z: None,
+                    });
+                    self.lies.len() - 1
+                }
+            };
+            let lie = &mut self.lies[k];
+            // On the thing's face turned to the eyes when it's first in the hand.
+            if let (None, true, false, Some(t)) = (lie.face, held.flags & HELD_FACE != 0, held.flags & HELD_FACING != 0, thing) {
+                let centre = if held.flags & HELD_CENTRE != 0 { Vec3::from_array(held.centre) } else { t.centre };
+                let f = Face::of(centre, t.half, t.rot.inverse() * head_up);
+                tracing::info!("held menus: {:#x} lies on {:#x}'s faces along {:.2?} about {centre:.3?} (up {:.2?}; its box {:.3?} about {:.3?}; held at {:.3?})", g.id, t.id, f.axis, f.up, t.half, t.centre, t.pos);
+                lie.face = Some(f);
+            }
+            if lie.holder != holder && matches!(lie.hold, Some(Hold::Both)) {
+                // Handed over from between the hands: the second has it where it took it.
+                lie.at = lie.other_at;
+            }
+            (lie.object, lie.holder) = (held.object, holder);
+            // Where it is now: its origin, right and up.
+            let frame = match (lie.face, thing) {
+                (_, Some(t)) if held.flags & HELD_FACING != 0 => Some(facing_frame(lie, &held, fp, t, head_pos, head_up, dt)),
+                (Some(f), Some(t)) => {
+                    let (c, r, u) = f.toward(t.rot.inverse() * (head_pos - t.pos));
+                    Some((t.pos + t.rot * c, t.rot * r, t.rot * u))
+                }
+                _ => sheet_frame(lie, &held, fp, holder, thing, hands, head_pos, head_up, natural, dt),
+            };
+            let Some((origin, right, up)) = frame else { continue };
+            if now - self.logged > 2.0 {
+                tracing::info!("held menus: {:#x} at {origin:.3?} (right {right:.2?}, up {up:.2?}, {:.3} m a unit), held by hand {holder}{}", g.id, lie.unit, thing.map_or(String::new(), |t| format!(" with {:#x} at {:.3?}", t.id, t.pos)));
+            }
+            out.holding[holder] = true;
+            if matches!(lie.hold, Some(Hold::Both)) {
+                out.holding[free] = true;
+            }
+            let normal = up.cross(right);
+            let unit = lie.unit;
+            let half_w = (fp[2] - fp[0]) * 0.5;
+            let mut pieces = Vec::new();
+            for e in layout.entries().iter().filter(|e| e.group == n) {
+                let (w, h) = piece_size(e, aspect);
+                // (An open book's two pages tip towards the eye about its middle.)
+                let side = if e.offset[0] + w * 0.5 <= 1e-4 { -1.0 } else if e.offset[0] - w * 0.5 >= -1e-4 { 1.0 } else { 0.0 };
+                // (The left page's outer edge comes towards the eye, and the right page's.)
+                let a = held.fold * side;
+                let r = (right * a.cos() + normal * a.sin()).normalize_or(right);
+                let c = origin + r * e.offset[0] * unit + up * e.offset[1] * unit + normal * e.offset[2] * unit;
+                let panel = Panel { center: c, right: r, up, width: w * unit, height: h * unit };
+                let opacity = if e.opacity > 0.0 { e.opacity } else { 1.0 };
+                pieces.push(HudPiece { panel, uv: e.uv, opacity, role: e.role, flags: e.flags });
+            }
+            // The free hand on it: where on it (group units) and how far in front.
+            let on = hands[free].grip.map(|(p, _)| {
+                let d = p - origin;
+                (Vec2::new(d.dot(right), d.dot(up)) / unit, d.dot(normal))
+            });
+            let over = |xy: Vec2| xy.x > fp[0] - half_w * 0.15 && xy.x < fp[2] + half_w * 0.15 && xy.y > fp[1] - (fp[3] - fp[1]) * 0.2 && xy.y < fp[3] + (fp[3] - fp[1]) * 0.2;
+            // (A hand taking hold of a sheet may be a little behind it: paper is taken from both sides.)
+            let on_it = on.filter(|&(xy, z)| z > -GRIP_BEHIND && z < NEAR_PAGE && over(xy));
+            let grip = hands[free].squeeze > 0.6;
+            // Spreading a sheet: the free hand's grip near either side (not pages': their grip turns
+            // them).
+            if held.flags & HELD_SHEET != 0 && held.flags & HELD_PAGES == 0 && grip && !lie.gripped && lie.drag.is_none() {
+                if let Some((xy, _)) = on_it.filter(|(xy, _)| (xy.x - fp[0]).abs() < half_w * FAR_SIDE || (xy.x - fp[2]).abs() < half_w * FAR_SIDE) {
+                    lie.hold = Some(Hold::Both);
+                    lie.other_at = xy;
+                    tracing::info!("held menus: {:#x} taken by its side: spread between the hands", g.id);
+                    out.haptics.push((free, 0.02, 160.0, 0.5));
+                }
+            }
+            if !grip && matches!(lie.hold, Some(Hold::Both)) {
+                // Let go with the other hand: held in the first again, as big as it was spread.
+                lie.hold = Some(Hold::One);
+            }
+            // Dragging what's on it: the free hand's grip on its face.
+            if held.flags & HELD_DRAG != 0 && !matches!(lie.hold, Some(Hold::Both)) {
+                if grip && !lie.gripped && on_it.is_some() {
+                    tracing::info!("held menus: {:#x} gripped on its face: the game's cursor dragged", g.id);
+                    lie.drag = Some(Vec2::ZERO);
+                }
+                if lie.drag.is_some() {
+                    let at = hands[free].grip.map(|(p, _)| p).unwrap_or(origin);
+                    // (The point of the texture under the hand, on whichever piece it's over.)
+                    let uv = pieces.iter().find_map(|pc| pc.hit(at + normal * 0.3, -normal).map(|(_, uv)| uv));
+                    if let Some(uv) = uv {
+                        lie.drag = Some(uv);
+                    }
+                    let uv = lie.drag.unwrap();
+                    if grip {
+                        if uv != Vec2::ZERO {
+                            out.cursor = Some((uv, true));
+                        }
+                    } else {
+                        out.cursor = (uv != Vec2::ZERO).then_some((uv, false));
+                        lie.drag = None;
+                    }
+                }
+            }
+            // The fingertip's own speed (tracking space), a little eased: what tells a press (into
+            // the page) from a hand brushing across it.
+            let tip_at = hands[free].tip;
+            match (tip_at, lie.tip_last) {
+                (Some(p), Some((p0, t0))) if now > t0 => {
+                    let step = (now - t0) as f32;
+                    lie.tip_vel += ((p - p0) / step - lie.tip_vel) * (1.0 - (-step / TIP_EASE).exp());
+                }
+                _ => lie.tip_vel = Vec3::ZERO,
+            }
+            lie.tip_last = tip_at.map(|p| (p, now));
+            let tip = tip_at.map(|p| {
+                let d = p - origin;
+                (p, Vec2::new(d.dot(right), d.dot(up)) / unit, d.dot(normal))
+            });
+            // Pressing what's on it with a finger: the free hand's index fingertip pushed onto it
+            // from in front presses the game's button there until it comes back off; near it, the
+            // game's cursor follows the fingertip. (Not while that hand drags it, has it by a side
+            // or grips, nor a fingertip sweeping across it: a hand that brushes the pages.)
+            if lie.drag.is_none() && !matches!(lie.hold, Some(Hold::Both)) && !grip {
+                let under = |p: Vec3| pieces.iter().find_map(|pc| pc.hit(p + normal * 0.3, -normal).map(|(_, uv)| uv));
+                let v = lie.tip_vel;
+                let across = (v - normal * v.dot(normal)).length();
+                let sweeping = across > POKE_SIDEWAYS || across > -v.dot(normal);
+                match (lie.poke, tip) {
+                    (Some(uv), Some((p, _, z))) if z < POKE_OFF => {
+                        // (Held down, it follows the finger: off the button before it's lifted,
+                        // no click.)
+                        let uv = under(p).unwrap_or(uv);
+                        lie.poke = Some(uv);
+                        out.cursor = Some((uv, true));
+                    }
+                    (Some(uv), _) => {
+                        out.cursor = Some((uv, false));
+                        lie.poke = None;
+                    }
+                    (None, Some((p, xy, z))) if z < POKE_NEAR && z > -POKE_OFF && over(xy) => {
+                        if let Some(uv) = under(p) {
+                            let pushed = z < POKE_ON && lie.tip_z.is_some_and(|z0| z0 >= POKE_ON);
+                            if pushed && !sweeping {
+                                tracing::info!("held menus: {:#x} pressed by the free hand's finger at {uv:.3?}", g.id);
+                                lie.poke = Some(uv);
+                                out.cursor = Some((uv, true));
+                                out.haptics.push((free, 0.015, 180.0, 0.35));
+                            } else {
+                                out.cursor = Some((uv, false));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                lie.tip_z = tip.map(|(_, _, z)| z);
+            } else {
+                lie.tip_z = None;
+            }
+            // Turning pages: the free hand's grip anywhere near them holds them, and moving it across
+            // them turns them, a page for every few centimetres it goes (leftwards onwards, rightwards
+            // back). Near them, its grip takes nothing else (`out.page_hands`).
+            if held.flags & HELD_PAGES != 0 {
+                let (w, h) = (fp[2] - fp[0], fp[3] - fp[1]);
+                let by = on.is_some_and(|(xy, z)| {
+                    z.abs() < TURN_NEAR && xy.x > fp[0] - w * TURN_MARGIN && xy.x < fp[2] + w * TURN_MARGIN && xy.y > fp[1] - h * TURN_MARGIN && xy.y < fp[3] + h * TURN_MARGIN
+                });
+                let empty = !things.iter().any(|t| t.hand == free) && !matches!(lie.hold, Some(Hold::Both));
+                let hand = hands[free].grip.map(|(p, _)| p);
+                if !grip {
+                    lie.turning = None;
+                } else if lie.turning.is_none() && !lie.gripped && by && empty {
+                    tracing::info!("held menus: {:#x}'s pages held by the free hand's grip", g.id);
+                    lie.turning = hand;
+                    out.haptics.push((free, 0.015, 160.0, 0.3));
+                }
+                if let (Some(at), Some(p)) = (lie.turning, hand) {
+                    let across = (p - at).dot(right);
+                    if across.abs() > TURN_STEP {
+                        let a = if across < 0.0 { Action::PageNext } else { Action::PagePrev };
+                        tracing::info!("held menus: {:#x}'s page turned by the free hand's grip: {}", g.id, a.name());
+                        out.presses.push(a);
+                        out.haptics.push((free, 0.02, 120.0, 0.45));
+                        lie.turning = Some(p);
+                    }
+                }
+                out.page_hands[free] = lie.turning.is_some() || (by && empty && !grip);
+            }
+            lie.gripped = grip;
+            out.pieces.extend(pieces);
+        }
+        if now - self.logged > 2.0 && !out.pieces.is_empty() {
+            self.logged = now;
+        }
+        out
+    }
+}
+
+/// Where a sheet is now (`HELD_SHEET`, or a group with nothing to lie on): its origin, right and
+/// up, from the hands; its size kept in `lie.unit`.
+#[allow(clippy::too_many_arguments)]
+fn sheet_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], holder: usize, thing: Option<&Thing>, hands: &[Hand; 2], eye: Vec3, head_up: Vec3, natural: f32, dt: f32) -> Option<(Vec3, Vec3, Vec3)> {
+    // The holding hand (a sheet's thing is only what the hand has of it).
+    let at = hands[holder].grip.or(thing.map(|t| (t.pos, t.rot)))?;
+    let mid = Vec2::new((fp[0] + fp[2]) * 0.5, (fp[1] + fp[3]) * 0.5);
+    if lie.hold.is_none() {
+        // Taken by its middle.
+        lie.at = mid;
+        if held.flags & HELD_SHEET == 0 {
+            lie.unit = natural;
+        }
+    }
+    if let (Some(Hold::Both), Some((other, _))) = (lie.hold, hands[holder ^ 1].grip) {
+        // Spread between the hands: the points of it each took in them (as big as they're apart:
+        // pulling them apart makes it bigger), facing the eyes from between them, a hand's depth in
+        // front of them.
+        let along = lie.other_at - lie.at;
+        let n = (eye - (at.0 + other) * 0.5).normalize_or(Vec3::NEG_Z);
+        let apart = (other - at.0) - n * (other - at.0).dot(n);
+        if along.length() > 1e-3 && apart.length() > 1e-3 {
+            // (Exactly where the hands are: a pinch steadied would slide under them.)
+            lie.steady = [None; 3];
+            lie.unit = (apart.length() / along.length()).clamp(natural * SPREAD.0, natural * SPREAD.1);
+            // (Its right turned from the line between the hands by the angle of that line on it.)
+            let e = apart.normalize();
+            let a = along.y.atan2(along.x);
+            let right = e * a.cos() - e.cross(n) * a.sin();
+            let up = right.cross(n);
+            return Some((at.0 + n * SHEET_LIFT - right * lie.at.x * lie.unit - up * lie.at.y * lie.unit, right, up));
+        }
+    }
+    lie.hold = Some(Hold::One);
+    // Turned to the eyes from its middle (not from the hand, which may have it by a side and would
+    // leave it turned away), upright: wherever the hand takes it, it's read face on. Steadied.
+    let hand = Steady::follow(&mut lie.steady[0], at.0, dt, STEADY_BETA);
+    let (mut r, mut u) = facing(hand, eye, head_up);
+    for _ in 0..2 {
+        let middle = hand + r * (mid.x - lie.at.x) * lie.unit + u * (mid.y - lie.at.y) * lie.unit;
+        (r, u) = facing(middle, eye, head_up);
+    }
+    let (r, u) = steady_turn(&mut lie.steady, r, u, dt);
+    // (A hand's depth in front of the hand, towards the eyes: its fingers stay behind it.)
+    let origin = hand + u.cross(r) * SHEET_LIFT - r * lie.at.x * lie.unit - u * lie.at.y * lie.unit;
+    Some((origin, r, u))
+}
+
+/// Where pages facing the eyes on a thing are now (`HELD_FACING`): their middle on the thing's
+/// (its model's, with `HELD_CENTRE`), turned to the eyes from there, upright, steadied, and out
+/// towards the eyes past the thing's box as they see it, so nothing of it is in front of them.
+#[allow(clippy::too_many_arguments)]
+fn facing_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], t: &Thing, eye: Vec3, head_up: Vec3, dt: f32) -> (Vec3, Vec3, Vec3) {
+    let centre = if held.flags & HELD_CENTRE != 0 { Vec3::from_array(held.centre) } else { t.centre };
+    let mid = Steady::follow(&mut lie.steady[0], t.pos + t.rot * centre, dt, STEADY_BETA);
+    let (r, u) = facing(mid, eye, head_up);
+    let (r, u) = steady_turn(&mut lie.steady, r, u, dt);
+    // (How far the box reaches towards the eyes from that middle, in its own space.)
+    let n = t.rot.inverse() * u.cross(r);
+    let reach = (t.centre - centre).dot(n) + n.abs().dot(t.half);
+    let at = mid + t.rot * n * (reach.max(0.0) + FACING_LIFT);
+    let origin = at - r * (fp[0] + fp[2]) * 0.5 * lie.unit - u * (fp[1] + fp[3]) * 0.5 * lie.unit;
+    (origin, r, u)
+}

@@ -161,6 +161,8 @@ struct Obj {
     /// A hand has had it (held or pulled): a game's prop the runtime draws stays the runtime's to
     /// draw from then on ([`OS_RUNTIME_DRAWN`]).
     handled: bool,
+    /// Things that open ([`OBJF_OPENS`]): times the other hand opened or shut it.
+    opens: u32,
     /// Touching the world or another object (a held one knocking into something is felt).
     in_contact: bool,
     /// Held: where the player's walk and turn take it this step, and the share of its velocity the
@@ -276,6 +278,8 @@ struct Hand {
     fingers: [RigidBodyHandle; 5],
     finger_at: [Vec3; 5],
     finger_vel: [Vec3; 5],
+    /// The index finger's tip (world), where the drawn one's is.
+    index_tip: Vec3,
     /// The fingers as the controller has them, eased as the drawn hand's are (the same solver on
     /// the same input), this frame's: the capsules are where the drawn fingers are (a lifted thumb
     /// or index straight).
@@ -685,6 +689,9 @@ const PALM_REACH: f32 = 0.1;
 /// A hand this near what the other hand holds (metres, from its grip pose to the surface) has its
 /// palm on it.
 const ON_IT: f32 = 0.035;
+/// ... and this near a book the other hand holds ([`OBJF_OPENS`]): a hand reaching for its cover
+/// to open it may be stopped a little short of it by the pages over it.
+const ON_COVER: f32 = 0.08;
 /// A hand takes a thing it's on: its palm or a finger touching it, or all but (metres).
 const TOUCH: f32 = 0.03;
 /// A hand slower than this (m/s) near a thing it could take is reaching for it, not swatting it.
@@ -765,6 +772,9 @@ pub struct Rig {
     bows: Box<Bows>,
     /// The arrows loosed this frame, for the game.
     pub loosed: Vec<Loose>,
+    /// Hands turning a held book's pages (its grip on them): they take nothing, and their gloves
+    /// pull nothing.
+    page_hands: [bool; 2],
 }
 
 impl Default for Rig {
@@ -799,6 +809,7 @@ impl Default for Rig {
             grasps: [None, None],
             bows: bytemuck::zeroed_box(),
             loosed: Vec::new(),
+            page_hands: [false; 2],
         }
     }
 }
@@ -1208,6 +1219,7 @@ impl Rig {
                 hovered: false,
                 hands_off_until: 0.0,
                 handled: false,
+                opens: 0,
                 in_contact: false,
                 carry: None,
                 carried: (Vec3::ZERO, Vec3::ZERO),
@@ -1522,7 +1534,9 @@ impl Rig {
                 self.hand_input(i, inp, &zones, dom);
             }
             for i in 0..2 {
-                self.gloves(i, inp);
+                if !self.page_hands[i] {
+                    self.gloves(i, inp);
+                }
             }
             self.weapons(inp, dom);
             self.bows(inp);
@@ -1572,6 +1586,7 @@ impl Rig {
                 h.finger_vel[k] = (at - h.finger_at[k]) / dt;
                 h.finger_at[k] = at;
             }
+            h.index_tip = segs[1].1;
         }
     }
 
@@ -1845,6 +1860,7 @@ impl Rig {
                 fingers,
                 finger_at: [v3(g.pos); 5],
                 finger_vel: [Vec3::ZERO; 5],
+                index_tip: v3(g.pos),
                 finger_solver: rustvr_ik::FingerSolver::new(),
                 drawn_curls: [0.0; 5],
                 fingers_on: false,
@@ -1957,6 +1973,14 @@ impl Rig {
 
     // ---- what an empty hand would grab ------------------------------------------------------------
     fn update_hover(&mut self, i: usize, s: &Settings, zones: &[Zone; SLOT_COUNT_BODY], ammo: &[Zone; 2], quiver: &[Zone]) {
+        if self.page_hands[i] {
+            // (Its grip is on a held book's pages: it takes nothing, not even the book.)
+            if self.hands.as_ref().unwrap()[i].glove != Glove::Idle {
+                self.set_glove(i, Glove::Idle);
+            }
+            self.hands.as_mut().unwrap()[i].hover = Hover::None;
+            return;
+        }
         let hands = self.hands.as_ref().unwrap();
         let h = &hands[i];
         if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.valve.is_some() || h.creature.is_some() {
@@ -2035,7 +2059,8 @@ impl Rig {
             && o.desc.flags & OBJF_GRABBABLE != 0
         {
             let at_grip = self.hands.as_ref().unwrap()[i ^ 1].on != On::Grip && self.handle_hold(i, id, On::Grip).is_some();
-            if at_grip || self.physics.distance_to(o.collider, palm) < ON_IT * self.map.world_per_meter {
+            let reach = if o.desc.flags & OBJF_OPENS != 0 { ON_COVER } else { ON_IT };
+            if at_grip || self.physics.distance_to(o.collider, palm) < reach * self.map.world_per_meter {
                 hover = Hover::Object(id);
             }
         }
@@ -2276,6 +2301,14 @@ impl Rig {
                     _ => {}
                 }
             }
+            // The other hand's grip on a held book opens it (or shuts it): it stays in the hand
+            // that has it, and this one stays free to turn its pages.
+            Hover::Object(id) if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1) && o.desc.flags & OBJF_OPENS != 0) => {
+                let o = self.objects.get_mut(&id).unwrap();
+                o.opens = o.opens.wrapping_add(1);
+                tracing::info!("rig: {id:#x} opened or shut by the other hand ({})", o.opens);
+                self.emit(Cue::Grab, Some(i), Some(id), palm, 0.4);
+            }
             Hover::Object(id) if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1)) => self.second_hand(i, id),
             Hover::Object(id) => {
                 // Gripped as it flies in from the gloves: a catch (it may still be half a metre out).
@@ -2443,6 +2476,40 @@ impl Rig {
             .map(|(&id, o)| (id, self.physics.pose(o.body).0.distance(palm)))
             .filter(|&(_, d)| d < 12.0 * self.map.world_per_meter)
             .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        self.take(id, i, true);
+        Some(id)
+    }
+
+    /// Object `id`, lying free, to hand `i` as the gloves' catch brings it (a book read where it
+    /// lies, to be held open in the hand). False if it isn't free (or the hand is full).
+    pub fn bring(&mut self, id: u32, i: usize) -> bool {
+        let free = self.objects.get(&id).is_some_and(|o| o.holder == Holder::Free);
+        let empty = self.hands.as_ref().is_some_and(|h| h[i].holding.is_none() && h[i].support.is_none());
+        if free && empty {
+            self.take(id, i, true);
+        }
+        free && empty
+    }
+
+    /// The hands turning a held book's pages (their grip on them), from now on: they take nothing,
+    /// and their gloves pull nothing, until they're done.
+    pub fn set_page_hands(&mut self, hands: [bool; 2]) {
+        self.page_hands = hands;
+    }
+
+    /// Object `id`, held by the other hand, into hand `i`'s palm (a sheet spread between both hands,
+    /// let go by the one that had it: the other has it now).
+    pub fn give(&mut self, id: u32, i: usize) {
+        if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1)) {
+            self.take(id, i, true);
+        }
+    }
+
+    /// Testing (`RUSTVR_TEST_TAKE=<hand>:<id>`): object `id`, wherever it is, into hand `i` as the
+    /// gloves' catch would take it.
+    pub fn test_take(&mut self, i: usize, id: u32) -> Option<u32> {
+        let o = self.objects.get(&id).filter(|o| o.holder == Holder::Free)?;
+        tracing::info!("rig: test take: {id:#x} from {:.2?}", self.physics.pose(o.body).0);
         self.take(id, i, true);
         Some(id)
     }
@@ -2826,6 +2893,19 @@ impl Rig {
                 self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
                 return;
             }
+        }
+        // Kept on the body (a map): back to the slot it was drawn from, however it's let go.
+        if o.desc.flags & OBJF_KEPT != 0
+            && let Some(slot) = o.home_slot.filter(|&s| self.slots[s as usize].is_none_or(|x| x == id))
+        {
+            let from = self.physics.pose(o.body);
+            o.holder = Holder::Returning { slot, t0: self.now, from };
+            self.slots[slot as usize] = Some(id);
+            self.physics.set_kinematic(o.body, true);
+            self.physics.set_groups(o.collider, groups_none());
+            self.debug.returns += 1;
+            self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
+            return;
         }
         // A throw leaves from where the object was at the peak, carried along it to now (unless
         // that's far, or through the world).
@@ -5274,6 +5354,12 @@ impl Rig {
         Some(((id, on), g))
     }
 
+    /// Where hand `i`'s index fingertip is (world), as the drawn hand has it (straight when the
+    /// finger's lifted off the trigger): what presses the buttons of a menu held in the other hand.
+    pub fn index_tip(&self, i: usize) -> Option<Vec3> {
+        Some(self.hands.as_ref()?[i].index_tip)
+    }
+
     /// Testing: hand `i`'s physical fingers (each one's ends, world).
     pub fn debug_fingers(&self, i: usize) -> Vec<(Vec3, Vec3)> {
         let Some(h) = self.hands.as_ref().map(|h| &h[i]) else { return Vec::new() };
@@ -5371,7 +5457,8 @@ impl Rig {
                     (b.nocked.is_some() as u32, b.shots, 0, b.bend(&o.desc, self.bows.get(*id), self.now))
                 }
                 // A valve: how far it's turned (radians about its axis).
-                None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(0), 0, o.valve.map_or(0.0, |v| v.angle)),
+                // (Grenades: times they went off; things that open: times they were opened or shut.)
+                None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(o.opens), 0, o.valve.map_or(0.0, |v| v.angle)),
             };
             // An air gun's pressure, a bolt's lift; a grenade's fuse.
             let fuse = match &o.weapon {

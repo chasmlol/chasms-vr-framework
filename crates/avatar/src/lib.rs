@@ -303,6 +303,11 @@ impl Avatar {
         self.renderer.set_body_overlays(overlays);
     }
 
+    /// The sheets on what the hands hold from now on (none: none), drawn with the player.
+    pub fn set_sheets(&mut self, sheets: Vec<Sheet>) {
+        self.renderer.set_sheets(sheets);
+    }
+
     /// Draws the body into `target` (an sRGB view of one eye's image, `width` x `height`) as seen
     /// from `eye` with `fov`. With `depth`, the body is hidden behind the game's geometry;
     /// without, it's drawn on top.
@@ -438,6 +443,27 @@ pub struct HeldPart {
     pub mesh: usize,
     pub vertices: Vec<u32>,
     pub indices: Vec<u32>,
+}
+
+/// A sheet of a texture on something the hands hold (tracking space): a book's pages, a map, cut
+/// from the game's own UI. Drawn with the player, in its depth, after what the hands hold: a hand in
+/// front of a page covers it, and the fingers behind a sheet are hidden by it. The texture is
+/// premultiplied (its colour times its alpha, over nothing), drawn as it is.
+#[derive(Clone, Debug)]
+pub struct Sheet {
+    pub srv: ID3D11ShaderResourceView,
+    /// Its middle, and half its width and half its height along it (right and up as it's read).
+    pub center: glam::Vec3,
+    pub half_x: glam::Vec3,
+    pub half_y: glam::Vec3,
+    /// The part of the texture on it: u0, v0, u1, v1 (top-left origin).
+    pub uv: [f32; 4],
+    pub opacity: f32,
+    /// Its edges fade out over this part of its half-width and half-height (0: a hard edge).
+    pub soft: [f32; 2],
+    /// Its coverage is its colour's, whatever the texture's alpha says (a game that draws a page's
+    /// colour but not its coverage): solid where something was drawn, clear where it's black.
+    pub opaque: bool,
 }
 
 /// A gun's laser (tracking space): its beam from `from` to `to`, and its dot there when it hits

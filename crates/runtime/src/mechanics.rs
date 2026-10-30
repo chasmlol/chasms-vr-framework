@@ -441,7 +441,9 @@ impl Mechanics {
         self.recenter_seq = self.recenter_seq.wrapping_add(1);
     }
 
-    fn press(&mut self, a: Action) {
+    /// One press of `a` for the game (the runtime's own gestures press them too: a page turned by
+    /// hand).
+    pub fn press(&mut self, a: Action) {
         self.presses[a as usize] = self.presses[a as usize].wrapping_add(1);
     }
 
@@ -1113,6 +1115,16 @@ impl Mechanics {
         out.weapon = weapon;
         out.intents.held = held;
         out.intents.presses = self.presses;
+        // A fingertip on what's held in the hands as the game plays on (a book's pages): where on the
+        // HUD texture, and whether it's pressing. The game's own mouse isn't it: its button would
+        // swing or cast.
+        if let Some(cur) = inp.cursor {
+            out.intents.flags |= INT_CURSOR;
+            out.intents.cursor_uv = cur.uv.to_array();
+            if cur.down {
+                out.intents.flags |= INT_CURSOR_DOWN;
+            }
+        }
         out
     }
 
