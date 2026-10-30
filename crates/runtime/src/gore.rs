@@ -555,10 +555,19 @@ impl Gore {
         let (jp, jq) = (Vec3::from_array(j.pos), Quat::from_array(j.rot).normalize());
         let inv = jq.inverse();
         let n = inp.map.inv_rot(Quat::IDENTITY) * normal_world;
-        if self.body_splats.len() >= MAX_BODY_SPLATS {
-            self.body_splats.remove(0);
+        let at = inv * (at_tracking - jp);
+        // On blood already there it adds to it; else a splat of its own (the smallest goes for it).
+        if let Some((_, s)) = self.body_splats.iter_mut().find(|(k, s)| *k == joint && s.at.distance(at) < s.radius) {
+            s.radius = (s.radius * s.radius + 0.3 * radius * radius).sqrt().min(0.07);
+            s.wet = 1.0;
+            return;
         }
-        self.body_splats.push((joint, Splat { at: inv * (at_tracking - jp), normal: inv * n, radius, wet: 1.0, born: now }));
+        if self.body_splats.len() >= MAX_BODY_SPLATS
+            && let Some(i) = self.body_splats.iter().enumerate().min_by(|a, b| a.1.1.radius.total_cmp(&b.1.1.radius)).map(|(i, _)| i)
+        {
+            self.body_splats.remove(i);
+        }
+        self.body_splats.push((joint, Splat { at, normal: inv * n, radius, wet: 1.0, born: now }));
     }
 
     fn stumps_bleed(&mut self, rig: &Rig, now: f64) {
@@ -715,6 +724,21 @@ impl Gore {
                 (h, inp.map.point(Vec3::from_array(hs.pose.pos) + Quat::from_array(hs.pose.rot) * Vec3::Y * 0.05))
             })
             .collect();
+        // The rest of the player's body (world): the torso and the forearms, as capsules, each with
+        // the joint blood that lands on it stays on.
+        let joint = |j: Joint| {
+            let p = &inp.joints[j as usize];
+            (p.valid != 0).then(|| inp.map.point(Vec3::from_array(p.pos)))
+        };
+        let body: Vec<(Vec3, Vec3, f32, usize)> = [
+            (Joint::Hips, Joint::UpperChest, 0.16, Joint::Chest),
+            (Joint::LeftLowerArm, Joint::LeftHand, 0.05, Joint::LeftLowerArm),
+            (Joint::RightLowerArm, Joint::RightHand, 0.05, Joint::RightLowerArm),
+        ]
+        .iter()
+        .filter_map(|&(a, b, r, on)| Some((joint(a)?, joint(b)?, r, on as usize)))
+        .collect();
+        let mut on_body = Vec::new();
         let held: Vec<(u32, Vec3, Vec3)> = (0..2).filter_map(|h| rig.held(h)).flat_map(|id| inp.combat.blades(id).into_iter().map(move |(a, b, _)| (id, a, b))).collect();
         let mut landed = Vec::new();
         let mut on_hand = Vec::new();
@@ -731,6 +755,13 @@ impl Gore {
             }
             if let Some(&(h, _)) = hands.iter().find(|(_, p)| p.distance(d.pos) < HAND_RADIUS) {
                 on_hand.push((i, h));
+                continue;
+            }
+            if let Some(&(.., on)) = body.iter().find(|(a, b, r, _)| {
+                let (s, _) = crate::combat::closest_segments(*a, *b, d.pos, d.pos);
+                a.lerp(*b, s).distance(d.pos) < *r
+            }) {
+                on_body.push((i, on));
                 continue;
             }
             if let Some(&(id, ..)) = held.iter().find(|(_, a, b)| {
@@ -777,6 +808,14 @@ impl Gore {
                 let at = inp.map.inv_point(d.pos);
                 let _ = hs;
                 self.splat_body(inp, if h == 0 { Joint::LeftHand as usize } else { Joint::RightHand as usize }, at, (d.size * 6.0).clamp(0.01, 0.03), -d.vel.normalize_or(Vec3::Y), now);
+            }
+        }
+        for &(i, on) in &on_body {
+            let d = self.drops[i];
+            gone[i] = true;
+            if self.liquid(d.blood) {
+                self.splat_blood = d.blood;
+                self.splat_body(inp, on, inp.map.inv_point(d.pos), (d.size * 7.0).clamp(0.012, 0.04), -d.vel.normalize_or(Vec3::Y), now);
             }
         }
         for &(i, id) in &on_blade {
