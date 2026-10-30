@@ -538,6 +538,10 @@ impl Session {
         // void.
         let floating = menu_mode && alive && shown_info.is_some_and(|i| i.flags & SLOT_STEREO != 0) && self.hud_layout.flags & HUDL_ALPHA != 0;
         let grouped = floating && self.hud_layout.group_count > 0;
+        // The game playing on, its stereo picture shown with no menu open: what a game holds in the
+        // hands then (a book read as anything else is held, its pages over it) is drawn as a menu's
+        // held pieces are.
+        let in_play = !menu_mode && alive && shown_info.is_some_and(|i| i.flags & SLOT_STEREO != 0);
         // The runtime's own settings beside the game's menus outside the world, and in the world
         // only beside the game's pause menu (not beside a chest's list).
         let runtime_menu_open = (menu_mode && (!floating || self.hud_layout.flags & HUDL_SETTINGS != 0)) || !alive;
@@ -727,8 +731,9 @@ impl Session {
                 tracing::info!("runtime: test: the nearest prop into the {} hand: {got:?}", if hand == 0 { "left" } else { "right" });
             }
             // (A menu held in the hands keeps them going while the game waits: the book can be moved,
-            // handed over and let go, the map spread. Fights stay paused with the game.)
-            let held_open = floating && self.hud_layout.group_entries().iter().any(|g| g.anchor == ANCHOR_HELD);
+            // handed over and let go, the map spread. Fights stay paused with the game. A book read
+            // as the game plays on is held with no menu open at all.)
+            let held_open = (floating || in_play) && self.hud_layout.group_entries().iter().any(|g| g.anchor == ANCHOR_HELD);
             // A sheet spread between the hands, let go by the hand that had it: the other has it now
             // (before the rig sees the grip open, which would put it away).
             let release = self.settings.current.interaction.grip_release;
@@ -1423,7 +1428,8 @@ impl Session {
         // they're drawn.)
         static FLAT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let flat = *FLAT.get_or_init(|| std::env::var("RUSTVR_HELD_FLAT").is_ok_and(|v| v == "1"));
-        let sheets_with_body = (self.draws_body || framework) && floating && !flat;
+        let in_play = !menu_mode && alive && locked.as_ref().is_some_and(|(_, i)| i.flags & SLOT_STEREO != 0);
+        let sheets_with_body = (self.draws_body || framework) && (floating || in_play) && !flat;
         if let Some((slot, info)) = &locked
             && let Some(hud) = &slot.hud {
                 let srv = hud.srv.as_ref().unwrap();
@@ -1439,7 +1445,9 @@ impl Session {
                     };
                     layers.world_panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive: false, soft });
                 }
-                for piece in self.held.pieces.iter().filter(|_| menu_mode) {
+                // (Held pieces are there only while something's held open: a menu's, or one read
+                // as the game plays on.)
+                for piece in &self.held.pieces {
                     let texels = 3.0;
                     let soft = if piece.flags & HUDE_SOFT != 0 {
                         [texels * 2.0 / ((piece.uv[2] - piece.uv[0]) * tex_w).max(1.0), texels * 2.0 / ((piece.uv[3] - piece.uv[1]) * tex_h).max(1.0)]

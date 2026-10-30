@@ -1110,6 +1110,16 @@ impl Mechanics {
         out.weapon = weapon;
         out.intents.held = held;
         out.intents.presses = self.presses;
+        // A fingertip on what's held in the hands as the game plays on (a book's pages): where on the
+        // HUD texture, and whether it's pressing. The game's own mouse isn't it: its button would
+        // swing or cast.
+        if let Some(cur) = inp.cursor {
+            out.intents.flags |= INT_CURSOR;
+            out.intents.cursor_uv = cur.uv.to_array();
+            if cur.down {
+                out.intents.flags |= INT_CURSOR_DOWN;
+            }
+        }
         out
     }
 

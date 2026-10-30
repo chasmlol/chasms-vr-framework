@@ -89,7 +89,8 @@ pub const ANCHOR_POPUP: u32 = 3;
 /// On a thing in the hands (its [`HudLayout::held`]): a book's pages on the book, a map held like
 /// paper. It goes where the hands take it, every frame, and it's drawn with the body (a hand in
 /// front of a page covers it; the fingers behind a sheet don't show through it). There's no laser
-/// on it: the free hand's fingertip presses its buttons (the game's cursor and click).
+/// on it: the free hand's fingertip presses its buttons (`Intents::cursor_uv`; in a menu the game's
+/// cursor and click). A game may hold one with no menu open (a book read as it plays on).
 pub const ANCHOR_HELD: u32 = 4;
 
 // ---- how a group lies on what holds it (`HudHeld::flags`) ----------------------------------------
@@ -101,8 +102,8 @@ pub const HELD_FACE: u32 = 1 << 0;
 /// hand's grip near either side spreads it between the two (the points of it the hands took stay in
 /// them, within reason): pulling them apart makes it bigger.
 pub const HELD_SHEET: u32 = 1 << 1;
-/// Its pages turn by hand: a flick of the free hand over them or near them (or the trigger pinched
-/// at a page's edge and pulled across the middle), presses [`crate::Action::PageNext`] (leftwards) or
+/// Its pages turn by hand: the free hand's fingertip swiped across them (or the trigger pinched at
+/// a page's edge and pulled across the middle), presses [`crate::Action::PageNext`] (leftwards) or
 /// [`crate::Action::PagePrev`].
 pub const HELD_PAGES: u32 = 1 << 2;
 /// The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on
