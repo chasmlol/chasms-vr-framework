@@ -1,19 +1,20 @@
 //! The player's powers beside their hands and weapons (`docs/MELEE.md`), and stamina:
 //!
-//! * **Slowing time** (on a focus meter): clicking the off hand's
-//!   stick slows the game's time to half, snapping in and easing out over 0.7 s. It runs on focus:
-//!   it needs more than 10 to start, drains 6 a second (real time) and stops when it's spent;
-//!   focus comes back at 3 a second (half while walking). The hands keep the player's real speed, so
-//!   in the slowed world they swing twice as fast and hit twice as hard.
-//! * **Stamina** (an option, off by default): a fast swing of a weapon costs it, by
-//!   the weapon's weight, and it comes back while the player rests; a tired player's hands are
-//!   weaker on their weapons. A game that keeps its own (Oblivion's Fatigue) gives it
-//!   ([`MeleeRules`]) and is told what the swings spent.
-//! * **Imbuing**: a hand charging a spell that's fire or shock
-//!   ([`SPELL_FIRE`], [`SPELL_SHOCK`]) held within 0.2 m of a held weapon's blade fills it (at
-//!   50 a second at full charge, twice that for a weapon of tier 1 to 3: full in a
-//!   second), and it drains (1 a second at tier 2, a shock's at 0.4 of that; 3 a hit; 5 a second
-//!   dropped). Its hits carry the spell ([`CEF_IMBUED`]); the game makes the burn or the shock.
+//! * **Slowing time** (on a focus meter): clicking the off hand's stick slows the game's time to
+//!   half, snapping in and easing out over 0.7 s. It runs on focus: it needs more than 10 to start,
+//!   drains 6 a second (real time) and stops when it's spent; focus comes back at 3 a second (half
+//!   while walking). The hands keep the player's real speed, so in the slowed world they swing
+//!   twice as fast and hit twice as hard.
+//! * **Stamina** (an option, off by default): swinging a weapon hard costs it (the setting's
+//!   seconds of an arming sword swung hard empty it, a heavier weapon or a faster swing sooner),
+//!   and it comes back once the player has rested a moment; a tired player's hands are weaker on
+//!   their weapons. A game that keeps its own (Oblivion's Fatigue) gives it ([`MeleeRules`]) and
+//!   is told what the swings spent.
+//! * **Imbuing**: a hand charging a spell that's fire or shock ([`SPELL_FIRE`], [`SPELL_SHOCK`])
+//!   held within 0.2 m of a held weapon's blade fills it (50 a second at full charge, twice that
+//!   for a weapon of tier 1 to 3: full in a second), and it drains (1 a second at tier 2, a
+//!   shock's at 0.4 of that; 3 a hit; 5 a second dropped). Its hits carry the spell
+//!   ([`CEF_IMBUED`]); the game makes the burn or the shock.
 //!
 //! The game is told all of it each frame ([`RtMelee`]): the time scale, the focus, the stamina
 //! spent, the imbued weapons.
@@ -43,10 +44,13 @@ pub const IMBUE_LOSS: f32 = 1.0;
 pub const IMBUE_SHOCK_LOSS: f32 = 0.4;
 pub const IMBUE_HIT_LOSS: f32 = 3.0;
 pub const IMBUE_DROPPED_LOSS: f32 = 5.0;
-/// Stamina (ours): a swing faster than this (m/s, the blade's tip) costs it, at this much a second
-/// per m/s over and per kilogram, out of 1; it comes back over the setting's refill time.
+/// Stamina (ours): a blade's ends faster than this (m/s) is a swing; one this fast, of a weapon
+/// this heavy (an arming sword's 1.25 kg), swung the setting's seconds, empties it. It comes back
+/// over the setting's refill time once nothing has been swung for this long (s).
 const SWING_FROM: f32 = 3.0;
-const SWING_COST: f32 = 0.004;
+const SWING_HARD: f32 = 8.0;
+const SWING_MASS: f32 = 1.25;
+const REST_AFTER: f64 = 1.0;
 /// Tired, a hand's hold is down to this share of its strength.
 const TIRED_STRENGTH: f32 = 0.5;
 
@@ -66,12 +70,14 @@ pub struct Powers {
     /// Each hand's imbuing this frame (for the game).
     pub imbuing: [Imbue; 2],
     stick_was: [bool; 2],
-    tips: HashMap<u32, Vec3>,
+    /// Each held weapon's blades' ends last frame (world), and when the player last swung.
+    tips: HashMap<u32, Vec<Vec3>>,
+    swung_at: f64,
 }
 
 impl Default for Powers {
     fn default() -> Self {
-        Powers { focus: FOCUS_MAX, slowing: false, easing_out: None, time_scale: 1.0, stamina: 1.0, spent: 0.0, imbues: HashMap::new(), imbuing: Default::default(), stick_was: [false; 2], tips: HashMap::new() }
+        Powers { focus: FOCUS_MAX, slowing: false, easing_out: None, time_scale: 1.0, stamina: 1.0, spent: 0.0, imbues: HashMap::new(), imbuing: Default::default(), stick_was: [false; 2], tips: HashMap::new(), swung_at: 0.0 }
     }
 }
 
@@ -89,8 +95,10 @@ pub struct PowersInput<'a> {
     /// Each hand's spell as it charges (from the combat): its spell, its charge, where its orb is
     /// (world); and whether that spell is fire or shock.
     pub charging: [Option<(u32, f32, Vec3, u32)>; 2],
-    /// The held melee weapons: (id, its tier, its mass, each blade's ends (world)).
+    /// The held melee weapons: (id, its tier, its mass, each blade's ends (world)), and the world's
+    /// units a metre.
     pub held: Vec<(u32, u32, f32, Vec<(Vec3, Vec3)>)>,
+    pub world_per_meter: f32,
     /// The weapons lying loose (their ids), and the hits this frame (the weapon's id).
     pub loose: Vec<u32>,
     pub hits: Vec<u32>,
@@ -155,36 +163,41 @@ impl Powers {
         }
     }
 
-    /// Swings cost stamina (by how fast the blade's tip goes past a swing's speed, and the weapon's
-    /// weight), and it comes back at rest.
+    /// Swings cost stamina (by how fast the weapon's blades go past a swing's speed, and its
+    /// weight), and it comes back once the player has rested.
     fn stamina(&mut self, inp: &PowersInput, dt: f32) {
         let game = inp.rules.flags & RULES_STAMINA != 0 && inp.rules.stamina_max > 0.0;
         let on = inp.settings.stamina || game;
+        let w = inp.world_per_meter.max(1e-3);
+        // How hard the weapons are swung: each by its blades' fastest end, against an arming sword
+        // swung hard (1).
+        let mut effort = 0.0;
         let mut tips = HashMap::new();
-        let mut cost = 0.0;
         for (id, _, mass, blades) in &inp.held {
-            let tip = blades.iter().map(|b| b.1).fold(None, |a: Option<Vec3>, b| Some(a.map_or(b, |a| if b.length() > a.length() { b } else { a }))).unwrap_or(Vec3::ZERO);
-            if let Some(was) = self.tips.get(id) {
-                let speed = tip.distance(*was) / dt.max(1e-4);
-                cost += (speed - SWING_FROM).max(0.0) * mass * SWING_COST * dt;
+            let ends: Vec<Vec3> = blades.iter().flat_map(|&(a, b)| [a, b]).collect();
+            if let Some(was) = self.tips.get(id).filter(|was| was.len() == ends.len()) {
+                let speed = ends.iter().zip(was).map(|(p, q)| p.distance(*q)).fold(0.0, f32::max) / w / dt.max(1e-4);
+                effort += ((speed - SWING_FROM) / (SWING_HARD - SWING_FROM)).max(0.0) * mass / SWING_MASS;
             }
-            tips.insert(*id, tip);
+            tips.insert(*id, ends);
         }
         self.tips = tips;
+        if effort > 0.0 {
+            self.swung_at = inp.now;
+        }
         if !on {
             self.stamina = 1.0;
             return;
         }
+        let used = effort * dt / inp.settings.stamina_time.max(1.0);
         if game {
             // The game's units: what a full meter is to it.
-            let used = cost * inp.rules.stamina_max * if inp.rules.swing_cost > 0.0 { inp.rules.swing_cost } else { 1.0 };
-            self.spent += used;
+            self.spent += used * inp.rules.stamina_max * if inp.rules.swing_cost > 0.0 { inp.rules.swing_cost } else { 1.0 };
             self.stamina = (inp.rules.stamina / inp.rules.stamina_max).clamp(0.0, 1.0);
         } else {
-            let time = inp.settings.stamina_time.max(1.0);
-            self.stamina -= cost * 12.0 / time;
-            self.spent += cost;
-            if cost <= 0.0 {
+            self.stamina -= used;
+            self.spent += used;
+            if inp.now - self.swung_at > REST_AFTER {
                 self.stamina += dt / inp.settings.stamina_refill.max(0.5);
             }
             self.stamina = self.stamina.clamp(0.0, 1.0);

@@ -1130,6 +1130,7 @@ impl Session {
                     walking: Vec2::from_array(frame.hands[off].stick).length() > 0.2,
                     charging,
                     held: melee_held,
+                    world_per_meter: rig_map.world_per_meter,
                     loose,
                     hits,
                     paused: rig_paused || menu_mode,
