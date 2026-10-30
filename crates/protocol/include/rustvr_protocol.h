@@ -753,9 +753,10 @@
 
 /**
  * What the game says about the thing in a hand (its own panel of a thing's name and numbers): over
- * the thing a hand holds or pulls, turned to the eyes, fading with it; with nothing in a hand,
- * where it is on the flat screen. A game with this piece has its own card for what's held, so the
- * runtime draws none of its own ([`crate::ItemInfos`]).
+ * the thing a hand holds or pulls, turned to the eyes, fading with it, each hand its own (drawn
+ * from pictures of it: [`HudLayout::held`]); with nothing in a hand, where it is on the flat
+ * screen. A game with this piece has its own card for what's held, so the runtime draws none of its
+ * own ([`crate::ItemInfos`]).
  */
 #define RVR_HUD_HELD 9
 
@@ -2038,6 +2039,116 @@
  */
 #define RVR_RR_SPEED (1 << 4)
 
+#define RVR_MAX_POCKETS 32
+
+#define RVR_MAX_POCKET_ITEMS 12
+
+#define RVR_MAX_POCKET_OUTCOMES 16
+
+/**
+ * Cloth, leather, food, herbs.
+ */
+#define RVR_FEEL_SOFT 0
+
+/**
+ * Coins: a purse.
+ */
+#define RVR_FEEL_COINS 1
+
+/**
+ * Small metal: a key, a lockpick, a ring.
+ */
+#define RVR_FEEL_KEY 2
+
+/**
+ * A bottle, a gem, a soul gem.
+ */
+#define RVR_FEEL_GLASS 3
+
+/**
+ * A book, a note, a scroll.
+ */
+#define RVR_FEEL_PAPER 4
+
+/**
+ * Anything hard and bigger: a weapon, armour, a tool.
+ */
+#define RVR_FEEL_HARD 5
+
+/**
+ * The game won't have this creature robbed now (it caught the player before): a hand finds it shut.
+ */
+#define RVR_POCKET_SHUT (1 << 0)
+
+/**
+ * The take worked: the thing in the hand is the player's now.
+ */
+#define RVR_PO_TAKEN 1
+
+/**
+ * It didn't: the thing stays where it was (the hand's copy goes) and the game reacts.
+ */
+#define RVR_PO_CAUGHT 2
+
+/**
+ * The thing let go in the pocket went into it.
+ */
+#define RVR_PO_PLANTED 3
+
+/**
+ * The game won't have it planted: it stays out (it falls from the pocket).
+ */
+#define RVR_PO_REFUSED 4
+
+/**
+ * The taken thing let go in the world is the game's own thing there now (the runtime's copy goes).
+ */
+#define RVR_PO_DROPPED 5
+
+#define RVR_POCKET_EVENT_SLOTS 64
+
+/**
+ * A hand has been in `actor`'s pockets a moment (`pocket` the one it's in), or is taking a thing
+ * out of one or planting one, or found them shut: the game's pickpocketing of it opens (shut, the
+ * game's refusal). A quicker look is only feeling, and the game has no part in it.
+ */
+#define RVR_PE_OPEN 1
+
+/**
+ * The hands have been away from all of `actor`'s pockets a moment (or its pockets went), nothing
+ * waiting on the game: its pickpocketing closes.
+ */
+#define RVR_PE_CLOSE 2
+
+/**
+ * Thing `item` pulled out of `pocket` by `hand`, as `object` (the copy in the hand): the attempt.
+ * `speed`: how fast the hand came out (m/s).
+ */
+#define RVR_PE_TAKE 3
+
+/**
+ * `object` let go in `pocket` (a thing to take, or one taken): planting it.
+ */
+#define RVR_PE_PLANT 4
+
+/**
+ * A taken thing (`object`, the player's now) let go in the world at `pos` / `rot`, moving at
+ * `vel`: the game puts its own thing there.
+ */
+#define RVR_PE_DROP 5
+
+/**
+ * A taken thing (`object`) put in a body slot: the player keeps it (it's theirs already).
+ */
+#define RVR_PE_STOW 6
+
+/**
+ * What `hand` is on in the pockets changed: it's in `pocket` of `actor` (0: in none), its
+ * fingers on thing `item`, whose template is `object` (0: on nothing, as in an empty or shut
+ * pocket, or holding a thing). The game shows its card of the thing the fingers are on.
+ */
+#define RVR_PE_FEEL 7
+
 #define RVR_SHOTS 0
 
 #define RVR_HITS 1
@@ -2244,6 +2355,8 @@ typedef uint32_t RVR_Joint;
 
 
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
+
+
 
 
 

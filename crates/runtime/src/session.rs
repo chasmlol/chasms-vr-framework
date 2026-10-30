@@ -122,15 +122,17 @@ pub struct Session {
     /// The rig ran this step (there's a physics world to show).
     rig_active_last: bool,
     menu: RuntimeMenu,
-    /// The card beside a thing in the hand, and this frame's place for it (and how strongly).
-    item_card: crate::item_card::ItemCard,
+    /// The card beside the thing in each hand, and this frame's place for it (and how strongly); a
+    /// game's own card, as pictures of it.
+    item_cards: [crate::item_card::ItemCard; 2],
+    held_cards: crate::held_cards::HeldCards,
     /// OBS's window in the headset (over the left wrist, or pinned with F9): only the headset.
     obs: crate::obs_view::ObsView,
     /// The mirror the player or the game's character creator has up (`crate::mirror`), and whether
     /// where the game's menu stands beside it was said.
     mirror: crate::mirror::Mirror,
     menu_beside_said: bool,
-    card: Option<(panels::Panel, f32)>,
+    cards: [Option<(panels::Panel, f32)>; 2],
     /// The bow's crosshair (the Hands tab's option), and this frame's place for it.
     crosshair: crate::crosshair::Crosshair,
     bow_mark: Option<(panels::Panel, f32)>,
@@ -198,6 +200,8 @@ pub struct Session {
     /// What grabbing the game's creatures needs (see `rig::creatures`), and each hand's grab.
     actor_bodies: Box<ActorBodies>,
     creature_grabs: Box<CreatureGrabs>,
+    /// The game's creatures' pockets and its answers ([`Pockets`]).
+    pockets: Box<Pockets>,
     /// Their convex collision (see `Rig::set_game_hulls`).
     game_hulls: Box<GameHulls>,
     hud: crate::hud::HudPlacer,
@@ -311,11 +315,12 @@ impl Session {
             physics_tris: Vec::new(),
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
-            item_card: crate::item_card::ItemCard::new(&gpu)?,
+            item_cards: [crate::item_card::ItemCard::new(&gpu)?, crate::item_card::ItemCard::new(&gpu)?],
+            held_cards: Default::default(),
             obs: crate::obs_view::ObsView::default(),
             mirror: crate::mirror::Mirror::default(),
             menu_beside_said: false,
-            card: None,
+            cards: [None; 2],
             crosshair: Default::default(),
             bow_mark: None,
             gpu,
@@ -364,6 +369,7 @@ impl Session {
             game_pushes: bytemuck::zeroed_box(),
             actor_bodies: bytemuck::zeroed_box(),
             creature_grabs: bytemuck::zeroed_box(),
+            pockets: bytemuck::zeroed_box(),
             game_hulls: bytemuck::zeroed_box(),
             game_lighting: bytemuck::zeroed_box(),
             game_lighting_read: bytemuck::zeroed_box(),
@@ -871,6 +877,10 @@ impl Session {
                 }
             }
             let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
+            // The game's creatures' pockets, and its answers to what the hands did with them (a
+            // torn read keeps the last).
+            self.link.read_pockets_into(&mut self.pockets);
+            self.rig.set_creature_pockets(&self.pockets, self.link.pocket_events_written());
             let rig_paused = (menu_mode && !held_open) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             let game_name = name_str(&g.name).to_owned();
             self.holsters.before(&self.link, &mut self.rig, &mut self.settings, &game_name, &self.gpu, &mut self.held_objects);
@@ -928,6 +938,16 @@ impl Session {
                     format!("{:.3?} for the controller at {:.3?}{}", at(&h.pose), at(&frame.hands[i].grip), if h.flags & HAND_BLOCKED != 0 { " (blocked)" } else { "" })
                 };
                 tracing::info!("rig: left hand {}; right hand {}", line(0), line(1));
+                for i in 0..2 {
+                    if let Some((p, d)) = self.rig.nearest_pocket(i).filter(|(_, d)| d.length() < 1.0) {
+                        tracing::info!("rig: the {} hand is {:.2} m from pocket {p:#x} (it's {d:.2?} from the hand)", if i == 0 { "left" } else { "right" }, d.length());
+                    }
+                }
+            }
+            // What the hands did with the pockets, for the game, in order (numbered as the rig
+            // numbered them).
+            for ev in std::mem::take(&mut self.rig.pickpocket_events) {
+                self.link.push_pocket_event(&ev);
             }
             self.rig.write_states(&mut self.states);
             // The game's menus held in the hands (a book's pages, the map), with the hands as they
@@ -981,9 +1001,19 @@ impl Session {
                 self.held_menus = Default::default();
                 self.rig.set_page_hands([false; 2]);
             }
-            // What the thing in a hand is, on a card beside it.
-            self.item_card.read(&self.link);
-            self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
+            // What the thing in each hand is (or the thing its fingers are on in a pocket), on a card
+            // beside it.
+            let rig = &self.rig;
+            let hand_of = |s: &ObjectState| match s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) {
+                OS_HELD_LEFT => Some(0),
+                OS_HELD_RIGHT => Some(1),
+                _ => rig.puller(s.id),
+            };
+            for (i, card) in self.item_cards.iter_mut().enumerate() {
+                card.read(&self.link);
+                let felt = rig.feeling(i).map(|(t, palm)| (t, rig_map.inv_point(palm)));
+                self.cards[i] = card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), i, hand_of, felt, Vec3::from_array(frame.hmd.pos), frame.dt)?;
+            }
             // Where a drawn arrow points, when the player asks for it.
             let head = (Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot));
             self.bow_mark = self.crosshair.update(&self.gpu, self.settings.current.archery.crosshair, &self.rig, &self.bows, self.map_now.as_ref(), head, frame.dt);
@@ -1053,7 +1083,7 @@ impl Session {
             self.held_objects.update(&self.objects, &drawn, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
             self.held_objects.clear();
-            self.card = None;
+            self.cards = [None; 2];
             self.bow_mark = None;
         }
         if let (true, Some(a)) = (self.opts.offline_audio && !self.opts.audio, &self.audio) {
@@ -1790,10 +1820,15 @@ impl Session {
                             gun,
                             off_hand: (off.connected != 0).then(|| (Vec3::from_array(off.grip.pos), quat(off.grip.rot))),
                             off_left: dom == 1,
-                            held: self.card.map(|(p, opacity)| (p.center, opacity)),
+                            held: self.cards.iter().any(|c| c.is_some()),
                             map: self.map_now,
                         };
                         let aspect = p.width / p.height.max(1e-4);
+                        // The game's card, while it's of a thing in a hand: that thing's picture.
+                        self.held_cards.next_frame();
+                        if info.flags & SLOT_STEREO != 0 {
+                            self.held_cards.cut(&self.gpu, hud, &self.hud_layout);
+                        }
                         let pieces = self.hud.place(
                             s,
                             Vec3::from_array(frame.hmd.pos),
@@ -1835,10 +1870,25 @@ impl Session {
         if !hud_shown {
             self.hud.reset();
         }
-        // (A game with its own card of what's held, `HUD_HELD`, has it placed there instead.)
+        // Each hand's card: a game's own (`HUD_HELD`) from its picture of the hand's thing, else the
+        // runtime's.
         let game_card = self.hud_layout.entries().iter().any(|e| e.role == HUD_HELD);
-        if let Some((p, opacity)) = self.card.filter(|_| !menu_mode && !game_card) {
-            layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, self.item_card.srv()) });
+        let head = Vec3::from_array(frame.hmd.pos);
+        for (card, item) in self.cards.iter().zip(&self.item_cards) {
+            if let (Some(_), Some(key)) = (card, item.key()) {
+                self.held_cards.touch(key);
+            }
+        }
+        for (card, item) in self.cards.iter().zip(&self.item_cards) {
+            let Some((p, opacity)) = card.filter(|_| !menu_mode) else { continue };
+            if !game_card {
+                layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, item.srv()) });
+            } else if let (Some(at), Some(key)) = (item.over(), item.key())
+                && let Some((srv, du, aspect)) = self.held_cards.picture(key)
+            {
+                let additive = self.hud_layout.flags & HUDL_ADDITIVE != 0;
+                layers.panels.push(PanelLayer { panel: crate::hud::held_card(at, head, du, aspect), srv, opacity, uv: [0.0, 0.0, 1.0, 1.0], additive, soft: [0.0; 2], solid: false });
+            }
         }
         if let (Some((p, opacity)), Some(srv)) = (self.bow_mark.filter(|_| !menu_mode), self.crosshair.srv()) {
             layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, srv) });
@@ -2379,6 +2429,12 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audi
         C::Quiver => (E::HolsterOut, S::HolsterOut),
         C::BowNock => (E::ZoneTick, S::ZoneTick),
         C::BowCreak | C::BowStrain | C::BowRelease | C::StringSnap | C::BowSpring => return None,
+        // A pocket is found like a holster, and a shut one says no; the rest is felt, not heard
+        // (the game's own sounds say what came of it).
+        C::PickpocketIn => (E::ZoneTick, S::ZoneTick),
+        C::PocketShut => (E::Fail, S::Fail),
+        C::PocketPlant => (E::HolsterIn, S::HolsterIn),
+        C::PocketEmpty | C::PocketFeel(_) | C::PickpocketOut | C::PocketCaught | C::PocketWatched => return None,
     })
     .map(|(e, s)| (e, Some(s)))
 }

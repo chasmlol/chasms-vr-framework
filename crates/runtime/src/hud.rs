@@ -90,14 +90,17 @@ pub struct Attach {
     /// The off hand is the left: its grip's +X is out of its palm (a right hand's is out of its
     /// back).
     pub off_left: bool,
-    /// Where the card of the thing in a hand goes (over it, eased), and how strongly it shows.
-    pub held: Option<(Vec3, f32)>,
+    /// A hand has a card over it: a game's own card ([`HUD_HELD`]) is drawn there from pictures of it
+    /// (`crate::held_cards`), not itself.
+    pub held: bool,
     /// Tracking space -> the game's world (for the things pieces float over).
     pub map: Option<WorldMap>,
 }
 
-/// How wide the game's own card of a thing in a hand is (metres).
-pub const HELD_WIDTH: f32 = 0.2;
+/// How wide the game's whole HUD would be at the scale of its own card of a thing in a hand
+/// (metres): the card is drawn at one scale however much of the HUD it takes, so its lines keep
+/// their size as they change (a third of the HUD across is 20 cm).
+pub const HELD_SCALE: f32 = 0.6;
 
 /// A head-following anchor with a dead zone: it holds still while the head turns less than `dead`
 /// away from it, then catches up until it's within a couple of degrees, and stops.
@@ -406,10 +409,7 @@ impl HudPlacer {
                     panel.height = panel.width * dv / du / aspect;
                     Some((panel, 1.0))
                 }
-                HUD_HELD if at.held.is_some() => at.held.map(|(c, opacity)| {
-                    let (w, h) = sized(HELD_WIDTH / du, f32::MAX);
-                    (facing_eye(c, head_pos, w, h), opacity)
-                }),
+                HUD_HELD if at.held => None,
                 HUD_COMPASS => {
                     // Low in front of the body: the head's lazy turn, a fixed angle under the
                     // horizon (not the head's pitch: looking down finds it).
@@ -503,6 +503,15 @@ fn place_group(g: &HudGroup, fp: [f32; 4], thing: Option<Vec3>, eye: Vec3, head_
     let (cx, cy) = ((fp[0] + fp[2]) * 0.5, (fp[1] + fp[3]) * 0.5);
     let height = eye.y - distance * pitch.tan() - cy * unit;
     Placed { id: g.id, anchor: g.anchor, thing, eye, yaw: yaw - cx * unit / distance, height, distance, unit }
+}
+
+/// A picture of the game's card of a thing in a hand (`du`: its share of the HUD's width; `aspect`:
+/// its width / height), standing on `c` (just over the thing, however tall the card is), turned to
+/// the eye at `eye`, at one scale ([`HELD_SCALE`]).
+pub fn held_card(c: Vec3, eye: Vec3, du: f32, aspect: f32) -> Panel {
+    let w = du * HELD_SCALE;
+    let h = w / aspect.max(1e-4);
+    facing_eye(c + Vec3::Y * h * 0.5, eye, w, h)
 }
 
 /// A `w` x `h` panel at `c`, upright, turned to face the eye at `eye`.
@@ -604,7 +613,7 @@ mod tests {
         // (A left hand's palm is its grip's +X: turned up, +X is up.)
         let palm_up = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
         let wrist_ahead = (Vec3::new(-0.05, 1.45, 0.35), palm_up);
-        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), off_left: true, held: None, map: None };
+        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), off_left: true, held: false, map: None };
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
         let ammo = p.iter().find(|p| p.role == HUD_AMMO).unwrap();
         assert!(ammo.panel.center.distance(sight) < 0.15 && ammo.panel.center.x < sight.x, "{:?}", ammo.panel.center);

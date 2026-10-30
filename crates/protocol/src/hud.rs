@@ -48,9 +48,10 @@ pub const HUD_CENTER: u32 = 7;
 /// Not drawn at all (e.g. the crosshair).
 pub const HUD_HIDDEN: u32 = 8;
 /// What the game says about the thing in a hand (its own panel of a thing's name and numbers): over
-/// the thing a hand holds or pulls, turned to the eyes, fading with it; with nothing in a hand,
-/// where it is on the flat screen. A game with this piece has its own card for what's held, so the
-/// runtime draws none of its own ([`crate::ItemInfos`]).
+/// the thing a hand holds or pulls, turned to the eyes, fading with it, each hand its own (drawn
+/// from pictures of it: [`HudLayout::held`]); with nothing in a hand, where it is on the flat
+/// screen. A game with this piece has its own card for what's held, so the runtime draws none of its
+/// own ([`crate::ItemInfos`]).
 pub const HUD_HELD: u32 = 9;
 /// A piece of a menu: placed by its group (the element's `group`), not by its role.
 pub const HUD_MENU: u32 = 10;
@@ -148,6 +149,7 @@ pub const HUDL_ALPHA: u32 = 1 << 2;
 /// The runtime's own settings float beside this menu (the game's pause menu).
 pub const HUDL_SETTINGS: u32 = 1 << 3;
 
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
 pub struct HudElement {
@@ -230,7 +232,13 @@ pub struct HudLayout {
     /// The laser's colours in the game's own palette (its cursor's, its UI's): the beam's bright
     /// thread and the glow round it and its dot, each `0xRRGGBBAA` in sRGB (0: the runtime's own).
     pub pointer: [u32; 2],
-    pub _pad: [u32; 1],
+    /// What the game's card ([`HUD_HELD`]) is of now, once it shows it: a thing in a hand, by the id
+    /// its card is known by ([`crate::ItemInfos`]: the thing's own, or its template's). 0: none (it's
+    /// of what's looked at, or still laying out a new thing: a game takes a moment, and meanwhile
+    /// it's of what it was). The runtime keeps a picture of the card for each thing it's been of and
+    /// draws each hand's from its thing's: both hands have theirs, though the card is of one thing
+    /// at a time.
+    pub card_of: u32,
     pub groups: [HudGroup; MAX_HUD_GROUPS],
     pub elements: [HudElement; MAX_HUD_ELEMENTS],
     /// What holds each group anchored in the hands (`held[group - 1]`, for [`ANCHOR_HELD`]).

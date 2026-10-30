@@ -481,6 +481,44 @@ impl Link {
         *read = written;
         out
     }
+    // ---- pockets ([`crate::pockets`]) -----------------------------------------------------------
+    /// Adapter: the creatures' pockets and the game's answers, every frame.
+    pub fn write_pockets(&self, v: &Pockets) {
+        unsafe { seq_write(self.base.add(OFF_POCKETS), v) }
+    }
+    pub fn read_pockets_into(&self, out: &mut Pockets) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_POCKETS), out) }
+    }
+    /// Runtime: what a hand did with a pocket, for the game. Returns its number.
+    pub fn push_pocket_event(&self, ev: &PocketEvent) -> u64 {
+        let written = self.u64_at(OFF_POCKET_EVENTS + offset_of!(PocketEvents, written));
+        let n = written.load(Ordering::Relaxed);
+        let slot = OFF_POCKET_EVENTS + offset_of!(PocketEvents, events) + (n as usize % POCKET_EVENT_SLOTS) * size_of::<PocketEvent>();
+        unsafe { plain_write(self.base.add(slot), ev) };
+        written.store(n + 1, Ordering::Release);
+        n
+    }
+    /// The number the next pocket event pushed will have.
+    pub fn pocket_events_written(&self) -> u64 {
+        self.u64_at(OFF_POCKET_EVENTS + offset_of!(PocketEvents, written)).load(Ordering::Acquire)
+    }
+    /// Adapter: the pocket events after the `read` first ones, each with its number (`read` is
+    /// then how many there have been). One that fell more than a ring behind skips ahead.
+    pub fn read_pocket_events(&self, read: &mut u64) -> Vec<(u64, PocketEvent)> {
+        let written = self.pocket_events_written();
+        if written < *read {
+            *read = written; // the runtime started again
+        }
+        let from = (*read).max(written.saturating_sub(POCKET_EVENT_SLOTS as u64));
+        let out = (from..written)
+            .map(|n| {
+                let slot = OFF_POCKET_EVENTS + offset_of!(PocketEvents, events) + (n as usize % POCKET_EVENT_SLOTS) * size_of::<PocketEvent>();
+                (n, unsafe { plain_read(self.base.add(slot)) })
+            })
+            .collect();
+        *read = written;
+        out
+    }
     /// Runtime: publish the posed player (see [`RtPlayerDraw`]).
     pub fn write_player_draw(&self, v: &RtPlayerDraw) {
         unsafe { seq_write(self.base.add(OFF_PLAYER_DRAW), v) }

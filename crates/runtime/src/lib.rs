@@ -15,6 +15,7 @@ pub mod mechanics;
 pub mod menu;
 pub mod mirror;
 pub mod obs_view;
+pub mod held_cards;
 pub mod held_menus;
 pub mod held_objects;
 pub mod holsters;

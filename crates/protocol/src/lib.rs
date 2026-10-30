@@ -44,11 +44,13 @@
 //! | [`OFF_ACTOR_BODIES`], [`OFF_CREATURE_GRABS`] | [`ActorBodies`] (adapter -> runtime), [`CreatureGrabs`] (runtime -> adapter): see [`grab`] | | seqlock |
 //! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
 //! | [`OFF_INVENTORY`] .. [`OFF_SLOT_EDITS`] | the player's things and the body's slots (see [`inventory`]) | both | seqlock |
+//! | [`OFF_POCKETS`] .. [`OFF_POCKETS_END`] | the creatures' pockets and what the hands do in them: see [`pockets`] | both | seqlock, ring |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
-//! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, and the
-//! inventory with the body's slots (a new one goes after the last). Every region is listed in address order in `LAYOUT`, which the build
-//! checks: none overlaps the next, and all lie inside [`MAPPING_BYTES`].
+//! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, the
+//! inventory with the body's slots, and the creatures' pockets (a new one goes after the last).
+//! Every region is listed in address order in `LAYOUT`, which the build checks: none overlaps the
+//! next, and all lie inside [`MAPPING_BYTES`].
 //!
 //! # Frames
 //!
@@ -84,6 +86,7 @@ pub mod lighting;
 pub mod magic;
 pub mod player;
 pub mod ride;
+pub mod pockets;
 
 pub use archery::*;
 pub use avatar::*;
@@ -99,6 +102,7 @@ pub use lighting::*;
 pub use magic::*;
 pub use player::*;
 pub use ride::*;
+pub use pockets::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
 pub const VERSION: u32 = 13;
@@ -1008,6 +1012,8 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_INVENTORY, size_of::<Inventory>()),
     (OFF_BODY_SLOTS, size_of::<BodySlots>()),
     (OFF_SLOT_EDITS, size_of::<SlotEdits>()),
+    (OFF_POCKETS, size_of::<Pockets>()),
+    (OFF_POCKET_EVENTS, size_of::<PocketEvents>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 
