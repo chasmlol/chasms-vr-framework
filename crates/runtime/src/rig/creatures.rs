@@ -13,8 +13,8 @@
 //!   hold), how hard the hand can pull (the strength setting times the game's own strength), how
 //!   hard it squeezes a throat, and when it lets go, the throw: the hand's speed at its peak.
 //! * Past the arm's reach from the controller the grip slips, rather than the hand stretching.
-//! * Let go, the hand glides back to its controller through the body and ignores that creature
-//!   until it's out of it, so it's never shoved off it.
+//! * Let go, the hand is a free hand again where it is, on the body's surface: held back by the
+//!   body if the controller is in it, catching up eased, never through it.
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::*;

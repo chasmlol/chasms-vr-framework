@@ -331,8 +331,6 @@ struct Hand {
     valve: Option<valve::ValveGrip>,
     /// On a creature's part ([`creatures`]).
     creature: Option<creatures::Hold>,
-    /// Just let go of this creature: it goes through it, ignoring it, until it's out of it.
-    clear_of: Option<u32>,
     /// The controller's turn rate (world, rad/s) from its last two rotations: the wrist's flicks
     /// (whatever a heavy gun in it manages to follow).
     turn_rate: Vec3,
@@ -1426,7 +1424,7 @@ impl Rig {
             // As the drawn hand's are, from the controller; an empty hand's as what it's pressed
             // on pushes them open.
             let curls = if h.reach_from.is_some() { h.curls } else { h.drawn_curls };
-            h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none() && h.valve.is_none() && h.creature.is_none() && h.clear_of.is_none();
+            h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none() && h.valve.is_none() && h.creature.is_none();
             // The fingers are the hand's own collider (curled as the controller has them): what
             // the hand meets, they meet too, and nothing goes through them.
             let local = fingers::segments((hand.pos, hand.rot), i == 1, curls);
@@ -1660,7 +1658,6 @@ impl Rig {
                 barrels: None,
                 valve: None,
                 creature: None,
-                clear_of: None,
                 turn_rate: Vec3::ZERO,
                 trigger_was: 0.0,
                 squeeze_peak: 0.0,
@@ -1866,7 +1863,7 @@ impl Rig {
         }
         // 4. A creature's part the hand is on (the palm or a finger touching it, or all but): any
         // part of anyone the game lets the hands take hold of.
-        if hover == Hover::None && h.clear_of.is_none() {
+        if hover == Hover::None {
             let prev = match h.hover {
                 Hover::Creature(a, p) => Some((a, p)),
                 _ => None,
@@ -2349,7 +2346,7 @@ impl Rig {
             }
             if h.creature.is_some() {
                 let throw = h.history.release(self.now).lin;
-                self.let_go_creature(i, Some(throw), s.grab_transition);
+                self.let_go_creature(i, Some(throw));
                 return;
             }
             if h.valve.take().is_some() {
@@ -3610,19 +3607,20 @@ impl Rig {
     }
 
     /// Hand `i` lets go of the creature it holds, with the throw (none: its grip slipped, or the
-    /// creature went): its grab's last word for the game, and the hand glides back to its
-    /// controller from the body, through it.
-    fn let_go_creature(&mut self, i: usize, throw: Option<Vec3>, transition: f32) {
+    /// creature went): its grab's last word for the game. The hand is on the body's surface where it
+    /// let go, and a free hand again from there: held back by the body if its controller is in it,
+    /// catching up eased as a hand held back does (never a jump, never through the body).
+    fn let_go_creature(&mut self, i: usize, throw: Option<Vec3>) {
         let Some(hold) = self.hands.as_mut().unwrap()[i].creature.take() else { return };
         let g = &mut self.grabs[i];
         g.flags = (g.flags & !GRAB_HELD) | if throw.is_none() { GRAB_SLIPPED } else { 0 };
         g.vel = throw.unwrap_or(Vec3::ZERO).to_array();
         let h = &mut self.hands.as_mut().unwrap()[i];
         let from = self.physics.pose(h.body);
-        let time = travel_time(transition, from.0.distance(h.target.0));
-        h.returning = Some((from.0, from.1, self.now, time));
-        h.clear_of = Some(hold.actor);
+        h.reach_from = Some((from.0, h.target.0));
         h.blocked = false;
+        let c = h.collider;
+        self.physics.set_groups(c, groups_hand(i));
         tracing::info!(
             "rig: the {} hand lets go of creature {:#x}{}",
             if i == 0 { "left" } else { "right" },
@@ -3646,7 +3644,7 @@ impl Rig {
         for i in 0..2 {
             let Some(hold) = self.hands.as_ref().unwrap()[i].creature else { continue };
             let Some(frame) = self.part_frame(hold.actor, hold.part) else {
-                self.let_go_creature(i, None, s.grab_transition);
+                self.let_go_creature(i, None);
                 continue;
             };
             let both = self.hands.as_ref().unwrap()[i ^ 1].creature.is_some_and(|c| c.actor == hold.actor);
@@ -3690,7 +3688,7 @@ impl Rig {
                 self.emit(Cue::Strain, Some(i), None, at.0, k);
             }
             if slipping.is_some_and(|t| now - t > creatures::SLIP_TIME) {
-                self.let_go_creature(i, None, s.grab_transition);
+                self.let_go_creature(i, None);
             }
         }
     }
@@ -4042,17 +4040,7 @@ impl Rig {
                     continue;
                 }
                 h.returning = None;
-                if h.clear_of.is_none() {
-                    self.physics.set_groups(h.collider, groups_hand(i));
-                }
-            }
-            // Out of the creature it let go of: it meets creatures (and loose things) again.
-            if let Some(actor) = h.clear_of {
-                let inside = self.proxies.iter().any(|(&(a, _), &(_, c, ..))| a == actor && self.physics.distance_between(h.collider, c) <= 0.0);
-                if !inside {
-                    h.clear_of = None;
-                    self.physics.set_groups(h.collider, groups_hand(i));
-                }
+                self.physics.set_groups(h.collider, groups_hand(i));
             }
             let (pos, _) = self.physics.pose(h.body);
             if pos.distance(h.target.0) > LEASH && self.physics.reachable(head, h.target.0) {
