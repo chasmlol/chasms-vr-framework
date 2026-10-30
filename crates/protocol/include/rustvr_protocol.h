@@ -813,6 +813,18 @@
 #define RVR_OBJF_LOOT (1 << 11)
 
 /**
+ * With [`OBJF_GAME_SIMULATED`]: the game's physics holds it on its own constraints (a link of a
+ * chain hanging from the ceiling, a rope's piece), so it can't simply go where a hand puts it.
+ * It's solid to the hands: they rest on it and push it ([`GamePushes`], with how far each hand's
+ * controller is pressed in past it), and gone through by nothing. A hand holding it stays on it
+ * where the game has it (held back as the game's physics holds it) and lets go once its
+ * controller is 30 cm from where it holds it; its state's pose (`OS_HELD_*`) is where the hand would
+ * have it, for the game to pull it there with its own physics. It follows the game as soon as
+ * it's let go.
+ */
+#define RVR_OBJF_CONSTRAINED (1 << 12)
+
+/**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
  */
 #define RVR_GAME_HANDBACK 0.15

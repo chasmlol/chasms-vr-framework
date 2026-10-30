@@ -1624,12 +1624,24 @@ impl Rig {
         let Some(hands) = &self.hands else { return Vec::new() };
         let mut out = self.actor_pushes();
         for (id, o) in &self.objects {
-            let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && self.now - o.free_since > GAME_HANDBACK as f64;
+            let constrained = o.desc.flags & OBJF_CONSTRAINED != 0;
+            let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && (constrained || self.now - o.free_since > GAME_HANDBACK as f64);
             if !game_free {
                 continue;
             }
             let mut best: Option<(f32, Vec3, Vec3, f32)> = None;
-            for h in hands {
+            // Solid to the hands (on the game's constraints): each empty hand resting on it pushes
+            // it as fast as its controller goes on into it, and more the deeper its controller is.
+            if constrained {
+                for h in hands.iter().filter(|h| h.holding.is_none() && h.support.is_none() && h.valve.is_none()) {
+                    let Some((point, normal, gap)) = self.physics.touch(h.collider, o.collider, PRESS_GAP * self.map.world_per_meter) else { continue };
+                    let depth = (h.target.0 - self.physics.pose(h.body).0).dot(normal) - gap.max(0.0);
+                    if depth > 0.0 && best.is_none_or(|b| depth > b.0) {
+                        best = Some((depth, point, normal, (h.target_vel.dot(normal).max(0.0) + depth * PUSH_OUT).min(PUSH_MAX)));
+                    }
+                }
+            }
+            for h in hands.iter().filter(|_| !constrained) {
                 let palm_vel = self.physics.velocity(h.body).0;
                 let fingers = h.fingers.iter().zip(h.finger_vel).filter(|_| h.fingers_on).map(|(f, v)| (self.physics.collider_of(*f), v));
                 let palm = (h.holding.is_none() && h.support.is_none()).then_some((Some(h.collider), palm_vel));
@@ -2307,7 +2319,8 @@ impl Rig {
             t.flight = None;
             t.thrown_at = None;
         }
-        self.physics.set_kinematic(o.body, false);
+        // (One on the game's constraints stays where the game has it: the game pulls it to the hand.)
+        self.physics.set_kinematic(o.body, o.desc.flags & OBJF_CONSTRAINED != 0);
         self.physics.set_gravity(o.body, 1.0);
         self.physics.set_angular_damping(o.body, 0.2);
         self.physics.set_groups(o.collider, groups_held(i));
@@ -2474,6 +2487,22 @@ impl Rig {
         }
         let Some(id) = self.hands.as_mut().unwrap()[i].holding.take() else { return };
         self.physics.set_groups(self.hands.as_ref().unwrap()[i].collider, groups_hand(i));
+        // On the game's constraints: the game's again at once (it was never anywhere else), and
+        // the hand goes back to its controller from it, as off a valve.
+        if self.objects[&id].desc.flags & OBJF_CONSTRAINED != 0 {
+            let o = self.objects.get_mut(&id).unwrap();
+            o.holder = Holder::Free;
+            o.free_since = self.now;
+            o.aim = None;
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            h.hold = None;
+            let (b, target) = (h.body, h.target.0);
+            let from = self.physics.pose(b);
+            let time = travel_time(s.grab_transition, from.0.distance(target));
+            self.hands.as_mut().unwrap()[i].returning = Some((from.0, from.1, self.now, time));
+            self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
+            return;
+        }
         // Let go of while it's stuck in something: it stays in.
         if self.objects[&id].embed.is_some() {
             let o = self.objects.get_mut(&id).unwrap();
@@ -3511,8 +3540,9 @@ impl Rig {
     fn glove_target(&self, origin: Vec3, dir: Vec3, head: (Vec3, Quat), current: Option<u32>, range: f32) -> Option<u32> {
         let mut best: Option<(u32, f32)> = None;
         for (id, o) in &self.objects {
+            // (Not one on the game's constraints: it can't come away to the hand.)
             let pullable = o.desc.flags & OBJF_PULLABLE != 0 || (o.desc.flags & OBJF_GRABBABLE != 0 && o.desc.mass <= 8.0);
-            if !pullable || o.holder != Holder::Free {
+            if !pullable || o.holder != Holder::Free || o.desc.flags & OBJF_CONSTRAINED != 0 {
                 continue;
             }
             let (p, _) = self.physics.pose(o.body);
@@ -3808,6 +3838,7 @@ impl Rig {
         // controller only when the head could reach it there.
         let head = inp.map.point(v3(inp.frame.hmd.pos));
         let ids: Vec<u32> = self.objects.keys().copied().collect();
+        let mut pulled_off = Vec::new();
         for id in &ids {
             let holder = self.objects[id].holder;
             match holder {
@@ -3827,6 +3858,28 @@ impl Rig {
                         }
                         _ => target,
                     };
+                    // On the game's constraints (a chain's link): where the game has it, the hand on
+                    // it there; where the hand would have it goes to the game, which pulls it there.
+                    // Pulled where the game's physics won't let it go, the hand comes off it.
+                    if self.objects[id].desc.flags & OBJF_CONSTRAINED != 0 {
+                        let o = self.objects.get_mut(id).unwrap();
+                        let pivot = match o.attach {
+                            Attach::Gun => v3(o.desc.grip),
+                            Attach::Fixed(p, q) => inverse((p, q)).0,
+                        };
+                        let body = o.body;
+                        o.aim = Some(target);
+                        if let Some(&(p, q)) = self.game_poses.get(id) {
+                            self.physics.move_kinematic(body, p, q);
+                        }
+                        let (now_pos, now_rot) = self.physics.pose(body);
+                        let o = self.objects.get_mut(id).unwrap();
+                        o.lag = (target.0 + target.1 * pivot) - (now_pos + now_rot * pivot);
+                        if o.lag.length() > valve::BREAK * self.map.world_per_meter {
+                            pulled_off.push(hand);
+                        }
+                        continue;
+                    }
                     // Stuck in something: it stays, sliding along the way in as the hand pushes
                     // and pulls, until it's pulled out.
                     if self.objects[id].embed.is_some() && self.hold_embedded(*id, hand, target, dt) {
@@ -3935,15 +3988,19 @@ impl Rig {
                     if self.objects[id].throw.as_ref().is_some_and(|t| t.flight.is_some()) {
                         self.fly(*id, dt, s.interaction.knife_assist);
                     }
-                    // The game's own prop: where the game has it, once it's had it back.
+                    // The game's own prop: where the game has it, once it's had it back (one on the
+                    // game's constraints at once: it never flew off in the runtime). One on its
+                    // constraints is solid to the hands, as a door's leaf is: they rest on it and
+                    // push it, rather than going into it.
                     let o = &self.objects[id];
+                    let constrained = o.desc.flags & OBJF_CONSTRAINED != 0;
                     if o.desc.flags & OBJF_GAME_SIMULATED != 0
-                        && self.now - o.free_since > GAME_HANDBACK as f64
+                        && (constrained || self.now - o.free_since > GAME_HANDBACK as f64)
                         && let Some(&(p, q)) = self.game_poses.get(id)
                     {
                         let (body, collider) = (o.body, o.collider);
                         self.physics.set_kinematic(body, true);
-                        self.physics.set_groups(collider, groups_game_prop());
+                        self.physics.set_groups(collider, if constrained { physics::groups_panel() } else { groups_game_prop() });
                         self.physics.move_kinematic(body, p, q);
                     }
                 }
@@ -3957,6 +4014,9 @@ impl Rig {
                 },
                 Holder::Stuck { .. } | Holder::Gone | Holder::Stowed(_) => {}
             }
+        }
+        for hand in pulled_off {
+            self.release(hand, inp, zones);
         }
         // The player's body, for the doors to stop on: from just under the head down past the hips.
         let body = {
@@ -4249,7 +4309,7 @@ impl Rig {
             let change = (vel - o.prev_vel).length();
             // (Not one of the game's own props the runtime only follows: the game moves it, at the
             // game's pace, and sounds its own knocks.)
-            let following = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && self.now - o.free_since > GAME_HANDBACK as f64;
+            let following = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && (o.desc.flags & OBJF_CONSTRAINED != 0 || self.now - o.free_since > GAME_HANDBACK as f64);
             let hit = match o.holder {
                 Holder::Free | Holder::Pulled { .. } => !following && change > 1.2 && o.prev_vel.length() > 1.0,
                 Holder::Held(_) => contact && !o.in_contact && o.prev_vel.length() > 0.4,
@@ -4535,7 +4595,10 @@ impl Rig {
             })
             .unwrap_or_default();
         for (id, o) in self.objects.iter().take(MAX_OBJECTS) {
-            let (p, q) = self.physics.pose(o.body);
+            // (One on the game's constraints a hand holds: where the hand would have it, for the
+            // game to pull it there.)
+            let held_constrained = matches!(o.holder, Holder::Held(_)) && o.desc.flags & OBJF_CONSTRAINED != 0;
+            let (p, q) = o.aim.filter(|_| held_constrained).unwrap_or_else(|| self.physics.pose(o.body));
             let (lv, av) = self.physics.velocity(o.body);
             // A valve turns on its axle at its own speed (its body is only moved there), or slides.
             let (lv, av) = o.valve.map_or((lv, av), |v| if v.slide { (v.axis() * v.vel, Vec3::ZERO) } else { (Vec3::ZERO, v.axis() * v.vel) });
