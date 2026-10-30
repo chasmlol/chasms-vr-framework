@@ -50,7 +50,7 @@ const FULL_PUSH: f32 = 0.9;
 /// (m/s) to dive: below it they stay at the surface. Every real stroke has a little up and down in
 /// it, and the game floats a swimmer only once they stop: a long swim at the surface sank them a
 /// couple of centimetres a second.
-const SURFACE_HOLD: f32 = 0.2;
+const SURFACE_HOLD: f32 = 0.1;
 /// A grip squeezed past this is a fist (or a hold): it doesn't swim.
 const FIST: f32 = 0.6;
 /// A hand going into the water faster than this (m/s, downwards) slaps it: a pulse.
