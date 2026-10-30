@@ -190,6 +190,9 @@ pub struct Session {
     menu_trigger_was: bool,
     /// The player's body (IK) and its avatar.
     pub body: crate::body::PlayerBody,
+    /// Swimming by the arms in the game's water (`crate::swim`), and what it did this frame.
+    swim: crate::swim::Swim,
+    pub swim_out: crate::swim::SwimOut,
     /// What the runtime draws of what the player holds (`OBJF_RUNTIME_DRAWS`).
     pub held_objects: crate::held_objects::HeldObjects,
     /// The runtime draws the body this frame.
@@ -319,6 +322,8 @@ impl Session {
             comfort: Comfort::default(),
             menu_trigger_was: false,
             body: crate::body::PlayerBody::default(),
+            swim: Default::default(),
+            swim_out: Default::default(),
             held_objects: Default::default(),
             draws_body: false,
             calibrate_at: None,
@@ -741,7 +746,7 @@ impl Session {
         let t_mech = std::time::Instant::now();
         // ---- mechanics
         let aux_aspect = self.targets.as_ref().map(|t| t.spec.aux_w as f32 / t.spec.aux_h.max(1) as f32).unwrap_or(1.0);
-        let out = self.mech.update(&MechInput {
+        let mut out = self.mech.update(&MechInput {
             frame: &frame,
             game: self.game.as_ref(),
             settings: &self.settings.current,
@@ -759,6 +764,28 @@ impl Session {
         });
         for h in self.mech.haptics.drain(..) {
             self.backend.haptic(h.hand, h.seconds, h.frequency, h.amplitude);
+        }
+
+        // ---- swimming: the strokes in the game's water push the player (`crate::swim`)
+        let water = self.game.as_ref().filter(|_| alive).map(|g| g.water);
+        let swim_paused = menu_mode || menu_pointer.is_some() || gflags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
+        self.swim_out = self.swim.update(&crate::swim::SwimInput {
+            frame: &frame,
+            water,
+            map: self.map_now,
+            busy: if rig_active { self.rig_out.hand_busy } else { [false; 2] },
+            paused: swim_paused,
+            enabled: self.settings.current.input.arm_swimming,
+            ease: self.settings.current.input.swim_ease,
+            now,
+        });
+        for &(hand, seconds, frequency, amplitude) in &self.swim.pulses {
+            self.backend.haptic(hand, seconds, frequency, amplitude);
+        }
+        if self.swim_out.swimming && self.settings.current.input.arm_swimming {
+            out.intents.flags |= INT_SWIM;
+            out.intents.swim = self.swim_out.velocity.to_array();
+            out.intents.swim_effort = self.swim_out.effort;
         }
 
         // Arm measurement: a tick each second of each countdown; the arms straight out to the sides,
@@ -856,6 +883,14 @@ impl Session {
                 grasps: if rig_active { [self.rig.grasps()[0].as_ref(), self.rig.grasps()[1].as_ref()] } else { [None; 2] },
                 finger_give: if rig_active { self.rig_out.finger_give } else { [[0.0; 5]; 2] },
                 locomotion,
+                swim: self.swim_out.swimming.then(|| {
+                    // How the body moves through the water: as the game moves it (the strokes',
+                    // the stick's), in tracking space; the strokes' own until the game has moved.
+                    let walk = self.map_now.map(|m| Quat::from_rotation_y(-m.body_yaw) * self.locomotion.walk().0 / m.world_per_meter);
+                    let strokes = self.swim_out.velocity;
+                    let velocity = walk.filter(|w| w.length() > strokes.length()).unwrap_or(strokes);
+                    rustvr_ik::Swimming { velocity, full_speed: self.swim_out.full_speed, effort: self.swim_out.effort }
+                }),
                 eye_height: if stand > 0.5 { stand } else { 0.0 },
                 floor,
                 settings: &self.settings.current,

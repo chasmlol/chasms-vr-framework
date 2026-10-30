@@ -188,6 +188,10 @@ pub struct Input {
     pub physical_crouch: bool,
     /// Metres below the calibrated standing height that count as crouching.
     pub crouch_threshold: f32,
+    /// In a game's water, the arms swim (strokes push the player); the stick swims either way.
+    pub arm_swimming: bool,
+    /// How much easier a stroke is: 2 swims at full speed with half the stroke (1: as designed).
+    pub swim_ease: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -469,6 +473,8 @@ impl Default for Input {
             flick_speed: 2.0,
             physical_crouch: true,
             crouch_threshold: 0.35,
+            arm_swimming: true,
+            swim_ease: 1.0,
         }
     }
 }
