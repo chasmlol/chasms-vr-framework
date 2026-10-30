@@ -1656,6 +1656,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustvr-melee"
+version = "0.1.0"
+dependencies = [
+ "glam 0.34.1",
+ "rustvr-protocol",
+]
+
+[[package]]
 name = "rustvr-protocol"
 version = "0.1.0"
 dependencies = [
@@ -1679,6 +1687,7 @@ dependencies = [
  "rustvr-gpu",
  "rustvr-guns",
  "rustvr-ik",
+ "rustvr-melee",
  "rustvr-protocol",
  "rustvr-runtime",
  "tracing",
@@ -1703,6 +1712,7 @@ dependencies = [
  "rustvr-gpu",
  "rustvr-guns",
  "rustvr-ik",
+ "rustvr-melee",
  "rustvr-protocol",
  "serde",
  "toml 1.1.8+spec-1.1.0",

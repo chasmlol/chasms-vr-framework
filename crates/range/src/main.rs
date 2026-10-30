@@ -21,9 +21,13 @@
 //! your right hand (physical mode; the scenarios that handle a particular gun use it);
 //! `--runtime-draws` has the runtime draw Metro's guns and their magazines (`OBJF_RUNTIME_DRAWS`,
 //! from the same models, with the player's hands) instead of the range, as a game adapter does.
+//! `--arena <range|arena|bench|climb>` starts the player in one of the melee areas (`arenas`).
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+mod anim;
+mod arenas;
+mod arsenal;
 mod combat;
 mod content;
 mod effects;
@@ -126,6 +130,8 @@ struct Game {
     world: hits::World,
     /// The training dummies: people the player's hands meet, hit, push and stab.
     dummies: ragdoll::Dummies,
+    /// The melee weapons' handles and damagers (`arsenal`), for the runtime.
+    melee_weapons: Box<MeleeWeapons>,
 }
 
 fn main() -> Result<()> {
@@ -139,6 +145,7 @@ fn main() -> Result<()> {
     let mut front: Vec<String> = Vec::new();
     let mut runtime_draws = false;
     let mut metro_hud = false;
+    let mut arena = String::from("range");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -147,6 +154,7 @@ fn main() -> Result<()> {
             "--legacy" => legacy = true,
             "--runtime-draws" => runtime_draws = true,
             "--metro-hud" => metro_hud = true,
+            "--arena" => arena = args.next().unwrap_or_default(),
             "--table" => front = args.next().unwrap_or_default().split(',').filter(|k| !k.is_empty()).map(String::from).collect(),
             other => anyhow::bail!("unknown argument {other}"),
         }
@@ -154,6 +162,11 @@ fn main() -> Result<()> {
     let gpu = Gpu::new()?;
     let mut game = Game::new(gpu, &start_weapon, legacy, &front, runtime_draws)?;
     game.metro_hud = metro_hud.then_some(false);
+    let Some((feet, yaw)) = arenas::start(&arena) else {
+        anyhow::bail!("no area {arena}: {}", arenas::starts().map(|s| s.0).join(", "));
+    };
+    (game.feet, game.yaw) = (feet, yaw);
+    tracing::info!("range: starting in the {arena} area at {feet:.1?}");
     game.run(fps_cap)
 }
 
@@ -201,8 +214,19 @@ impl Game {
         // pouches.
         let throw_list = if legacy { Vec::new() } else { throwables::all(&assets) };
         let mut scenery = scenery;
+        // The melee weapons' handles and damagers, by the ids they're registered with.
+        let mut melee_weapons: Box<MeleeWeapons> = bytemuck::zeroed_box();
         if let Some(a) = &mut armory {
             let placed = throwables::layout(&throw_list);
+            let arms = arsenal::all();
+            for (i, d) in &placed {
+                let Some(arm) = arms.iter().find(|w| w.thing.key == throw_list[*i].key) else { continue };
+                let n = melee_weapons.count as usize;
+                if n < MAX_MELEE_WEAPONS {
+                    melee_weapons.weapons[n] = MeleeWeapon { id: d.id, ..arm.melee };
+                    melee_weapons.count += 1;
+                }
+            }
             a.add_objects(&placed.iter().map(|(i, d)| (*d, physical::Kind::Throwable(*i))).collect::<Vec<_>>());
             // Their collision, cut from their models (a sword's blade, guard and handle).
             for (i, d) in &placed {
@@ -211,7 +235,7 @@ impl Game {
                 a.add_hulls(d.id, &rustvr_guns::hulls::convex_parts(&tris, 4, MAX_HULL_POINTS));
             }
             a.add_sound_sets(&placed.iter().map(|(i, d)| (d.id, throwables::sound_set(&throw_list[*i]))).collect::<Vec<_>>());
-            let table = throwables::furniture();
+            let table: Vec<_> = throwables::furniture().into_iter().chain(arenas::furniture()).collect();
             a.add_collision(&table.iter().map(|(lo, hi, _)| (*lo, *hi)).collect::<Vec<_>>());
             let mut m = MeshData::default();
             for (lo, hi, c) in table {
@@ -229,7 +253,7 @@ impl Game {
         let gun_fx = weapons.iter().map(|g| effects::gun_fx(&g.w, &assets)).collect();
         // What bullets hit: the room (stone), the furniture (wood, the steel rails metal), the plates.
         let mut boxes: Vec<(Vec3, Vec3, Surface)> = content::shell().into_iter().map(|(lo, hi)| (lo, hi, Surface::Stone)).collect();
-        for (lo, hi, c) in content::furniture().into_iter().chain(if legacy { Vec::new() } else { throwables::furniture() }) {
+        for (lo, hi, c) in content::furniture().into_iter().chain(if legacy { Vec::new() } else { throwables::furniture().into_iter().chain(arenas::furniture()).collect() }) {
             boxes.push((lo, hi, if c[2] > c[0] { Surface::Metal } else { Surface::Wood }));
         }
         let world = hits::World::new(boxes, targets.iter().map(|t| (t.center, t.radius)).collect());
@@ -285,6 +309,7 @@ impl Game {
             gun_fx,
             world,
             dummies: combat::dummies(),
+            melee_weapons,
         })
     }
 
@@ -538,8 +563,9 @@ impl Game {
         }
         if self.combat_for != self.adapter.connections() && self.adapter.connected() {
             self.combat_for = self.adapter.connections();
-            let swords: Vec<u32> = self.armory.as_ref().map(|a| a.ids_of_kind(OBJ_MELEE)).unwrap_or_default();
-            self.adapter.write_melee(&combat::melee_table(&swords));
+            self.adapter.write_melee(&combat::melee_table(&self.melee_weapons));
+            self.melee_weapons.seq = self.melee_weapons.seq.wrapping_add(2);
+            self.adapter.write_melee_weapons(&self.melee_weapons);
             self.adapter.write_spells(&combat::spells());
         }
         for ev in self.adapter.combat_events() {

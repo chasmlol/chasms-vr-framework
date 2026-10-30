@@ -100,15 +100,21 @@ pub struct MeleeBlade {
     pub normal: f32,
     /// What a penetration itself does.
     pub penetration_damage: f32,
-    /// Its damage by impact speed: (m/s, multiplier) at two points, straight between and flat
-    /// past them. All zero: its kind's own.
+    /// Its damage by impact speed: (m/s, multiplier) at two points, flat past them, with the
+    /// curve's slopes there (multiplier per m/s, leaving the first and coming into the second; both
+    /// 0: it eases in and out). All zero: its kind's own.
     pub curve: [f32; 4],
+    pub slopes: [f32; 2],
+    pub _p0: [f32; 2],
     /// The damping a penetration slides against (N s/m): with a hand on it going in, coming out,
     /// and with none. 0: its kind's own.
     pub damper_in: f32,
     pub damper_out: f32,
     pub damper_free: f32,
-    pub _pad: f32,
+    /// Which damage table it's judged by against what it meets (`rustvr_melee`'s `MOD_*`: a sword's
+    /// slash, a dagger's weaker one, an axe's; a stab, a fine point's; a mace's
+    /// blunt, a pommel's lighter one...). 0: its kind's own.
+    pub modifier: u32,
 }
 
 // ---- weapons ------------------------------------------------------------------------------------
@@ -303,8 +309,8 @@ pub const OFF_MELEE_END: usize = OFF_RT_MELEE + size_of::<RtMelee>();
 
 const _: () = {
     assert!(size_of::<MeleeHandle>() == 64);
-    assert!(size_of::<MeleeBlade>() == 112);
-    assert!(size_of::<MeleeWeapon>() == 64 + 64 * MAX_HANDLES + 112 * MAX_BLADES);
+    assert!(size_of::<MeleeBlade>() == 128);
+    assert!(size_of::<MeleeWeapon>() == 64 + 64 * MAX_HANDLES + 128 * MAX_BLADES);
     assert!(size_of::<ActorItem>() == 48);
     assert!(size_of::<MeleeRules>() == 64);
     assert!(size_of::<RtMelee>() == 128);

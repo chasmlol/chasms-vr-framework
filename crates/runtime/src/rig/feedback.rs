@@ -128,6 +128,9 @@ pub enum Cue {
     /// A fingertip coming down on a sheet's face ([`super::sheet`]): a tap, felt only (the game
     /// sounds what the touch does).
     Touch,
+    /// A hand sliding along a weapon's handle ([`super::melee`]): a buzz while it runs, the
+    /// stronger the faster (felt only).
+    Slide,
 }
 
 impl Cue {
@@ -205,6 +208,7 @@ impl Cue {
             Cue::Grind => "grind",
             Cue::GrindStroke => "grind_stroke",
             Cue::Touch => "touch",
+            Cue::Slide => "slide",
         }
     }
 }
@@ -319,6 +323,8 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::GrindStroke => (0.03, 90.0, 0.45),
         // A fingertip on paper: a light, short tap.
         Cue::Touch => (0.012, 220.0, 0.3),
+        // Wood or leather running through a loose fist: a fine, rising buzz.
+        Cue::Slide => (0.015, 180.0 + 120.0 * i, (0.08 + 0.3 * i).min(0.4)),
     })
 
 }

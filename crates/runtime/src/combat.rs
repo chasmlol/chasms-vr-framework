@@ -302,6 +302,11 @@ pub struct Combat {
     actors: Box<Actors>,
     melee: Box<MeleeTable>,
     spells: Box<Spells>,
+    /// The game's melee weapons with their full melee numbers ([`MeleeWeapons`]), what its
+    /// creatures hold ([`ActorItems`]) and its rules for the player ([`MeleeRules`]).
+    pub weapons: Box<MeleeWeapons>,
+    pub items: Box<ActorItems>,
+    pub rules: Box<MeleeRules>,
     /// Each held weapon's damager points last frame (world), by object (0, 1: the fists).
     prev: HashMap<u32, Vec<[Vec3; SAMPLES]>>,
     /// Each body part's centre last frame, by (actor, part index).
@@ -328,6 +333,9 @@ impl Default for Combat {
             actors: bytemuck::zeroed_box(),
             melee: bytemuck::zeroed_box(),
             spells: bytemuck::zeroed_box(),
+            weapons: bytemuck::zeroed_box(),
+            items: bytemuck::zeroed_box(),
+            rules: bytemuck::zeroed_box(),
             prev: HashMap::new(),
             prev_parts: HashMap::new(),
             touching: Default::default(),
@@ -432,6 +440,9 @@ impl Combat {
         link.read_actors_into(&mut self.actors);
         link.read_melee_into(&mut self.melee);
         link.read_spells_into(&mut self.spells);
+        link.read_melee_weapons_into(&mut self.weapons);
+        link.read_actor_items_into(&mut self.items);
+        link.read_melee_rules_into(&mut self.rules);
     }
 
     /// For tests: the tables as given.

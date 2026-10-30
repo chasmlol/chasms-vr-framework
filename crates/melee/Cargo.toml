@@ -1,0 +1,11 @@
+[package]
+name = "rustvr-melee"
+description = "Melee rules and numbers: how a contact is judged and what it does, shared by the runtime (judging what the hands did) and a game without its own (the test range)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rustvr-protocol.workspace = true
+glam.workspace = true

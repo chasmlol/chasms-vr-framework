@@ -17,6 +17,7 @@ rustvr-audio = { path = "crates/audio" }
 rustvr-ik = { path = "crates/ik" }
 rustvr-avatar = { path = "crates/avatar" }
 rustvr-guns = { path = "crates/guns" }
+rustvr-melee = { path = "crates/melee" }
 
 anyhow = "1"
 bytemuck = { version = "1.25", features = ["derive"] }

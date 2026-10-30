@@ -241,7 +241,9 @@ pub fn sound_set(t: &Throwable) -> &str {
 
 /// Everything the range throws: the built-in ones, then Metro's.
 pub fn all(root: &std::path::Path) -> Vec<Throwable> {
-    let mut v = vec![builtin_frag(), builtin_knife(), crate::combat::sword()];
+    let mut v = vec![builtin_frag(), builtin_knife()];
+    // The melee weapons (the arming sword first, on this table; the rest on the melee rack).
+    v.extend(crate::arsenal::all().into_iter().map(|a| a.thing));
     v.extend(metro_throwables(root));
     v
 }
@@ -271,6 +273,15 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
             places.push((i, Vec3::new(x, top, 1.08), 0));
         }
     }
+    let n_table = places.len();
+    // The melee rack's weapons, each lying its own way.
+    let mut turned: Vec<(usize, Quat)> = Vec::new();
+    for (key, at, rot) in crate::arsenal::rack_places() {
+        if let Some(i) = find(key) {
+            turned.push((places.len(), rot));
+            places.push((i, at, 0));
+        }
+    }
     places
         .into_iter()
         .enumerate()
@@ -280,8 +291,10 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
             d.id = THROW_BASE + k as u32;
             d.spawn_seq = 1;
             d.start_slot = slot;
-            let at = at.clamp(lo, hi);
-            d.spawn_pose = Pose { pos: (at + Vec3::Y * t.lying.1).to_array(), valid: 1, rot: t.lying.0.to_array() };
+            // (The rack's weapons lie on the rack, at the height their lying pose puts them.)
+            let rot = turned.iter().find(|(n, _)| *n == k).map_or(t.lying.0, |(_, r)| *r);
+            let at = if k < n_table { at.clamp(lo, hi) } else { at };
+            d.spawn_pose = Pose { pos: (at + Vec3::Y * t.lying.1).to_array(), valid: 1, rot: rot.to_array() };
             (i, d)
         })
         .collect()

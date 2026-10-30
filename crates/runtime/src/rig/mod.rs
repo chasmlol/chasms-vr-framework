@@ -27,6 +27,7 @@ pub mod fingers;
 pub mod grips;
 pub mod valve;
 pub mod kick;
+pub mod melee;
 pub mod physics;
 pub mod pickpocket;
 pub mod pockets;
@@ -874,6 +875,8 @@ pub struct Rig {
     grind_felt: [f64; 2],
     /// The sheets' touches ([`sheet`]).
     touches: HashMap<u32, sheet::Touches>,
+    /// The melee weapons and the hands' hold on them ([`melee`]).
+    melee: melee::MeleeRig,
 }
 
 /// Something the player did with the body's slots that the runtime keeps (in its settings) or
@@ -941,6 +944,7 @@ impl Default for Rig {
             grinds: HashMap::new(),
             grind_felt: [0.0; 2],
             touches: HashMap::new(),
+            melee: melee::MeleeRig { strength: 1.0, ..Default::default() },
         }
     }
 }
@@ -2013,6 +2017,11 @@ impl Rig {
                 if let Fuse::Lit { at } = &mut t.fuse {
                     *at += dt as f64;
                 }
+            }
+        }
+        if !inp.paused {
+            for i in 0..2 {
+                self.slide_melee(i, inp, dt);
             }
         }
         self.drive(inp, dt, &zones);
@@ -3407,12 +3416,18 @@ impl Rig {
         // hand anywhere along it. Drawn from a holster or caught (`snap`), a gun or a rigged
         // weapon goes into the hand by its grip whatever.
         let rigged = gun || (authored(d.grip_rot).is_some() && matches!(d.kind, OBJ_THROWABLE | OBJ_MELEE | OBJ_BOW));
-        let hold = self.handle_of(&d, i, On::Grip).and_then(|h| match h.take(local.0, local.1) {
+        // A melee weapon the game describes is taken where it is, nothing moving ([`melee`]),
+        // unless it comes from a holster or is caught (into the hand by its grip).
+        let melee_at = (d.kind == OBJ_MELEE && !snap && self.melee.weapons.contains_key(&id)).then(|| self.take_melee(id, i));
+        let hold = self.handle_of(&d, i, On::Grip).filter(|_| melee_at.is_none()).and_then(|h| match h.take(local.0, local.1) {
             Some(hold) => Some(hold),
             None if snap && rigged => Some((h.at, h.rot)),
             None => None,
         });
-        let (attach, on) = if let Some(hold) = hold {
+        let (attach, on) = if let Some((attach, on, at)) = melee_at {
+            drawn = at;
+            (attach, on)
+        } else if let Some(hold) = hold {
             if gun {
                 (Attach::Gun, On::Grip)
             } else {
@@ -5912,6 +5927,14 @@ impl Rig {
                     if self.objects[id].embed.is_some() && self.hold_embedded(*id, hand, target, dt) {
                         continue;
                     }
+                    // A melee weapon is held on a hand's joint of limited strength, keeping its
+                    // weight.
+                    if self.objects[id].desc.kind == OBJ_MELEE {
+                        if !self.hold_melee(*id, hand, target, inp, dt) {
+                            pulled_off.push(hand);
+                        }
+                        continue;
+                    }
                     let o = &self.objects[id];
                     // Weight: heavy things accelerate less (Godot's 15 -> 300 N idea, scaled by the
                     // weight setting).
@@ -6060,6 +6083,8 @@ impl Rig {
         for hand in pulled_off {
             self.release(hand, inp, zones);
         }
+        let objects = &self.objects;
+        self.melee.held.retain(|id, _| objects.get(id).is_some_and(|o| matches!(o.holder, Holder::Held(_))));
         // The player's body, for the doors to stop on: from just under the head down past the hips.
         let body = {
             let head = v3(inp.frame.hmd.pos);
@@ -6859,6 +6884,9 @@ impl Rig {
     /// it meets the body with, before the body stops it).
     pub fn swing_pose(&self, id: u32) -> Option<(Vec3, Quat)> {
         let o = self.objects.get(&id)?;
+        if let (Holder::Held(_), None, Some(swing)) = (o.holder, o.embed, self.melee_swing(id)) {
+            return Some(swing);
+        }
         match (o.holder, o.aim, o.embed) {
             (Holder::Held(_), Some(aim), None) => Some(aim),
             _ => self.obj_pose(id),

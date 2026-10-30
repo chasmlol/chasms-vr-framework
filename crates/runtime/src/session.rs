@@ -156,6 +156,8 @@ pub struct Session {
     pub rig: Rig,
     pub rig_out: RigOutput,
     combat: crate::combat::Combat,
+    /// The melee weapons table the rig last took ([`MeleeWeapons::seq`]).
+    melee_weapons_seq: u32,
     /// Blood and limbs cut off (crate::gore).
     gore: crate::gore::Gore,
     /// Hands whose trigger casts a spell this frame (`crate::combat`).
@@ -354,6 +356,7 @@ impl Session {
             rig: Rig::default(),
             rig_out: RigOutput::default(),
             combat: crate::combat::Combat::default(),
+            melee_weapons_seq: 0,
             gore: crate::gore::Gore::default(),
             spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
@@ -1042,6 +1045,12 @@ impl Session {
             self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
             self.combat.read(&self.link);
+            // The game's melee weapons' handles, and how strong it says the player is.
+            if self.combat.weapons.seq != self.melee_weapons_seq {
+                self.melee_weapons_seq = self.combat.weapons.seq;
+                self.rig.set_melee_weapons(&self.combat.weapons);
+            }
+            self.rig.set_melee_strength(if self.combat.rules.strength > 0.0 { self.combat.rules.strength } else { 1.0 });
             // The game's effect shaders over what the runtime draws, when they change.
             if self.link.read_overlays_into(&mut self.overlays) && self.overlays.seq != self.overlays_seq {
                 self.overlays_seq = self.overlays.seq;
@@ -2487,7 +2496,7 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audi
         // The game sounds its own grinding (the bowl's strokes).
         C::Grind | C::GrindStroke => return None,
         // And what a touch on its page does.
-        C::Touch => return None,
+        C::Touch | C::Slide => return None,
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

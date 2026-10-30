@@ -1,13 +1,11 @@
 //! The range's combat: training dummies (people the hands can hit, push and stab: `crate::ragdoll`,
-//! published as capsules every frame), a sword on the throwables' table (its edges cut both ways, its point stabs, its pommel
-//! bludgeons) and one spell, a fire bolt, so the runtime's melee and magic can be played and tested
-//! without a game (`rustvr_protocol::combat`).
+//! published as capsules every frame), the melee weapons (`crate::arsenal`) and one spell, a fire
+//! bolt, so the runtime's melee and magic can be played and tested without a game
+//! (`rustvr_protocol::combat`).
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::*;
 
-use crate::content::MeshData;
-use crate::throwables::Throwable;
 
 /// The dummy's id, as the game knows it.
 pub const DUMMY_ID: u32 = 7001;
@@ -28,64 +26,20 @@ pub fn dummies() -> crate::ragdoll::Dummies {
     crate::ragdoll::Dummies::new(&[(DUMMY_AT, facing(0.0)), (DUMMY_LEFT_AT, facing(0.35))], DUMMY_ID, &world)
 }
 
-/// A one-handed sword: the blade along +Z from the guard at 0 to its point at +80 cm, its edges to
-/// ±X, the handle behind (the grip at -6 cm), the pommel at -13 cm.
-pub fn sword() -> Throwable {
-    let steel = [190, 192, 198, 255];
-    let mut m = MeshData::default();
-    m.add_box(Vec3::new(-0.022, -0.003, 0.0), Vec3::new(0.022, 0.003, 0.72), steel);
-    m.add_box(Vec3::new(-0.012, -0.0025, 0.72), Vec3::new(0.012, 0.0025, 0.8), steel);
-    m.add_box(Vec3::new(-0.08, -0.012, -0.012), Vec3::new(0.08, 0.012, 0.0), [120, 100, 60, 255]);
-    m.add_box(Vec3::new(-0.014, -0.014, -0.11), Vec3::new(0.014, 0.014, -0.012), [60, 40, 30, 255]);
-    m.add_box(Vec3::new(-0.022, -0.022, -0.135), Vec3::new(0.022, 0.022, -0.11), [120, 100, 60, 255]);
-    let mut d: ObjectDesc = bytemuck::Zeroable::zeroed();
-    d.kind = OBJ_MELEE;
-    d.flags = OBJF_GRABBABLE | OBJF_PULLABLE | OBJF_HOLSTERABLE;
-    d.shape = SHAPE_BOX;
-    d.half_extents = [0.08, 0.022, 0.47];
-    d.center = [0.0, 0.0, 0.33];
-    d.mass = 1.2;
-    d.grip = [0.0, 0.0, -0.06];
-    d.muzzle = [0.0, 0.0, 0.8];
-    // The fist round the handle (little finger to thumb along the blade), the back of the hand to
-    // the blade's flat.
-    d.grip_rot = rustvr_guns::fist(Vec3::Z, Vec3::Y).to_array();
-    // The handle, from the pommel to the guard: a hand goes on anywhere along it.
-    d.grip_line = [[0.0, 0.0, -0.11], [0.0, 0.0, -0.012]];
-    d.grip_radius = 0.014;
-    set_name(&mut d.name, "Arming sword");
-    Throwable {
-        key: "builtin_sword".into(),
-        name: "Arming sword".into(),
-        parts: vec![m],
-        fix: glam::Mat4::IDENTITY,
-        from_game: false,
-        pin_parts: Vec::new(),
-        lever_parts: Vec::new(),
-        desc: d,
-        blast: None,
-        fuse_at: None,
-        led: None,
-        // Flat on the table.
-        lying: (Quat::from_rotation_x(std::f32::consts::FRAC_PI_2) * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), 0.012),
-    }
-}
-
-/// The sword's damagers: both edges along the blade, the point, the pommel.
-pub fn sword_melee(id: u32) -> MeleeDesc {
-    let mut w = MeleeDesc { id, count: 3, damage: 12.0, reach: 0.86, ..Default::default() };
-    w.damagers[0] = Damager { kind: DMG_SLASH, flags: DMGF_BOTH_WAYS, radius: 0.025, a: [0.0, 0.0, 0.08], b: [0.0, 0.0, 0.72], edge: [1.0, 0.0, 0.0], ..Default::default() };
-    w.damagers[1] = Damager { kind: DMG_PIERCE, radius: 0.015, depth: 0.2, a: [0.0, 0.0, 0.7], b: [0.0, 0.0, 0.8], ..Default::default() };
-    w.damagers[2] = Damager { kind: DMG_BLUNT, radius: 0.025, a: [0.0, 0.0, -0.135], b: [0.0, 0.0, -0.11], ..Default::default() };
-    w
-}
-
-pub fn melee_table(ids: &[u32]) -> MeleeTable {
+/// The melee weapons' blades as the runtime's simpler table has them ([`MeleeTable`]: four damagers
+/// a weapon), for a runtime that reads only that; the full ones are [`MeleeWeapons`].
+pub fn melee_table(weapons: &MeleeWeapons) -> MeleeTable {
     let mut t: MeleeTable = bytemuck::Zeroable::zeroed();
-    for (i, &id) in ids.iter().take(MAX_MELEE).enumerate() {
-        t.weapons[i] = sword_melee(id);
+    for (i, w) in weapons.weapons[..(weapons.count as usize).min(MAX_MELEE_WEAPONS)].iter().take(MAX_MELEE).enumerate() {
+        let mut d = MeleeDesc { id: w.id, damage: 12.0, ..Default::default() };
+        for b in w.blades().iter().take(MAX_DAMAGERS) {
+            d.damagers[d.count as usize] = Damager { kind: b.kind, flags: b.flags & (DMGF_BOTH_WAYS | DMGF_AXE), depth: b.depth, radius: b.radius, a: b.a, b: b.b, edge: b.edge, ..Default::default() };
+            d.count += 1;
+            d.reach = d.reach.max(glam::Vec3::from_array(b.b).length() + b.radius);
+        }
+        t.weapons[i] = d;
+        t.count += 1;
     }
-    t.count = ids.len().min(MAX_MELEE) as u32;
     t
 }
 

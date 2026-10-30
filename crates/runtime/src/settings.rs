@@ -29,6 +29,35 @@ pub struct Settings {
     pub archery: Archery,
     pub riding: Riding,
     pub holsters: Holsters,
+    pub melee: Melee,
+}
+
+/// Physical melee (`crate::rig::melee`, `crate::combat`, `docs/MELEE.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Melee {
+    /// The hands' strength on a weapon (1: the standard): their joint's spring and the most force
+    /// and torque it gives. Times the game's own number for the player.
+    pub strength: f32,
+    /// Swinging costs stamina, and a tired player's hands are weaker (a game's own stamina,
+    /// Oblivion's Fatigue, takes over when it gives one).
+    pub stamina: bool,
+    /// Seconds of hard swinging a full stamina lasts, and seconds it takes to come back.
+    pub stamina_time: f32,
+    pub stamina_refill: f32,
+    /// Slowing time on the focus meter.
+    pub slow_time: bool,
+    /// Telekinesis (point an open hand, grip, and the thing floats to it or held off) in
+    /// place of the gravity gloves.
+    pub telekinesis: bool,
+    /// Climbing by the hands: a grip on the world holds the player there.
+    pub climbing: bool,
+}
+
+impl Default for Melee {
+    fn default() -> Self {
+        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: true, climbing: true }
+    }
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.

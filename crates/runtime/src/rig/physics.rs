@@ -682,6 +682,73 @@ impl Physics {
         (carry_v, carry_w)
     }
 
+    /// Body `b`'s inertia (kg m^2) about the line through `point` along `axis` (world): its own
+    /// about its centre of mass, and the parallel axis's.
+    pub fn body_inertia_about(&self, b: RigidBodyHandle, point: V3, axis: V3) -> f32 {
+        let rb = &self.world.bodies[b];
+        let mp = &rb.mass_properties().local_mprops;
+        let (_, rot) = from_pose(rb.position());
+        let axis = axis.normalize_or_zero();
+        let n = rot.inverse() * axis;
+        let in_frame = from_q(mp.principal_inertia_local_frame).inverse() * n;
+        let principal = from_v(mp.principal_inertia());
+        let about_com = principal.x * in_frame.x * in_frame.x + principal.y * in_frame.y * in_frame.y + principal.z * in_frame.z * in_frame.z;
+        let off = from_v(rb.center_of_mass()) - point;
+        let d2 = (off - axis * off.dot(axis)).length_squared();
+        about_com + rb.mass() * d2
+    }
+
+    /// Holds a body as a hand holds a melee weapon ([`Joint`]): a spring and a
+    /// damper from the controller to the point held, no stronger than a hand, solved implicitly so
+    /// the stiff spring stays steady at the frame rate. The body keeps its mass and gravity: a light
+    /// one keeps up, a heavy one lags behind a fast swing and swings on past a stop, and what it
+    /// meets stops it. Returns the carry's share of the velocity set (as [`Physics::track`]) and
+    /// where the body goes this step if nothing stops it (the swing a blow is judged by).
+    pub fn joint(&mut self, b: RigidBodyHandle, target_pos: V3, target_rot: Q, dt: f32, j: &Joint) -> ((V3, V3), (V3, Q)) {
+        let dt = dt.max(1e-4);
+        let (pos, rot) = self.pose(b);
+        let (pos_c, rot_c) = j.carry.unwrap_or((pos, rot));
+        let pivot_now = pos + rot * j.pivot;
+        let pivot_c = pos_c + rot_c * j.pivot;
+        let carry_v = (pivot_c - pivot_now) / dt;
+        let carry_w = scaled_axis((rot_c * rot.inverse()).normalize()) / dt;
+        let rb = &self.world.bodies[b];
+        let mass = rb.mass().max(0.05);
+        let com = from_v(rb.center_of_mass());
+        let w_now = from_v(rb.angvel());
+        let (was_v, was_w) = j.carried;
+        // The point held, and the turn, against the player (what the carry gave them aside).
+        let v = from_v(rb.linvel()) + w_now.cross(pivot_now - com) - was_v;
+        let w = w_now - was_w;
+        // The spring pulls the point held onto where the controller has it at the end of the step:
+        // m (v' - v) = dt (k (x - v' dt) + c (vt - v')), the force no more than the hand's.
+        let to = target_pos + target_rot * j.pivot - pivot_c;
+        let k = j.spring;
+        let c = j.damper;
+        let free_v = (mass * v + dt * k * to + dt * c * j.target_vel) / (mass + c * dt + k * dt * dt);
+        let force = (mass * (free_v - v) / dt).clamp_length_max(j.max_force);
+        let v_next = v + force * dt / mass;
+        // Turning: the same about the point held, against the body's inertia about the way it
+        // must turn (a long weapon's head far out is hard to swing round).
+        let dq = (target_rot * rot_c.inverse()).normalize();
+        let angle = scaled_axis(dq);
+        let axis = (angle + (j.target_ang - w) * dt).normalize_or(V3::Y);
+        let inertia = self.body_inertia_about(b, pivot_now, axis).max(1e-4);
+        let (ka, ca) = (j.ang_spring, j.ang_damper);
+        let free_w = (inertia * w + dt * ka * angle + dt * ca * j.target_ang) / (inertia + ca * dt + ka * dt * dt);
+        let torque = (inertia * (free_w - w) / dt).clamp_length_max(j.max_torque);
+        let w_next = (w + torque * dt / inertia).clamp_length_max(60.0);
+        // 20 m/s is beyond any real hand; it only guards against tracking glitches.
+        let v_next = v_next.clamp_length_max(20.0) + carry_v;
+        let w_next = w_next + carry_w;
+        let rot_next = (Q::from_scaled_axis(w_next * dt) * rot).normalize();
+        let rb = &mut self.world.bodies[b];
+        let com_next = pivot_now + v_next * dt + rot_next * (from_v(rb.local_center_of_mass()) - j.pivot);
+        rb.set_linvel(to_v((com_next - com) / dt), true);
+        rb.set_angvel(to_v(w_next), true);
+        ((carry_v, carry_w), (pivot_now + v_next * dt - rot_next * j.pivot, rot_next))
+    }
+
     /// Collider `c`, where it is now, overlaps the static world.
     pub fn in_world(&self, c: ColliderHandle) -> bool {
         let Some(col) = self.world.colliders.get(c) else { return false };
@@ -868,6 +935,83 @@ pub struct Drive {
     pub ang_gain: f32,
     pub max_ang_accel: f32,
 }
+
+/// How [`Physics::joint`] holds a body: the joint from the controller to the point a hand holds a
+/// weapon by: its spring, damper and the most force and torque it gives, the same whatever the
+/// weapon weighs.
+#[derive(Clone, Copy, Debug)]
+pub struct Joint {
+    /// The point held (body space).
+    pub pivot: V3,
+    /// As [`Drive::carry`] and [`Drive::carried`].
+    pub carry: Option<(V3, Q)>,
+    pub carried: (V3, V3),
+    /// How the controller moves (world, m/s) and turns (rad/s): the damper works on the body's
+    /// motion against it, so a steady swing carries no lag.
+    pub target_vel: V3,
+    pub target_ang: V3,
+    pub spring: f32,
+    pub damper: f32,
+    pub max_force: f32,
+    pub ang_spring: f32,
+    pub ang_damper: f32,
+    pub max_torque: f32,
+}
+
+impl Joint {
+    /// One hand on a weapon's handle (the player's: 5000 N/m, 100 N s/m, at most 3000 N; turning
+    /// 1000 N m/rad, 50, at most 250 N m, times a light or heavy handle's 1.1 and 0.9), times the
+    /// hand's strength.
+    pub fn one_hand(pivot: V3, strength: f32) -> Joint {
+        Joint {
+            pivot,
+            carry: None,
+            carried: (V3::ZERO, V3::ZERO),
+            target_vel: V3::ZERO,
+            target_ang: V3::ZERO,
+            spring: HOLD_SPRING * strength,
+            damper: HOLD_DAMPER * strength.max(1.0).sqrt(),
+            max_force: HOLD_MAX_FORCE * strength,
+            ang_spring: HOLD_TURN_SPRING * HANDLE_TURN_SPRING * strength,
+            ang_damper: HOLD_TURN_DAMPER * HANDLE_TURN_DAMPER * strength.max(1.0).sqrt(),
+            max_torque: HOLD_MAX_TORQUE * strength,
+        }
+    }
+
+    /// In a world of `w` units a metre (a spring and a damper are the same per unit; a force grows
+    /// with the unit, a torque and a turning spring with its square).
+    pub fn in_units(self, w: f32) -> Joint {
+        Joint { max_force: self.max_force * w, ang_spring: self.ang_spring * w * w, ang_damper: self.ang_damper * w * w, max_torque: self.max_torque * w * w, ..self }
+    }
+
+    /// Both hands on it, `apart` metres apart along it: each hand's spring and force are doubled
+    /// (spring x2, damper x1) and one of them gets twice the turning
+    /// (spring and damper x2). The two hands' pulls a distance apart also turn it,
+    /// as stiffly as k d^2 / 2 and as hard as F d / 2 (the leverage two hands have).
+    pub fn two_hands(self, apart: f32) -> Joint {
+        let spring = self.spring * 2.0;
+        let max_force = self.max_force * 2.0;
+        Joint {
+            spring,
+            max_force,
+            ang_spring: self.ang_spring * 2.0 + spring * apart * apart * 0.5,
+            ang_damper: self.ang_damper * 2.0 + self.damper * apart * apart * 0.5,
+            max_torque: self.max_torque * 2.0 + max_force * apart * 0.5,
+            ..self
+        }
+    }
+}
+
+/// The player's hold (its position spring, damper and most force, its turning spring, damper and
+/// most torque) and the light and heavy handles' turning multipliers (spring 1.1, damper 0.9).
+pub const HOLD_SPRING: f32 = 5000.0;
+pub const HOLD_DAMPER: f32 = 100.0;
+pub const HOLD_MAX_FORCE: f32 = 3000.0;
+pub const HOLD_TURN_SPRING: f32 = 1000.0;
+pub const HOLD_TURN_DAMPER: f32 = 50.0;
+pub const HOLD_MAX_TORQUE: f32 = 250.0;
+pub const HANDLE_TURN_SPRING: f32 = 1.1;
+pub const HANDLE_TURN_DAMPER: f32 = 0.9;
 
 impl Drive {
     /// Straight there in a step, however hard that is.

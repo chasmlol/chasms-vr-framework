@@ -25,6 +25,8 @@ rustvr-avatar.workspace = true
 rustvr-asset.workspace = true
 # The guns adapters ask it to draw (OBJF_RUNTIME_DRAWS): the same rigged guns they register.
 rustvr-guns.workspace = true
+# The melee rules: how the hands' blows are judged.
+rustvr-melee.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
