@@ -91,6 +91,7 @@ fn a_hand_pressed_flat_on_a_wall() {
                 locomotion: Vec3::ZERO,
                 eye_height: 1.7,
                 floor: 0.0,
+                saddle: None,
                 settings: &settings,
             });
         }

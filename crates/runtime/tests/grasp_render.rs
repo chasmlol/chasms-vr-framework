@@ -181,6 +181,7 @@ fn hands_close_on_what_they_take() {
                 locomotion: Vec3::ZERO,
                 eye_height: 1.7,
                 floor: 0.0,
+                saddle: None,
                 settings: &settings,
             });
         }
