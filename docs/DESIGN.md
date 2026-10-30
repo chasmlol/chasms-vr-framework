@@ -426,6 +426,20 @@ meanwhile, nothing). Oblivion's alchemy bench leaves
 a note of the game's scroll this way, in its handwriting, listing what the player can make and the
 steps of the recipe touched.
 
+## 6f. Melee
+
+Melee is physical, its numbers tuned as one set (`docs/MELEE.md`).
+The runtime holds a game's melee weapons on a
+hand joint (their weight their own, two hands and leverage, hands sliding along handles), judges
+every contact by its physics (the impact's speed and angles against each damager, the damage tables
+by damage type, material and tier), keeps blades stuck in what they went into, and does the
+extras: throwing, telekinesis, slowed time, imbuing, breakable things, climbing by the hands, and
+an optional stamina. The game describes its weapons (`MeleeWeapons`), lists what its creatures
+hold (`ActorItems`), says its rules (`MeleeRules`), and is told the hits (`CombatEvent`) and the
+player's side (`RtMelee`); its creatures, their health and their brains are its own. The test
+range plays it all: ragdoll fighters with their pins, balance, reactions and brains,
+a bench of dummies in armour, a melee rack, a block to climb.
+
 ## 7. Adapters
 
 An adapter is small because the SDK does the shared work. Per game it:
