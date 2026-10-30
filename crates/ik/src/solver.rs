@@ -229,7 +229,8 @@ impl BodySolver {
                 state.pitch = 0.0;
                 state.hip_drop = 0.0;
                 let up = (saddle.seat.rot * UP).normalize_or(UP);
-                let hips = saddle.seat.pos + up * skel.hip_down;
+                // (The hip joints sit over the seat, the hips joint over them.)
+                let hips = saddle.seat.pos + up * (skel.sit_hip_height + skel.hip_down);
                 let input = ChainInput { head_joint, head_rot, torso_yaw, root_yaw: mount_yaw, pitch: 0.0 };
                 let chain = spine::seated(skel, &input, hips, up, saddle.seat.rot * Vec3::Z);
                 let joints = hip_joints(&chain);

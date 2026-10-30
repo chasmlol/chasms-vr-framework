@@ -76,11 +76,11 @@ pub struct Riding {
     pub speed: f32,
     pub turn: f32,
     pub _pad: [f32; 2],
-    /// The rider's hips as the game seats them: the point between the hip joints, turned as the
-    /// mount is (+Z its forward, +Y its up).
+    /// Where the rider sits: the saddle's seat (the lowest of its top), turned as the mount is (+Z
+    /// its forward, +Y its up). It moves with the mount's gait as the game animates it.
     pub seat: Pose,
-    /// The rider's knees, ankles and the balls of their feet as the game's riding pose has them
-    /// [left, right] (xyz; `RIDE_LEGS`).
+    /// Where the rider's knees, ankles and the balls of their feet go [left, right] (xyz;
+    /// `RIDE_LEGS`): astride the mount, round its body.
     pub knees: [[f32; 4]; 2],
     pub ankles: [[f32; 4]; 2],
     pub toes: [[f32; 4]; 2],

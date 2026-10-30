@@ -102,10 +102,11 @@ pub struct TrackedInput {
 /// instead of standing ([`BodySolver::ride`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Saddle {
-    /// The point between the rider's hip joints, turned as the mount is (+Z its forward, +Y up).
+    /// The point the rider sits on (the saddle's seat), turned as the mount is (+Z its forward, +Y
+    /// up): the hip joints are a sitting body's height over it.
     pub seat: Pose,
-    /// The game's rider's knee, ankle and ball of the foot, [left, right]; None: the legs hang
-    /// from the seat.
+    /// Where the rider's knee, ankle and ball of the foot go (astride the mount), [left, right];
+    /// None: the legs hang from the seat.
     pub legs: Option<[[Vec3; 3]; 2]>,
 }
 

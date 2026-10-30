@@ -118,6 +118,7 @@ pub struct Riding {
     hold_asked: [bool; 2],
     lean_since: Option<f64>,
     mount_at: f64,
+    mounts_seen: u32,
     was_mounted: bool,
     /// The seat's height and which way it last moved, for the stride in the hands.
     seat_y: f32,
@@ -156,10 +157,20 @@ impl Riding {
 
         if !r.mounted() {
             // Getting on: a free hand closing on a mount's saddle.
+            if inp.ride.count != self.mounts_seen {
+                self.mounts_seen = inp.ride.count;
+                tracing::info!("riding: {} mounts near", inp.ride.count);
+            }
             if !r.moving_on_or_off() && now - self.mount_at > MOUNT_AGAIN {
                 for h in 0..2 {
                     if !gripped[h] || self.grip_was[h] || inp.busy[h] {
+                        if gripped[h] && !self.grip_was[h] {
+                            tracing::info!("riding: the {} hand gripped, holding something", side_name(h));
+                        }
                         continue;
+                    }
+                    if let Some(d) = inp.ride.mounts().iter().map(|m| segment_distance(pos(h), Vec3::from_array(m.saddle_a), Vec3::from_array(m.saddle_b)) - m.radius).min_by(f32::total_cmp) {
+                        tracing::info!("riding: the {} hand gripped at {:.2?}, {:.2} m past the nearest saddle's reach", side_name(h), pos(h), d);
                     }
                     let near = inp.ride.mounts().iter().map(|m| (m, segment_distance(pos(h), Vec3::from_array(m.saddle_a), Vec3::from_array(m.saddle_b)))).filter(|(m, d)| *d <= m.radius).min_by(|a, b| a.1.total_cmp(&b.1));
                     if let Some((m, d)) = near {
@@ -176,7 +187,7 @@ impl Riding {
                 tracing::info!("riding: off the mount");
             }
             let haptics = std::mem::take(&mut self.haptics);
-            *self = Riding { out, mount_at: self.mount_at, grip_was: gripped, trig_was: triggered, last_pos: [0, 1].map(|h| live(h).then(|| pos(h))), haptics, ..Riding::new() };
+            *self = Riding { out, mount_at: self.mount_at, mounts_seen: self.mounts_seen, grip_was: gripped, trig_was: triggered, last_pos: [0, 1].map(|h| live(h).then(|| pos(h))), haptics, ..Riding::new() };
             out.gait = 0;
             out.pace = 0.0;
             out.steer = 0.0;

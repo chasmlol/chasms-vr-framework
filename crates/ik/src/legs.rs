@@ -320,10 +320,10 @@ pub fn solve_leg(p: &BodyParams, skel: &Skeleton, hip: Vec3, foot: &Foot, lift: 
     LegPose { hip, knee: solved.elbow, ankle, toes, rot: [upper, lower, foot_rot, toes_rot] }
 }
 
-/// A rider's leg astride a mount: from its hip joint to the ankle where the game's riding pose has
-/// it (in the stirrup), the knee bent the way the game's is (out round the mount's side). A
-/// shorter leg than the game rider's hangs just short of it; without the game's pose (`legs`
-/// None), the leg hangs from the hip down the mount's side.
+/// A rider's leg astride a mount: from its hip joint to the ankle where the game puts it (in the
+/// stirrup, or round the mount's body), the knee bent towards where the game puts the knee (out
+/// round the mount's side). A shorter leg hangs just short of it; without the game's places
+/// (`legs` None), the leg hangs from the hip down the mount's side.
 pub fn solve_saddle_leg(p: &BodyParams, skel: &Skeleton, hip: Vec3, saddle: &crate::Saddle, side: usize) -> LegPose {
     let (a, b) = (skel.thigh, skel.shin);
     let up = (saddle.seat.rot * UP).normalize_or(UP);
