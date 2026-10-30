@@ -4,6 +4,11 @@
 //! (the player calls it up from the menu's Body tab, or by pulling their gripped hands apart in
 //! front of the chest, as if opening curtains; the same puts it away).
 //!
+//! **Summoned by the game.** A game can give the player a spell for it ([`EV_MIRROR_CAST`]): cast
+//! while looking at the mirror, it sends it away; cast anywhere else, it summons one in front. The
+//! game plays its own effect at the glass, and the glass appears (or goes) at the effect's moment
+//! ([`EV_MIRROR_HIT`]), as a summoned creature appears at its effect's.
+//!
 //! **Where it stands.** In the game's world, so it stays put as the player walks and turns: on the
 //! floor, in front of where the head faced when it was called, its glass facing the player
 //! ([`crate::settings::Mirror`]: 1.2 m off, 0.95 m wide and 2 m tall by default; nearer when a
@@ -31,7 +36,9 @@ use glam::{Mat3, Mat4, Quat, Vec3};
 use rustvr_gpu::pipeline::{self, Blend, ConstantBuffer};
 use rustvr_gpu::shader::Program;
 use rustvr_gpu::{Gpu, TexDesc, Texture};
-use rustvr_protocol::{Fov, GS_MIRROR, MIR_RENDER, MIR_SHOWN, MirrorView, Pose};
+#[cfg(doc)]
+use rustvr_protocol::{EV_MIRROR_CAST, EV_MIRROR_HIT};
+use rustvr_protocol::{Fov, GS_MENU, GS_MIRROR, GS_PAUSED, MIR_RENDER, MIR_SHOWN, MirrorView, Pose};
 use windows::Win32::Graphics::Direct3D::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB};
@@ -197,13 +204,43 @@ const CURTAINS_TIME: f64 = 0.8;
 const CURTAINS_TOGETHER: f32 = 0.22;
 const CURTAINS_APART: f32 = 0.75;
 
+/// The game's mirror spell sends away a mirror the head faces, within this angle of where it looks
+/// (radians) and this near (metres); cast anywhere else, it summons one in front.
+const SEND_AWAY_WITHIN: f32 = 0.6;
+const SEND_AWAY_NEARER: f32 = 6.0;
+
+/// A summons the game doesn't answer ends anyway after this long (seconds of the game running, not
+/// paused): a game with no effect for it, or one that lost it.
+const SUMMONS_LONGEST: f64 = 4.0;
+
+/// The mirror being summoned or sent away with the game's effect: the glass appears, or goes, at
+/// the effect's moment.
+#[derive(Clone, Copy, Debug)]
+struct Summons {
+    /// Its count ([`MirrorView::summons`]).
+    count: u32,
+    /// Appearing (else going).
+    appearing: bool,
+    /// How long the game has been playing its effect (seconds, while the game runs).
+    waited: f64,
+}
+
 pub struct Mirror {
     place: Option<Place>,
-    /// The player called it up (the menu, the gesture).
+    /// The player called it up (the menu, the gesture, the game's spell).
     pub called: bool,
     /// The game wants it (its character creator is open).
     game: bool,
     glass: Option<Glass>,
+    /// The game's mirror spell was cast (handled in the next update, where the head is known), and
+    /// the game's effect for a summons reached its moment.
+    cast: bool,
+    hit: Option<u32>,
+    summons: Option<Summons>,
+    /// Summons so far ([`MirrorView::summons`]).
+    summons_count: u32,
+    /// The last update's time (seconds).
+    last_now: f64,
     /// The cameras asked of the game for its world, by frame: its picture comes back a frame or
     /// more later.
     asked: [(u64, Pose, Fov); 32],
@@ -224,6 +261,11 @@ impl Default for Mirror {
             called: false,
             game: false,
             glass: None,
+            cast: false,
+            hit: None,
+            summons: None,
+            summons_count: 0,
+            last_now: 0.0,
             asked: [(0, Pose::default(), Fov::default()); 32],
             eyes: [None, None],
             curtains: Curtains::default(),
@@ -254,14 +296,24 @@ pub struct MirrorInput<'a> {
 }
 
 impl Mirror {
-    /// The mirror is up.
+    /// The mirror is up (and not still being summoned).
     pub fn shown(&self) -> bool {
-        self.glass.is_some()
+        self.glass.is_some() && !self.summons.is_some_and(|s| s.appearing)
     }
 
-    /// The glass this frame (tracking space), when the mirror is up.
+    /// The glass this frame (tracking space), when the mirror stands (shown, or being summoned).
     pub fn glass(&self) -> Option<Glass> {
         self.glass
+    }
+
+    /// The game's mirror spell was cast ([`EV_MIRROR_CAST`]).
+    pub fn cast(&mut self) {
+        self.cast = true;
+    }
+
+    /// The game's effect for the summons `count` reached its moment ([`EV_MIRROR_HIT`]).
+    pub fn hit(&mut self, count: u32) {
+        self.hit = Some(count);
     }
 
     /// A point's reflection in the glass (where you see it in the mirror), when the mirror is up
@@ -303,6 +355,47 @@ impl Mirror {
                 self.toggle();
             }
         }
+        // The game's mirror spell: it sends away the mirror the head faces, else summons one in
+        // front (stood anew, where the gesture would stand it). The glass appears or goes at the
+        // game's effect's moment, or after a while if the game never says.
+        let dt = (inp.now - self.last_now).clamp(0.0, 0.25);
+        self.last_now = inp.now;
+        if std::mem::take(&mut self.cast) {
+            if self.summons.is_some() {
+                tracing::info!("mirror: the spell again while it's being summoned: nothing more");
+            } else {
+                let look = rot * Vec3::Z;
+                let faced = self.glass.is_some_and(|g| {
+                    let to = g.center - head;
+                    to.length() < SEND_AWAY_NEARER && to.normalize_or_zero().dot(look) > SEND_AWAY_WITHIN.cos()
+                });
+                self.summons_count = self.summons_count.wrapping_add(1).max(1);
+                self.summons = Some(Summons { count: self.summons_count, appearing: !faced, waited: 0.0 });
+                if !faced {
+                    (self.place, self.called) = (None, true);
+                }
+                tracing::info!("mirror: the spell {} (summons {})", if faced { "sends it away" } else { "summons it in front" }, self.summons_count);
+            }
+        }
+        let hit = self.hit.take();
+        if let Some(s) = self.summons.as_mut() {
+            if inp.game_flags & (GS_MENU | GS_PAUSED) == 0 {
+                s.waited += dt;
+            }
+            let answered = hit == Some(s.count);
+            if answered || s.waited > SUMMONS_LONGEST {
+                let s = *s;
+                self.summons = None;
+                tracing::info!(
+                    "mirror: {}{}",
+                    if s.appearing { "summoned" } else { "sent away" },
+                    if answered { " at the game's effect's moment" } else { ": the game never said when" }
+                );
+                if !s.appearing {
+                    (self.place, self.glass, self.called) = (None, None, false);
+                }
+            }
+        }
         // The game's character creator: up while it's open, gone after unless the player called it.
         let game = inp.game_flags & GS_MIRROR != 0;
         if game != self.game {
@@ -312,8 +405,7 @@ impl Mirror {
             }
         }
         if !(self.called || self.game) {
-            self.place = None;
-            self.glass = None;
+            (self.place, self.glass, self.summons) = (None, None, None);
             return;
         }
         let place = *self.place.get_or_insert_with(|| {
@@ -339,7 +431,7 @@ impl Mirror {
         // where its place means nothing): put away.
         if center.distance(head) > FORGET_FARTHER {
             tracing::info!("mirror: left {:.0} m behind: put away", center.distance(head));
-            (self.place, self.glass, self.called) = (None, None, false);
+            (self.place, self.glass, self.called, self.summons) = (None, None, false, None);
             return;
         }
         let normal = Vec3::new(yaw.sin(), 0.0, yaw.cos());
@@ -353,12 +445,15 @@ impl Mirror {
     /// render its world from, the head (`head`, between the eyes) reflected. (Not rendered while
     /// the head looks away from the glass, `look` its forward: the game's extra render is saved.)
     pub fn view(&mut self, frame: u64, head: Vec3, look: Vec3, render: bool) -> MirrorView {
-        let Some(g) = self.glass else { return MirrorView::default() };
+        let Some(g) = self.glass else { return MirrorView { summons: self.summons_count, ..Default::default() } };
         let seen = g.corners().into_iter().chain([g.center]).any(|p| (p - head).normalize_or_zero().dot(look) > SEEN_WITHIN.cos());
         let render = render && seen;
+        // (While it's being summoned the game renders its world in it already, so the glass has it
+        // the moment it appears.)
         let mut v = MirrorView {
             flags: MIR_SHOWN,
             frame: frame as u32,
+            summons: self.summons_count,
             center: g.center.extend(0.0).to_array(),
             right: g.right.extend(0.0).to_array(),
             up: g.up.extend(0.0).to_array(),
@@ -391,7 +486,7 @@ impl Mirror {
         world: Option<crate::warp::WarpSource>,
         draw: &mut dyn FnMut(&Gpu, &EyeTarget, &Pose, &Fov, Option<&ID3D11ShaderResourceView>),
     ) -> Result<bool> {
-        let Some(g) = self.glass else { return Ok(false) };
+        let Some(g) = self.glass.filter(|_| self.shown()) else { return Ok(false) };
         let Some((camera, fov, _)) = g.camera(Vec3::from_array(eye.pos)) else {
             if let Some(r) = self.eyes[e].as_mut() {
                 r.drawn = false;
@@ -434,7 +529,7 @@ impl Mirror {
     /// hidden behind the game's world where that's nearer (`depth`: its view depth there, and the
     /// metres a unit of it is).
     pub fn draw_glass(&mut self, gpu: &Gpu, target: &EyeTarget, e: usize, eye: &Pose, fov: &Fov, depth: Option<(&ID3D11ShaderResourceView, f32)>) -> Result<()> {
-        let Some(g) = self.glass else { return Ok(()) };
+        let Some(g) = self.glass.filter(|_| self.shown()) else { return Ok(()) };
         let Some(r) = self.eyes[e].as_ref().filter(|r| r.drawn) else { return Ok(()) };
         let reflect_vp = r.view_proj;
         let srv = r.tex.srv.clone();

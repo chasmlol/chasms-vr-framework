@@ -498,6 +498,9 @@ impl Session {
                 // The game's explosions and hits push what the rig simulates (on its next step).
                 EV_BLAST => self.rig.blast(Vec3::new(ev.f[0], ev.f[1], ev.f[2]), ev.f[3], ev.f[4]),
                 EV_IMPULSE => self.rig.impulse(ev.a, Vec3::new(ev.f[0], ev.f[1], ev.f[2]), Vec3::new(ev.f[3], ev.f[4], ev.f[5])),
+                // The game's mirror spell, and its effect's moment.
+                EV_MIRROR_CAST => self.mirror.cast(),
+                EV_MIRROR_HIT => self.mirror.hit(ev.a),
                 _ => {}
             }
         }

@@ -355,7 +355,11 @@ pub struct MirrorView {
     pub near: f32,
     /// [`RtFrame::frame_index`] the camera is for (low 32 bits), as the slot's `aux_frame` says.
     pub frame: u32,
-    pub _pad: u32,
+    /// How many times the mirror has been summoned or sent away with the game's own effect (the
+    /// game's mirror spell: [`EV_MIRROR_CAST`]). When it changes, the game plays its effect at the
+    /// glass and says when the effect's moment comes ([`EV_MIRROR_HIT`] with this count): the glass
+    /// appears, or goes, then.
+    pub summons: u32,
     /// The camera, tracking space, and its frustum.
     pub camera: Pose,
     pub fov: Fov,
@@ -874,6 +878,13 @@ pub const EV_IMPULSE: u32 = 5;
 /// legacy mode (the gun glued to the hand) the runtime kicks it with the game's recoil, the kicks
 /// registered for [`KICK_OBJECT_HELD`].
 pub const EV_GAME_SHOTS: u32 = 6;
+/// The game's mirror spell was cast. A mirror the player is looking at is sent away; otherwise a
+/// mirror is summoned in front of them (where the gesture would stand it). Either way the runtime
+/// counts a summons ([`MirrorView::summons`]) and waits for the game's effect ([`EV_MIRROR_HIT`]).
+pub const EV_MIRROR_CAST: u32 = 7;
+/// The game's effect for the mirror's summons `a` ([`MirrorView::summons`]) reached its moment:
+/// the glass appears (or goes) now, as a summoned creature appears at its effect's "Hit".
+pub const EV_MIRROR_HIT: u32 = 8;
 
 pub const HAPTIC_LEFT: u32 = 0;
 pub const HAPTIC_RIGHT: u32 = 1;

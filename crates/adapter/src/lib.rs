@@ -586,6 +586,16 @@ impl Adapter {
         self.push_event(Event { kind: EV_RUMBLE, a: 0, f: [strength, 0.0, 0.0, 0.0, 0.0, 0.0] })
     }
 
+    /// The game's mirror spell was cast ([`EV_MIRROR_CAST`]).
+    pub fn mirror_cast(&self) -> bool {
+        self.push_event(Event { kind: EV_MIRROR_CAST, a: 0, f: [0.0; 6] })
+    }
+
+    /// The game's effect for the mirror's summons `count` reached its moment ([`EV_MIRROR_HIT`]).
+    pub fn mirror_hit(&self, count: u32) -> bool {
+        self.push_event(Event { kind: EV_MIRROR_HIT, a: count, f: [0.0; 6] })
+    }
+
     /// The game's explosion at `pos` (world metres) pushes the objects the runtime simulates:
     /// `impulse` (N s) at the centre, nothing past `radius` ([`EV_BLAST`]).
     pub fn blast(&self, pos: [f32; 3], radius: f32, impulse: f32) -> bool {
