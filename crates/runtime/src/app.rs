@@ -22,9 +22,13 @@ pub struct VrOptions {
     pub exit_with_game: Option<std::time::Duration>,
 }
 
-/// `%LOCALAPPDATA%\RustVR`: settings, profiles and logs.
+/// `%LOCALAPPDATA%\RustVR`: settings, profiles and logs. `RUSTVR_DIR` puts them elsewhere, so a
+/// test run (an agent's, say) keeps its own settings and logs and leaves the player's alone.
 pub fn data_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("RustVR")
+    match std::env::var_os("RUSTVR_DIR") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("RustVR"),
+    }
 }
 
 /// Runs until the headset session ends (closed from the VR dashboard, or the VR runtime quits).
