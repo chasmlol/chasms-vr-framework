@@ -32,6 +32,7 @@ pub mod scenario_physical;
 pub mod session;
 pub mod settings;
 pub mod spectator;
+pub mod spectator_fx;
 pub mod swim;
 pub mod targets;
 pub mod warp;

@@ -22,6 +22,7 @@ enum Tab {
     Controls,
     Weapon,
     Display,
+    Studio,
     Help,
 }
 
@@ -175,6 +176,7 @@ impl RuntimeMenu {
                         (Tab::Controls, "Controls"),
                         (Tab::Weapon, "Weapon"),
                         (Tab::Display, "Display"),
+                        (Tab::Studio, "Studio"),
                     ] {
                         let r = ui.selectable_value(&mut tab, t, name);
                         rects.push((format!("tab:{name}"), r.rect));
@@ -189,6 +191,7 @@ impl RuntimeMenu {
                     Tab::Controls => controls(ui, s),
                     Tab::Weapon => weapon(ui, s),
                     Tab::Display => display(ui, s, status),
+                    Tab::Studio => crate::spectator_fx::panel(ui, s),
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
