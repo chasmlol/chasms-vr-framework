@@ -745,6 +745,7 @@ impl Session {
             }
             self.link.write_game_pushes(&self.game_pushes);
             self.link.write_object_states(&self.states);
+            self.held_objects.sheets(&self.gpu, &self.game_cards.faces(), &self.objects);
             self.held_objects.update(&self.objects, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
             self.held_objects.clear();
@@ -1763,6 +1764,8 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::ExplosionRumble => return None,
         // The game sounds its own grinding (the bowl's strokes).
         C::Grind | C::GrindStroke => return None,
+        // And what a touch on its page does.
+        C::Touch => return None,
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

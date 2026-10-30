@@ -10,6 +10,9 @@
 //! parts go where the object's state puts them, as the test range draws its own guns
 //! (`rustvr_guns::desc::object_part_matrices`): the bolt or handle back with `slide`, the trigger
 //! under the finger pulling it, the rounds a magazine holds, the magazine where its own object is.
+//!
+//! A sheet ([`OBJF_SHEET`]) has no model: it's drawn as a page, its game's card on its face
+//! ([`HeldObjects::sheets`], [`rustvr_avatar::HeldModel::sheet`]), wherever it is.
 
 use std::collections::HashMap;
 
@@ -44,6 +47,8 @@ struct Placed {
     world: bool,
     /// The hand holding it.
     hand: Option<usize>,
+    /// A sheet's page: not a model the game's own drawing of the player could draw.
+    sheet: bool,
 }
 
 #[derive(Default)]
@@ -56,6 +61,16 @@ pub struct HeldObjects {
     /// Props a hand had lately: drawn until then ([`RUNTIME_DRAW_TAIL`] after the hand lets go,
     /// while the game shows its own again).
     props_until: HashMap<u32, f64>,
+    /// The sheets' pages (in `models` as [`sheet_name`]): which texture of its card each was made
+    /// with.
+    sheets: HashMap<u32, u64>,
+    /// The papers the backs of sheets are (the cache's textures, by name; None: it won't load).
+    papers: HashMap<String, Option<rustvr_asset::Texture>>,
+}
+
+/// The name a sheet's page goes by among the models.
+fn sheet_name(id: u32) -> String {
+    format!("#sheet/{id:08x}")
 }
 
 fn quat(a: [f32; 4]) -> Quat {
@@ -254,6 +269,42 @@ impl HeldObjects {
         }
     }
 
+    /// The sheets' pages from their cards this frame ([`crate::game_cards::GameCards::faces`]): each
+    /// made again when its card's texture is a new one; gone with its card.
+    pub fn sheets(&mut self, gpu: &Gpu, faces: &[crate::game_cards::Face], objects: &ObjectTable) {
+        let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
+        let root = rustvr_asset::default_root();
+        for f in faces {
+            if self.sheets.get(&f.anchor) == Some(&f.generation) {
+                continue;
+            }
+            let Some(d) = descs.iter().find(|d| d.id == f.anchor && d.flags & OBJF_SHEET != 0) else { continue };
+            let back = f.back.as_ref().and_then(|(name, uv)| {
+                let paper = self.papers.entry(name.clone()).or_insert_with(|| {
+                    let (game, key) = name.split_once('/')?;
+                    rustvr_asset::load_texture(&root.join(game), key).map_err(|e| tracing::warn!("runtime: a sheet's paper {name}: {e:#}")).ok()
+                });
+                Some((paper.clone()?, *uv))
+            });
+            let made = rustvr_avatar::HeldModel::sheet(gpu, (f.srgb.clone(), f.raw.clone()), back, Vec3::from_array(d.center), Vec3::from_array(d.half_extents));
+            match made {
+                Ok(model) => {
+                    self.models.insert(sheet_name(f.anchor), Some(Loaded { weapon: None, model, blocks: Vec::new(), turning: Vec::new() }));
+                    self.sheets.insert(f.anchor, f.generation);
+                }
+                Err(e) => {
+                    tracing::warn!("runtime: can't draw the sheet {:#x}: {e:#}", f.anchor);
+                    self.sheets.insert(f.anchor, f.generation);
+                }
+            }
+        }
+        let gone: Vec<u32> = self.sheets.keys().copied().filter(|id| !faces.iter().any(|f| f.anchor == *id)).collect();
+        for id in gone {
+            self.sheets.remove(&id);
+            self.models.remove(&sheet_name(id));
+        }
+    }
+
     /// The part of each valve the runtime draws that a hand takes it by: its description's id and
     /// the points of its turning part in the valve's frame.
     pub fn valve_shapes(&self, objects: &ObjectTable) -> Vec<(u32, Vec<Vec3>)> {
@@ -282,6 +333,17 @@ impl HeldObjects {
             if s.id == 0 || s.flags & OS_SPENT != 0 {
                 continue;
             }
+            let hand = match s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) {
+                OS_HELD_LEFT => Some(0),
+                OS_HELD_RIGHT => Some(1),
+                _ => None,
+            };
+            // A sheet: its page, wherever it is.
+            if self.sheets.contains_key(&s.id) {
+                let object = Mat4::from_rotation_translation(quat(s.pose.rot), Vec3::from_array(s.pose.pos));
+                self.placed.push(Placed { name: sheet_name(s.id), parts: vec![Some(object)], world: s.flags & OS_TRACKING == 0, hand, sheet: true });
+                continue;
+            }
             let Some(d) = descs.iter().find(|d| d.id == s.desc && d.id != 0 && d.flags & OBJF_RUNTIME_DRAWS != 0) else { continue };
             let name = name_str(&d.name);
             let Some(Some(l)) = self.models.get(name) else { continue };
@@ -295,11 +357,6 @@ impl HeldObjects {
             }
             let (pos, rot) = (Vec3::from_array(s.pose.pos), quat(s.pose.rot));
             let world = s.flags & OS_TRACKING == 0;
-            let hand = match s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) {
-                OS_HELD_LEFT => Some(0),
-                OS_HELD_RIGHT => Some(1),
-                _ => None,
-            };
             let trigger = hand.map_or(0.0, |h| triggers[h]);
             let object = Mat4::from_rotation_translation(rot, pos);
             let parts = match &l.weapon {
@@ -309,7 +366,7 @@ impl HeldObjects {
                 // A prop: its model where the game draws it on the object.
                 None => vec![Some(object * model_place(d))],
             };
-            self.placed.push(Placed { name: name.to_string(), parts, world, hand });
+            self.placed.push(Placed { name: name.to_string(), parts, world, hand, sheet: false });
         }
         // What the valves work (a gate), with them.
         for d in descs.iter().filter(|d| d.id != 0 && d.kind == OBJ_DRIVEN && d.flags & OBJF_RUNTIME_DRAWS != 0) {
@@ -328,7 +385,7 @@ impl HeldObjects {
                     driven_places(d, angle)
                 }
             };
-            self.placed.push(Placed { name: name.to_string(), parts, world: true, hand: None });
+            self.placed.push(Placed { name: name.to_string(), parts, world: true, hand: None, sheet: false });
         }
         self.place(map);
     }
@@ -356,11 +413,13 @@ impl HeldObjects {
     }
 
     /// This frame's objects as the protocol carries them to an adapter that draws the player
-    /// ([`RtPlayerDraw`]): the model's name and each part's place.
+    /// ([`RtPlayerDraw`]): the model's name and each part's place. (Not the sheets: they're pages
+    /// of the runtime's own, no model of the game's.)
     pub fn drawn(&self) -> Vec<DrawnObject> {
         self.placed
             .iter()
             .zip(&self.parts_now)
+            .filter(|(p, _)| !p.sheet)
             .take(DRAWN_OBJECTS_MAX)
             .map(|(p, parts)| {
                 let mut o: DrawnObject = bytemuck::Zeroable::zeroed();
@@ -409,7 +468,7 @@ impl HeldObjects {
     /// The hand holding each of [`HeldObjects::drawn`]'s objects (None: none, it's holstered or
     /// loose).
     pub fn drawn_hands(&self) -> Vec<Option<usize>> {
-        self.placed.iter().take(DRAWN_OBJECTS_MAX).map(|p| p.hand).collect()
+        self.placed.iter().filter(|p| !p.sheet).take(DRAWN_OBJECTS_MAX).map(|p| p.hand).collect()
     }
 
     /// This frame's draws, as last placed ([`HeldObjects::update`], [`HeldObjects::place`]).

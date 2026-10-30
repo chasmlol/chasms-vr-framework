@@ -28,6 +28,7 @@ pub mod kick;
 pub mod physics;
 pub mod receptacle;
 pub mod recoil;
+pub mod sheet;
 pub mod throwable;
 pub mod throwing;
 pub mod weapon;
@@ -273,6 +274,8 @@ struct Hand {
     fingers: [RigidBodyHandle; 5],
     finger_at: [Vec3; 5],
     finger_vel: [Vec3; 5],
+    /// The index finger's end this frame (the world): what touches a sheet ([`sheet`]).
+    tip: Vec3,
     /// The fingers as the controller has them, eased as the drawn hand's are (the same solver on
     /// the same input), this frame's: the capsules are where the drawn fingers are (a lifted thumb
     /// or index straight).
@@ -726,6 +729,8 @@ pub struct Rig {
     grinds: HashMap<u32, Grind>,
     /// When each hand last felt its grinding.
     grind_felt: [f64; 2],
+    /// The sheets' touches ([`sheet`]).
+    touches: HashMap<u32, sheet::Touches>,
 }
 
 impl Default for Rig {
@@ -758,6 +763,7 @@ impl Default for Rig {
             bowls_seq: 0,
             grinds: HashMap::new(),
             grind_felt: [0.0; 2],
+            touches: HashMap::new(),
         }
     }
 }
@@ -1490,6 +1496,30 @@ impl Rig {
         }
     }
 
+    /// The fingertips on the sheets ([`sheet`]): one coming down on a face is felt in its hand, and
+    /// lifting off again it's a touch.
+    fn sheets(&mut self) {
+        self.touches.retain(|id, _| self.objects.get(id).is_some_and(|o| o.desc.flags & OBJF_SHEET != 0));
+        let Some(hands) = &self.hands else { return };
+        let wpm = self.map.world_per_meter.max(1e-6);
+        let mut felt = Vec::new();
+        for (id, o) in self.objects.iter().filter(|(_, o)| o.desc.flags & OBJF_SHEET != 0) {
+            let (p, q) = self.physics.pose(o.body);
+            let (half, centre) = (v3(o.desc.half_extents), v3(o.desc.center));
+            let t = self.touches.entry(*id).or_default();
+            for (i, h) in hands.iter().enumerate() {
+                // (A hand holding or working anything has its fingers on that, not free to touch.)
+                let tip = h.fingers_on.then(|| q.inverse() * (h.tip - p) / wpm - centre);
+                if t.step(i, tip, half) == sheet::Tap::Down {
+                    felt.push((i, *id, h.tip));
+                }
+            }
+        }
+        for (hand, id, at) in felt {
+            self.emit(Cue::Touch, Some(hand), Some(id), at, 1.0);
+        }
+    }
+
     fn place(&mut self, id: u32, pos: Vec3, rot: Quat) {
         let Some(o) = self.objects.get(&id) else { return };
         let body = o.body;
@@ -1511,6 +1541,8 @@ impl Rig {
         self.physics.set_kinematic(o.body, false);
         self.physics.set_gravity(o.body, 1.0);
         self.physics.set_angular_damping(o.body, 0.2);
+        // (A sheet lets the hands through, whatever else is free.)
+        let groups = if o.desc.flags & OBJF_SHEET != 0 { physics::groups_sheet() } else { groups };
         self.physics.set_groups(o.collider, groups);
     }
 
@@ -1697,6 +1729,7 @@ impl Rig {
         self.physics.step();
         self.after_step(inp);
         self.bowls(dt);
+        self.sheets();
         self.game_pushes = self.pushes();
         self.output(inp, dom)
     }
@@ -1720,6 +1753,7 @@ impl Rig {
             let local = fingers::segments((hand.pos, hand.rot), i == 1, curls);
             self.physics.set_hand_shape(h.collider, fingers::palm((hand.pos, hand.rot)), &local);
             let segs = local.map(|(a, b)| (gp + gq * a, gp + gq * b));
+            h.tip = segs[1].1;
             for (k, (a, b)) in segs.into_iter().enumerate() {
                 let (at, rot, half) = fingers::capsule_pose(a, b);
                 let f = h.fingers[k];
@@ -1911,6 +1945,7 @@ impl Rig {
                 fingers,
                 finger_at: [v3(g.pos); 5],
                 finger_vel: [Vec3::ZERO; 5],
+                tip: v3(g.pos),
                 finger_solver: rustvr_ik::FingerSolver::new(),
                 drawn_curls: [0.0; 5],
                 fingers_on: false,
@@ -4120,7 +4155,7 @@ impl Rig {
                 Holder::Free => {
                     let o = &self.objects[id];
                     if o.hands_off_until > 0.0 && self.now > o.hands_off_until {
-                        self.physics.set_groups(o.collider, groups_free());
+                        self.physics.set_groups(o.collider, physics::groups_free_of(&o.desc));
                         self.objects.get_mut(id).unwrap().hands_off_until = 0.0;
                     }
                     if self.objects[id].throw.as_ref().is_some_and(|t| t.flight.is_some()) {
@@ -4800,7 +4835,11 @@ impl Rig {
                     let share = if inside.is_empty() { 0.0 } else { inside.iter().map(|i| self.objects[i].ground).sum::<f32>() / inside.len() as f32 };
                     (fuse, share, self.grinds.get(id).map_or(0, |g| g.strokes))
                 }
-                _ => (fuse, slide, shots),
+                _ => match self.touches.get(id) {
+                    // A sheet: its touches, and where the last one was on its card.
+                    Some(t) => (t.at.1, t.at.0, t.count),
+                    None => (fuse, slide, shots),
+                },
             };
             out.states[out.count as usize] = ObjectState {
                 id: *id,

@@ -247,6 +247,21 @@ impl Texture {
         }
     }
 
+    /// Another view of it to sample, as `format` (one its TYPELESS storage takes: the raw UNORM of
+    /// a texture its `srv` reads as sRGB, say).
+    pub fn view(&self, gpu: &Gpu, format: DXGI_FORMAT) -> Result<ID3D11ShaderResourceView> {
+        let mut td = D3D11_TEXTURE2D_DESC::default();
+        unsafe { self.tex.GetDesc(&mut td) };
+        let d = D3D11_SHADER_RESOURCE_VIEW_DESC {
+            Format: format,
+            ViewDimension: windows::Win32::Graphics::Direct3D::D3D11_SRV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_SRV { MostDetailedMip: 0, MipLevels: td.MipLevels } },
+        };
+        let mut v = None;
+        unsafe { gpu.device.CreateShaderResourceView(&self.tex, Some(&d), Some(&mut v)) }.context("shader resource view")?;
+        v.context("no view")
+    }
+
     fn make_views(&mut self, gpu: &Gpu, rtv: Option<DXGI_FORMAT>, srv: Option<DXGI_FORMAT>, dsv: Option<DXGI_FORMAT>) -> Result<()> {
         unsafe {
             if let Some(f) = rtv {

@@ -6,7 +6,9 @@
 //! image piece the part of its texture stretched over its rectangle, every text piece laid out the
 //! way the game lays out text, glyph by glyph along the line (the space before each, its width,
 //! the space after it), its top that far over the baseline, the words wrapped at the piece's
-//! width. It floats over its object, turned to the eyes, fading in as it comes and out as it goes.
+//! width. It floats over its object, turned to the eyes, fading in as it comes and out as it goes;
+//! a card on a sheet ([`OBJF_SHEET`]) is that sheet's face instead, drawn on it with the held
+//! things ([`GameCards::faces`], `crate::held_objects`).
 
 use std::collections::HashMap;
 
@@ -44,6 +46,11 @@ struct LoadedFont {
 /// One card on show (or fading).
 struct Shown {
     tex: Texture,
+    /// Its texture's raw view (what it was painted, unconverted: as the game's own textures are
+    /// read where its lighting shades a sheet), and which texture it is (a new one when its size
+    /// changes).
+    raw: ID3D11ShaderResourceView,
+    generation: u64,
     px: (u32, u32),
     painted: Option<u32>,
     /// Where it is (tracking space, eased) and how strongly it shows.
@@ -65,6 +72,20 @@ pub struct GameCards {
     table: Box<Cards>,
     shown: HashMap<u32, Shown>,
     assets: Assets,
+    /// The sheets the cards are on this frame (their objects' ids).
+    sheets: Vec<u32>,
+    generations: u64,
+}
+
+/// A sheet's face this frame ([`OBJF_SHEET`]): its card's texture (sRGB-decoding and raw views, and
+/// which texture it is), and the card's first piece (the cache's texture and the part of it: its
+/// paper) for the back of it.
+pub struct Face {
+    pub anchor: u32,
+    pub srgb: ID3D11ShaderResourceView,
+    pub raw: ID3D11ShaderResourceView,
+    pub generation: u64,
+    pub back: Option<(String, [f32; 4])>,
 }
 
 /// An object's place (tracking space) and how far its top is over its middle, from its state.
@@ -109,7 +130,15 @@ fn wrap(font: &rustvr_asset::Font, text: &[u8], width: f32) -> Vec<(Vec<u8>, f32
 
 impl GameCards {
     pub fn new(gpu: &Gpu) -> Result<GameCards> {
-        Ok(GameCards { ctx: egui::Context::default(), painter: EguiPainter::new(gpu)?, table: bytemuck::zeroed_box(), shown: HashMap::new(), assets: Assets::default() })
+        Ok(GameCards {
+            ctx: egui::Context::default(),
+            painter: EguiPainter::new(gpu)?,
+            table: bytemuck::zeroed_box(),
+            shown: HashMap::new(),
+            assets: Assets::default(),
+            sheets: Vec::new(),
+            generations: 0,
+        })
     }
 
     /// The game's cards (once a frame).
@@ -119,15 +148,18 @@ impl GameCards {
         }
     }
 
-    /// This frame's cards: each one's panel, how strongly it shows and its texture. `head`: the
-    /// eyes' middle (tracking space).
+    /// This frame's cards: each one's panel, how strongly it shows and its texture (the cards on
+    /// sheets aren't among them: [`GameCards::faces`]). `head`: the eyes' middle (tracking space).
     pub fn update(&mut self, gpu: &Gpu, states: &ObjectStates, objects: &ObjectTable, map: Option<&WorldMap>, head: Vec3, dt: f32) -> Result<Vec<(Panel, f32, u32)>> {
         for s in self.shown.values_mut() {
             s.present = false;
         }
+        self.sheets = objects.descs[..(objects.count as usize).min(MAX_OBJECTS)].iter().filter(|d| d.id != 0 && d.flags & OBJF_SHEET != 0).map(|d| d.id).collect();
         let cards: Vec<Card> = self.table.entries().iter().filter(|c| c.anchor != 0 && c.count > 0).copied().collect();
         for card in cards {
-            let px = ((card.size[0] * PIXELS_PER_UNIT).clamp(16.0, MAX_PX as f32) as u32, (card.size[1] * PIXELS_PER_UNIT).clamp(16.0, MAX_PX as f32) as u32);
+            // (A card too big for the largest texture at that is painted smaller, its shape kept.)
+            let k = PIXELS_PER_UNIT.min(MAX_PX as f32 / card.size[0].max(1.0)).min(MAX_PX as f32 / card.size[1].max(1.0));
+            let px = ((card.size[0] * k).clamp(16.0, MAX_PX as f32) as u32, (card.size[1] * k).clamp(16.0, MAX_PX as f32) as u32);
             if self.shown.get(&card.anchor).is_none_or(|s| s.px != px) {
                 let desc = TexDesc {
                     width: px.0,
@@ -139,9 +171,22 @@ impl GameCards {
                     mips: 1,
                 };
                 let old = self.shown.remove(&card.anchor);
+                let tex = Texture::new(gpu, &desc)?;
+                let raw = tex.view(gpu, DXGI_FORMAT_R8G8B8A8_UNORM)?;
+                self.generations += 1;
                 self.shown.insert(
                     card.anchor,
-                    Shown { tex: Texture::new(gpu, &desc)?, px, painted: None, at: old.as_ref().and_then(|o| o.at), opacity: old.map_or(0.0, |o| o.opacity), card, present: true },
+                    Shown {
+                        tex,
+                        raw,
+                        generation: self.generations,
+                        px,
+                        painted: None,
+                        at: old.as_ref().and_then(|o| o.at),
+                        opacity: old.map_or(0.0, |o| o.opacity),
+                        card,
+                        present: true,
+                    },
                 );
             }
             let s = self.shown.get_mut(&card.anchor).unwrap();
@@ -151,10 +196,18 @@ impl GameCards {
         let mut out = Vec::new();
         let ids: Vec<u32> = self.shown.keys().copied().collect();
         for id in ids {
-            let place = place_of(id, states, objects, map);
+            // A sheet's is there, whole, as long as the sheet is: it's the page.
+            let sheet = self.sheets.contains(&id);
+            let place = if sheet { None } else { place_of(id, states, objects, map) };
             let s = self.shown.get_mut(&id).unwrap();
-            let showing = s.present && place.is_some();
-            s.opacity = if showing { (s.opacity + dt / FADE_IN).min(1.0) } else { (s.opacity - dt / FADE_OUT).max(0.0) };
+            let showing = s.present && (sheet || place.is_some());
+            s.opacity = if sheet {
+                showing as u32 as f32
+            } else if showing {
+                (s.opacity + dt / FADE_IN).min(1.0)
+            } else {
+                (s.opacity - dt / FADE_OUT).max(0.0)
+            };
             if !showing && s.opacity == 0.0 {
                 self.shown.remove(&id);
                 continue;
@@ -173,6 +226,9 @@ impl GameCards {
                 self.paint(gpu, &card, &rtv, px)?;
                 self.shown.get_mut(&id).unwrap().painted = Some(card.revision);
             }
+            if sheet {
+                continue;
+            }
             let s = &self.shown[&id];
             let Some(at) = s.at else { continue };
             let d = (at - head).normalize_or(Vec3::Z);
@@ -181,6 +237,18 @@ impl GameCards {
             out.push((Panel::facing(at, yaw, pitch, width, aspect), eased, id));
         }
         Ok(out)
+    }
+
+    /// The faces of the sheets the cards are on, painted.
+    pub fn faces(&self) -> Vec<Face> {
+        self.shown
+            .iter()
+            .filter(|(id, s)| self.sheets.contains(id) && s.present && s.painted.is_some())
+            .filter_map(|(id, s)| {
+                let back = s.card.pieces().first().filter(|p| p.kind == PIECE_IMAGE).map(|p| (p.asset().to_owned(), p.uv));
+                Some(Face { anchor: *id, srgb: s.tex.srv.clone()?, raw: s.raw.clone(), generation: s.generation, back })
+            })
+            .collect()
     }
 
     /// The texture of the card over `anchor`.

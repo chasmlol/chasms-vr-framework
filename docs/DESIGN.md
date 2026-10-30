@@ -111,7 +111,7 @@ adapters (`tests/header.rs` keeps the two in step).
 | `SoundPack`: where the game's sound pack is, each object's sound set, which sounds the game plays itself | adapter -> runtime | seqlock |
 | `HudLayout`: which rectangle of the HUD texture is what (subtitles, hints, ammo, status...) | adapter -> runtime | seqlock |
 | `Receptacles`: which objects are bowls the hands make things in (their shape, how much they hold, what may go in now, what grinds in them) | adapter -> runtime | seqlock |
-| `Cards`: cards of the game's own interface (its menu art cut out, text in its bitmap fonts) to draw over its objects | adapter -> runtime | seqlock |
+| `Cards`: cards of the game's own interface (its menu art cut out, text in its bitmap fonts) to draw over its objects, or as the face of a page (`OBJF_SHEET`) | adapter -> runtime | seqlock |
 
 - **Shared memory** is only touched through 32-bit atomics, so concurrent access is defined
   behaviour.
@@ -339,6 +339,17 @@ its width, the space after, its top over the baseline; words wrapped at the piec
 colours. The runtime paints each card (egui, into a texture of its own) whenever its revision
 changes and floats it over its object, turned to the eyes, fading in and out. Oblivion's alchemy
 bench shows what the bowl would make this way, in its alchemy menu's own parchment, icons and fonts.
+
+A card can also be a page (`OBJF_SHEET`): its object is a thin box the hands take up and put down,
+and the card is drawn on its face (`rustvr_avatar::HeldModel::sheet`, the card's texture on a quad,
+its paper on the back) with the held things, in their depth and the game's lighting, so a finger
+shows over it. The hands and fingers go through a lying page (pushed, it would only be squeezed
+between a hand and its table); an empty hand's index fingertip tapping its face is a touch
+(`rig/sheet.rs`: down within 1.2 cm over it or 8 mm through it, felt as a tap; lifted 2.5 cm off
+again, counted in the page's state with where on the card it came down; the hand taking the page up
+meanwhile, nothing). Oblivion's alchemy bench leaves
+a note of the game's scroll this way, in its handwriting, listing what the player can make and the
+steps of the recipe touched.
 
 ## 7. Adapters
 

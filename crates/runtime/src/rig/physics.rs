@@ -26,6 +26,18 @@ pub fn groups_free() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
 }
 
+/// A sheet ([`rustvr_protocol::OBJF_SHEET`]) lying free: as any free object, but the hands and
+/// their fingers go through it. A fingertip on its face touches it ([`super::sheet`]); pushed, a
+/// page on a table would only be squeezed between the hand and the table.
+pub fn groups_sheet() -> InteractionGroups {
+    InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
+}
+
+/// What a free object of `d` touches: a sheet as a sheet, anything else as [`groups_free`].
+pub fn groups_free_of(d: &ObjectDesc) -> InteractionGroups {
+    if d.flags & OBJF_SHEET != 0 { groups_sheet() } else { groups_free() }
+}
+
 /// A part of one of the game's creatures, followed (`Rig::follow_actors`): the hands, what they
 /// hold and loose objects meet it (and push the creature, through the game).
 pub fn groups_actor() -> InteractionGroups {
@@ -219,7 +231,7 @@ impl Physics {
             .ccd_enabled(true)
             .linear_damping(0.05)
             .angular_damping(0.2);
-        let c = object_collider(d, hulls).collision_groups(groups_free());
+        let c = object_collider(d, hulls).collision_groups(groups_free_of(d));
         self.world.insert(body, c)
     }
 

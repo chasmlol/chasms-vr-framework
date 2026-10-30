@@ -1019,9 +1019,15 @@ impl HeldModel {
     /// `meshes`: each with the part it belongs to (its vertices' bones are ignored) and whether a
     /// special draw takes it instead (see [`crate::SpecialDraw`]).
     pub(crate) fn new(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>) -> Result<HeldModel> {
+        Self::with_views(gpu, meshes, &[])
+    }
+
+    /// As [`HeldModel::new`], the textures in `given` drawn from the views given with them instead
+    /// of uploaded: a texture the runtime paints itself (a sheet's card).
+    pub(crate) fn with_views(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>, given: &[(Arc<asset::Texture>, GpuTex)]) -> Result<HeldModel> {
         let parts = meshes.iter().map(|(_, i)| i.part + 1).max().unwrap_or(0);
         anyhow::ensure!(parts <= MAX_BONES, "{parts} parts (at most {MAX_BONES})");
-        let mut uploaded: HashMap<*const asset::Texture, Option<GpuTex>> = HashMap::new();
+        let mut uploaded: HashMap<*const asset::Texture, Option<GpuTex>> = given.iter().map(|(t, v)| (Arc::as_ptr(t), Some(v.clone()))).collect();
         let mut upload = |t: &Arc<asset::Texture>, what: &str| {
             uploaded
                 .entry(Arc::as_ptr(t))

@@ -76,6 +76,9 @@ pub enum Cue {
     /// harder the faster), and each stroke's pulse. Felt only: the game sounds its own grinding.
     Grind,
     GrindStroke,
+    /// A fingertip coming down on a sheet's face ([`super::sheet`]): a tap, felt only (the game
+    /// sounds what the touch does).
+    Touch,
 }
 
 impl Cue {
@@ -129,6 +132,7 @@ impl Cue {
             Cue::AirHiss => "air_hiss",
             Cue::Grind => "grind",
             Cue::GrindStroke => "grind_stroke",
+            Cue::Touch => "touch",
         }
     }
 }
@@ -205,6 +209,8 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         // A low, rough buzz: stone on stone with something crunching between.
         Cue::Grind => (0.05, 65.0, (0.12 + 0.35 * i).min(0.5)),
         Cue::GrindStroke => (0.03, 90.0, 0.45),
+        // A fingertip on paper: a light, short tap.
+        Cue::Touch => (0.012, 220.0, 0.3),
     })
 }
 

@@ -7,14 +7,17 @@
 //! high), `size` across and down, every piece a rectangle of it. The textures and fonts come from
 //! the runtime's asset cache by name (`<game>/<key>`: a texture's, or a font's, see
 //! `rustvr_asset::Font`). The runtime puts the card over its `anchor`, turned to the eyes, fading
-//! in when it comes and out when it goes, and paints it again whenever its `revision` changes.
+//! in when it comes and out when it goes, and paints it again whenever its `revision` changes. A
+//! card anchored on a sheet ([`crate::OBJF_SHEET`]) is that sheet's face instead: drawn on it, in
+//! the world's depth and light, all of the card over all of the face.
 //!
 //! The adapter writes the table whenever a card comes, goes or changes.
 
 use bytemuck::{Pod, Zeroable};
 
 pub const OFF_CARDS: usize = (crate::OFF_STATIONS + size_of::<crate::Receptacles>()).next_multiple_of(64);
-pub const MAX_CARDS: usize = 4;
+/// (Two to a bench, say: what it would make, and a page of what to make.)
+pub const MAX_CARDS: usize = 8;
 pub const MAX_CARD_PIECES: usize = 24;
 
 /// A piece of the game's art: the part `uv` of the texture `asset`, stretched over `rect`.

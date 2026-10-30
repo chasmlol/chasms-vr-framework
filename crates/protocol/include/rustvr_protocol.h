@@ -610,7 +610,10 @@
  */
 #define RVR_REC_GRIND (1 << 0)
 
-#define RVR_MAX_CARDS 4
+/**
+ * (Two to a bench, say: what it would make, and a page of what to make.)
+ */
+#define RVR_MAX_CARDS 8
 
 #define RVR_MAX_CARD_PIECES 24
 
@@ -827,6 +830,17 @@
  * whose game model the game hides while the runtime draws its pieces.
  */
 #define RVR_OBJF_DRAWN_ALWAYS (1 << 12)
+
+/**
+ * A sheet: a prop, a thin box (thin along its Y), that is drawn as the game's card anchored on it
+ * ([`crate::Card`]), lying on its +Y face (the card's top towards the box's +Z, its left towards
+ * −X), the back of it, on −Y, the card's first piece alone (its paper). A page of the game's own,
+ * lying on a table or held; the hands go through it while it lies loose. A fingertip tapping its
+ * face (the index finger of an empty hand, down on it and lifted off) is a touch: each adds one to
+ * its state's `shots`, `slide` and `fuse` saying where the last one came down, across the card (0
+ * its left edge .. 1 its right) and down it (0 its top .. 1 its foot).
+ */
+#define RVR_OBJF_SHEET (1 << 13)
 
 /**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.

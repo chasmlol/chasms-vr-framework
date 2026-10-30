@@ -445,6 +445,14 @@ pub const OBJF_LOOT: u32 = 1 << 11;
 /// piece of a game's model the runtime split off (a pestle out of its mortar's model), or a thing
 /// whose game model the game hides while the runtime draws its pieces.
 pub const OBJF_DRAWN_ALWAYS: u32 = 1 << 12;
+/// A sheet: a prop, a thin box (thin along its Y), that is drawn as the game's card anchored on it
+/// ([`crate::Card`]), lying on its +Y face (the card's top towards the box's +Z, its left towards
+/// −X), the back of it, on −Y, the card's first piece alone (its paper). A page of the game's own,
+/// lying on a table or held; the hands go through it while it lies loose. A fingertip tapping its
+/// face (the index finger of an empty hand, down on it and lifted off) is a touch: each adds one to
+/// its state's `shots`, `slide` and `fuse` saying where the last one came down, across the card (0
+/// its left edge .. 1 its right) and down it (0 its top .. 1 its foot).
+pub const OBJF_SHEET: u32 = 1 << 13;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 
@@ -636,7 +644,8 @@ pub struct ObjectState {
     pub rounds: u32,
     pub ang_vel: [f32; 3],
     /// Weapons: rounds fired so far (each increase is one shot from the muzzle). Grenades: times it
-    /// went off (each increase is one explosion at `pose`, for the game to make).
+    /// went off (each increase is one explosion at `pose`, for the game to make). Sheets
+    /// ([`OBJF_SHEET`]): the touches on its face so far.
     pub shots: u32,
     /// Weapons: which chambers hold a live round and which a spent case (see
     /// [`CHAMBER_SPENT_SHIFT`]); `chambered & CHAMBER_LIVE_MASK != 0`: a round is chambered. (A gun
@@ -646,13 +655,15 @@ pub struct ObjectState {
     /// swing actions: how far the barrels (or cylinder) are open, 0 shut .. 1 fully open
     /// (`action_angle`). Valves ([`OBJ_VALVE`]): how far it's turned about its axis, radians
     /// (anticlockwise looking down +Z; `ang_vel` is how fast, along the axis). A valve with a hand
-    /// on its rim is [`OS_HELD_LEFT`] / [`OS_HELD_RIGHT`].
+    /// on its rim is [`OS_HELD_LEFT`] / [`OS_HELD_RIGHT`]. Sheets: how far across its card the last
+    /// touch was (0 .. 1).
     pub slide: f32,
     /// Which [`ObjectDesc`] to draw it with (itself, or the template it was spawned from).
     pub desc: u32,
     /// Grenades: seconds left on a burning fuse the runtime times ([`OS_ARMED`]), else 0. Air guns
     /// ([`WPN_PNEUMATIC`]): the pressure, 0 empty .. 1 full. Bolt actions: how far the bolt's handle
-    /// is lifted, 0 down .. 1 up (`action_angle`).
+    /// is lifted, 0 down .. 1 up (`action_angle`). Sheets: how far down its card the last touch was
+    /// (0 .. 1).
     pub fuse: f32,
 }
 /// The runtime is moving it: draw it at `pose`.
