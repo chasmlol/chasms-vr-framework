@@ -265,6 +265,8 @@ struct Hand {
     fingers: [RigidBodyHandle; 5],
     finger_at: [Vec3; 5],
     finger_vel: [Vec3; 5],
+    /// The index finger's tip (world), where the drawn one's is.
+    index_tip: Vec3,
     /// The fingers as the controller has them, eased as the drawn hand's are (the same solver on
     /// the same input), this frame's: the capsules are where the drawn fingers are (a lifted thumb
     /// or index straight).
@@ -1427,6 +1429,7 @@ impl Rig {
                 h.finger_vel[k] = (at - h.finger_at[k]) / dt;
                 h.finger_at[k] = at;
             }
+            h.index_tip = segs[1].1;
         }
     }
 
@@ -1610,6 +1613,7 @@ impl Rig {
                 fingers,
                 finger_at: [v3(g.pos); 5],
                 finger_vel: [Vec3::ZERO; 5],
+                index_tip: v3(g.pos),
                 finger_solver: rustvr_ik::FingerSolver::new(),
                 drawn_curls: [0.0; 5],
                 fingers_on: false,
@@ -4392,6 +4396,12 @@ impl Rig {
             None => self.physics.grasp_solids(o.collider, &mut g),
         }
         Some(((id, on), g))
+    }
+
+    /// Where hand `i`'s index fingertip is (world), as the drawn hand has it (straight when the
+    /// finger's lifted off the trigger): what presses the buttons of a menu held in the other hand.
+    pub fn index_tip(&self, i: usize) -> Option<Vec3> {
+        Some(self.hands.as_ref()?[i].index_tip)
     }
 
     /// Testing: hand `i`'s physical fingers (each one's ends, world).

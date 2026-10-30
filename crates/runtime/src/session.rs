@@ -587,7 +587,8 @@ impl Session {
             *rm = panels::Panel::facing(c, yaw, pitch, w, w / h.max(1e-4));
         }
         // The laser from the dominant hand, unless it's holding a menu (a book, the map): then from
-        // the other, free one.
+        // the other, free one, for what floats (a question over the map). What's held in the hands
+        // has no laser: its buttons are pressed with the fingers (`crate::held_menus`).
         let pointer = if self.held.holding[dom] && !self.held.holding[dom ^ 1] { dom ^ 1 } else { dom };
         self.pointer = pointer;
         let hand = &frame.hands[pointer];
@@ -600,8 +601,7 @@ impl Session {
         };
         // The menu's pieces the laser can point at: the nearest it hits, where in the HUD texture.
         if hand.connected != 0 {
-            // (The ones held in the hands as they were last frame: they're placed with the hands.)
-            for piece in self.menu_pieces.iter().chain(self.held.pieces.iter().filter(|_| menu_mode)).filter(|p| p.flags & HUDE_POINT != 0) {
+            for piece in self.menu_pieces.iter().filter(|p| p.flags & HUDE_POINT != 0) {
                 if let Some((t, uv)) = piece.hit(laser_origin, laser_dir)
                     && pick.is_none_or(|b| t < b.1)
                 {
@@ -822,7 +822,14 @@ impl Session {
                     .collect();
                 let hands = [0, 1].map(|i| {
                     let c = &frame.hands[i];
-                    crate::held_menus::Hand { grip: (c.connected != 0).then(|| (Vec3::from_array(c.grip.pos), quat(c.grip.rot))), vel: Vec3::from_array(c.vel), squeeze: c.squeeze, trigger: c.trigger }
+                    let connected = c.connected != 0;
+                    crate::held_menus::Hand {
+                        grip: connected.then(|| (Vec3::from_array(c.grip.pos), quat(c.grip.rot))),
+                        tip: self.rig.index_tip(i).filter(|_| connected).map(|p| map.inv_point(p)),
+                        vel: Vec3::from_array(c.vel),
+                        squeeze: c.squeeze,
+                        trigger: c.trigger,
+                    }
                 });
                 let held = self.held_menus.update(&self.settings.current, head_pos, head_rot, frame.dt, now, hud_aspect.unwrap(), &self.hud_layout, &things, &hands);
                 for &a in &held.presses {
@@ -1536,7 +1543,7 @@ impl Session {
             rustvr_avatar::LaserBeam { from: origin, to: origin + w.aim_dir * hit.unwrap_or(30.0), hit: hit.is_some() }
         });
         self.body.set_laser(&self.gpu, laser);
-        let pointable = self.menu_pieces.iter().chain(&self.held.pieces).any(|p| p.flags & HUDE_POINT != 0);
+        let pointable = self.menu_pieces.iter().any(|p| p.flags & HUDE_POINT != 0);
         if layout.game_menu.is_some() || layout.runtime_menu.is_some() || (menu_mode && pointable) {
             let hand = &frame.hands[self.pointer];
             if hand.connected != 0 {
