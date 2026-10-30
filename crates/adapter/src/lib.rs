@@ -540,6 +540,39 @@ impl Adapter {
         }
     }
 
+    /// The game's kinds of blood (see [`BloodTable`]): when they change.
+    pub fn write_bloods(&self, bloods: &BloodTable) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_bloods(bloods);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The creatures' blood and stumps (see [`GoreBodies`]): every frame.
+    pub fn write_gore_bodies(&self, bodies: &GoreBodies) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_gore_bodies(bodies);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A limb cut off (see [`GoreEvent`]).
+    pub fn push_gore_event(&self, ev: &GoreEvent) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.push_gore_event(ev);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The melee hits, blocks and casts since the last call (see [`CombatEvent`]).
     pub fn combat_events(&mut self) -> Vec<CombatEvent> {
         match &self.link {

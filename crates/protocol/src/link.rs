@@ -360,6 +360,46 @@ impl Link {
         *read = written;
         out
     }
+    // ---- gore ([`crate::gore`]) -------------------------------------------------------------------
+    /// Adapter: the game's kinds of blood, when they change.
+    pub fn write_bloods(&self, v: &BloodTable) {
+        unsafe { seq_write(self.base.add(OFF_BLOODS), v) }
+    }
+    pub fn read_bloods_into(&self, out: &mut BloodTable) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_BLOODS), out) }
+    }
+    /// Adapter: the creatures' blood and stumps, every frame.
+    pub fn write_gore_bodies(&self, v: &GoreBodies) {
+        unsafe { seq_write(self.base.add(OFF_GORE_BODIES), v) }
+    }
+    pub fn read_gore_bodies_into(&self, out: &mut GoreBodies) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_GORE_BODIES), out) }
+    }
+    /// Adapter: a limb cut off.
+    pub fn push_gore_event(&self, ev: &GoreEvent) {
+        let written = self.u64_at(OFF_GORE_EVENTS + offset_of!(GoreEvents, written));
+        let n = written.load(Ordering::Relaxed);
+        let slot = OFF_GORE_EVENTS + offset_of!(GoreEvents, events) + (n as usize % GORE_EVENT_SLOTS) * size_of::<GoreEvent>();
+        unsafe { plain_write(self.base.add(slot), ev) };
+        written.store(n + 1, Ordering::Release);
+    }
+    /// Runtime: the gore events after the `read` first ones (`read` is then how many there have
+    /// been). One that fell more than a ring behind skips ahead to the newest.
+    pub fn read_gore_events(&self, read: &mut u64) -> Vec<GoreEvent> {
+        let written = self.u64_at(OFF_GORE_EVENTS + offset_of!(GoreEvents, written)).load(Ordering::Acquire);
+        if written < *read {
+            *read = written; // the game started again
+        }
+        let from = (*read).max(written.saturating_sub(GORE_EVENT_SLOTS as u64));
+        let out = (from..written)
+            .map(|n| {
+                let slot = OFF_GORE_EVENTS + offset_of!(GoreEvents, events) + (n as usize % GORE_EVENT_SLOTS) * size_of::<GoreEvent>();
+                unsafe { plain_read(self.base.add(slot)) }
+            })
+            .collect();
+        *read = written;
+        out
+    }
     /// Runtime: publish the posed player (see [`RtPlayerDraw`]).
     pub fn write_player_draw(&self, v: &RtPlayerDraw) {
         unsafe { seq_write(self.base.add(OFF_PLAYER_DRAW), v) }
