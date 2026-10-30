@@ -1580,10 +1580,10 @@ impl Rig {
         for (&(actor, part), &(_, proxy, ..)) in &self.proxies {
             for c in self.physics.touching(proxy) {
                 // Who's pressing, and how far behind where it's driven it is (what it presses with).
-                let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0)).or_else(|| {
-                    self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }))
+                let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0, Some(self.map.vel(h.vel_t)))).or_else(|| {
+                    self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
                 });
-                let Some((body, lag)) = pusher else { continue };
+                let Some((body, lag, controller)) = pusher else { continue };
                 let Some((point, normal, depth)) = self.physics.overlap(c, proxy).or_else(|| {
                     // Resting against it: the nearest points.
                     let p = self.physics.closest_point(proxy, self.physics.pose(body).0);
@@ -1594,8 +1594,11 @@ impl Rig {
                 };
                 let vel = self.physics.velocity(body).0;
                 let speed = (vel.dot(normal).max(0.0) + lag.dot(normal).max(0.0) * PUSH_LAG + depth * PUSH_OUT).min(PUSH_MAX);
+                // (A hand stopped on the body has lost its speed: its controller's is how hard it
+                // came.)
+                let moving = controller.unwrap_or(vel).dot(normal).max(0.0);
                 if speed > 0.05 {
-                    keep(GamePush { id: actor, part: part as u32 + 1, point: point.extend(1.0).to_array(), normal: normal.extend(speed).to_array(), ..Default::default() });
+                    keep(GamePush { id: actor, part: part as u32 + 1, moving, point: point.extend(1.0).to_array(), normal: normal.extend(speed).to_array(), ..Default::default() });
                 }
             }
         }

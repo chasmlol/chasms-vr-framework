@@ -472,7 +472,10 @@ pub struct GamePush {
     pub id: u32,
     /// 0: an object; `n`: part `n - 1` of creature `id` (as [`crate::Actor::parts`] has them).
     pub part: u32,
-    pub _pad: [u32; 2],
+    /// How fast the pusher itself moves into it (m/s; a hand's controller, a held thing): a shove,
+    /// where `normal[3]` alone may be a hand leaning on it with its controller further in.
+    pub moving: f32,
+    pub _pad: u32,
     pub point: [f32; 4],
     pub normal: [f32; 4],
 }
