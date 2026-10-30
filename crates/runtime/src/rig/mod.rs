@@ -4454,7 +4454,8 @@ impl Rig {
             if let Glove::Flight(id) = h.glove {
                 out.pulled[i] = self.obj_pose(id).map(|(p, _)| map.inv_point(p));
             }
-            out.hand_targeting[i] = h.hover != Hover::None || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
+            // (A hand on a person still has the trigger's use: touch someone's shoulder to talk.)
+            out.hand_targeting[i] = !matches!(h.hover, Hover::None | Hover::Creature(..)) || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
         }
         // Primary gun: the firing hand's, else any held gun.
         let gun_in = |hand: usize| hands[hand].holding.filter(|id| self.objects.get(id).is_some_and(|o| matches!(o.attach, Attach::Gun)));
