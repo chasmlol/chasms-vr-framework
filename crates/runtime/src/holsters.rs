@@ -25,13 +25,27 @@ pub struct HolsterLink {
     edits: Box<SlotEdits>,
     edits_revision: u32,
     place_seq: u32,
+    /// The editor's region as a game before this connection left it (its seqlock word): seen, not
+    /// acted on, until the game writes it afresh (None: it has). Its first read sets it.
+    stale: Option<u32>,
+    fresh: bool,
     /// The slots last published, to number their revisions.
     published: Vec<BodySlot>,
 }
 
 impl Default for HolsterLink {
     fn default() -> Self {
-        HolsterLink { inventory: bytemuck::zeroed_box(), inventory_seq: 0, out: bytemuck::zeroed_box(), edits: bytemuck::zeroed_box(), edits_revision: 0, place_seq: 0, published: Vec::new() }
+        HolsterLink {
+            inventory: bytemuck::zeroed_box(),
+            inventory_seq: 0,
+            out: bytemuck::zeroed_box(),
+            edits: bytemuck::zeroed_box(),
+            edits_revision: 0,
+            place_seq: 0,
+            stale: None,
+            fresh: true,
+            published: Vec::new(),
+        }
     }
 }
 
@@ -96,6 +110,15 @@ impl HolsterLink {
             }
         }
         if link.read_slot_edits_into(&mut self.edits) {
+            // (A game before this one may have left edits, a slot to place, the editor open.)
+            if std::mem::take(&mut self.fresh) {
+                self.stale = Some(self.edits.seq);
+                self.edits_revision = self.edits.revision;
+                self.place_seq = self.edits.place_seq;
+            }
+            if self.stale.is_some_and(|seq| seq != self.edits.seq) {
+                self.stale = None;
+            }
             if self.edits.revision != 0 && self.edits.revision != self.edits_revision {
                 self.edits_revision = self.edits.revision;
                 let n = (self.edits.count as usize).min(MAX_BODY_SLOTS);
@@ -109,7 +132,8 @@ impl HolsterLink {
         // (The slots first: a new one is placed by hand as it's made.)
         rig.set_pockets(&self.slots(settings, game));
         // While the editor is open, the picked slot's first thing shows where the slot is.
-        rig.show_pockets((self.edits.editing as usize).checked_sub(1));
+        let editing = if self.stale.is_some() { 0 } else { self.edits.editing };
+        rig.show_pockets((editing as usize).checked_sub(1));
         if self.edits.place_seq != self.place_seq {
             self.place_seq = self.edits.place_seq;
             let slot = self.edits.place_slot as usize;
