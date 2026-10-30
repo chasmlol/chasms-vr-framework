@@ -26,7 +26,7 @@ pub mod grips;
 pub mod valve;
 pub mod kick;
 pub mod physics;
-pub mod pockets;
+pub mod pickpocket;
 pub mod recoil;
 pub mod throwable;
 pub mod throwing;
@@ -44,7 +44,7 @@ use actions::{Chamber, Cycle, CycleEvent, HingeEvent};
 use feedback::{Cue, Feedback};
 use filters::OneEuro;
 use physics::{Physics, groups_free, groups_game_prop, groups_hand, groups_held, groups_none};
-use pockets::{InPocket, Pocketed};
+use pickpocket::{InPocket, Pocketed};
 use throwable::{Flight, Fuse, KnifeMode, ThrowState};
 use throwing::{ThrowClass, ThrowHistory};
 use weapon::{Fire, HandleGrab, WeaponState};
@@ -204,7 +204,7 @@ enum Hover {
     /// A valve's rim.
     Valve(u32),
     /// In one of the game's creatures' pockets (its id).
-    Pocket(u32),
+    CreaturePocket(u32),
 }
 
 /// A hand holding a hinged action's barrels: which gun, where on them it took them (weapon space,
@@ -711,17 +711,17 @@ pub struct Rig {
     pushes: Vec<Push>,
     /// What each hand's fingers close on this frame (tracking space).
     grasps: [Option<rustvr_avatar::Grasp>; 2],
-    /// The game's creatures' pockets now (world), and its latest answers ([`Rig::set_pockets`]).
-    pockets: Vec<Pocket>,
+    /// The game's creatures' pockets now (world), and its latest answers ([`Rig::set_creature_pockets`]).
+    creature_pockets: Vec<Pocket>,
     pocket_answers: Vec<PocketOutcome>,
     /// What the hands did with them this frame, for the game, numbered from `pocket_next` on (the
     /// ring's next number: the session pushes them in order).
-    pub pocket_events: Vec<PocketEvent>,
+    pub pickpocket_events: Vec<rustvr_protocol::PocketEvent>,
     pocket_next: u64,
     /// The creatures whose pickpocketing is open, and when a hand was last near their pockets.
     pocket_sessions: BTreeMap<u32, f64>,
     /// The creatures a hand is feeling in the pockets of, not open yet: since when, and when a hand
-    /// was last in them ([`pockets::OPEN_AFTER`]).
+    /// was last in them ([`pickpocket::OPEN_AFTER`]).
     pocket_looks: BTreeMap<u32, (f64, f64)>,
 }
 
@@ -751,9 +751,9 @@ impl Default for Rig {
             kicks: HashMap::new(),
             pushes: Vec::new(),
             grasps: [None, None],
-            pockets: Vec::new(),
+            creature_pockets: Vec::new(),
             pocket_answers: Vec::new(),
-            pocket_events: Vec::new(),
+            pickpocket_events: Vec::new(),
             pocket_next: 0,
             pocket_sessions: BTreeMap::new(),
             pocket_looks: BTreeMap::new(),
@@ -1753,18 +1753,18 @@ impl Rig {
     // ---- the game's creatures' pockets ([`pockets`]) -------------------------------------------------
     /// The game's creatures' pockets now (world space) and its answers to what the hands did with
     /// them; `next`: the number the next pocket event will have in the ring (the session pushes this
-    /// frame's [`Rig::pocket_events`] in order after the update).
-    pub fn set_pockets(&mut self, table: &Pockets, next: u64) {
+    /// frame's [`Rig::pickpocket_events`] in order after the update).
+    pub fn set_creature_pockets(&mut self, table: &Pockets, next: u64) {
         let creatures = |p: &[Pocket]| p.iter().map(|p| p.actor).collect::<std::collections::BTreeSet<u32>>();
-        if creatures(table.pockets()) != creatures(&self.pockets) {
+        if creatures(table.pockets()) != creatures(&self.creature_pockets) {
             tracing::info!("rig: {} pockets on {:x?}", table.pockets().len(), creatures(table.pockets()));
         }
-        self.pockets.clear();
-        self.pockets.extend_from_slice(table.pockets());
+        self.creature_pockets.clear();
+        self.creature_pockets.extend_from_slice(table.pockets());
         self.pocket_answers.clear();
         self.pocket_answers.extend_from_slice(table.outcomes());
         self.pocket_next = next;
-        self.pocket_events.clear();
+        self.pickpocket_events.clear();
     }
 
     /// The pocket hand `i` is in (its creature and its id), its fingers on its things or holding one
@@ -1817,26 +1817,26 @@ impl Rig {
     pub fn nearest_pocket(&self, i: usize) -> Option<(u32, Vec3)> {
         let c = self.hands.as_ref()?[i].collider;
         let from = |p: &Pocket| Vec3::from_array(p.center) - self.physics.closest_point(c, Vec3::from_array(p.center));
-        self.pockets.iter().map(|p| (p.id, from(p))).min_by(|a, b| a.1.length().total_cmp(&b.1.length()))
+        self.creature_pockets.iter().map(|p| (p.id, from(p))).min_by(|a, b| a.1.length().total_cmp(&b.1.length()))
     }
 
     fn pocket(&self, id: u32) -> Option<&Pocket> {
-        self.pockets.iter().find(|p| p.id == id)
+        self.creature_pockets.iter().find(|p| p.id == id)
     }
 
     /// An event for the game: its number in the ring.
-    fn pocket_event(&mut self, ev: PocketEvent) -> u64 {
-        let n = self.pocket_next + self.pocket_events.len() as u64;
-        self.pocket_events.push(ev);
+    fn pocket_event(&mut self, ev: rustvr_protocol::PocketEvent) -> u64 {
+        let n = self.pocket_next + self.pickpocket_events.len() as u64;
+        self.pickpocket_events.push(ev);
         n
     }
 
     /// The event for something done with object `id` by hand `i` (where it is, how fast).
-    fn pocket_event_of(&self, kind: u32, actor: u32, pocket: u32, item: u32, id: u32, i: usize) -> PocketEvent {
+    fn pocket_event_of(&self, kind: u32, actor: u32, pocket: u32, item: u32, id: u32, i: usize) -> rustvr_protocol::PocketEvent {
         let (pos, rot) = self.obj_pose(id).unwrap_or((Vec3::ZERO, Quat::IDENTITY));
         let vel = self.objects.get(&id).map_or(Vec3::ZERO, |o| self.physics.velocity(o.body).0);
         let speed = self.hands.as_ref().map_or(0.0, |h| h[i].history.recent().length());
-        PocketEvent { kind, actor, pocket, item, object: id, hand: i as u32, pos: pos.to_array(), speed, rot: rot.to_array(), vel: vel.to_array(), ..Default::default() }
+        rustvr_protocol::PocketEvent { kind, actor, pocket, item, object: id, hand: i as u32, pos: pos.to_array(), speed, rot: rot.to_array(), vel: vel.to_array(), ..Default::default() }
     }
 
     /// A copy of template `t` (a thing in a pocket), at `pos`.
@@ -1888,7 +1888,7 @@ impl Rig {
                         }
                         // Pulled out: the attempt, for the game to decide (its pickpocketing open
                         // first, if the look was quick).
-                        Some(p) if pockets::out_of(&p, self.hand_reach(i), scale) => {
+                        Some(p) if pickpocket::out_of(&p, self.hand_reach(i), scale) => {
                             self.open_pocket_session(&p, i, palm);
                             let ev = self.pocket_event_of(PE_TAKE, actor, pocket, item, id, i);
                             let n = self.pocket_event(ev);
@@ -1897,7 +1897,7 @@ impl Rig {
                             let c = o.collider;
                             self.physics.set_groups(c, groups_held(i));
                             tracing::info!("rig: {id:#x} (thing {item:#x}) pulled out of pocket {pocket:#x} of {actor:#x}: event {n}");
-                            self.emit(Cue::PocketOut, Some(i), Some(id), palm, 1.0);
+                            self.emit(Cue::PickpocketOut, Some(i), Some(id), palm, 1.0);
                         }
                         _ => {}
                     }
@@ -1911,17 +1911,17 @@ impl Rig {
                 // A thing to plant brought into a pocket: a brush (the creature's pickpocketing
                 // opens as it's let go there, or after a moment there, as for an empty hand).
                 let plantable = self.objects.get(&id).is_some_and(|o| o.desc.flags & OBJF_LOOT != 0 || o.pocketed == Some(Pocketed::Taken));
-                let into = plantable.then(|| pockets::pocket_at(&self.pockets, self.hand_reach(i), before.map(|p| p.pocket), scale)).flatten().and_then(|p| self.pocket(p).copied());
+                let into = plantable.then(|| pickpocket::pocket_at(&self.creature_pockets, self.hand_reach(i), before.map(|p| p.pocket), scale)).flatten().and_then(|p| self.pocket(p).copied());
                 if let Some(pk) = into.filter(|_| self.hands.as_ref().unwrap()[i].holding == Some(id)) {
                     if before.is_none_or(|b| b.pocket != pk.id) {
-                        self.emit(Cue::PocketIn, Some(i), None, palm, 0.6);
+                        self.emit(Cue::PickpocketIn, Some(i), None, palm, 0.6);
                     }
                     self.hands.as_mut().unwrap()[i].pocket = Some(InPocket { pocket: pk.id, actor: pk.actor, index: 0, moved: 0.0, last: palm });
                 }
             } else if busy {
                 self.hands.as_mut().unwrap()[i].pocket = None;
             } else {
-                let in_now = pockets::pocket_at(&self.pockets, self.hand_reach(i), before.map(|p| p.pocket), scale);
+                let in_now = pickpocket::pocket_at(&self.creature_pockets, self.hand_reach(i), before.map(|p| p.pocket), scale);
                 match (before, in_now.and_then(|id| self.pocket(id).copied())) {
                     (Some(mut p), Some(pk)) if p.pocket == pk.id => {
                         // On along it: the next thing, felt.
@@ -1934,7 +1934,7 @@ impl Rig {
                         // In: a brush, and the first thing (or nothing, or a refusal: the game's,
                         // at once). Its pickpocketing opens after a moment of this.
                         self.hands.as_mut().unwrap()[i].pocket = Some(InPocket { pocket: pk.id, actor: pk.actor, index: 0, moved: 0.0, last: palm });
-                        self.emit(Cue::PocketIn, Some(i), None, palm, 0.6);
+                        self.emit(Cue::PickpocketIn, Some(i), None, palm, 0.6);
                         if pk.flags & POCKET_SHUT != 0 {
                             self.emit(Cue::PocketShut, Some(i), None, palm, 1.0);
                             self.open_pocket_session(&pk, i, palm);
@@ -1952,9 +1952,9 @@ impl Rig {
             let aware = self.in_pocket(i).and_then(|(_, p)| self.pocket(p)).map_or(0.0, |p| p.awareness);
             let h = &self.hands.as_ref().unwrap()[i];
             let (was, next) = (h.aware, h.heartbeat);
-            if aware >= pockets::WATCHED && (was < pockets::WATCHED || now >= next) {
-                self.emit(Cue::PocketWatched, Some(i), None, palm, if was < pockets::WATCHED { 1.0 } else { 0.4 });
-                self.hands.as_mut().unwrap()[i].heartbeat = now + pockets::HEARTBEAT;
+            if aware >= pickpocket::WATCHED && (was < pickpocket::WATCHED || now >= next) {
+                self.emit(Cue::PocketWatched, Some(i), None, palm, if was < pickpocket::WATCHED { 1.0 } else { 0.4 });
+                self.hands.as_mut().unwrap()[i].heartbeat = now + pickpocket::HEARTBEAT;
             }
             self.hands.as_mut().unwrap()[i].aware = aware;
             // What it's on, told to the game as it changes: the game shows its card of the thing the
@@ -1962,7 +1962,7 @@ impl Rig {
             let felt = self.felt(i);
             if felt != self.hands.as_ref().unwrap()[i].felt {
                 let [actor, pocket, item, object] = felt;
-                self.pocket_event(PocketEvent { kind: PE_FEEL, actor, pocket, item, object, hand: i as u32, pos: palm.to_array(), ..Default::default() });
+                self.pocket_event(rustvr_protocol::PocketEvent { kind: PE_FEEL, actor, pocket, item, object, hand: i as u32, pos: palm.to_array(), ..Default::default() });
                 let h = &mut self.hands.as_mut().unwrap()[i];
                 h.felt = felt;
                 h.felt_since = now;
@@ -1977,7 +1977,7 @@ impl Rig {
                 look.1 = now;
                 look.0
             };
-            if now - since >= pockets::OPEN_AFTER
+            if now - since >= pickpocket::OPEN_AFTER
                 && let Some(pk) = self.pocket(pocket).copied()
             {
                 let palm = self.physics.pose(self.hands.as_ref().unwrap()[i].body).0;
@@ -1985,25 +1985,25 @@ impl Rig {
             }
         }
         let sessions = &self.pocket_sessions;
-        self.pocket_looks.retain(|actor, (_, last)| !sessions.contains_key(actor) && now - *last <= pockets::SESSION_GAP);
+        self.pocket_looks.retain(|actor, (_, last)| !sessions.contains_key(actor) && now - *last <= pickpocket::SESSION_GAP);
         // The creatures' pickpocketing closes once no hand has been near their pockets a moment.
         let near: Vec<u32> = self
             .pocket_sessions
             .keys()
             .copied()
-            .filter(|&actor| (0..2).any(|i| pockets::near_actor(&self.pockets, actor, self.hand_reach(i), scale) || self.in_pocket(i).is_some_and(|(a, _)| a == actor)))
+            .filter(|&actor| (0..2).any(|i| pickpocket::near_actor(&self.creature_pockets, actor, self.hand_reach(i), scale) || self.in_pocket(i).is_some_and(|(a, _)| a == actor)))
             .collect();
         let mut closed = Vec::new();
         for (actor, last) in self.pocket_sessions.iter_mut() {
             if near.contains(actor) {
                 *last = now;
-            } else if now - *last > pockets::SESSION_GAP {
+            } else if now - *last > pickpocket::SESSION_GAP {
                 closed.push(*actor);
             }
         }
         for actor in closed {
             self.pocket_sessions.remove(&actor);
-            let n = self.pocket_event(PocketEvent { kind: PE_CLOSE, actor, ..Default::default() });
+            let n = self.pocket_event(rustvr_protocol::PocketEvent { kind: PE_CLOSE, actor, ..Default::default() });
             tracing::info!("rig: the hands are away from {actor:#x}'s pockets: its pickpocketing closes (event {n})");
         }
     }
@@ -2015,7 +2015,7 @@ impl Rig {
             return;
         }
         self.pocket_sessions.insert(pk.actor, self.now);
-        let ev = PocketEvent { kind: PE_OPEN, actor: pk.actor, pocket: pk.id, hand: i as u32, pos: palm.to_array(), ..Default::default() };
+        let ev = rustvr_protocol::PocketEvent { kind: PE_OPEN, actor: pk.actor, pocket: pk.id, hand: i as u32, pos: palm.to_array(), ..Default::default() };
         let n = self.pocket_event(ev);
         tracing::info!("rig: the {} hand in pocket {:#x} of {:#x} ({} things{}): its pickpocketing opens (event {n})", if i == 0 { "left" } else { "right" }, pk.id, pk.actor, pk.count, if pk.flags & POCKET_SHUT != 0 { ", shut" } else { "" });
     }
@@ -2045,8 +2045,8 @@ impl Rig {
                     tracing::info!("rig: {id:#x} wasn't taken unnoticed (event {event}): it stays where it was");
                 }
                 (Some(Pocketed::Dropping { .. }), Some(_)) => gone.push((id, None, false)),
-                (_, None) if now - since > pockets::ANSWER_WAIT => {
-                    tracing::warn!("rig: no answer from the game for {id:#x} (event {event}) in {:.0} s: it goes", pockets::ANSWER_WAIT);
+                (_, None) if now - since > pickpocket::ANSWER_WAIT => {
+                    tracing::warn!("rig: no answer from the game for {id:#x} (event {event}) in {:.0} s: it goes", pickpocket::ANSWER_WAIT);
                     gone.push((id, None, false));
                 }
                 _ => {}
@@ -2161,7 +2161,7 @@ impl Rig {
         if hover == Hover::None
             && let Some(p) = h.pocket
         {
-            hover = Hover::Pocket(p.pocket);
+            hover = Hover::CreaturePocket(p.pocket);
         }
         // 2. Holsters, then the ammo pouch (it beats nearby objects when the other hand has a gun).
         if hover == Hover::None {
@@ -2439,7 +2439,7 @@ impl Rig {
                 self.hands.as_mut().unwrap()[i].pin = Some((gid, palm));
                 self.emit(Cue::Grab, Some(i), Some(gid), palm, 0.4);
             }
-            Hover::Pocket(pid) => self.take_from_pocket(i, pid),
+            Hover::CreaturePocket(pid) => self.take_from_pocket(i, pid),
         }
         let _ = inp;
     }
@@ -2771,7 +2771,7 @@ impl Rig {
         // go there as anywhere, and the game takes it if it's planted.
         let taken = pocketed == Some(Pocketed::Taken);
         let plant = (desc.flags & OBJF_LOOT != 0 || taken)
-            .then(|| pockets::pocket_at(&self.pockets, self.hand_reach(i), self.hands.as_ref().unwrap()[i].pocket.map(|p| p.pocket), self.map.world_per_meter))
+            .then(|| pickpocket::pocket_at(&self.creature_pockets, self.hand_reach(i), self.hands.as_ref().unwrap()[i].pocket.map(|p| p.pocket), self.map.world_per_meter))
             .flatten()
             .and_then(|pid| self.pocket(pid).copied())
             .filter(|p| p.flags & POCKET_SHUT == 0 && hand_speed < HOLSTER_MAX_SPEED);

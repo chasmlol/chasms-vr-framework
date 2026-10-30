@@ -648,7 +648,7 @@ impl Session {
             // The game's creatures' pockets, and its answers to what the hands did with them (a
             // torn read keeps the last).
             self.link.read_pockets_into(&mut self.pockets);
-            self.rig.set_pockets(&self.pockets, self.link.pocket_events_written());
+            self.rig.set_creature_pockets(&self.pockets, self.link.pocket_events_written());
             let rig_paused = menu_mode || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
@@ -709,7 +709,7 @@ impl Session {
             }
             // What the hands did with the pockets, for the game, in order (numbered as the rig
             // numbered them).
-            for ev in std::mem::take(&mut self.rig.pocket_events) {
+            for ev in std::mem::take(&mut self.rig.pickpocket_events) {
                 self.link.push_pocket_event(&ev);
             }
             self.rig.write_states(&mut self.states);
@@ -1799,10 +1799,10 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::AirHiss => (E::DryFire, S::EmptyClick),
         // A pocket is found like a holster, and a shut one says no; the rest is felt, not heard
         // (the game's own sounds say what came of it).
-        C::PocketIn => (E::ZoneTick, S::ZoneTick),
+        C::PickpocketIn => (E::ZoneTick, S::ZoneTick),
         C::PocketShut => (E::Fail, S::Fail),
         C::PocketPlant => (E::HolsterIn, S::HolsterIn),
-        C::PocketEmpty | C::PocketFeel(_) | C::PocketOut | C::PocketCaught | C::PocketWatched => return None,
+        C::PocketEmpty | C::PocketFeel(_) | C::PickpocketOut | C::PocketCaught | C::PocketWatched => return None,
     })
 }
 
