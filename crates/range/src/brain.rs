@@ -283,6 +283,8 @@ pub struct Swing {
     pub hand: usize,
     /// Played back (at -0.5 speed for 0.2 s), from this share of it, since then.
     pub back: Option<(f32, f64)>,
+    /// A feint: at the top of its wind-up it turns into another move.
+    pub feint: bool,
 }
 
 impl Swing {
@@ -431,6 +433,11 @@ impl Brain {
         self.swing.is_some_and(|s| s.back.is_none())
     }
 
+    /// Its swing is a feint (for the game's look).
+    pub fn feinting(&self) -> bool {
+        self.swing.is_some_and(|s| s.feint)
+    }
+
     pub fn doing(&self, now: f64) -> Doing {
         match (self.mode, self.swing) {
             (Mode::Waiting, _) => Doing::Idle,
@@ -466,7 +473,7 @@ impl Brain {
             let mv = MOVES[s.mv].chain.unwrap();
             self.chains += 1;
             let speed = (s.speed * (1.0 + d.chain_speed * self.chains as f32)).max(0.5);
-            self.swing = Some(Swing { mv, t0: now + 0.2, speed, hand: s.hand, back: None });
+            self.swing = Some(Swing { mv, t0: now + 0.2, speed, hand: s.hand, back: None, feint: false });
             self.next_riposte = now + self.range(d.riposte_delay) as f64;
             tracing::info!("brain: parried, chains into {} ({} chained)", MOVES[mv].name, self.chains);
             false
@@ -604,6 +611,12 @@ impl Brain {
                 }
             }
             Mode::Fighting => {
+                // A feint at the top of its wind-up: the swing turns into another from there.
+                if let Some(s) = self.swing.filter(|s| s.feint && s.back.is_none() && s.progress(now) >= 0.33) {
+                    let next = (s.mv + 1 + (self.rand() * 2.0) as usize) % 3;
+                    tracing::info!("brain: feints: {} turns into {}", MOVES[s.mv].name, MOVES[next].name);
+                    self.swing = Some(Swing { mv: next, t0: now - (MOVES[next].seconds * 0.2 / s.speed) as f64, feint: false, ..s });
+                }
                 if let Some(s) = self.swing
                     && s.progress(now) >= 1.0
                 {
@@ -638,7 +651,14 @@ impl Brain {
                     if let Some((mv, _)) = best {
                         let mass = hands[hand].map_or(1.5, |h| h.mass);
                         let speed = d.speed * (1.5 / mass.max(0.1)).clamp(0.7, 1.0);
-                        self.swing = Some(Swing { mv, t0: now, speed, hand, back: None });
+                        // A feint now and then (Medium one swing in ten, Hard one in five): plain
+                        // fighters never feint; the user asked for it (our call, `docs/MELEE.md`).
+                        let feint = self.rand() < match self.tier {
+                            Tier::Easy => 0.0,
+                            Tier::Medium => 0.1,
+                            Tier::Hard => 0.2,
+                        };
+                        self.swing = Some(Swing { mv, t0: now, speed, hand, back: None, feint });
                         self.last_move = Some(mv);
                         self.chains = 1;
                         tracing::info!("brain: attacks: {} with the {} hand at {dist:.2} m", MOVES[mv].name, if hand == 0 { "left" } else { "right" });

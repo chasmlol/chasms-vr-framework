@@ -79,6 +79,20 @@ const LIFT: f32 = 0.05;
 const LIFT_LEGS: f32 = 0.1;
 /// Let go while moving faster than this (m/s), it's knocked over.
 const THROWN_SPEED: f32 = 2.0;
+/// A weapon the player holds pulled this far from its holder's chest (m) for this long (s) is
+/// wrenched from its hand.
+const WRENCH_REACH: f32 = 0.95;
+const WRENCH_TIME: f64 = 0.25;
+/// A hand on the throat squeezing past this chokes (one weapon dropped after 2 s,
+/// both after 5); it hurts at 5 a second (that it hurts at all is
+/// our call, so a choke can kill).
+const CHOKE_SQUEEZE: f32 = 0.5;
+const CHOKE_DPS: f32 = 5.0;
+/// A held creature that's awake struggles: a try every 2 to 3 s, 10% at first, 5% more each time,
+/// at most 50%; a try that works wrenches its held part away.
+const STRUGGLE_EVERY: f64 = 2.5;
+const STRUGGLE_JERK: f32 = 5.0;
+
 /// The most a push may give a part at once (N s).
 const PUSH_MAX: f32 = 60.0;
 /// A part slamming into something this much faster than it was going is a slam (m/s), and does
@@ -217,6 +231,11 @@ pub struct Person {
     pub severed: u32,
     /// A hand holds it.
     handled: bool,
+    /// Choked by a hand since then; when it next tries to struggle free, and how often it has.
+    choked_since: Option<f64>,
+    choked_by: Option<usize>,
+    next_struggle: f64,
+    struggles: u32,
 }
 
 /// A weapon or shield a creature holds (or dropped): its body in the creatures' world, the object
@@ -235,6 +254,8 @@ pub struct Item {
     /// Its blades, for the brains (its own space): (a, b).
     pub blade: (V3, V3),
     pub mass: f32,
+    /// The player has been pulling it out past its holder's reach since then.
+    wrench: Option<f64>,
 }
 
 /// A weapon or shield a creature can hold: its object id, mass, collision, grip and blade.
@@ -367,6 +388,10 @@ impl Dummies {
             doing: Doing::Idle,
             severed: 0,
             handled: false,
+            choked_since: None,
+            choked_by: None,
+            next_struggle: 0.0,
+            struggles: 0,
         });
         k
     }
@@ -383,7 +408,7 @@ impl Dummies {
         let k = self.items.len();
         let body = self.item_body(spec, pose, group(who));
         let joint = Some(self.fix(hand_body, body, grip));
-        self.items.push(Item { id: spec.id, body, joint, holder: Some((who, hand)), grip, shield: spec.shield, players: false, blade: spec.blade, mass: spec.mass });
+        self.items.push(Item { id: spec.id, body, joint, holder: Some((who, hand)), grip, shield: spec.shield, players: false, blade: spec.blade, mass: spec.mass, wrench: None });
         self.people[who].hands[hand] = Some(k);
         k
     }
@@ -450,14 +475,32 @@ impl Dummies {
             Some((p, q)) => {
                 if !self.items[k].players {
                     self.items[k].players = true;
+                    self.items[k].wrench = None;
                 }
                 // Followed where the runtime has it: its holder's hand is dragged along with it
-                // (the player wrestling it away), unless it's let go of it.
+                // (the player wrestling it away).
                 let rb = &mut self.world.bodies[body];
-                let (now, _) = from_pose(rb.position());
                 rb.set_body_type(RigidBodyType::KinematicPositionBased, true);
                 rb.set_next_kinematic_position(to_pose(p, q));
-                let _ = now;
+                // Pulled out past its holder's reach (the arm stretched from its chest) for a
+                // moment, it lets go: the player has wrenched it away (`docs/MELEE.md`).
+                if let Some((who, hand)) = self.items[k].holder {
+                    let chest = from_pose(self.world.bodies[self.people[who].parts[anim::TORSO].body].position()).0;
+                    let stretched = p.distance(chest) > WRENCH_REACH;
+                    let now = self.time;
+                    match (stretched, self.items[k].wrench) {
+                        (true, None) => self.items[k].wrench = Some(now),
+                        (true, Some(t)) if now - t > WRENCH_TIME => {
+                            let id = self.people[who].id;
+                            if let Some(item) = self.drop_item(who, hand) {
+                                tracing::info!("range: {id:#x}'s {item:#x} wrenched from its hand");
+                                self.happened.push(Happened::Disarmed { id, item });
+                            }
+                        }
+                        (false, _) => self.items[k].wrench = None,
+                        _ => {}
+                    }
+                }
             }
             None if self.items[k].players => {
                 self.items[k].players = false;
@@ -668,6 +711,59 @@ impl Dummies {
             }
         }
         let now = self.time;
+        // Choked: weapons dropped after 2 and 5 seconds, and hurt.
+        for (hand, g) in grabs.grabs.iter().enumerate() {
+            let held = g.flags & GRAB_HELD != 0 && g.flags & GRAB_THROAT != 0 && g.squeeze > CHOKE_SQUEEZE;
+            let Some(k) = self.people.iter().position(|p| p.id == g.actor) else { continue };
+            if !held {
+                if self.people[k].choked_by == Some(hand) {
+                    self.people[k].choked_by = None;
+                }
+                continue;
+            }
+            let p = &mut self.people[k];
+            let since = *p.choked_since.get_or_insert(now);
+            p.choked_by = Some(hand);
+            let (choking, id) = (now - since, p.id);
+            for (after, h) in [(2.0, 1), (5.0, 0)] {
+                if choking > after
+                    && let Some(item) = self.drop_item(k, h)
+                {
+                    self.happened.push(Happened::Disarmed { id, item });
+                }
+            }
+            let at = self.part_pose(k, anim::HEAD).0;
+            self.hurt(k, CHOKE_DPS * STEP.max(1.0 / 90.0), at);
+        }
+        for p in &mut self.people {
+            if p.choked_by.is_none() {
+                p.choked_since = None;
+            }
+        }
+        // Struggling: an awake creature held tries to break free now and then.
+        for h in self.held.clone() {
+            let Some(k) = self.people.iter().position(|p| p.id == h.id) else { continue };
+            let p = &mut self.people[k];
+            if !p.alive || matches!(p.balance, Balance::Limp(_)) {
+                continue;
+            }
+            if now < p.next_struggle {
+                continue;
+            }
+            p.next_struggle = now + STRUGGLE_EVERY + ((now * 3.7).fract() - 0.5);
+            let chance = (0.1 + 0.05 * p.struggles as f32).min(0.5);
+            p.struggles += 1;
+            if (now * 7.31).fract() as f32 >= chance {
+                continue;
+            }
+            p.struggles = 0;
+            let rb = &mut self.world.bodies[p.parts[h.part].body];
+            let (pos, rot) = from_pose(rb.position());
+            let away = (pos + rot * h.local - h.target).normalize_or(V3::Y);
+            let jerk = away * STRUGGLE_JERK * rb.mass();
+            rb.apply_impulse(to_v(jerk), true);
+            tracing::info!("range: {:#x} struggles free", p.id);
+        }
         for h in self.held.clone() {
             let Some(k) = self.people.iter().position(|p| p.id == h.id) else { continue };
             let part = &self.people[k].parts[h.part];
