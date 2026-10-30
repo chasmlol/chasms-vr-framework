@@ -35,7 +35,7 @@ server = "http://127.0.0.1:7860"
 seed = 42
 # Say each line as its note says ("[sneering]"): twice the work for Breeze, on a GPU the game is
 # already using; off, lines are said plainly (the note still makes the face) and come twice as fast.
-instruct = false
+instruct = true
 
 [mic]
 # The microphone: the first whose name has this in it (Virtual Desktop's own), else the default.
@@ -78,9 +78,9 @@ pub struct Speech {
     #[serde(default = "seed")]
     pub seed: u64,
     /// Say each line as its note says ("[sneering]"): Breeze's guidance, about twice the work,
-    /// on a GPU the game's rendering already has busy. Off (the default), lines are said plainly
-    /// (the note still makes the character's face), and come twice as fast.
-    #[serde(default)]
+    /// on a GPU the game's rendering already has busy. Off, lines are said plainly (the note still
+    /// makes the character's face), and come twice as fast.
+    #[serde(default = "yes")]
     pub instruct: bool,
 }
 
@@ -90,6 +90,10 @@ fn mic() -> m8::config::MicConfig {
 
 fn seed() -> u64 {
     42
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl VoiceConfig {
