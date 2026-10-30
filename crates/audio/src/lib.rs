@@ -363,7 +363,7 @@ pub(crate) enum Command {
     Play { sound: Sound, pos: Vec3, intensity: f32 },
     /// A pack event, or `fallback` if the pack (for this set, or at all) has none.
     Event { event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32 },
-    StartLoop { id: u64, sound: Sound, pos: Vec3 },
+    StartLoop { id: u64, sound: Sound, event: Option<Event>, pos: Vec3 },
     MoveLoop { id: u64, pos: Vec3 },
     StopLoop { id: u64 },
 }
@@ -537,10 +537,19 @@ impl Audio {
     }
 
     /// A loop that follows a position until stopped (glove travel). Any sound can loop;
-    /// [`Sound::GloveTravel`] is the one made to. Loops are always synthesised.
+    /// [`Sound::GloveTravel`] is the one made to. Synthesised: with a pack loaded it plays nothing
+    /// (the pack's own loop is [`Audio::start_event_loop`]'s).
     pub fn start_loop(&self, s: Sound, pos: Vec3) -> LoopId {
         let id = self.next_loop.fetch_add(1, Ordering::Relaxed);
-        self.send(Command::StartLoop { id, sound: s, pos });
+        self.send(Command::StartLoop { id, sound: s, event: None, pos });
+        LoopId(id)
+    }
+
+    /// Starts a loop of the pack's sound for `event` (its first layer's clip, looped), or with no
+    /// pack the synthesised `fallback`; a pack without the event plays nothing, as its one-shots.
+    pub fn start_event_loop(&self, event: Event, fallback: Sound, pos: Vec3) -> LoopId {
+        let id = self.next_loop.fetch_add(1, Ordering::Relaxed);
+        self.send(Command::StartLoop { id, sound: fallback, event: Some(event), pos });
         LoopId(id)
     }
 
