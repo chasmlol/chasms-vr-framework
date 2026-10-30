@@ -245,6 +245,8 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     // Smooth the swivel, never the hand: the elbow direction is filtered in chest space.
     let local = q.inverse() * target_dir;
     let pole_local = match state.pole {
+        // (A frame that takes no time leaves it exactly as it was.)
+        Some(prev) if dt <= 0.0 => prev,
         Some(prev) => prev.lerp(local, smoothing(dt, p.swivel_tau)).normalize_or(local),
         None => local,
     };

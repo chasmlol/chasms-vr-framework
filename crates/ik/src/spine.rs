@@ -4,7 +4,7 @@
 use glam::{Quat, Vec3};
 
 use crate::math::{frame_yz, smoothstep, wrap_angle, yaw_dir, yaw_rot, UP};
-use crate::skeleton::Skeleton;
+use crate::skeleton::{Skeleton, NECK_LEAN};
 use crate::BodyParams;
 
 /// Share of the spine pitch each segment takes, hips -> spine up to upper chest -> neck: the
@@ -77,14 +77,19 @@ pub struct ChainInput {
     pub pitch: f32,
 }
 
+/// The neck's way up from its base in a frame whose +Y is up the spine and +Z forward: leaning
+/// forward by `NECK_LEAN`.
+fn neck_up(frame: Quat) -> Vec3 {
+    frame * Vec3::new(0.0, NECK_LEAN.cos(), NECK_LEAN.sin())
+}
+
 pub fn build(skel: &Skeleton, input: &ChainInput) -> Chain {
     let twist = wrap_angle(input.torso_yaw - input.root_yaw);
     let yaw = TWIST_SHARE.map(|s| input.root_yaw + twist * s);
-    // Segment directions from each joint up to the next, pitched forward about their own right.
-    let dirs: [Vec3; 4] =
-        std::array::from_fn(|i| yaw_rot(yaw[i]) * (Quat::from_rotation_x(input.pitch * PITCH_SHARE[i]) * UP));
-    let head_up = input.head_rot * UP;
-    let neck_dir = dirs[3].lerp(head_up, NECK_FOLLOW).normalize_or(dirs[3]);
+    // Segment frames from each joint up to the next, pitched forward about their own right.
+    let frames: [Quat; 4] = std::array::from_fn(|i| yaw_rot(yaw[i]) * Quat::from_rotation_x(input.pitch * PITCH_SHARE[i]));
+    let dirs: [Vec3; 4] = frames.map(|f| f * UP);
+    let neck_dir = neck_up(frames[3]).lerp(neck_up(input.head_rot), NECK_FOLLOW).normalize_or(dirs[3]);
     let neck = input.head_joint - neck_dir * skel.neck;
 
     let mut pos = [Vec3::ZERO; 6];
@@ -110,8 +115,7 @@ pub fn build(skel: &Skeleton, input: &ChainInput) -> Chain {
 pub fn seated(skel: &Skeleton, input: &ChainInput, hips: Vec3, up: Vec3, fwd: Vec3) -> Chain {
     let twist = wrap_angle(input.torso_yaw - input.root_yaw);
     let yaw = TWIST_SHARE.map(|s| input.root_yaw + twist * s);
-    let head_up = input.head_rot * UP;
-    let neck_dir = head_up.lerp((input.head_joint - hips).normalize_or(up), NECK_FOLLOW).normalize_or(up);
+    let neck_dir = neck_up(input.head_rot).lerp((input.head_joint - hips).normalize_or(up), NECK_FOLLOW).normalize_or(up);
     let neck = input.head_joint - neck_dir * skel.neck;
     let len = skel.spine;
     let total: f32 = len.iter().sum();

@@ -11,9 +11,15 @@ use crate::{Pose, Side};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodyParams {
     // ---- proportions ----
-    /// Eyes to the head joint (the neck pivot the skull rotates about). Parger et al. 2018.
-    pub neck_to_eyes: f32,
-    /// Between the shoulder joints. Parger et al. 2018.
+    /// The head joint, where the skull turns on the neck (the atlanto-occipital joint), this far
+    /// below and behind the eyes at the reference size: the ear canal is 1.7 cm below the eyes
+    /// (ANSUR II, 6,068 adults) and the occipital condyles some 3 cm below that, 7-9 cm back.
+    /// (Parger's 0.13 m pivot, the LibOVR neck model's, is lower down the neck: the point a whole
+    /// nod turns about, which here comes from the neck bending as the head does.)
+    pub head_pivot: [f32; 2],
+    /// Between the shoulder joints (the glenohumeral centres): 0.21 of stature, the biacromial
+    /// breadth (ANSUR II: 0.237 of stature in men, 0.224 in women) less 1-2 cm each side. Parger's
+    /// 0.31 m is a fifth narrower than a real body's, which puts the arms in too close to the neck.
     pub shoulder_width: f32,
 
     // ---- torso yaw ----
@@ -163,8 +169,8 @@ pub struct BodyParams {
 impl Default for BodyParams {
     fn default() -> Self {
         BodyParams {
-            neck_to_eyes: 0.13,
-            shoulder_width: 0.31,
+            head_pivot: [0.046, 0.087],
+            shoulder_width: 0.38,
 
             torso_yaw_clamp_deg: 80.0,
             torso_yaw_blend: 0.7,

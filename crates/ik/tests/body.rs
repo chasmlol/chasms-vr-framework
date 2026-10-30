@@ -150,9 +150,9 @@ fn head_joint_follows_the_hmd() {
         let o = s.solve(&input(h, Some(hanging_grip(Side::Left)), None));
         let head = o.joints[Joint::Head as usize];
         assert!(angle_deg(head.rot, h.rot) < 0.01, "head rotation is the HMD's");
-        // The head joint is the neck pivot, rigidly attached to the HMD 0.13 m away.
+        // The head joint is where the skull turns on the neck, rigidly attached to the HMD.
         let local = h.rot.inverse() * (head.pos - h.pos);
-        assert!((local.length() - 0.13).abs() < 1e-4);
+        assert!(local.distance(eye_to_neck()) < 1e-4);
         if let Some(first) = offset {
             assert!(local.distance(first) < 1e-4);
         }
@@ -293,7 +293,7 @@ fn bending_over_pitches_the_spine_and_pushes_the_hips_back() {
     let o = settle(&mut s, &bend, 90);
     assert!(spine_lean(&o) > 40.0, "spine leans only {:.1}°", spine_lean(&o));
     let hips = pos(&o, Joint::Hips);
-    assert!(hips.z < pos(&standing, Joint::Hips).z - 0.1, "hips moved back to {:.2}", hips.z);
+    assert!(hips.z < pos(&standing, Joint::Hips).z - 0.08, "hips moved back to {:.2}", hips.z);
     assert!(hips.z < pos(&o, Joint::Head).z - 0.3);
     assert_on_floor(&o, "bent over");
     assert_hands_pinned(&o, &bend, "bend");

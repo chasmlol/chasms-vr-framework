@@ -4,8 +4,15 @@ use glam::{Quat, Vec3};
 
 use crate::{BodyParams, Calibration, Side};
 
-/// Eye height of the reference skeleton; `scale` is the player's eye height over this.
+/// Eye height of the reference skeleton; `scale` is the player's eye height over this. (A person
+/// with eyes this high is 1.82 m tall: eye height is 0.935 of stature, ANSUR II.)
 pub const REF_EYE_HEIGHT: f32 = 1.70;
+
+/// The neck leans forward this much from the chest's up, from its base to the skull's pivot, in
+/// an upright stance: the cervical spine curves forward, the skull sitting ahead of the neck's
+/// base, whose middle is then some 10 cm behind the eyes (the trunk's middle line under it: CMU's
+/// motion capture has the hips 9.4 cm behind the eyes standing; est.).
+pub const NECK_LEAN: f32 = 10.0 * std::f32::consts::PI / 180.0;
 
 /// Legs are made slightly longer than the standing hip-to-ankle distance so a standing body keeps
 /// a few degrees of knee bend (FRIK's leg slack "to preserve slight knee bend"); a dead-straight
@@ -49,15 +56,17 @@ impl Skeleton {
     pub fn new(params: &BodyParams, calibration: Calibration) -> Self {
         let eye_height = calibration.eye_height;
         let s = eye_height / REF_EYE_HEIGHT;
-        // The neck pivot direction comes from the legacy Oculus neck model (7.5 cm down, 8.05 cm
-        // back from the eyes); its length is Parger's 0.13 m neck-to-head distance.
-        let eye_to_head = Vec3::new(0.0, -0.075, -0.0805).normalize() * params.neck_to_eyes * s;
-        let neck = 0.11 * s;
-        let spine = [0.12 * s, 0.13 * s, 0.13 * s, 0.14 * s];
+        // The body's landmarks where ANSUR II puts them on a person this tall (1.82 m at the
+        // reference size): the neck's base (C7) 0.071 of stature below the eyes, the shoulder
+        // joints some 4 cm under the acromion's 0.820, the hip joints at 0.53 (Drillis & Contini).
+        let [pivot_down, pivot_back] = params.head_pivot;
+        let eye_to_head = Vec3::new(0.0, -pivot_down, -pivot_back) * s;
+        let neck = 0.09 * s;
+        let spine = [0.126 * s, 0.137 * s, 0.137 * s, 0.147 * s];
         let hip_down = 0.06 * s;
         let ankle_height = 0.08 * s;
         // Standing, everything hangs from the eyes: the hip joints end up this high.
-        let hip_joint_y = eye_height + eye_to_head.y - neck - spine.iter().sum::<f32>() - hip_down;
+        let hip_joint_y = eye_height + eye_to_head.y - neck * NECK_LEAN.cos() - spine.iter().sum::<f32>() - hip_down;
         let leg = (hip_joint_y - ankle_height).max(0.2 * s) / LEG_SLACK;
 
         // Parger's calibration: arm segment = (span - shoulder width)/4 with the span measured
@@ -75,7 +84,7 @@ impl Skeleton {
             eye_to_head,
             neck,
             spine,
-            shoulder_up: 0.08 * s,
+            shoulder_up: 0.027 * s,
             clavicle_root: 0.025 * s,
             shoulder_half: shoulder_width * 0.5,
             // (The arm's length from the span, shared out as the drawn model's arm is.)
@@ -103,7 +112,7 @@ impl Skeleton {
     /// Eye height when sitting upright on a seat `seat_height` high: the virtual standing height
     /// the spine formulas use in seated mode.
     pub fn seated_eye_height(&self, seat_height: f32) -> f32 {
-        let hips_to_eyes = -self.eye_to_head.y + self.neck + self.spine_length() + self.hip_down;
+        let hips_to_eyes = -self.eye_to_head.y + self.neck * NECK_LEAN.cos() + self.spine_length() + self.hip_down;
         seat_height * self.scale + self.sit_hip_height + hips_to_eyes
     }
 }
@@ -119,7 +128,16 @@ mod tests {
         // About 0.6 m shoulder to wrist and 0.84 m of leg for a 1.70 m eye height.
         assert!((0.55..0.68).contains(&s.arm_length()), "{}", s.arm_length());
         assert!((0.8..0.9).contains(&(s.thigh + s.shin)), "{}", (s.thigh + s.shin));
-        assert!((s.eye_to_head.length() - 0.13).abs() < 1e-5);
+        // The landmarks where a person 1.82 m tall has them (ANSUR II): the neck's base 0.071 of
+        // stature below the eyes, the shoulder joints 0.115 of stature and 4 cm, the hip joints
+        // at 0.53 of stature.
+        let stature = s.eye_height / 0.935;
+        let neck = s.eye_height + s.eye_to_head.y - s.neck * NECK_LEAN.cos();
+        assert!((s.eye_height - neck - 0.071 * stature).abs() < 0.01, "{neck}");
+        let shoulders = neck - s.spine[3] + s.shoulder_up;
+        assert!((s.eye_height - shoulders - (0.115 * stature + 0.04)).abs() < 0.01, "{shoulders}");
+        let hips = shoulders - s.shoulder_up - s.spine[..3].iter().sum::<f32>() - s.hip_down;
+        assert!((hips - 0.53 * stature).abs() < 0.01, "{hips}");
         let seated = s.seated_eye_height(0.45);
         assert!((1.15..1.4).contains(&seated), "{seated}");
     }
