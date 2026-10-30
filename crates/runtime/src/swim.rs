@@ -13,16 +13,19 @@
 //! the playtests' builds 1 to 5).
 //!
 //! * Any stroke works, in any direction: a breaststroke or a crawl ahead, a pull up to dive, a push
-//!   down to rise, to the side. A pull only ever carries the swimmer its way; it never slows them
-//!   (pull the other way for that). The water's drag glides them out over several seconds.
-//! * The hands holding the water make one stroke together: their mean. A breaststroke's sweeps out
-//!   and in cancel in it, leaving its pull back (a hand's own way, the sweep out, hid the pull in
-//!   playtest 8). The stroke pulls only while it goes on away from where it started (or turned
-//!   back): squeezing the grip a little before the reach ends, or letting it go a little after the
-//!   hands start back, slips, as the hands go back over their own stroke. (Without that, those
-//!   hands moving forward threw the swimmer backwards: playtest 7.)
-//! * A pull steers the glide its way, as a swimmer's streamlined body does: what goes across it
-//!   dies out, so uneven hands don't leave the swimmer drifting sideways for seconds.
+//!   down to rise, to the side. The water's drag glides the swimmer out over several seconds.
+//! * The hands holding the water make one stroke together: their velocities' sum over two (one
+//!   hand alone pulls half as hard). A breaststroke's sweeps out and in cancel in it, leaving its
+//!   pull back (a hand's own way, the sweep out, hid the pull in playtest 8). The stroke pulls only
+//!   while it goes on away from where it started (or turned back), once 15 cm from there:
+//!   squeezing the grip a little before the reach ends, or letting it go a little after the hands
+//!   start back, slips, as the hands go back over their own stroke. (Without that, those hands
+//!   moving forward threw the swimmer backwards: playtest 7.)
+//! * A stroke never takes the glide's speed unless it's a stroke back against it, of 25 cm or more
+//!   (that's how to stop): the sweep out of the next breaststroke goes a little forward, and slowed
+//!   the swimmer at every stroke (playtest 9). Otherwise a pull speeds the glide up to its pace
+//!   along it and turns it its way, as a swimmer's streamlined body follows the stroke, so uneven
+//!   hands don't leave the swimmer drifting sideways.
 //! * The hands' velocity is measured against the head, so walking about the room pushes nothing.
 //!   A hand holding something doesn't swim.
 //! * The game's swim speed (skills, attributes, load) scales the pull, and the strokes may go up to
@@ -49,13 +52,19 @@ const VELOCITY_TAU: f32 = 0.03;
 /// A hand catches the water with the grip squeezed past `CATCH[0]`, and lets go below `CATCH[1]`.
 const CATCH: [f32; 2] = [0.6, 0.35];
 /// A pull carries the swimmer this many of the game's full swim speeds for each m/s of the hands'
-/// (about three times as fast as the hands, at the game's 2 m/s): at the surface a relaxed
-/// breaststroke (the hands wide out, back and in over most of a second) swims about 1.5 times the
-/// game's speed, a firm one 2 times, however the grip is timed.
-const PULL: f32 = 1.5;
+/// (about four times as fast as the hands, at the game's 2 m/s): at the surface a relaxed
+/// breaststroke (the hands wide out, back and in over most of a second) swims about 2.3 times the
+/// game's speed, a firm one 3 times, however the grip is timed; one firm stroke from still carries
+/// the swimmer about 17 m.
+const PULL: f32 = 2.0;
 /// A stroke pulls once the hands are this far (m) from the point of the stroke they're furthest
-/// from: a grip squeezed while the reach is still ending moves them less than that.
-const STROKE_FROM: f32 = 0.1;
+/// from: a grip squeezed while the reach is still ending, or a breaststroke's sweep out going a
+/// little forward, moves them less than that.
+const STROKE_FROM: f32 = 0.15;
+/// A stroke back against the glide (more than 120 degrees from it, while gliding faster than
+/// `GLIDING` m/s) counts only from this far (m), and slows the swimmer.
+const AGAINST_FROM: f32 = 0.25;
+const GLIDING: f32 = 1.0;
 /// A stroke's points are kept this far apart (m), and no more of them than this.
 const STROKE_STEP: f32 = 0.01;
 const STROKE_POINTS: usize = 400;
@@ -64,10 +73,10 @@ const STROKE_POINTS: usize = 400;
 const CATCH_TAU: f32 = 0.08;
 const STEER_TAU: f32 = 0.25;
 /// The water's drag on the swimmer: their speed glides out by e over this long (seconds), and
-/// sooner when fast (`DRAG` more for each m/s). From 4 m/s a swimmer is still at 2.7 m/s a second
-/// on and 1.4 m/s three seconds on.
-const GLIDE: f32 = 4.0;
-const DRAG: f32 = 0.04;
+/// sooner when fast (`DRAG` more for each m/s). From 5 m/s a swimmer is still at 3.8 m/s a second
+/// on and 2.3 m/s three seconds on.
+const GLIDE: f32 = 6.0;
+const DRAG: f32 = 0.025;
 /// No stroke drives the swimmer past this many times the game's full swim speed.
 const MAX_SPEED: f32 = 4.0;
 /// At the surface (the head out of the water) a stroke must take the player down faster than this
@@ -234,40 +243,55 @@ impl Swim {
                 holding += 1;
             }
         }
-        // The hands holding the water stroke together: their mean. It pulls the way it goes on away
-        // from the point of the stroke that's furthest from it; back over its own stroke, it slips.
+        // The hands holding the water stroke together: their velocities' sum over two. It pulls the
+        // way it goes on away from the point of the stroke that's furthest from it; back over its
+        // own stroke, it slips.
         self.pulling = 0.0;
         let mut stroking = 0.0;
         if holding == 0 {
             self.drawn = Vec3::ZERO;
             self.stroke.clear();
         } else {
-            let mean = pull / holding as f32;
-            self.drawn += mean * dt;
+            let both = pull / 2.0;
+            self.drawn += both * dt;
             let at = self.drawn;
             if self.stroke.last().is_none_or(|p| p.distance(at) > STROKE_STEP) && self.stroke.len() < STROKE_POINTS {
                 self.stroke.push(at);
             }
             let from = self.stroke.iter().copied().max_by(|a, b| a.distance_squared(at).total_cmp(&b.distance_squared(at))).unwrap_or(at);
             let gone = at - from;
-            if gone.length() >= STROKE_FROM && mean.dot(gone) > 0.0 {
-                self.pulling = mean.length();
-                // It carries the swimmer the other way, at `PULL` times its pace, and steers their
-                // glide its way. A pull never slows them: one slower than they already go its way
-                // slips through. (At the surface its rise goes into the surface.)
-                let mut to = -mean * PULL * full * inp.ease.clamp(0.25, 4.0);
-                if at_surface {
-                    to.y = to.y.min(0.0);
-                }
-                let pace = to.length();
-                if pace > 1e-3 {
-                    let way = to / pace;
-                    let along = self.velocity.dot(way);
-                    if along < pace {
-                        self.velocity += way * (pace - along) * (1.0 - (-dt / CATCH_TAU).exp());
-                        let across = self.velocity - way * self.velocity.dot(way);
-                        self.velocity -= across * (1.0 - (-dt / STEER_TAU).exp());
+            // It carries the swimmer the other way, at `PULL` times its pace. (At the surface its
+            // rise goes into the surface.)
+            let mut to = -both * PULL * full * inp.ease.clamp(0.25, 4.0);
+            if at_surface {
+                to.y = to.y.min(0.0);
+            }
+            let pace = to.length();
+            let speed = self.velocity.length();
+            let gliding = speed > GLIDING;
+            let against = gliding && to.dot(self.velocity) < -0.5 * pace * speed;
+            if pace > 1e-3 && gone.length() >= if against { AGAINST_FROM } else { STROKE_FROM } && both.dot(gone) > 0.0 {
+                self.pulling = both.length();
+                let way = to / pace;
+                let catch = 1.0 - (-dt / CATCH_TAU).exp();
+                if !gliding {
+                    // From (nearly) still: the stroke's way, at its pace.
+                    if self.velocity.dot(way) < pace {
+                        self.velocity += (to - self.velocity) * catch;
                     }
+                } else if against {
+                    // Back against the glide: it slows the swimmer, as hard as it's strong against
+                    // their speed (nearly still, it takes them its way).
+                    self.velocity *= 1.0 - catch * (pace / speed).min(1.0);
+                } else {
+                    // Otherwise it never takes speed: it speeds the glide up to its pace along it
+                    // (a pull slower than that slips), and turns it its way, as fast as it's strong
+                    // against the swimmer's speed.
+                    let dir = self.velocity / speed;
+                    let ahead = to.dot(dir);
+                    let speed = if ahead > speed { speed + (ahead - speed) * catch } else { speed };
+                    let turn = (1.0 - (-dt / STEER_TAU).exp()) * (pace / speed).min(1.0);
+                    self.velocity = (dir + (way - dir) * turn).try_normalize().unwrap_or(dir) * speed;
                 }
                 // The water's resistance in the hands pulling.
                 for i in (0..2).filter(|&i| self.caught[i]) {
