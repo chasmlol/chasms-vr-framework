@@ -52,8 +52,10 @@ pub struct Attach {
     pub held: Option<(Vec3, f32)>,
 }
 
-/// How wide the game's own card of a thing in a hand is (metres).
-pub const HELD_WIDTH: f32 = 0.2;
+/// How wide the game's whole HUD would be at the scale of its own card of a thing in a hand
+/// (metres): the card is drawn at one scale however much of the HUD it takes, so its lines keep
+/// their size as they change (a third of the HUD across is 20 cm).
+pub const HELD_SCALE: f32 = 0.6;
 
 /// A head-following anchor with a dead zone: it holds still while the head turns less than `dead`
 /// away from it, then catches up until it's within a couple of degrees, and stops.
@@ -169,7 +171,7 @@ impl HudPlacer {
                 }
                 HUD_HELD if at.held.is_some() => at.held.map(|(c, opacity)| {
                     // Standing on the point: just over the thing, however tall the game's card is.
-                    let (w, h) = sized(HELD_WIDTH / du, f32::MAX);
+                    let (w, h) = sized(HELD_SCALE, f32::MAX);
                     (facing_eye(c + Vec3::Y * h * 0.5, head_pos, w, h), opacity)
                 }),
                 HUD_HIDDEN => None,
