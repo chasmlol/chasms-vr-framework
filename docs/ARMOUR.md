@@ -30,10 +30,12 @@ an armour for a game marks their own models the same way. Oblivion's
   taken 2.5 mm a layer towards the eye), so overlapping plates slide over one another rather than
   clip.
 * **The body under the armour.** A game's body made of parts sends its skin under what's worn too
-  (a part named `<game>/<key>:under`, `rustvr_protocol::UNDER`). It's drawn 1 cm away from the eye,
-  so it never shows through armour it comes up against, only where nothing worn is in front of it:
-  where a rigid cuff's open end is left as the hand bends out of it, or two plates part over a
-  joint, the arm inside shows, not the armour's hollow. Nothing to mark: every piece gets it.
+  (a part named `<game>/<key>:under`, `rustvr_protocol::UNDER`). It's drawn 1 cm away from the eye
+  and 5 mm inside its own skin (a glove's fingers are often the bare hand's own, or a little
+  slimmer), so it never shows through or round armour it comes up against, only where nothing
+  worn is in front of it: where a rigid cuff's open end is left as the hand bends out of it, or two
+  plates part over a joint, the arm inside shows, not the armour's hollow. Nothing to mark: every
+  piece gets it.
 
 ## 1. Where marks live
 

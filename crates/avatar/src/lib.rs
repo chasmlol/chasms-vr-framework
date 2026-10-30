@@ -531,6 +531,11 @@ pub(crate) struct SourceMaterial {
     pub env: Option<Arc<asset::Texture>>,
 }
 
+/// How far inside its own skin the body under what's worn is drawn (metres, along its normals): more
+/// than the vanilla gloves' fingers and hands are slimmer than the bare hand (up to 3.5 mm and,
+/// but for a few corners, 6 mm), so its outline never shows round theirs.
+const UNDER_INSET: f32 = 0.005;
+
 /// A body put together from a game's parts (see [`rustvr_protocol::AvatarDesc`]): the skeleton
 /// model's bones, and the meshes of every part (each skinned to those bones in their order), from
 /// the asset cache folder `dir`, with the texture swaps applied (a part's texture or bump map
@@ -625,9 +630,16 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         }
     }
     // The body under what's worn is flagged as such: 0.25 for a vertex blended linearly, 0.75 for
-    // one turned about its centre.
+    // one turned about its centre. It's drawn a little inside its own skin, so its outline stays
+    // within the armour's: a glove's fingers are often the bare hand's own, and others are a few
+    // millimetres slimmer than it, where the bare hand's edge showed round every glove's.
     for c in centres[first_under..].iter_mut().flatten() {
         c[3] = if c[3] < 0.5 { 0.25 } else { 0.75 };
+    }
+    for m in &mut model.meshes[first_under..] {
+        for v in &mut m.vertices {
+            v.pos = (glam::Vec3::from_array(v.pos) - glam::Vec3::from_array(v.normal) * UNDER_INSET).to_array();
+        }
     }
     // Plates are shaped at rest, so they ride their riders bound at rest: a copy of each rider
     // that moves between its bind pose and rest (an arm's bones), the copy below it.
