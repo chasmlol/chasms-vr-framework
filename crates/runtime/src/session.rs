@@ -1073,8 +1073,8 @@ impl Session {
             for i in 0..2 {
                 if let Some(o) = self.sculpt.hand_out(i) {
                     let h = &mut self.rig_out.hands[i];
-                    // Drawn where the face holds it, the controller's ghost where it is.
-                    if o.moved.length() > 0.004 {
+                    // Drawn where the face holds it (the controller's ghost where it is, with ghost hands on).
+                    if o.moved.length() > 0.004 && self.settings.current.interaction.ghost_hands {
                         self.rig_out.ghosts[i] = Some(frame.hands[i].grip);
                         h.flags |= HAND_BLOCKED;
                     }

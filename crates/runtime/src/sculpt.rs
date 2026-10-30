@@ -23,17 +23,17 @@
 //! **Pulling.** The hand's move (against the head it holds) is the pull: the face is solved for it
 //! each frame and drawn live, both on the player's body (so in the mirror) and on the copy. The part
 //! taken goes as far with the hand as the face can take it (its morphs, the sliders' ranges); the
-//! hand is drawn holding it where it got to, short of the controller when the face can't follow (a
-//! ghost hand at the controller), and the pull is felt harder the further it is held back. Squeeze
-//! the trigger while pulling and the pull goes asymmetric (one side against the other: a crooked
-//! nose, one ear out); let it go and it's symmetric again, both sides alike. Both hands can pull at
-//! once.
+//! hand is drawn holding it where it got to, short of the controller when the face can't follow
+//! (with ghost hands on, a ghost at the controller), and the pull is felt harder the further it is
+//! held back. Squeeze the trigger while pulling and the pull goes asymmetric (one side against the
+//! other: a crooked nose, one ear out); let it go and it's symmetric again, both sides alike. Both
+//! hands can pull at once.
 //!
 //! **Each pull is a stroke** ([`FaceSculpt::stroke`]): from the first hand taking hold to the last
 //! letting go. The game keeps the face from before each, for its undo.
 //!
-//! **Nothing passes through hands.** A free hand pushed into the copy is drawn on its surface (the
-//! controller's ghost inside), as the physics hands are against the world.
+//! **Nothing passes through hands.** A free hand pushed into the copy is drawn on its surface, as the
+//! physics hands are against the world.
 
 use std::sync::Arc;
 
