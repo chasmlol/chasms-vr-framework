@@ -16,7 +16,7 @@
 //! | overlay | fixed to the face, over the whole view (damage, fades) |
 //! | centre and the rest | the flat screen, lazily following the head |
 //! | hidden | not drawn (the crosshair: the gun's sights aim) |
-//! | gaze | where the head looks, fixed to it, 1.6 m out (what looking there does: "Open Door") |
+//! | gaze | where the head looks, eased after it, just in front of the thing it's about (what looking there does: "Open Door", a name) |
 //! | compass | low in front of the body, lazily following its turn |
 //! | target | over the foe it's about |
 //!
@@ -159,12 +159,27 @@ struct Glide {
 /// How long a group glides to where it's placed again (seconds).
 const GLIDE: f32 = 0.3;
 
+/// Where the pieces about what the eyes are on float: the head's direction, eased after it, and
+/// the distance of the thing they're about, eased.
+#[derive(Clone, Copy, Debug)]
+struct Gaze {
+    dir: Vec3,
+    distance: f32,
+}
+
+/// How long the gaze's pieces take to come round after the head (seconds): they don't shake with
+/// it, and still sit under where it looks.
+const GAZE_EASE: f32 = 0.18;
+/// How far out they float when nothing says where the thing is (metres).
+const GAZE_DISTANCE: f32 = 1.6;
+
 /// Where the head-following pieces are anchored (yaw and pitch), and where the menus' groups were
 /// placed, kept between frames.
 #[derive(Default)]
 pub struct HudPlacer {
     anchor: Option<(Lazy, Lazy)>,
     groups: Vec<(Placed, Option<Glide>)>,
+    gaze: Option<Gaze>,
 }
 
 /// The extent of group `group`'s pieces (x0, y0, x1, y1 in its units, y up).
@@ -198,6 +213,7 @@ impl HudPlacer {
     /// Forget the anchor (the HUD went away): it starts in front of the head next time.
     pub fn reset(&mut self) {
         self.anchor = None;
+        self.gaze = None;
     }
 
     /// Places the menus' groups (the layout's pieces that have one) for this frame. `aspect`: the
@@ -289,7 +305,7 @@ impl HudPlacer {
         let by_height = (aspect / (16.0 / 9.0)).min(1.0);
         let screen = Panel::facing(head_pos + Panel::dir(ay, ap) * u.hud_distance, ay, ap, u.hud_size * by_height, aspect);
         let full = [0.0, 0.0, 1.0, 1.0];
-        let Some(layout) = layout.filter(|l| l.count > 0 && u.split_hud) else {
+        let Some(layout) = layout.filter(|l| (l.count > 0 || l.flags & HUDL_REST_HIDDEN != 0) && u.split_hud) else {
             return vec![HudPiece { panel: screen, uv: full, opacity: 1.0, role: 0, flags: 0 }];
         };
         let mut out = Vec::new();
@@ -305,6 +321,24 @@ impl HudPlacer {
         // last.)
         let status_unit = layout.entries().iter().find(|e| e.group == 0 && e.role == HUD_STATUS).map(|e| u.status_width / ((e.uv[2] - e.uv[0]).max(1e-4) * aspect));
         let (mut status_stack, mut hints_stack) = (0.0f32, 0.0f32);
+        // What the eyes are on: under where the head looks, eased after it so it doesn't shake with
+        // the head, just in front of the thing it's about (as big to the eye at any distance).
+        let gaze = layout.entries().iter().any(|e| e.group == 0 && e.role == HUD_GAZE).then(|| {
+            let thing = at.map.filter(|_| layout.gaze_radius > 0.0).map(|m| {
+                let c = m.inv_point(Vec3::from_array(layout.gaze));
+                (c.distance(head_pos) - layout.gaze_radius.min(0.3)).clamp(0.6, 3.0)
+            });
+            let g = self.gaze.get_or_insert(Gaze { dir: fwd, distance: thing.unwrap_or(GAZE_DISTANCE) });
+            let k = 1.0 - (-dt / GAZE_EASE).exp();
+            g.dir = g.dir.lerp(fwd, k).normalize_or(fwd);
+            if let Some(d) = thing {
+                g.distance += (d - g.distance) * k;
+            }
+            *g
+        });
+        if gaze.is_none() {
+            self.gaze = None;
+        }
         for e in layout.entries().iter().filter(|e| e.group == 0) {
             let scale = if e.scale > 0.0 { e.scale } else { 1.0 };
             let (du, dv) = ((e.uv[2] - e.uv[0]).max(1e-4), (e.uv[3] - e.uv[1]).max(1e-4));
@@ -376,17 +410,18 @@ impl HudPlacer {
                     panel.height = h;
                     Some((panel, 1.0))
                 }
-                HUD_GAZE => {
-                    // Where the head looks, fixed to it (no roll), as big as the game's text there.
-                    const DISTANCE: f32 = 1.6;
-                    let unit = DISTANCE * per_metre * scale;
+                HUD_GAZE => gaze.map(|g| {
+                    // Its offset from the gaze, round the eye (no roll), as big as the game's text
+                    // there.
+                    let unit = g.distance * per_metre * scale;
                     let (w, h) = (du * aspect * unit, dv * unit);
-                    let rot = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(pitch);
-                    let c = head_pos + rot * Vec3::new(e.offset[0] * unit, e.offset[1] * unit, DISTANCE);
-                    let mut panel = Panel::facing(c, yaw, pitch, w, aspect);
+                    let (gy, gp) = (g.dir.x.atan2(g.dir.z), -(g.dir.y.clamp(-1.0, 1.0)).asin());
+                    let rot = Quat::from_rotation_y(gy) * Quat::from_rotation_x(gp);
+                    let c = head_pos + rot * Vec3::new(e.offset[0] * unit, e.offset[1] * unit, g.distance);
+                    let mut panel = Panel::facing(c, gy, gp, w, aspect);
                     panel.height = h;
-                    Some((panel, 1.0))
-                }
+                    (panel, 1.0)
+                }),
                 HUD_TARGET => at.map.filter(|_| layout.has_target != 0).map(|m| {
                     // Over the foe, as big as the game's text there would be.
                     let c = m.inv_point(Vec3::from_array(layout.target));

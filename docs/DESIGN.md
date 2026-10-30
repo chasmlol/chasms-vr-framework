@@ -317,7 +317,7 @@ describes its HUD (`HudLayout`: rectangles of the HUD texture and their roles) a
 | Ammo | on the held gun's left side, facing the eye; hidden with no gun |
 | Status | on the back of the off-hand wrist, shown while you look at it |
 | Overlay | fixed to the face over the whole view (damage, fades) |
-| Gaze | where the head looks, fixed to it (what looking there does: "Open Door") |
+| Gaze | under where the head looks, eased after it (0.18 s), just in front of the thing it's about (`HudLayout::gaze`), as big to the eye at any distance (what looking there does: "Open Door", a name) |
 | Compass | low in front of the body (26 degrees under the horizon), lazily following its turn |
 | Target | over the foe it's about (its health) |
 | Centre and the rest | the flat screen, 1.4 m ahead |
@@ -326,7 +326,11 @@ describes its HUD (`HudLayout`: rectangles of the HUD texture and their roles) a
 Everything that follows the head waits for a 20 degree turn, glides back in front (0.15 s) and
 stops; it never rolls. The game stays the source of truth for *when* a piece shows: its rectangle
 is drawn every frame, so it appears and fades as the game draws it. Without a layout the HUD is one
-flat screen, as before. Metro's layout is in its adapter's `docs/METRO.md` (the chasms-vr-metro
+flat screen, as before; a layout that hides what it doesn't cover (`HUDL_REST_HIDDEN`) with nothing
+in it shows nothing. Each picture says which layout it was drawn with (`SlotInfo::hud_layout`), and
+the runtime cuts it by that one: a layout written as the picture is finished waits for its picture,
+so no piece is ever cut from the frame before or after (a menu's pieces from the HUD, or the HUD's
+from a menu). Metro's layout is in its adapter's `docs/METRO.md` (the chasms-vr-metro
 repository).
 
 **Menus in pieces.** A game's menu is never hung in front of the face whole: the adapter describes
@@ -348,7 +352,14 @@ the hands are in front of them), their cut edges soft. The laser picks among the
 own hover, selection and clicks; the dominant stick scrolls (`Intents::scroll`, the game's mouse
 wheel). The runtime's own settings float beside a game menu only when the layout asks
 (`HUDL_SETTINGS`: a pause menu). A menu with no layout is one world-locked panel with the laser
-(§6).
+(§6). Over the game's world, a menu whose pieces haven't come yet (the game says it's in a menu as
+the frame that opens it starts; the pieces come with that frame's picture) shows nothing for up to
+half a second rather than the flat screen.
+
+**The laser** is a thread of light in a glow, fainter and fading out when it points at nothing, with
+motes of light running out along it; where it hits, the light it casts and a dot with a dark edge
+and a bright heart, pressed in while the trigger is held. Its colours are the game's own when the
+layout gives them (`HudLayout::pointer`: its cursor's, its UI's), else the runtime's blue.
 
 ## 7. Adapters
 

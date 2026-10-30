@@ -271,6 +271,21 @@ float4 PSQuad(VOut i) : SV_Target {
         float g = pow(saturate(1 - r), 2.5) + 0.6 * saturate(1 - r * 3);
         return float4(color.rgb * g, 0);
     }
+    if (mode == 5) {
+        // A beam of light (the laser): a bright thread along its middle (`color`) in a glow
+        // (`uv_rect`) that fades to nothing at its sides, added to what's behind (the thread a
+        // little opaque too, so it reads over a pale page). It comes in from the hand, fades out
+        // along its length when it points at nothing (`params.z`), and motes of light run out along
+        // it (`params.y`: seconds; `params.w`: its length in metres).
+        float across = saturate(1 - abs(i.local.x));
+        float d = (1 - i.local.y) * 0.5 * params.w;
+        float ends = saturate(d / 0.05) * lerp(1, saturate(1 - d / max(params.w, 1e-3)), params.z);
+        float m = frac(d / 0.25 - params.y * 4);
+        float mote = pow(saturate(1 - abs(m - 0.5) * 8), 2);
+        float thread = pow(across, 6);
+        float3 c = (color.rgb * thread + uv_rect.rgb * across * across * 0.35) * (1 + 1.5 * mote) * ends;
+        return float4(c, thread * 0.5 * ends);
+    }
     if (mode == 3) {
         float r = length(i.local);
         if (r > 1) discard;
@@ -397,6 +412,7 @@ const MODE_TEXTURE: f32 = 0.0;
 const MODE_SOLID: f32 = 1.0;
 const MODE_DOT: f32 = 2.0;
 const MODE_GLOW: f32 = 4.0;
+const MODE_BEAM: f32 = 5.0;
 const MODE_LENS: f32 = 3.0;
 
 /// One textured panel to draw.
@@ -445,6 +461,28 @@ pub struct Laser {
     pub end: Vec3,
     /// It hits a panel (draw the dot).
     pub hit: bool,
+    /// The trigger is held: the dot pressed in.
+    pub down: bool,
+    /// Its colours (linear): the bright thread along its middle, and the glow round it and its dot.
+    pub core: Vec3,
+    pub glow: Vec3,
+    /// Seconds (any start), for the light running along it.
+    pub time: f32,
+}
+
+impl Laser {
+    /// The runtime's own colours, for a game that doesn't give its own (`HudLayout::pointer`).
+    pub const CORE: Vec3 = Vec3::new(0.6, 0.9, 1.0);
+    pub const GLOW: Vec3 = Vec3::new(0.25, 0.75, 1.0);
+}
+
+/// A colour given as `0xRRGGBBAA` in sRGB, in linear light (its alpha left out).
+pub fn srgb(rgba: u32) -> Vec3 {
+    let f = |c: u32| {
+        let c = (c & 0xFF) as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    Vec3::new(f(rgba >> 24), f(rgba >> 16), f(rgba >> 8))
 }
 
 #[derive(Default)]
@@ -701,10 +739,23 @@ impl Compositor {
             self.draw_quad(gpu, &c, None);
         }
         if let Some(l) = &layers.laser {
-            let color = if l.hit { Vec4::new(0.25, 0.75, 1.0, 0.7) } else { Vec4::new(0.25, 0.5, 0.7, 0.35) };
-            self.draw_ribbon(gpu, &cb, eye_pos, l.origin, l.end, 0.003, color);
+            // A thread of light in a glow, fainter and fading out when it points at nothing.
+            let k = if l.hit { 1.0 } else { 0.5 };
+            self.draw_beam(gpu, &cb, eye_pos, l, 0.012, k);
             if l.hit {
-                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.012, Vec4::new(0.6, 0.9, 1.0, 1.0));
+                // Where it points: the light it casts, and a dot like the game's own cursor (a dark
+                // edge round the glow's colour, a bright heart), pressed in while the trigger's held.
+                let r = if l.down { 0.75 } else { 1.0 };
+                let mut c = cb;
+                c.center = l.end.extend(1.0).to_array();
+                c.axis_x = (eye_rot * Vec3::X * 0.025 * r).extend(0.0).to_array();
+                c.axis_y = (eye_rot * Vec3::Y * 0.025 * r).extend(0.0).to_array();
+                c.color = (l.glow * 0.6).extend(0.0).to_array();
+                c.params = [MODE_GLOW, 0.0, 1.0, 0.0];
+                self.draw_quad(gpu, &c, None);
+                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.0055 * r, Vec4::new(0.01, 0.006, 0.0, 0.85));
+                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.0042 * r, l.glow.extend(1.0));
+                self.draw_dot(gpu, &cb, eye_rot, l.end, 0.002 * r, l.core.extend(1.0));
             }
         }
         let k = &layers.comfort;
@@ -759,6 +810,24 @@ impl Compositor {
         c.axis_y = along.extend(0.0).to_array();
         c.color = color.to_array();
         c.params = [MODE_SOLID, 0.0, 1.0, 0.0];
+        self.draw_quad(gpu, &c, None);
+    }
+
+    /// The laser's beam, `width` wide, turned to the eye, its light `k` as strong.
+    fn draw_beam(&self, gpu: &Gpu, base: &DrawCb, eye: Vec3, l: &Laser, width: f32, k: f32) {
+        let mid = (l.origin + l.end) * 0.5;
+        let along = (l.end - l.origin) * 0.5;
+        if along.length_squared() < 1e-10 {
+            return;
+        }
+        let side = along.cross(eye - mid).normalize_or_zero() * width * 0.5;
+        let mut c = *base;
+        c.center = mid.extend(1.0).to_array();
+        c.axis_x = side.extend(0.0).to_array();
+        c.axis_y = along.extend(0.0).to_array();
+        c.color = (l.core * k).extend(1.0).to_array();
+        c.uv_rect = (l.glow * k).extend(0.0).to_array();
+        c.params = [MODE_BEAM, l.time, if l.hit { 0.0 } else { 1.0 }, along.length() * 2.0];
         self.draw_quad(gpu, &c, None);
     }
 

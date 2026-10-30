@@ -520,7 +520,7 @@ impl Default for Ui {
             status_width: 0.09,
             obs_view: false,
             menu_text_deg: 1.5,
-            menu_opacity: 0.94,
+            menu_opacity: 1.0,
             menu_scroll: 10.0,
         }
     }
