@@ -34,6 +34,7 @@ pub mod settings;
 pub mod spectator;
 pub mod swim;
 pub mod targets;
+pub mod view_bob;
 pub mod warp;
 pub mod locomotion;
 pub mod pacing;

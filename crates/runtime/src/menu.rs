@@ -616,6 +616,16 @@ fn display(ui: &mut egui::Ui, s: &mut Settings, status: &Status) {
     slider(ui, "Desktop camera smoothing", &mut s.spectator.smoothing, 0.0, 0.4, " s", 2);
     slider(ui, "Desktop camera lag at most", &mut s.spectator.max_lag, 0.0, 20.0, " deg", 0);
     ui.checkbox(&mut s.spectator.roll_lock, "Keep the desktop view's horizon level");
+    ui.horizontal(|ui| {
+        use crate::settings::BobMode;
+        ui.label("Desktop view bobs as you walk (never the headset)");
+        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Off, "off");
+        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Generic, "the runtime's");
+        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Game, "the game's own");
+    });
+    if s.desktop_bob.mode != crate::settings::BobMode::Off {
+        slider(ui, "Desktop view's bob strength", &mut s.desktop_bob.strength, 0.0, 3.0, "x", 2);
+    }
     ui.checkbox(&mut s.spectator.fullscreen, "Desktop view opens fullscreen (F11 switches)");
     ui.checkbox(&mut s.ui.obs_view, "OBS in the headset: look at the back of your left wrist, or F9 to pin it");
 }
