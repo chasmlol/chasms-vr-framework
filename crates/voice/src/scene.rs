@@ -43,20 +43,22 @@ struct Voicing {
 
 /// A long sentence goes to the game a clause at a time, at the voice's own pauses: the game plays
 /// whole files, and its first words shouldn't wait for the voice of all of it. A clause is at
-/// least this long (seconds), and a pause at least `PAUSE`.
+/// least this long (seconds; a line's first, sooner, as everything waits on it; the rest are
+/// ready while the one before plays), and a pause at least `PAUSE`.
 const CLAUSE: f32 = 2.0;
+const FIRST_CLAUSE: f32 = 1.0;
 const PAUSE: f32 = 0.12;
 
-/// Where to cut the voice so far: the middle of its first pause after `CLAUSE` seconds (a pause:
+/// Where to cut the voice so far: the middle of its first pause after `clause` seconds (a pause:
 /// `PAUSE` of 10 ms windows all under a tenth of the voice's loudest), if there's one yet.
-fn pause_in(samples: &[f32], rate: u32) -> Option<usize> {
+fn pause_in(samples: &[f32], rate: u32, clause: f32) -> Option<usize> {
     let window = (rate / 100).max(1) as usize;
     let rms: Vec<f32> = samples.chunks_exact(window).map(|w| (w.iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt()).collect();
     let loud = rms.iter().copied().fold(0.0, f32::max);
     if loud <= 0.0 {
         return None;
     }
-    let (first, needed) = ((CLAUSE * 100.0) as usize, (PAUSE * 100.0) as usize);
+    let (first, needed) = ((clause * 100.0) as usize, (PAUSE * 100.0) as usize);
     let mut run = 0;
     for (i, &r) in rms.iter().enumerate().skip(first) {
         if r < loud * 0.1 {
@@ -93,6 +95,8 @@ pub struct Scene {
     addressed: AtomicU32,
     /// The voices whose clip couldn't be made yet (said once each).
     unvoiced: Mutex<std::collections::HashSet<String>>,
+    /// Nothing of the line being voiced has gone to the game yet.
+    fresh: std::sync::atomic::AtomicBool,
 }
 
 impl Scene {
@@ -149,6 +153,7 @@ impl Scene {
             stops,
             addressed: AtomicU32::new(0),
             unvoiced: Mutex::new(Default::default()),
+            fresh: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
@@ -190,12 +195,24 @@ impl Scene {
     }
 }
 
+/// A word as speech to text and the LLM would both write it: its letters and digits, lower case.
+fn plain(word: &str) -> String {
+    word.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
 /// Where a clause's words end in its sentence's (the LLM's) words, from `from`: as many as speech
 /// to text heard in it, moved to just after the sentence's word that matches the last one heard,
 /// if one does within a few words (it can hear two words as one, or miss one at a cut).
 fn clause_end(all: &[&str], from: usize, heard: &[m8::listen::Word]) -> usize {
-    let plain = |w: &str| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
-    let guess = (from + heard.len().max(1)).min(all.len());
+    // (only words count: a dash between them is said as a pause)
+    let mut guess = from;
+    let mut counted = 0;
+    while guess < all.len() && counted < heard.len().max(1) {
+        if !plain(all[guess]).is_empty() {
+            counted += 1;
+        }
+        guess += 1;
+    }
     let Some(last) = heard.last().map(|w| plain(&w.text)).filter(|w| !w.is_empty()) else { return guess };
     (0..=3usize)
         .flat_map(|d| [guess as isize + d as isize, guess as isize - d as isize])
@@ -216,8 +233,11 @@ fn write_line(dir: &std::path::Path, line: u32, voicing: &Voicing, transcriber: 
     let to = if voicing.last { all.len() } else { clause_end(&all, from, &words) };
     *taken = if voicing.last { 0 } else { to };
     let said = all[from..to].join(" ");
-    // (a sentence's tail with no words in it is its voice's own silence: nothing to say)
-    if voicing.last && said.is_empty() && words.is_empty() {
+    // A sentence's tail with none of its words left: silence, or a sound the voice added that
+    // the line hasn't got ("mm", "yeah"), unless what's heard is one of the sentence's last words
+    // (its clauses ran ahead of the voice): nothing to say.
+    let ending: Vec<String> = all.iter().rev().take(3).map(|w| plain(w)).collect();
+    if voicing.last && said.is_empty() && !words.iter().any(|w| ending.contains(&plain(&w.text))) {
         anyhow::bail!("only silence");
     }
     let frames = m8::lips::frames(&voicing.samples, voicing.rate, &words, &said, LIPS_FPS as f32);
@@ -269,7 +289,9 @@ impl Game for Scene {
         let Some(v) = voicing.as_mut() else { return };
         v.rate = rate;
         v.samples.extend_from_slice(samples);
-        if let Some(at) = pause_in(&v.samples, rate) {
+        let clause = if self.fresh.load(Ordering::SeqCst) { FIRST_CLAUSE } else { CLAUSE };
+        if let Some(at) = pause_in(&v.samples, rate, clause) {
+            self.fresh.store(false, Ordering::SeqCst);
             let rest = v.samples.split_off(at);
             let clause = Voicing { speaker: v.speaker.clone(), text: v.text.clone(), how: v.how.clone(), samples: std::mem::replace(&mut v.samples, rest), rate, last: false };
             let _ = self.jobs.send(Job::Sentence(clause, self.stops.load(Ordering::SeqCst)));
@@ -278,17 +300,22 @@ impl Game for Scene {
 
     fn sentence_end(&self, _speaker: &str) {
         if let Some(voicing) = self.voicing.lock().unwrap().take().filter(|v| !v.samples.is_empty()) {
+            self.fresh.store(false, Ordering::SeqCst);
             let _ = self.jobs.send(Job::Sentence(voicing, self.stops.load(Ordering::SeqCst)));
         }
     }
 
     fn line_end(&self, speaker: &str) {
+        self.fresh.store(true, Ordering::SeqCst);
         let _ = self.jobs.send(Job::End(speaker.to_string(), self.stops.load(Ordering::SeqCst)));
     }
 
+    /// What came before goes: what's queued for the game, and the game's own playing. (Not the
+    /// sentence being gathered: a new line's first sound stops the old line's, and that sentence
+    /// is the new line's; one the player talked over is never ended, and the next replaces it.)
     fn stop_audio(&self) {
         self.stops.fetch_add(1, Ordering::SeqCst);
-        *self.voicing.lock().unwrap() = None;
+        self.fresh.store(true, Ordering::SeqCst);
         self.link.push_voice_line(&VoiceLine::new(VL_STOP, 0, 0, 0, "", ""));
     }
 
@@ -332,11 +359,13 @@ mod tests {
         let quiet = |seconds: f32| vec![0.0f32; (seconds * rate as f32) as usize];
         // (a breath at 1 s is too soon; the pause at 2.5 s is the cut, in its middle)
         let mut samples = [voice(1.0), quiet(0.2), voice(1.3), quiet(0.3), voice(1.0)].concat();
-        let at = pause_in(&samples, rate).expect("a pause");
+        let at = pause_in(&samples, rate, CLAUSE).expect("a pause");
         assert!((at as f32 / rate as f32 - 2.56).abs() < 0.03, "{}", at as f32 / rate as f32);
         // (not yet a whole pause: no cut)
         samples.truncate((2.55 * rate as f32) as usize);
-        assert_eq!(pause_in(&samples, rate), None);
+        assert_eq!(pause_in(&samples, rate, CLAUSE), None);
+        // (a line's first clause goes at the first pause after a second: the breath at 1 s)
+        assert!((pause_in(&samples, rate, FIRST_CLAUSE).unwrap() as f32 / rate as f32 - 1.06).abs() < 0.03);
     }
 
     #[test]
@@ -348,5 +377,8 @@ mod tests {
         assert_eq!(clause_end(&all, 7, &heard("but a merchant can always appreciate good show.")), all.len());
         // (nothing it matches: as many words as were heard)
         assert_eq!(clause_end(&all, 0, &heard("eats thrice")), 2);
+        // (a dash isn't a word)
+        let dashed: Vec<&str> = "Good day, friend — what will it be?".split_whitespace().collect();
+        assert_eq!(clause_end(&dashed, 0, &heard("Good day friend what")), 5);
     }
 }
