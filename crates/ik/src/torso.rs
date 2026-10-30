@@ -31,7 +31,7 @@ impl TorsoYaw {
 
     /// `eyes` and `head_joint` are the HMD and neck-pivot positions, `head_yaw` the head's facing,
     /// `hands` the tracked palm positions [left, right], `tracked` the chest's yaw where the
-    /// headset's body tracking has it (it then wins over the hands').
+    /// headset's body tracking has it (it then wins over the hands'), `learned` the learned prior's.
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -43,6 +43,7 @@ impl TorsoYaw {
         head_yaw: f32,
         hands: [Option<Vec3>; 2],
         tracked: Option<f32>,
+        learned: Option<f32>,
     ) -> f32 {
         let (target, tau) = match hands {
             _ if tracked.is_some() => {
@@ -51,7 +52,10 @@ impl TorsoYaw {
             }
             [Some(l), Some(r)] => {
                 let offset = self.hand_offset(p, scale, eyes, head_joint, head_yaw, l, r);
-                (head_yaw + offset, p.torso_yaw_tau)
+                // The learned prior's chest, as far as it's trusted (`BodyParams::prior_chest`).
+                let target = head_yaw + offset;
+                let target = learned.map_or(target, |y| target + wrap_angle(y - target) * p.prior_chest);
+                (target, p.torso_yaw_tau)
             }
             // One hand alone can't tell a turned torso from a hand held out to the side, so with
             // fewer than two hands the torso just trails the head.
@@ -180,7 +184,7 @@ mod tests {
         let eyes = Vec3::new(0.0, 1.7, 0.0);
         let head_joint = eyes + crate::math::yaw_rot(head_yaw) * Vec3::new(0.0, -0.09, -0.095);
         for _ in 0..360 {
-            t.update(&p, 1.0 / 90.0, 1.0, eyes, head_joint, head_yaw, hands, None);
+            t.update(&p, 1.0 / 90.0, 1.0, eyes, head_joint, head_yaw, hands, None, None);
         }
         t.yaw
     }

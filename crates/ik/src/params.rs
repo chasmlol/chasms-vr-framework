@@ -100,6 +100,11 @@ pub struct BodyParams {
     /// (FRIK 2.25 L).
     pub arm_tracking_loss: f32,
 
+    /// How far the chest's yaw and the elbows' swivels go the learned prior's way (`prior`), 0..1
+    /// (0.9 measures best against held-out motion capture: CMU subjects never trained on, and LaFAN1).
+    pub prior_chest: f32,
+    pub prior_elbow: f32,
+
     // ---- legs ----
     /// Distance between the feet when standing (VRIK footDistance 0.3).
     pub foot_spacing: f32,
@@ -200,6 +205,9 @@ impl Default for BodyParams {
             swivel_tau: 0.06,
             arm_stretch: 1.3,
             arm_tracking_loss: 2.25,
+
+            prior_chest: 0.9,
+            prior_elbow: 0.9,
 
             foot_spacing: 0.3,
             step_threshold: 0.8,

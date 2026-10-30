@@ -55,6 +55,8 @@ mod fingers;
 mod legs;
 mod math;
 mod params;
+#[doc(hidden)]
+pub mod prior;
 mod skeleton;
 mod solver;
 mod spine;

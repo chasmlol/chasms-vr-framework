@@ -124,6 +124,8 @@ pub struct ArmInput {
     /// Where the headset tracks the elbow, when it does: the elbow points the way the player's
     /// does (the arm's own lengths kept).
     pub elbow: Option<Vec3>,
+    /// The learned prior's way for the elbow out from the shoulder-to-wrist line (`prior`).
+    pub prior: Option<Vec3>,
 }
 
 /// Swivel frame around the shoulder -> wrist axis: elbow direction e(α) = u cos α + o sin α, so
@@ -295,7 +297,7 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     let d = shoulder.distance(wrist).min(a + b);
     let flexion = ((d * d - a * a - b * b) / (2.0 * a * b)).clamp(-1.0, 1.0).acos();
     let straight = smoothstep(30f32.to_radians(), 8f32.to_radians(), flexion);
-    let target_dir = swivel_target(skel, &frame, sign, rest_shoulder, previous, straight, input, |e| {
+    let target_dir = swivel_target(p, skel, &frame, sign, rest_shoulder, previous, straight, input, |e| {
         two_bone(shoulder, wrist, lengths, e, flex, p.arm_stretch)
     });
     // The headset's own tracking of the elbow: its way out from the shoulder-to-wrist line, the
@@ -339,6 +341,7 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
 /// The elbow direction this frame, before smoothing.
 #[allow(clippy::too_many_arguments)]
 fn swivel_target(
+    p: &BodyParams,
     skel: &Skeleton,
     frame: &SwivelFrame,
     sign: f32,
@@ -372,6 +375,11 @@ fn swivel_target(
         let fixed = chest_rot * Vec3::new(PARGER_FIXED_ELBOW.x * sign, PARGER_FIXED_ELBOW.y, PARGER_FIXED_ELBOW.z);
         let fixed = fixed.reject_from(swivel_axis).normalize_or(prior);
         prior = prior.lerp(fixed, blend.clamp(0.0, 1.0)).normalize_or(prior);
+    }
+    // 3. The learned prior's way, as far as it's trusted (`BodyParams::prior_elbow`).
+    if let Some(learned) = input.prior {
+        let learned = learned.reject_from(swivel_axis).normalize_or(prior);
+        prior = prior.lerp(learned, p.prior_elbow).normalize_or(prior);
     }
     let (hand_x, hand_y, hand_z) = (input.target.rot * Vec3::X, input.target.rot * UP, input.target.rot * Vec3::Z);
     let mut prior = frame.angle(prior);
