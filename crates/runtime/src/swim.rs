@@ -248,6 +248,9 @@ impl Swim {
             self.beat = 0.0;
             return;
         };
+        if self.beat == 0.0 {
+            tracing::info!("swim: breath {:.2} left under the water: the heart beats in the hands", w.breath);
+        }
         let left = (w.breath / HEART[0]).clamp(0.0, 1.0);
         if now >= self.beat {
             let amp = 0.35 + 0.45 * (1.0 - left);
