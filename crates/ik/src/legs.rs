@@ -320,6 +320,36 @@ pub fn solve_leg(p: &BodyParams, skel: &Skeleton, hip: Vec3, foot: &Foot, lift: 
     LegPose { hip, knee: solved.elbow, ankle, toes, rot: [upper, lower, foot_rot, toes_rot] }
 }
 
+/// A rider's leg astride a mount: from its hip joint to the ankle where the game puts it (in the
+/// stirrup, or round the mount's body), the knee bent towards where the game puts the knee (out
+/// round the mount's side). A shorter leg hangs just short of it; without the game's places
+/// (`legs` None), the leg hangs from the hip down the mount's side.
+pub fn solve_saddle_leg(p: &BodyParams, skel: &Skeleton, hip: Vec3, saddle: &crate::Saddle, side: usize) -> LegPose {
+    let (a, b) = (skel.thigh, skel.shin);
+    let up = (saddle.seat.rot * UP).normalize_or(UP);
+    let fwd = (saddle.seat.rot * Vec3::Z).normalize_or(Vec3::Z);
+    let out = (saddle.seat.rot * Vec3::X) * if side == 0 { -1.0 } else { 1.0 };
+    let [knee_at, ankle_at, toes_at] = match saddle.legs {
+        Some(l) => l[side],
+        None => {
+            let ankle = hip + out * (0.12 * skel.scale) + fwd * (0.1 * skel.scale) - up * ((a + b) * 0.9);
+            [hip + fwd * a + out * (0.15 * skel.scale), ankle, ankle + fwd * skel.toe_forward]
+        }
+    };
+    let flex = [KNEE_MIN_FLEXION, p.knee_max_flexion_deg.to_radians()];
+    // (Never stretched: a leg that doesn't reach the stirrup hangs short of it.)
+    let solved = two_bone(hip, ankle_at, [a, b], knee_at - hip, flex, 1.0);
+    let ankle = solved.elbow + solved.forearm * b;
+    let thigh_dir = (solved.elbow - hip).normalize_or(-up);
+    let knee_dir = (knee_at - hip).reject_from((ankle_at - hip).normalize_or(-up)).normalize_or(fwd);
+    let upper = frame_yz(thigh_dir, knee_dir, fwd);
+    let lower = frame_yz(solved.forearm, knee_dir, fwd);
+    let foot_fwd = (toes_at - ankle_at).normalize_or(fwd);
+    let toes = ankle + foot_fwd * skel.toe_forward.hypot(skel.ankle_height - skel.toe_height);
+    let foot_rot = frame_yz(foot_fwd, up, fwd);
+    LegPose { hip, knee: solved.elbow, ankle, toes, rot: [upper, lower, foot_rot, foot_rot] }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -81,6 +81,11 @@ pub struct World {
     pub objects: Vec<ObjSnap>,
 }
 
+/// The mount's turn (radians a second) that closes the riding vignette all the way.
+const RIDE_FULL_TURN: f32 = 1.0;
+/// The fade while getting on or off a mount is held this long after (seconds).
+const RIDE_FADE_AFTER: f64 = 0.35;
+
 pub struct Session {
     pub gpu: Gpu,
     pub link: Link,
@@ -205,6 +210,13 @@ pub struct Session {
     /// The pack asked of the audio (folder and revision), if any.
     pack_wanted: Option<(PathBuf, u32)>,
     comfort: Comfort,
+    /// Riding (`crate::riding`): the mount the game says the player rides (the last good copy),
+    /// the rider's hands on it, and the fade held a moment after getting on or off.
+    ride: Box<Ride>,
+    riding: crate::riding::Riding,
+    /// The mount's reins (`crate::reins`): drawn with the body, of the game's own leather.
+    reins: crate::reins::Reins,
+    ride_fade_until: f64,
     menu_trigger_was: bool,
     /// The player's body (IK) and its avatar.
     pub body: crate::body::PlayerBody,
@@ -345,6 +357,10 @@ impl Session {
             object_sounds: Default::default(),
             pack_wanted: None,
             comfort: Comfort::default(),
+            ride: Box::default(),
+            riding: crate::riding::Riding::new(),
+            reins: Default::default(),
+            ride_fade_until: f64::MIN,
             menu_trigger_was: false,
             body: crate::body::PlayerBody::default(),
             held_objects: Default::default(),
@@ -437,6 +453,13 @@ impl Session {
                 self.map_now = None;
             }
         }
+        // The mount the player rides (a torn read keeps the last good copy; never written, none).
+        if !alive {
+            *self.ride = Ride::default();
+        } else {
+            self.link.read_ride_into(&mut self.ride);
+        }
+        let riding = self.ride.riding.mounted() || self.ride.riding.moving_on_or_off();
         // A torn read (the adapter writing as we read) keeps the last good copy.
         if !alive {
             self.has_game_lighting = false;
@@ -868,9 +891,27 @@ impl Session {
             spell_hands: if rig_active { self.spell_hands } else { [false; 2] },
             game_shots: std::mem::take(&mut self.game_shots),
             held_kicks: &self.held_kicks,
+            riding,
         });
         for h in self.mech.haptics.drain(..) {
             self.backend.haptic(h.hand, h.seconds, h.frequency, h.amplitude);
+        }
+
+        // ---- riding: the reins, getting on and off (crate::riding)
+        if alive && !menu_mode && menu_pointer.is_none() {
+            let rt_ride = self.riding.update(&crate::riding::RidingInput {
+                frame: &frame,
+                ride: &self.ride,
+                settings: &self.settings.current,
+                now,
+                busy: if rig_active { self.rig_out.hand_busy } else { [false; 2] },
+                move_xy: out.intents.move_xy,
+                sprint: out.intents.held & Action::Sprint.bit() != 0,
+            });
+            for (hand, secs, freq, amp) in self.riding.haptics.drain(..) {
+                self.backend.haptic(hand, secs, freq, amp);
+            }
+            self.link.write_rt_ride(&rt_ride);
         }
 
         // Arm measurement: a tick each second of each countdown; the arms straight out to the sides,
@@ -958,18 +999,26 @@ impl Session {
             } else {
                 [None; 2]
             };
+            // A hand on a rein closes round it as a rider's does, whatever the trigger is doing.
+            let mut holds = if rig_active { self.rig_out.holds } else { [rustvr_ik::HoldShape::None; 2] };
+            for (hold, rein) in holds.iter_mut().zip(self.riding.reins_held()) {
+                if rein.is_some() {
+                    *hold = rustvr_ik::HoldShape::Rein;
+                }
+            }
             let body = self.body.update(&crate::body::BodyInput {
                 frame: &frame,
                 hands,
                 hand_states: rig_active.then_some(self.rig_out.hands),
                 ghosts,
-                holds: if rig_active { self.rig_out.holds } else { [rustvr_ik::HoldShape::None; 2] },
+                holds,
                 held,
                 grasps: if rig_active { [self.rig.grasps()[0].as_ref(), self.rig.grasps()[1].as_ref()] } else { [None; 2] },
                 finger_give: if rig_active { self.rig_out.finger_give } else { [[0.0; 5]; 2] },
                 locomotion,
                 eye_height: if stand > 0.5 { stand } else { 0.0 },
                 floor,
+                saddle: self.saddle(),
                 settings: &self.settings.current,
             });
             self.link.write_body(body);
@@ -1156,12 +1205,37 @@ impl Session {
         Ok(true)
     }
 
-    /// The vignette (eased in while the stick moves you or turns you smoothly) and the fade when the
-    /// head pushes into the game's walls.
+    /// Riding: the seat the game has its rider in (with its legs), for the body to sit in.
+    fn saddle(&self) -> Option<rustvr_ik::Saddle> {
+        let r = &self.ride.riding;
+        if !r.mounted() {
+            return None;
+        }
+        let v = |p: [f32; 4]| Vec3::new(p[0], p[1], p[2]);
+        Some(rustvr_ik::Saddle {
+            seat: rustvr_ik::Pose { pos: Vec3::from_array(r.seat.pos), rot: quat(r.seat.rot) },
+            legs: (r.flags & RIDE_LEGS != 0).then(|| [0, 1].map(|i| [v(r.knees[i]), v(r.ankles[i]), v(r.toes[i])])),
+        })
+    }
+
+    /// The vignette (eased in while the stick moves you or turns you smoothly, or the mount you
+    /// ride turns or gallops) and the fade when the head pushes into the game's walls (or while the
+    /// game's animation puts you on a mount or takes you off).
     fn update_comfort(&mut self, frame: &HmdFrame, out: &crate::mechanics::MechOutput, menu: bool) {
         let c = &self.settings.current.comfort;
         let dt = frame.dt.max(1e-4);
-        let moving = Vec2::from_array(out.intents.move_xy).length().min(1.0);
+        let ride = self.ride.riding;
+        let rs = &self.settings.current.riding;
+        let mut moving = Vec2::from_array(out.intents.move_xy).length().min(1.0);
+        let mut strength = c.vignette;
+        if ride.mounted() {
+            // On a mount the stick rides it: the mount's turning (as the view turns with it,
+            // smoothly) and its galloping close the vignette in instead.
+            let turning = if rs.turn == crate::settings::TurnMode::Smooth { self.locomotion.walk().1.abs() / RIDE_FULL_TURN } else { 0.0 };
+            let galloping = if ride.gaits > 1 && ride.gait >= ride.gaits as i32 { 1.0 } else { 0.0 };
+            moving = turning.max(galloping).min(1.0);
+            strength = rs.vignette;
+        }
         let turning = if c.turn_mode == crate::settings::TurnMode::Smooth {
             let dom = self.settings.current.dominant();
             (frame.hands[dom].stick[0].abs() - self.settings.current.input.stick_deadzone).max(0.0) / (1.0 - self.settings.current.input.stick_deadzone).max(0.1)
@@ -1170,9 +1244,13 @@ impl Session {
         };
         // Walking the body after the head (roomscale) doesn't move the view: no vignette for it.
         let following = out.tracking.flags & TRK_FOLLOW != 0;
-        let target = if menu || following { 0.0 } else { c.vignette * moving.max(turning).min(1.0) };
+        let target = if menu || following { 0.0 } else { strength * moving.max(if ride.mounted() { 0.0 } else { turning }).min(1.0) };
         let k = 1.0 - (-dt / c.vignette_ease.max(0.02)).exp();
+        let was = self.comfort.vignette;
         self.comfort.vignette += (target - self.comfort.vignette) * k;
+        if ride.mounted() && (was > 0.25) != (self.comfort.vignette > 0.25) {
+            tracing::info!("runtime: riding: the vignette {} (the mount turning {:.2} rad/s, gait {})", if self.comfort.vignette > 0.25 { "closes in" } else { "opens" }, self.locomotion.walk().1, ride.gait);
+        }
         self.comfort.aperture = c.vignette_aperture;
         self.comfort.feather = c.vignette_feather;
         self.comfort.forward = quat(frame.hmd.rot) * Vec3::Z;
@@ -1182,6 +1260,18 @@ impl Session {
                 let head = map.point(Vec3::from_array(frame.hmd.pos));
                 fade = (self.rig.physics.sphere_penetration(head, 0.12) / 0.08).clamp(0.0, 1.0);
             }
+        }
+        // Getting on a mount or off it, the game's animation moves the view as the player doesn't:
+        // dark until it's done, and a moment after (the view settles in the saddle, or on foot).
+        let now = frame.display_time_ns as f64 * 1e-9;
+        if rs.fade_on_off && ride.moving_on_or_off() {
+            if now >= self.ride_fade_until {
+                tracing::info!("runtime: riding: the view fades while the game's animation gets the rider {}", if ride.flags & RIDE_GETTING_ON != 0 { "on" } else { "off" });
+            }
+            self.ride_fade_until = now + RIDE_FADE_AFTER;
+        }
+        if now < self.ride_fade_until {
+            fade = 1.0;
         }
         let kf = 1.0 - (-dt / 0.08).exp();
         if (fade > 0.5) != (self.comfort.fade > 0.5) {
@@ -1364,6 +1454,10 @@ impl Session {
         };
         let obs_panel = self.obs.update(&self.gpu, s.ui.obs_view, Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot), left, frame.display_time_ns as f64 * 1e-9);
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
+        // A mount's reins, from its bit to the hands holding them (the game's mount has none): of
+        // the game's own leather, drawn with the body; without it, flat ribbons over the picture.
+        self.reins.update(&self.gpu, &self.ride.riding, self.riding.reins_held(), frame.hands.map(|h| (Vec3::from_array(h.grip.pos), quat(h.grip.rot))), self.game.as_ref().map(|g| &g.light), frame.dt);
+        layers.ribbons = self.reins.ribbons();
         if let (Some(p), Some(srv)) = (obs_panel, self.obs.srv()) {
             layers.private.push(PanelLayer::whole(p, srv));
         }
@@ -1556,6 +1650,7 @@ impl Session {
         let body = &mut self.body;
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
+        let reins = &mut self.reins;
         let warp = &mut self.warp;
         let mirror = &mut self.mirror;
         // The game's world in the mirror: its picture from the camera asked for (`MirrorView`), with
@@ -1686,7 +1781,18 @@ impl Session {
                 if moved && info.eye_map[e].world_per_meter > 0.0 { shown_map(&m) } else { m }
             });
             held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
-            let held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
+            // The reins' mount end where this picture shows the mount: moved to this eye with the
+            // picture, it moved with the rest of the game's world.
+            let picture = match (&stereo, moved) {
+                (Some((_, info)), true) if info.eye_map[e].world_per_meter > 0.0 => {
+                    let then = WorldMap::from_slot(&info.eye_map[e]);
+                    shown_map(&then).matrix().inverse() * then.matrix()
+                }
+                _ => glam::Mat4::IDENTITY,
+            };
+            reins.place(picture);
+            let mut held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
+            held.extend(reins.draw().filter(|_| draw_body && !framework));
             // The blood, where this eye's picture has the world (set before the mirror's reflection,
             // so the player and the world in the glass have this eye's blood too).
             let gore = (draw_body && !framework && self.gore.active()).then(|| {
@@ -1797,7 +1903,9 @@ impl Session {
             // (Placed by the picture it's drawn over: the first eye's.)
             let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| WorldMap::from_slot(&info.eye_map[first]));
             self.held_objects.place(eye_map.as_ref().or(self.map_now.as_ref()));
-            let held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
+            self.reins.place(glam::Mat4::IDENTITY);
+            let mut held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
+            held.extend(self.reins.draw().filter(|_| draw_body && !framework));
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");

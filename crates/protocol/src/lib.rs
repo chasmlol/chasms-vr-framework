@@ -41,6 +41,7 @@
 //! | [`OFF_CASTERS`], [`OFF_OVERLAYS`] | [`Casters`] (runtime -> adapter), [`Overlays`] (adapter -> runtime): see [`magic`] | | seqlock |
 //! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
 //! | [`OFF_GORE`] | the game's blood, its creatures' stumps, limbs cut off (see [`gore`]) | adapter -> runtime | seqlock, SPSC ring |
+//! | [`OFF_RIDE`], [`OFF_RT_RIDE`] | [`Ride`], [`RtRide`]: the mount the player rides (see [`ride`]) | both | seqlock |
 //!
 //! # Frames
 //!
@@ -74,6 +75,7 @@ pub mod world;
 pub mod lighting;
 pub mod magic;
 pub mod player;
+pub mod ride;
 
 pub use archery::*;
 pub use avatar::*;
@@ -87,6 +89,7 @@ pub use world::*;
 pub use lighting::*;
 pub use magic::*;
 pub use player::*;
+pub use ride::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
 pub const VERSION: u32 = 12;
@@ -422,7 +425,9 @@ pub struct TrackingControl {
     pub height_comp: f32,
     /// How far (metres) the head may move away from the game body before the view is held back.
     pub room_limit: f32,
-    pub _pad: u32,
+    /// What carries the player (a mount: `TrackingMapper::carry_turn`) turns the view with it in
+    /// steps of this many radians, each as one turn (0: smoothly, as it turns).
+    pub carry_step: f32,
 }
 /// The head may move away from the game body (roomscale).
 pub const TRK_ROOMSCALE: u32 = 1 << 0;

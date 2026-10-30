@@ -96,6 +96,10 @@ pub struct MechInput<'a> {
     /// (`EV_GAME_SHOTS`), and its held gun's kicks (`KICK_OBJECT_HELD`).
     pub game_shots: u32,
     pub held_kicks: &'a [KickDesc],
+    /// The player rides a mount (`crate::riding`): the body stays in the saddle (no walking it
+    /// after the head), the mount turns the view (the turning stick steers it instead), and the
+    /// trigger of a hand off the reins is riding's (getting off), not the game's "use".
+    pub riding: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -506,7 +510,7 @@ impl Mechanics {
             height_offset: c.comfort.height_offset + self.real_height_offset(c),
             height_comp: 0.0,
             room_limit: c.comfort.roomscale_limit,
-            _pad: 0,
+            carry_step: if c.riding.turn == TurnMode::Snap { c.riding.turn_step.clamp(20.0, 90.0).to_radians() } else { 0.0 },
             },
             ..Default::default()
         };
@@ -756,7 +760,7 @@ impl Mechanics {
         let look_yaw = game.map(|g| g.tracking.look_yaw).unwrap_or(head_yaw);
         let len = room.length();
         let stick_idle = mx.abs() < 0.05 && my.abs() < 0.05;
-        if !c.comfort.roomscale || !stick_idle || gflags & GS_SCRIPTED != 0 || game.is_none() {
+        if !c.comfort.roomscale || !stick_idle || gflags & GS_SCRIPTED != 0 || game.is_none() || inp.riding {
             self.following = false;
         } else if !self.following && len > 0.20 {
             self.following = true;
@@ -775,8 +779,8 @@ impl Mechanics {
         self.debug.room_len = len;
         out.intents.move_xy = move_xy.to_array();
 
-        // Turning: firing-hand stick X.
-        let tx = deadzone(dc.stick[0], 0.25);
+        // Turning: firing-hand stick X (on a mount it steers the mount, which turns the view).
+        let tx = if inp.riding { 0.0 } else { deadzone(dc.stick[0], 0.25) };
         match c.comfort.turn_mode {
             TurnMode::Snap => {
                 if tx.abs() > 0.75 && now > self.snap_cooldown {
@@ -801,7 +805,7 @@ impl Mechanics {
         if ydir != 0 && ydir != self.last_stick_y_dir {
             if !rig_mode {
                 self.press(if ydir > 0 { Action::NextWeapon } else { Action::PrevWeapon });
-            } else if ydir < 0 {
+            } else if ydir < 0 && !inp.riding {
                 // Guns are in your hands and holsters; the stick's down flick toggles crouch.
                 self.press(Action::Crouch);
                 self.crouch_by_phys = false;
@@ -843,7 +847,7 @@ impl Mechanics {
         if self.btn_b[dom].down && !rig_mode {
             held |= Action::Jump.bit();
         }
-        if self.stick_fire[dom] {
+        if self.stick_fire[dom] && !inp.riding {
             self.press(Action::Crouch);
             self.crouch_by_phys = false;
         }
@@ -901,7 +905,8 @@ impl Mechanics {
             } else if self.phys_crouch && h > self.stand_h - thr + 0.06 {
                 self.phys_crouch = false;
             }
-            if c.input.physical_crouch && !c.comfort.seated && game.is_some() {
+            // (Leaning down on a mount's neck isn't sneaking.)
+            if c.input.physical_crouch && !c.comfort.seated && game.is_some() && !inp.riding {
                 if self.phys_crouch != was {
                     self.crouch_pending = if self.phys_crouch { 1 } else if self.crouch_by_phys { 0 } else { -1 };
                 }
@@ -1120,10 +1125,11 @@ impl Mechanics {
             if self.btn_a[h].down && !gun_hand(h) {
                 *held |= Action::Jump.bit();
             }
-            if self.btn_trig[h].pressed() && !busy[h] && !targeting[h] && !inp.spell_hands[h] {
+            // (On a mount the game's "use" gets off, which riding does by a held trigger.)
+            if self.btn_trig[h].pressed() && !busy[h] && !targeting[h] && !inp.spell_hands[h] && !inp.riding {
                 self.press(Action::Use);
             }
-            if self.btn_trig[h].down && !busy[h] && !targeting[h] && !inp.spell_hands[h] && inp.now - self.btn_trig[h].t0 > LONG_PRESS {
+            if self.btn_trig[h].down && !busy[h] && !targeting[h] && !inp.spell_hands[h] && !inp.riding && inp.now - self.btn_trig[h].t0 > LONG_PRESS {
                 *held |= Action::UseHold.bit();
             }
         }
@@ -1339,6 +1345,7 @@ mod tests {
             spell_hands: [false; 2],
             game_shots,
             held_kicks,
+            riding: false,
         })
     }
 

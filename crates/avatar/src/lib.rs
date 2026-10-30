@@ -554,6 +554,33 @@ impl HeldModel {
         }
         render::HeldModel::new(gpu, meshes)
     }
+
+    /// A model that bends along its bones (a strap, a rope) from an asset cache folder (`dir`, its
+    /// textures by key): its meshes whole, each vertex moving with its own bones as weighted, and a
+    /// part for each bone ([`HeldDraw::parts`] places them: bone space -> tracking space). Drawn
+    /// with the body as anything held is: in its depth, with the game's materials and lighting; the
+    /// game's surface hides it only once it's `depth_slack` (metres) behind it (a strap lying on the
+    /// game's own model). (Not [`HeldModel::load_bent`]'s bend: that's a morph, a bow drawn.)
+    pub fn load_strap(gpu: &Gpu, dir: &std::path::Path, model: &asset::Model, depth_slack: f32) -> Result<HeldModel> {
+        let mut cache: HashMap<String, Option<Arc<asset::Texture>>> = HashMap::new();
+        let mut texture = |key: &str| -> Option<Arc<asset::Texture>> {
+            if key.is_empty() {
+                return None;
+            }
+            cache
+                .entry(key.to_string())
+                .or_insert_with(|| asset::load_texture(dir, key).map_err(|e| tracing::warn!("avatar: texture {key}: {e:#}")).ok().map(Arc::new))
+                .clone()
+        };
+        let mut meshes = Vec::new();
+        for (i, m) in model.meshes.iter().enumerate() {
+            let one = asset::Model { source: model.source.clone(), meshes: vec![m.clone()], ..Default::default() };
+            let Some(mut source) = from_model(one, &mut texture).meshes.pop() else { continue };
+            source.depth_slack = depth_slack;
+            meshes.push((source, HeldMeshInfo { part: 0, source: i, name: m.name.clone(), special: false }));
+        }
+        render::HeldModel::strap(gpu, meshes)
+    }
 }
 
 /// A model as the renderer takes it: a skeleton and meshes, with their textures.
@@ -571,6 +598,9 @@ pub(crate) struct SourceMesh {
     pub tint: [f32; 3],
     /// How the game shades it, when that's known and its textures are all there.
     pub material: Option<SourceMaterial>,
+    /// How far behind the game's surface it may be before it's hidden (metres, on top of the
+    /// body's own allowance): 0 but for a strap lying on the game's model.
+    pub depth_slack: f32,
 }
 
 pub(crate) struct SourceMaterial {
@@ -890,7 +920,7 @@ fn from_model_with(model: asset::Model, extras: Vec<MeshExtras>, mut texture: im
                     hair_tint: x.hair_tint,
                 })
             });
-            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material }
+            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material, depth_slack: 0.0 }
         })
         .collect();
     Source { bones: model.bones, meshes }

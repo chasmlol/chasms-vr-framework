@@ -265,6 +265,27 @@ fn comfort(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::R
     slider(ui, "Vignette while moving", &mut s.comfort.vignette, 0.0, 1.0, "", 2);
     ui.checkbox(&mut s.comfort.wall_fade, "Fade out when your head goes into a wall");
     ui.checkbox(&mut s.comfort.seated, "Seated play (see the Body tab)");
+    ui.separator();
+    ui.heading("Riding");
+    let r = &mut s.riding;
+    ui.horizontal(|ui| {
+        ui.label("The view turns with the mount");
+        ui.selectable_value(&mut r.turn, TurnMode::Smooth, "Smoothly");
+        ui.selectable_value(&mut r.turn, TurnMode::Snap, "In steps");
+    });
+    if r.turn == TurnMode::Snap {
+        slider(ui, "Step", &mut r.turn_step, 20.0, 90.0, " deg", 0);
+    }
+    slider(ui, "Vignette while turning or galloping", &mut r.vignette, 0.0, 1.0, "", 2);
+    ui.checkbox(&mut r.fade_on_off, "Fade out while getting on and off");
+    slider(ui, "Reins pulled before they slow it", &mut r.rein_dead, 0.01, 0.12, " m", 2);
+    slider(ui, "Rein travel for a full turn", &mut r.rein_travel, 0.05, 0.50, " m", 2);
+    slider(ui, "Rein pull to slow hardest", &mut r.rein_pull, 0.08, 0.30, " m", 2);
+    slider(ui, "Spurred, it settles at (of the surge)", &mut r.cruise, 0.2, 1.0, "", 2);
+    slider(ui, "A spur's surge fades over", &mut r.spur_fade, 2.0, 30.0, " s", 0);
+    ui.checkbox(&mut r.flick, "Flick the reins to spur on");
+    slider(ui, "Reins let go: keeps its pace for", &mut r.coast, 0.0, 10.0, " s", 1);
+    ui.checkbox(&mut r.stride_haptics, "Feel the stride in the reins");
 }
 
 /// Your body: height, arms, seated play. Returns (measure height, measure arms) presses.
@@ -340,6 +361,17 @@ fn help(ui: &mut egui::Ui) {
         ("A or X, empty hand", "jump"),
         ("Duck for real", "crouch"),
         ("Menu button", "pause, and this menu"),
+    ]);
+    section(ui, "Riding", &[
+        ("Grip the saddle", "get on (the game's own mount: whose it is, stealing it, its animation)"),
+        ("Grip the reins", "hold them (either hand, or both)"),
+        ("Pull one rein back, or both reins to one side", "turn that way"),
+        ("Pull both reins back", "slow down a gait; hold it to stop, then back up"),
+        ("Flick the reins, or the trigger on a rein hand", "spur on: walk, then gallop"),
+        ("Let go of the reins", "it keeps going a while, then slows"),
+        ("Left stick (click: gallop), right stick", "ride and steer with the sticks instead"),
+        ("A", "jump"),
+        ("Hold the trigger of a hand off the reins, or hold the saddle and lean out", "get off"),
     ]);
     section(ui, "Hands", &[
         ("Grip", "grab what your hand is on (hold to keep holding)"),

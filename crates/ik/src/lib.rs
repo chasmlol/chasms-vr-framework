@@ -98,6 +98,18 @@ pub struct TrackedInput {
     pub elbows: [Option<Vec3>; 2],
 }
 
+/// A seat on a mount, as the game poses its own rider on it (tracking space): the body sits there
+/// instead of standing ([`BodySolver::ride`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Saddle {
+    /// The point the rider sits on (the saddle's seat), turned as the mount is (+Z its forward, +Y
+    /// up): the hip joints are a sitting body's height over it.
+    pub seat: Pose,
+    /// Where the rider's knee, ankle and ball of the foot go (astride the mount), [left, right];
+    /// None: the legs hang from the seat.
+    pub legs: Option<[[Vec3; 3]; 2]>,
+}
+
 /// The two measurements the body is scaled from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Calibration {

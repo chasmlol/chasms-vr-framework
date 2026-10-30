@@ -66,6 +66,7 @@ cbuffer Material : register(b2) {
     float4 surf_params;  // the game's surf_params
     float4 surf_color;
     float4 options;      // x: use_env, y: use_fresnel (the class's shader permutation)
+    float4 extra;        // x: depth slack (metres)
 };
 // The game's lighting (metro.rs), when it publishes it.
 cbuffer Lighting : register(b3) {
@@ -515,7 +516,8 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     float3 dpx = ddx(i.world), dpy = ddy(i.world);
     float2 dux = ddx(i.uv), duy = ddy(i.uv);
     if (i.vis < 0) discard;
-    if (behind_game(i.pos, i.view_z)) discard;
+    // (A strap lying on the game's model may be a little behind its surface: extra.x.)
+    if (behind_game(i.pos, i.view_z - extra.x)) discard;
     if (plain.w > 1.5) return float4(plain.rgb, 1);
     float4 base = albedo.Sample(samp, i.uv);
     if (material.y > 0 && base.a < 0.5) discard;
@@ -861,6 +863,8 @@ struct MaterialCb {
     surf_params: [f32; 4],
     surf_color: [f32; 4],
     options: [f32; 4],
+    /// x: how far behind the game's surface it may be before it's hidden (metres).
+    extra: [f32; 4],
 }
 
 /// The pictures the game drew the player in, as the shader's `Sources` buffer holds them.
@@ -1178,6 +1182,8 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
             [mat.env.is_some() as u32 as f32, mat.fresnel as u32 as f32, 0.0, 0.0]
         }
     });
+    // (How far behind the game's surface it may be before it's hidden: a strap on the game's model.)
+    let extra = [m.depth_slack.max(0.0), 0.0, 0.0, 0.0];
     let class = metro.as_ref().map_or(0.0, |mm| mm.class as u32 as f32);
     let material = MaterialCb {
         tint: [m.tint[0], m.tint[1], m.tint[2], 1.0],
@@ -1185,6 +1191,7 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
         surf_params,
         surf_color,
         options,
+        extra,
     };
     let srv = base.map(|b| b.srgb);
     Ok(GpuMesh {
@@ -1220,7 +1227,22 @@ impl HeldModel {
     /// special draw takes it instead (see [`crate::SpecialDraw`]), and for one that bends, each
     /// vertex's offset at full bend (position, normal; see [`crate::HeldDraw::bend`]).
     pub(crate) fn new(gpu: &Gpu, meshes: Vec<HeldSource>) -> Result<HeldModel> {
-        let parts = meshes.iter().map(|(_, i, _)| i.part + 1).max().unwrap_or(0);
+        Self::build(gpu, meshes, false)
+    }
+
+    /// As [`HeldModel::new`], but each vertex keeps its own bones (as weighted), a part for each
+    /// bone: the mesh bends between the parts' places (a strap, its every cross-section a part).
+    pub(crate) fn strap(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>) -> Result<HeldModel> {
+        Self::build(gpu, meshes.into_iter().map(|(m, i)| (m, i, None)).collect(), true)
+    }
+
+    fn build(gpu: &Gpu, meshes: Vec<HeldSource>, own_bones: bool) -> Result<HeldModel> {
+        let parts = if own_bones {
+            let weighted = |v: &asset::Vertex| (0..4).filter(|&k| v.weights[k] > 0).map(|k| v.bones[k] as usize + 1).max().unwrap_or(1);
+            meshes.iter().flat_map(|(m, ..)| m.vertices.iter().map(weighted)).max().unwrap_or(0)
+        } else {
+            meshes.iter().map(|(_, i, _)| i.part + 1).max().unwrap_or(0)
+        };
         anyhow::ensure!(parts <= MAX_BONES, "{parts} parts (at most {MAX_BONES})");
         let mut uploaded: HashMap<*const asset::Texture, Option<GpuTex>> = HashMap::new();
         let mut upload = |t: &Arc<asset::Texture>, what: &str| {
@@ -1232,9 +1254,11 @@ impl HeldModel {
         let mut out = Vec::new();
         let mut info = Vec::new();
         for (mut m, i, offsets) in meshes.into_iter().filter(|(m, ..)| !m.indices.is_empty()) {
-            for v in &mut m.vertices {
-                v.bones = [i.part as u8, 0, 0, 0];
-                v.weights = [255, 0, 0, 0];
+            if !own_bones {
+                for v in &mut m.vertices {
+                    v.bones = [i.part as u8, 0, 0, 0];
+                    v.weights = [255, 0, 0, 0];
+                }
             }
             fix_winding(&mut m);
             let n = m.indices.len() as u32;

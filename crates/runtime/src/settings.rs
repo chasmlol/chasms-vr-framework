@@ -26,6 +26,51 @@ pub struct Settings {
     pub spectator: Spectator,
     pub mirror: Mirror,
     pub archery: Archery,
+    pub riding: Riding,
+}
+
+/// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Riding {
+    /// The view turns with the mount: smoothly as it turns, or in steps of `turn_step` (snap: the
+    /// world turns only a step at a time, for those whom a turning world makes sick).
+    pub turn: TurnMode,
+    /// Degrees a step, when the view turns with the mount in steps.
+    pub turn_step: f32,
+    /// Darken the edges of the view while the mount turns or gallops (0 = off).
+    pub vignette: f32,
+    /// Fade out while the game's own animation puts you in the saddle or takes you down (it moves
+    /// the view in ways you don't).
+    pub fade_on_off: bool,
+    /// How far the reins are pulled back from where they were taken before they slow the mount
+    /// (metres): hands resting on the reins drift, and don't slow it. (Steering is finer.)
+    pub rein_dead: f32,
+    /// How far a rein is pulled (or the reins moved to one side) past the steering's dead zone for
+    /// the mount's hardest turn, metres.
+    pub rein_travel: f32,
+    /// Both reins pulled back this far (metres) slows the mount hardest (less pulled, less hard);
+    /// where it's slowed to, it stays. From a stand, eased and pulled right back again and held, it
+    /// backs.
+    pub rein_pull: f32,
+    /// Spurred, the mount surges (as hard as it's spurred: the hardest, to its full gallop) and
+    /// settles back to this share of the surge (0..1).
+    pub cruise: f32,
+    /// How slowly a spur's surge settles back (seconds to go most of the way).
+    pub spur_fade: f32,
+    /// A flick of the reins spurs the mount on (as well as the trigger of a hand on the reins).
+    pub flick: bool,
+    /// Let go of the reins: the mount keeps its gait this long (seconds), then slows a gait at a
+    /// time.
+    pub coast: f32,
+    /// A buzz in the hands on the reins with the mount's stride.
+    pub stride_haptics: bool,
+}
+
+impl Default for Riding {
+    fn default() -> Self {
+        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_dead: 0.05, rein_travel: 0.30, rein_pull: 0.15, cruise: 0.7, spur_fade: 8.0, flick: true, coast: 2.5, stride_haptics: true }
+    }
 }
 
 /// The mirror (`crate::mirror`): where it stands when called up, and how big it is.

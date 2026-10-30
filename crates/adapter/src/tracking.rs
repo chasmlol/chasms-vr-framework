@@ -109,6 +109,10 @@ pub struct TrackingMapper {
     follow_end: f64,
     recenter_pending: bool,
     last: Option<View>,
+    /// What carries the player turned since the last update (radians, `carry_turn`), and what of
+    /// its turns is still to come in a step (`TrackingControl::carry_step`).
+    carry_pending: f32,
+    carry_held: f32,
 }
 
 impl Default for TrackingMapper {
@@ -125,6 +129,8 @@ impl Default for TrackingMapper {
             follow_end: -1.0,
             recenter_pending: true,
             last: None,
+            carry_pending: 0.0,
+            carry_held: 0.0,
         }
     }
 }
@@ -133,6 +139,16 @@ impl TrackingMapper {
     /// Recentre on the next update (e.g. after a level load).
     pub fn recenter(&mut self) {
         self.recenter_pending = true;
+    }
+
+    /// The player is carried round by what they ride (a mount, a vehicle, a turning platform): it
+    /// turned `radians` (yaw, positive towards +X from +Z) since the last update. The view turns
+    /// with it, as the player's own turning does: the world turns round them, never their head.
+    /// The runtime's `TrackingControl::carry_step` says whether smoothly or in steps.
+    pub fn carry_turn(&mut self, radians: f32) {
+        if radians.is_finite() {
+            self.carry_pending += radians;
+        }
     }
 
     pub fn last_view(&self) -> Option<View> {
@@ -148,6 +164,8 @@ impl TrackingMapper {
             self.ref_init = false;
             self.last_ref = None;
             self.last = None;
+            self.carry_pending = 0.0;
+            self.carry_held = 0.0;
             return None;
         }
         let trk = &frame.tracking;
@@ -164,10 +182,23 @@ impl TrackingMapper {
         }
         let hmd_pos = pose_pos(&frame.hmd);
         let hmd_rot = pose_rot(&frame.hmd);
+        let carried = std::mem::take(&mut self.carry_pending);
         if std::mem::take(&mut self.recenter_pending) {
             self.origin = hmd_pos;
             self.body_yaw = anchor.look_yaw - yaw_of_quat(hmd_rot);
             self.last_ref = None;
+            self.carry_held = 0.0;
+        } else if trk.carry_step > 1e-3 {
+            // In steps: each one a turn of its own (the runtime shows it as one, not a speed).
+            self.carry_held += carried;
+            while self.carry_held.abs() >= trk.carry_step {
+                let step = trk.carry_step.copysign(self.carry_held);
+                self.body_yaw += step;
+                self.carry_held -= step;
+                tracing::info!("rustvr: the view turns a step ({:.0} degrees) with what carries the player", step.to_degrees());
+            }
+        } else {
+            self.body_yaw += carried + std::mem::take(&mut self.carry_held);
         }
         self.body_yaw = wrap_angle(self.body_yaw + wrap_angle(trk.turn_total - self.applied_turn));
         self.applied_turn = trk.turn_total;

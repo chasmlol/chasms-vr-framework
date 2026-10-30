@@ -1644,6 +1644,87 @@
  */
 #define RVR_DH_INDEX_REACH_PULLED (1 << 2)
 
+#define RVR_MAX_MOUNTS 8
+
+/**
+ * The most cross-sections of a mount's neck and head ([`Riding::neck`]).
+ */
+#define RVR_NECK_SECTIONS 10
+
+/**
+ * The mount is the player's own.
+ */
+#define RVR_MOUNT_OWNED (1 << 0)
+
+/**
+ * The mount is someone else's: getting on it is a crime (the game asks first).
+ */
+#define RVR_MOUNT_CRIME (1 << 1)
+
+/**
+ * Seated and riding: the rider has the reins.
+ */
+#define RVR_RIDE_MOUNTED (1 << 0)
+
+/**
+ * Getting on: the game's own animation is putting the rider in the saddle.
+ */
+#define RVR_RIDE_GETTING_ON (1 << 1)
+
+/**
+ * Getting off: the game's own animation is taking the rider down.
+ */
+#define RVR_RIDE_GETTING_OFF (1 << 2)
+
+/**
+ * The knees, ankles and toes are the game's riding pose's.
+ */
+#define RVR_RIDE_LEGS (1 << 3)
+
+/**
+ * The reins are where the game's rider holds them.
+ */
+#define RVR_RIDE_REINS (1 << 4)
+
+/**
+ * The bits are given: the runtime draws the reins from them to the hands (a game whose mount has
+ * reins of its own leaves this off).
+ */
+#define RVR_RIDE_BITS (1 << 5)
+
+/**
+ * The mount's neck and head are given ([`Riding::neck`]): the reins lie on them.
+ */
+#define RVR_RIDE_NECK (1 << 6)
+
+/**
+ * The reins' leather is given ([`Riding::reins_leather`]): they're drawn in the game's own.
+ */
+#define RVR_RIDE_LEATHER (1 << 7)
+
+/**
+ * The runtime is riding: `gait`, `pace` and `steer` are the rider's.
+ */
+#define RVR_RR_RIDING (1 << 0)
+
+/**
+ * A hand holds the left rein, the right rein.
+ */
+#define RVR_RR_REIN_LEFT (1 << 1)
+
+#define RVR_RR_REIN_RIGHT (1 << 2)
+
+/**
+ * The stick rides (rather than the reins).
+ */
+#define RVR_RR_STICK (1 << 3)
+
+/**
+ * Going forward at [`RtRide::speed`] (rather than a gait at a pace): the adapter gives the game
+ * whichever of its gaits, at whatever pace, makes that speed.
+ */
+#define RVR_RR_SPEED (1 << 4)
+
 #define RVR_SHOTS 0
 
 #define RVR_HITS 1

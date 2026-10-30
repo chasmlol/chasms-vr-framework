@@ -21,6 +21,8 @@ pub mod item_card;
 pub mod panels;
 pub mod physics_view;
 pub mod rig;
+pub mod reins;
+pub mod riding;
 pub mod scenario;
 pub mod scenario_physical;
 pub mod session;

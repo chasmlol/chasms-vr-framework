@@ -377,6 +377,20 @@ impl Link {
     pub fn read_bows_into(&self, out: &mut Bows) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_BOWS), out) }
     }
+    /// Adapter: the mount the player rides and the mounts near them ([`Ride`]), every game frame.
+    pub fn write_ride(&self, v: &Ride) {
+        unsafe { seq_write(self.base.add(OFF_RIDE), v) }
+    }
+    pub fn read_ride_into(&self, out: &mut Ride) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_RIDE), out) }
+    }
+    /// Runtime: what the rider does with the mount ([`RtRide`]), every runtime frame.
+    pub fn write_rt_ride(&self, v: &RtRide) {
+        unsafe { seq_write(self.base.add(OFF_RT_RIDE), v) }
+    }
+    pub fn read_rt_ride(&self) -> Option<RtRide> {
+        unsafe { seq_read(self.base.add(OFF_RT_RIDE)) }
+    }
     /// Runtime: a melee hit, block, cast or loosed arrow for the game.
     pub fn push_combat_event(&self, ev: &CombatEvent) {
         let written = self.u64_at(OFF_COMBAT_EVENTS + offset_of!(CombatEvents, written));

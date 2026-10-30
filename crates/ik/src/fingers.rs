@@ -65,6 +65,9 @@ pub enum HoldShape {
     Small,
     /// A large object, fingers spread round it.
     Large,
+    /// A rein, as a rider holds one: a closed fist round the strap (in at the little finger, out
+    /// over the index), the thumb pressed down on top of it.
+    Rein,
 }
 
 /// Curls (thumb, index, middle, ring, pinky) and splay a hold shape wraps the hand to (est.,
@@ -77,6 +80,7 @@ fn hold_pose(hold: HoldShape) -> Option<([f32; 5], f32)> {
         HoldShape::Magazine => ([0.45, 0.55, 0.58, 0.6, 0.62], 0.15),
         HoldShape::Small => ([0.55, 0.65, 0.68, 0.7, 0.72], 0.3),
         HoldShape::Large => ([0.25, 0.3, 0.32, 0.34, 0.36], 0.6),
+        HoldShape::Rein => ([0.62, 0.88, 0.92, 0.94, 0.95], 0.0),
     })
 }
 
