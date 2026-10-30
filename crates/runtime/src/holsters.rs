@@ -105,14 +105,15 @@ impl HolsterLink {
                 settings.current.holsters.games.insert(key(game), slots);
                 save(settings);
             }
-            if self.edits.place_seq != self.place_seq {
-                self.place_seq = self.edits.place_seq;
-                let slot = self.edits.place_slot as usize;
-                rig.place_pocket((slot < MAX_BODY_SLOTS).then_some(slot));
-                tracing::info!("holsters: slot {slot} to be placed by hand");
-            }
         }
+        // (The slots first: a new one is placed by hand as it's made.)
         rig.set_pockets(&self.slots(settings, game));
+        if self.edits.place_seq != self.place_seq {
+            self.place_seq = self.edits.place_seq;
+            let slot = self.edits.place_slot as usize;
+            rig.place_pocket((slot < MAX_BODY_SLOTS).then_some(slot));
+            tracing::info!("holsters: slot {slot} to be placed by hand");
+        }
     }
 
     /// After the rig's step: what the player did with the slots, kept; and the slots for the game.
@@ -123,6 +124,8 @@ impl HolsterLink {
                 PocketEvent::Placed(k, at) => {
                     if let Some(s) = self.own(settings, game).get_mut(k) {
                         s.at = at.to_array();
+                        // (Placed behind the head, it counts only there: over a shoulder.)
+                        s.behind = at.z < -0.04;
                     }
                     save(settings);
                     self.out.placed_seq = self.out.placed_seq.wrapping_add(1);
