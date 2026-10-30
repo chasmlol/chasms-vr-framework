@@ -9,6 +9,10 @@
 //! message box, until the game exits), `--wait` (the same wait for a headset with no game: started
 //! ahead of time, the range comes up whenever the headset does, and again if it drops out), and
 //! anything after `--` is passed to the range (e.g. `-- --weapon vsv`).
+//!
+//! `RUSTVR_LINK` names the shared memory the game or range connects on (the protocol's default
+//! otherwise), and `RUSTVR_DIR` the folder for settings and logs: with both set, several test runs,
+//! each with its own range, share the machine without crossing.
 
 #![windows_subsystem = "windows"]
 
@@ -36,7 +40,7 @@ fn main() {
     let range_args = args.get(split + 1..).map(|a| a.to_vec()).unwrap_or_default();
     let range = std::env::current_exe().ok().map(|p| p.with_file_name("rustvr-range.exe"));
     let opts = VrOptions {
-        mapping: rustvr_protocol::DEFAULT_MAPPING.to_owned(),
+        mapping: std::env::var("RUSTVR_LINK").ok().filter(|m| !m.is_empty()).unwrap_or_else(|| rustvr_protocol::DEFAULT_MAPPING.to_owned()),
         settings_dir: dir.clone(),
         range: if no_range { None } else { range },
         range_args,
