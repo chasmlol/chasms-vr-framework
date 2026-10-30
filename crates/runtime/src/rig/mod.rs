@@ -2176,6 +2176,13 @@ impl Rig {
 
     fn take(&mut self, id: u32, i: usize, snap: bool) {
         let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
+        // A hand holds one thing: whatever else it had is let go (it falls), never left held by a
+        // hand that has something else.
+        if let Some(before) = self.hands.as_ref().unwrap()[i].holding.filter(|&b| b != id) {
+            self.hands.as_mut().unwrap()[i].holding = None;
+            self.free_body(before, groups_free());
+            tracing::warn!("rig: {before:#x} let go: the hand took {id:#x}");
+        }
         // Out of the other hand if it was there.
         let other = i ^ 1;
         if self.hands.as_ref().unwrap()[other].holding == Some(id) {
@@ -4167,7 +4174,10 @@ impl Rig {
                     let elapsed = (self.now - t0) as f32;
                     let total = dur;
                     let grip_held = self.hands.as_ref().unwrap()[hand].grip_down;
-                    if p.distance(palm) < s.interaction.glove_catch_radius && grip_held && elapsed > 0.05 {
+                    // (A hand that has taken something else on the way doesn't catch it: it falls
+                    // by the hand once its flight is over.)
+                    let empty = self.hands.as_ref().unwrap()[hand].holding.is_none();
+                    if p.distance(palm) < s.interaction.glove_catch_radius && grip_held && empty && elapsed > 0.05 {
                         self.debug.catches += 1;
                         self.take(*id, hand, true);
                         self.emit(Cue::GloveCatch, Some(hand), Some(*id), palm, 1.0);
