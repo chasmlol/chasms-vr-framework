@@ -662,8 +662,10 @@ const BOWL_MAX_SPEED: f32 = 2.5;
 const BOWL_FALL: f64 = 0.18;
 /// How often the hand on a grinder feels its grinding (seconds between pulses).
 const GRIND_FEEL: f64 = 0.045;
-/// A bowl whose mouth faces lower than this (its up's height, -1 upside down) spills.
+/// A bowl whose mouth faces lower than this (its up's height, -1 upside down) spills, and one
+/// facing up less than `UPRIGHT` takes nothing in.
 const SPILL: f32 = -0.3;
+const UPRIGHT: f32 = 0.5;
 /// A throw lets go when the grip eases this far off its hardest squeeze while the hand swings
 /// faster than this (m/s).
 const THROW_EASE: f32 = 0.25;
@@ -1311,12 +1313,17 @@ impl Rig {
     /// rim and out past it its mouth still takes it): one that takes it and has room for it.
     fn bowl_for(&self, id: u32, at: Vec3, above: f32, slack: f32) -> Option<u32> {
         self.bowls.values().find_map(|r| {
-            if r.id == id || !r.accepts().contains(&id) || self.contents(r.id).len() >= r.capacity as usize {
+            if r.id == id || !r.accepts().contains(&id) || self.contents(r.id).len() >= r.capacity as usize || !self.upright(r.id) {
                 return None;
             }
             let local = self.in_bowl_space(r.id, at)?;
             Bowl::of(r).in_mouth(local, above, slack).then_some(r.id)
         })
+    }
+
+    /// A bowl the right way up enough to take things (its mouth facing up more than sideways).
+    fn upright(&self, bowl: u32) -> bool {
+        self.obj_pose(bowl).is_some_and(|(_, q)| (q * Vec3::Y).y > UPRIGHT)
     }
 
     /// What's in a bowl (not its grinder), in the order it went in.
