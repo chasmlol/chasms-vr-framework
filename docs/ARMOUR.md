@@ -29,6 +29,11 @@ an armour for a game marks their own models the same way. Oblivion's
 * **Layers**: a plate on a higher layer is drawn over a lower one's where they meet (its depth
   taken 2.5 mm a layer towards the eye), so overlapping plates slide over one another rather than
   clip.
+* **The body under the armour.** A game's body made of parts sends its skin under what's worn too
+  (a part named `<game>/<key>:under`, `rustvr_protocol::UNDER`). It's drawn 1 cm away from the eye,
+  so it never shows through armour it comes up against, only where nothing worn is in front of it:
+  where a rigid cuff's open end is left as the hand bends out of it, or two plates part over a
+  joint, the arm inside shows, not the armour's hollow. Nothing to mark: every piece gets it.
 
 ## 1. Where marks live
 
@@ -57,7 +62,7 @@ back, reaching, holding a gun, a squat) and draws each pose with the runtime's o
 * `<pose>.png`: a row per way of skinning (`--skin linear,centres,marked`: the game's, with joints
   that keep their volume, and with the marks), a column per view (`--views`: `front`, `side`,
   `back`, `eye` (the wearer's own, the head cut away), `arm`, `shoulder`, `elbow` (side on to the
-  bend), `wrist` (from the thumb's side));
+  bend), `wrist` (from the thumb's side), `hand` (down on the back of the hand and its fingers));
 * `islands.png`: every island its own colour, numbered `mesh.island`;
 * `plates.png`: every plate its own colour, soft parts grey, at rest and with the arms raised (or
   in the poses `--poses` names, from the views `--views` names: what bends where);
@@ -68,8 +73,9 @@ back, reaching, holding a gun, a squat) and draws each pose with the runtime's o
   bones their skin is on, heaviest first), then the plates its marks make (what each rides, its
   pivot at rest, its layer), what went wrong, and the rules that chose nothing in it.
 
-`--poses`, `--size`, `--plain` (one colour, no textures) and `--visibility hands|arms|full` (what
-of the body the pose pictures show, as the menu's setting does) narrow it down.
+`--poses`, `--size`, `--plain` (one colour, no textures), `--fingers relaxed|open|fist|point|trigger`
+(how the hands are held) and `--visibility hands|arms|full` (what of the body the pose pictures
+show, as the menu's setting does) narrow it down.
 
 ## 3. The file
 

@@ -108,7 +108,7 @@ struct VSIn {
     uint4 bones : BLENDINDICES;
     float4 weights : BLENDWEIGHT;
     float4 ao : COLOR0;        // x: the game's baked vertex AO
-    float4 centre : TEXCOORD1; // its centre of rotation, w: 0 blended linearly, else 1 + its plate's layer
+    float4 centre : TEXCOORD1; // its centre of rotation, w: 0 blended linearly, else 1 + its plate's layer (the body under what's worn 0.25, 0.75)
 };
 struct VSOut {
     float4 pos : SV_Position;
@@ -166,6 +166,10 @@ SKINNING(skinned, bone_rows, bone_turn, bone_stretch)
 // Metres a plate's layer comes towards the eye for its depth: overlapping plates nearer than this
 // to one another draw the higher layer's over the lower's (they slide over, they don't clip).
 #define LAYER_DEPTH 0.0025
+// Metres the body under what's worn goes away from the eye for its depth: it shows only where
+// nothing worn is in front of it nearer than this (an opening between rigid plates), never through
+// armour it comes up against.
+#define UNDER_DEPTH 0.01
 
 VSOut VSMain(VSIn i) {
     float4 w = i.weights / max(dot(i.weights, 1), 1e-5);
@@ -179,10 +183,12 @@ VSOut VSMain(VSIn i) {
     VSOut o;
     // A plate on a layer is drawn a little nearer the eye along its line of sight (the same pixel),
     // where it faces the eye: so where it meets a lower layer's, it's the one that shows.
+    // The body under what's worn goes the other way, behind whatever is near it.
     float3 seen = world;
     float layer = i.centre.w - 1;
     float3 to_eye = eye_pos.xyz - world;
-    if (layer > 0.5 && dot(n, to_eye) > 0) seen += to_eye * (layer * LAYER_DEPTH * rsqrt(max(dot(to_eye, to_eye), 1e-8)));
+    if (frac(i.centre.w) > 0.1) seen -= to_eye * (UNDER_DEPTH * rsqrt(max(dot(to_eye, to_eye), 1e-8)));
+    else if (layer > 0.5 && dot(n, to_eye) > 0) seen += to_eye * (layer * LAYER_DEPTH * rsqrt(max(dot(to_eye, to_eye), 1e-8)));
     o.pos = mul(view_proj, float4(seen, 1));
     o.world = world;
     // Unit length, as the game's vertex normals are (the rig's matrices scale the body).

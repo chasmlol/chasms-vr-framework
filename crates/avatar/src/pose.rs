@@ -92,6 +92,12 @@ pub fn fist() -> Fingers {
     Fingers { curl: [1.0; 5], splay: 0.0, _pad: [0.0; 2] }
 }
 
+/// Pointing, as a hand on a controller with the index finger off the trigger: the index straight,
+/// the others curled round the grip, the thumb over them.
+pub fn pointing() -> Fingers {
+    Fingers { curl: [0.6, 0.0, 1.0, 1.0, 1.0], splay: 0.0, _pad: [0.0; 2] }
+}
+
 /// Firing hand on a pistol grip: index finger along the trigger, the rest wrapped round.
 pub fn trigger_grip() -> Fingers {
     Fingers { curl: [0.65, 0.35, 0.85, 0.9, 0.9], splay: 0.0, _pad: [0.0; 2] }

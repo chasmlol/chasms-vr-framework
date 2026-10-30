@@ -180,7 +180,8 @@ pub struct Skin {
 }
 
 /// Each mesh's vertices' centres of rotation (`cor.rs`): `[x, y, z, w]`, w 0 for a vertex skinned
-/// by linear blending, else 1 plus its plate's layer (`armour.rs`) for one turned about (x, y, z).
+/// by linear blending, else 1 plus its plate's layer (`armour.rs`) for one turned about (x, y, z);
+/// the body under what's worn (see [`compose`]) 0.25 or 0.75 for the same.
 pub type Centres = Vec<Vec<[f32; 4]>>;
 
 /// How a body put together by [`compose`] is skinned.
@@ -537,7 +538,10 @@ pub(crate) struct SourceMaterial {
 /// (a body or an armour made for one race's skeleton, worn by another's) is put on this one by its
 /// bones' names, as the game itself does ([`rebind`]); a part with bones the skeleton hasn't is left
 /// out. `skinning` says how it's skinned: with [`Skinning::Marked`], each part the marks name (by
-/// the model path the cache's index gives its key) gets its plates.
+/// the model path the cache's index gives its key) gets its plates. A part named with
+/// [`rustvr_protocol::UNDER`] after its key is the body under what's worn: it goes after the others,
+/// its joints rounded on its own (the bare body's), and the renderer draws it a little away from the
+/// eye, so it shows only where nothing worn is in front of it.
 pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &[(String, String)], skinning: Skinning) -> Result<AvatarSource> {
     let skel = asset::load_model(dir, skeleton).with_context(|| format!("the skeleton {skeleton}"))?;
     // (A swap to a texture the cache doesn't have keeps the part's own.)
@@ -556,7 +560,13 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     let mut plates: Vec<armour::Plate> = Vec::new();
     let rest = rig::rest_pose(&model.bones);
-    for key in parts {
+    // (What's worn first, then the body under it, from this mesh on.)
+    let (worn, under): (Vec<&String>, Vec<&String>) = parts.iter().partition(|k| !k.ends_with(rustvr_protocol::UNDER));
+    let mut first_under = usize::MAX;
+    for (key, is_under) in worn.into_iter().map(|k| (k.as_str(), false)).chain(under.into_iter().map(|k| (k.trim_end_matches(rustvr_protocol::UNDER), true))) {
+        if is_under && first_under == usize::MAX {
+            first_under = model.meshes.len();
+        }
         let part = match asset::load_model(dir, key) {
             Ok(p) => p,
             Err(e) => {
@@ -575,7 +585,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             lo[k] = lo[k].min(part.bounds_min[k]);
             hi[k] = hi[k].max(part.bounds_max[k]);
         }
-        if let (Skinning::Marked(marks), Some(name)) = (skinning, names.get(key))
+        if let (Skinning::Marked(marks), Some(name), false) = (skinning, names.get(key), is_under)
             && let Some(piece) = marks.piece(name)
         {
             let mut marked = armour::plates(piece, &part, &rest);
@@ -599,15 +609,25 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
     // How each vertex is skinned: the soft ones about their centres (found from the game's own
     // weights), then each plate's as one piece.
     let mut centres: Centres = model.meshes.iter().map(|m| vec![[0.0; 4]; m.vertices.len()]).collect();
+    let first_under = first_under.min(model.meshes.len());
     if !matches!(skinning, Skinning::Linear) {
-        let meshes: Vec<(&[asset::Vertex], &[u32])> = model.meshes.iter().map(|m| (m.vertices.as_slice(), m.indices.as_slice())).collect();
-        for (out, found) in centres.iter_mut().zip(cor::centres(&meshes)) {
-            for (c, f) in out.iter_mut().zip(found) {
-                if let Some(p) = f {
-                    *c = [p.x, p.y, p.z, 1.0];
+        // (What's worn and the body under it each on its own: the body under it, as bare, mustn't
+        // change how the armour bends.)
+        for range in [0..first_under, first_under..model.meshes.len()] {
+            let meshes: Vec<(&[asset::Vertex], &[u32])> = model.meshes[range.clone()].iter().map(|m| (m.vertices.as_slice(), m.indices.as_slice())).collect();
+            for (out, found) in centres[range].iter_mut().zip(cor::centres(&meshes)) {
+                for (c, f) in out.iter_mut().zip(found) {
+                    if let Some(p) = f {
+                        *c = [p.x, p.y, p.z, 1.0];
+                    }
                 }
             }
         }
+    }
+    // The body under what's worn is flagged as such: 0.25 for a vertex blended linearly, 0.75 for
+    // one turned about its centre.
+    for c in centres[first_under..].iter_mut().flatten() {
+        c[3] = if c[3] < 0.5 { 0.25 } else { 0.75 };
     }
     // Plates are shaped at rest, so they ride their riders bound at rest: a copy of each rider
     // that moves between its bind pose and rest (an arm's bones), the copy below it.
