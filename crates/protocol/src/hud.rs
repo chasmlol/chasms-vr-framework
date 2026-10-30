@@ -57,8 +57,9 @@ pub const HUD_COMPASS: u32 = 11;
 /// What's said about a foe (its health): over the thing the layout's `target` says, facing the eye.
 pub const HUD_TARGET: u32 = 12;
 /// What the eyes are on (a crosshair, what it can activate: "Open Door", a name): where the head
-/// looks, fixed to it (it says what looking there does), its `offset` from that point (the group's
-/// units). Pieces drawn there are small, so it stays out of the way.
+/// looks, its `offset` from that point (the group's units), smoothed so it doesn't shake with the
+/// head, and out at the distance of the thing it's about (the layout's `gaze`), as big to the eye
+/// wherever it is. Pieces drawn there are small, so it stays out of the way.
 pub const HUD_GAZE: u32 = 13;
 
 // ---- element flags ------------------------------------------------------------------------------
@@ -157,7 +158,14 @@ pub struct HudLayout {
     /// What [`HUD_TARGET`] pieces float over: a point in the world (metres), if `has_target`.
     pub target: [f32; 3],
     pub has_target: u32,
-    pub _pad: [u32; 7],
+    /// What [`HUD_GAZE`] pieces are about (the thing looked at): its centre in the world (metres)
+    /// and how far it reaches round that (0: nothing, or not said). They float just in front of it.
+    pub gaze: [f32; 3],
+    pub gaze_radius: f32,
+    /// The laser's colours in the game's own palette (its cursor's, its UI's): the beam's bright
+    /// thread and the glow round it and its dot, each `0xRRGGBBAA` in sRGB (0: the runtime's own).
+    pub pointer: [u32; 2],
+    pub _pad: [u32; 1],
     pub groups: [HudGroup; MAX_HUD_GROUPS],
     pub elements: [HudElement; MAX_HUD_ELEMENTS],
 }

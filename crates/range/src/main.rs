@@ -858,7 +858,8 @@ impl Game {
             aux_frame: f.frame_index as u32,
             aux_pose: it.scope_cam,
             hud_aspect: slot_hud.as_ref().map(|(_, w, h, _)| *w as f32 / *h as f32).unwrap_or(16.0 / 9.0),
-            _pad: [0; 3],
+            hud_layout: 0,
+            _pad: [0; 2],
             // Where the eyes were in the world as they were drawn: the runtime moves the picture
             // on to where the head and the walking player are when it's shown.
             eye_map: [v.slot_map(); 2],

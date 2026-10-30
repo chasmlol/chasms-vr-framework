@@ -759,7 +759,11 @@ pub struct SlotInfo {
     pub aux_pose: Pose,
     /// Width / height of the HUD content.
     pub hud_aspect: f32,
-    pub _pad: [u32; 3],
+    /// The HUD layout that says what this picture's HUD is (its `seq`, as
+    /// [`crate::link::Link::hud_layout_seq`] gave it after it was written; 0: not said). The runtime cuts
+    /// a picture's pieces by the layout it was drawn with, never one a frame older or newer.
+    pub hud_layout: u32,
+    pub _pad: [u32; 2],
     /// Where each eye's picture was in the world when it was rendered: the tracking -> world
     /// mapping it was drawn with. With the depth, the runtime moves the picture to where the head
     /// and the walking player are when it's shown.

@@ -389,6 +389,15 @@ impl Adapter {
         }
     }
 
+    /// The HUD layout written last (its sequence number; 0: none), for the picture it describes
+    /// ([`SlotInfo::hud_layout`]).
+    pub fn hud_layout_seq(&self) -> u32 {
+        match &self.link {
+            Some(l) if self.connected => l.hud_layout_seq(),
+            _ => 0,
+        }
+    }
+
     /// Registers the game's own hand poses (`ObjectDesc::grip_pose` / `support_pose` name them).
     /// Bump `table.seq` on every change, as for the objects; call again after a reconnect.
     pub fn write_hand_poses(&self, table: &HandPoseTable) -> bool {

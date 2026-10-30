@@ -591,8 +591,9 @@
 
 /**
  * What the eyes are on (a crosshair, what it can activate: "Open Door", a name): where the head
- * looks, fixed to it (it says what looking there does), its `offset` from that point (the group's
- * units). Pieces drawn there are small, so it stays out of the way.
+ * looks, its `offset` from that point (the group's units), smoothed so it doesn't shake with the
+ * head, and out at the distance of the thing it's about (the layout's `gaze`), as big to the eye
+ * wherever it is. Pieces drawn there are small, so it stays out of the way.
  */
 #define RVR_HUD_GAZE 13
 
