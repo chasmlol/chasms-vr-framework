@@ -417,6 +417,23 @@
  */
 #define RVR_FACE_GIVEN (1 << 0)
 
+/**
+ * [`FaceDesc`]: the face may be shaped by hand now (the game's character creator is open). The
+ * runtime lets the hands take hold of it and pull its parts into shape, within the face's own
+ * geometry coordinates, and writes the face they make ([`FaceSculpt`]).
+ */
+#define RVR_FACE_SCULPT (1 << 1)
+
+/**
+ * The named face controls [`FaceDesc::limits`] has room for.
+ */
+#define RVR_FACE_CONTROLS 64
+
+/**
+ * [`FaceSculpt`]: a hand has hold of the face now (the pull isn't finished).
+ */
+#define RVR_SCULPT_HELD (1 << 0)
+
 #define RVR_OFF_COMBAT 5177344
 
 #define RVR_OFF_ACTORS RVR_OFF_COMBAT

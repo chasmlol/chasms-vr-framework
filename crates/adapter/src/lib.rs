@@ -640,6 +640,15 @@ impl Adapter {
         }
     }
 
+    /// The face as the player's hands have shaped it (see [`FaceSculpt`]), while the face says it
+    /// may be ([`FACE_SCULPT`]): false when there's none (nothing written yet).
+    pub fn read_face_sculpt(&self, out: &mut FaceSculpt) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_face_sculpt_into(out) && out.seq != 0,
+            _ => false,
+        }
+    }
+
     /// The mount the player rides and the mounts near them (see [`Ride`]): every game frame.
     pub fn write_ride(&self, ride: &Ride) -> bool {
         match &self.link {

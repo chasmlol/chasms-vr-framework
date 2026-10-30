@@ -102,10 +102,43 @@ pub struct FaceDesc {
     /// The parts that are the eyes (left, right; `<game>/<key>`, empty: none): each turns as one
     /// about its centre, to look where the eyes look (a mirror's reflection looks back at you).
     pub eyes: [[u8; 32]; 2],
+    /// While [`FACE_SCULPT`]: how far each of the game's named face controls (the cache's
+    /// `facegen.toml`, `rustvr_asset::FaceControls::controls`, in its order) may go either side of
+    /// 0, as far as its slider goes (0: no limit). A face shaped by hand stays inside them.
+    pub limits: [f32; FACE_CONTROLS],
 }
 
 /// [`FaceDesc`] holds a face (else the parts are drawn as modelled).
 pub const FACE_GIVEN: u32 = 1 << 0;
+/// [`FaceDesc`]: the face may be shaped by hand now (the game's character creator is open). The
+/// runtime lets the hands take hold of it and pull its parts into shape, within the face's own
+/// geometry coordinates, and writes the face they make ([`FaceSculpt`]).
+pub const FACE_SCULPT: u32 = 1 << 1;
+/// The named face controls [`FaceDesc::limits`] has room for.
+pub const FACE_CONTROLS: usize = 64;
+
+/// Runtime -> adapter: the face as the hands have shaped it (while [`FACE_SCULPT`]): its geometry
+/// coordinates whole, as [`FaceDesc`] gives them (the race's and the character's added). The
+/// adapter puts them into the game's face whenever `seq` changes, as the game's own sliders would,
+/// and the face comes back in [`FaceDesc`].
+pub const OFF_FACE_SCULPT: usize = (crate::OFF_CARDS + size_of::<crate::Cards>()).next_multiple_of(64);
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct FaceSculpt {
+    /// Seqlock word (each write is a new face).
+    pub seq: u32,
+    pub flags: u32, // SCULPT_*
+    /// A new number for each pull (taken hold of, pulled, let go): the face from before each is
+    /// what an undo goes back to.
+    pub stroke: u32,
+    pub _pad: u32,
+    pub geometry_symmetric: [f32; FACE_GEOMETRY_SYMMETRIC],
+    pub geometry_asymmetric: [f32; FACE_GEOMETRY_ASYMMETRIC],
+}
+
+/// [`FaceSculpt`]: a hand has hold of the face now (the pull isn't finished).
+pub const SCULPT_HELD: u32 = 1 << 0;
 
 impl FaceDesc {
     pub fn detail(&self) -> (&str, &str, &str) {
@@ -121,6 +154,8 @@ const _: () = {
     assert!(size_of::<AvatarDesc>() == 16 + 32 + 32 * MAX_AVATAR_PARTS + 32 * MAX_AVATAR_SWAPS);
     assert!(OFF_AVATAR + size_of::<AvatarDesc>() <= crate::OFF_HUD_LAYOUT);
     assert!(OFF_FACE + size_of::<FaceDesc>() <= crate::OFF_HUD_LAYOUT);
+    assert!(size_of::<FaceSculpt>() == 16 + 4 * (FACE_GEOMETRY_SYMMETRIC + FACE_GEOMETRY_ASYMMETRIC));
+    assert!(OFF_FACE_SCULPT + size_of::<FaceSculpt>() <= crate::OFF_HUD_LAYOUT);
 };
 
 #[cfg(test)]

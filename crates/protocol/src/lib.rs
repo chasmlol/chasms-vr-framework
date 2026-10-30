@@ -46,11 +46,12 @@
 //! | [`OFF_INVENTORY`] .. [`OFF_SLOT_EDITS`] | the player's things and the body's slots (see [`inventory`]) | both | seqlock |
 //! | [`OFF_POCKETS`] .. [`OFF_POCKETS_END`] | the creatures' pockets and what the hands do in them: see [`pockets`] | both | seqlock, ring |
 //! | [`OFF_STATIONS`], [`OFF_CARDS`] | [`Receptacles`]: bowls the hands make things in (see [`stations`]); [`Cards`]: cards made of a game's own interface (see [`cards`]) | adapter -> runtime | seqlock |
+//! | [`OFF_FACE_SCULPT`] | [`FaceSculpt`]: the face as the hands shape it (see [`avatar`]) | runtime -> adapter | seqlock |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
 //! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, the
-//! inventory with the body's slots, the creatures' pockets, the bowls and the cards (a new one goes
-//! after the last).
+//! inventory with the body's slots, the creatures' pockets, the bowls, the cards and the face the
+//! hands shape (a new one goes after the last).
 //! Every region is listed in address order in `LAYOUT`, which the build checks: none overlaps the
 //! next, and all lie inside [`MAPPING_BYTES`].
 //!
@@ -1064,6 +1065,7 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_POCKET_EVENTS, size_of::<PocketEvents>()),
     (OFF_STATIONS, size_of::<Receptacles>()),
     (OFF_CARDS, size_of::<Cards>()),
+    (OFF_FACE_SCULPT, size_of::<FaceSculpt>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

@@ -363,6 +363,13 @@ impl Link {
     pub fn read_face_into(&self, out: &mut FaceDesc) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_FACE), out) }
     }
+    /// Runtime: the face as the hands have shaped it ([`FaceSculpt`]).
+    pub fn write_face_sculpt(&self, v: &FaceSculpt) {
+        unsafe { seq_write(self.base.add(OFF_FACE_SCULPT), v) }
+    }
+    pub fn read_face_sculpt_into(&self, out: &mut FaceSculpt) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_FACE_SCULPT), out) }
+    }
     /// Adapter: what the things it offers are ([`ItemInfos`]).
     pub fn write_item_infos(&self, v: &ItemInfos) {
         unsafe { seq_write(self.base.add(OFF_ITEM_INFO), v) }
