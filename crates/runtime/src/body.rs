@@ -415,7 +415,7 @@ impl PlayerBody {
         std::thread::spawn(move || {
             let t = std::time::Instant::now();
             let built = rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps, face.as_ref());
-            tracing::debug!("runtime: the game's body put together in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
+            tracing::info!("runtime: the game's body put together in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
             let _ = tx.send(built);
         });
         self.game_body = Some(rx);
@@ -424,16 +424,18 @@ impl PlayerBody {
     /// Loads the avatar the first time it's needed: Metro's Miller when the extracted assets are
     /// there (local test content), else the built-in mannequin; later, the body the game makes up.
     fn avatar(&mut self, gpu: &Gpu) -> Option<&mut Avatar> {
-        if let Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) = self.game_body.as_ref().map(|rx| rx.try_recv()) {
+        let received = self.game_body.as_ref().map(|rx| rx.try_recv());
+        if let Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) = received {
             tracing::error!("runtime: putting the game's body together stopped");
             self.game_body = None;
         }
-        if let Some(Ok(built)) = self.game_body.as_ref().map(|rx| rx.try_recv()) {
+        if let Some(Ok(built)) = received {
             self.game_body = None;
             self.avatar_tried = true;
+            let t = std::time::Instant::now();
             match built.and_then(|source| Avatar::new(gpu, source)) {
                 Ok(a) => {
-                    tracing::info!("runtime: drawing the game's body");
+                    tracing::info!("runtime: drawing the game's body (on the GPU in {:.0} ms)", t.elapsed().as_secs_f32() * 1000.0);
                     self.avatar = Some(a);
                     self.take_proportions();
                 }

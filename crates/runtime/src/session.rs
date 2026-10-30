@@ -1494,7 +1494,8 @@ impl Session {
                 pose,
                 fov,
                 to_target,
-                metres_per_unit: 1.0,
+                // (Its depth is in the game's world's metres, as the eyes' is.)
+                metres_per_unit: 1.0 / if then.world_per_meter > 0.0 { then.world_per_meter } else { 1.0 },
             })
         });
         let headset_post = &mut self.headset_post;
@@ -1706,6 +1707,10 @@ impl Session {
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");
+                }
+                // (The mirror with the reflection the aiming eye sees in it.)
+                if !framework && let Err(err) = mirror.draw_glass(gpu, target, first, &cam, &fov, None) {
+                    tracing::warn!("mirror: {err:#}");
                 }
                 if draw_body {
                     body.draw(gpu, target, &cam, &fov, light, depth.take(), &held);

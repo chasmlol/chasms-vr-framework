@@ -160,9 +160,10 @@ pub enum AvatarSource {
     Model { dir: PathBuf, body: String, hands: Option<String> },
     /// A model given directly, with the textures its meshes and materials name (by key).
     Built { model: asset::Model, textures: HashMap<String, asset::Texture> },
-    /// A body put together from a game's parts ([`compose`]): as [`AvatarSource::Built`], with what
-    /// each mesh draws beside its material (a face's textures, the hair's tint), by mesh.
-    Composed { model: asset::Model, textures: HashMap<String, asset::Texture>, extras: Vec<MeshExtras> },
+    /// A body put together from a game's parts ([`compose`]): as [`AvatarSource::Built`] (its
+    /// textures shared with the parts' cache), with what each mesh draws beside its material (a
+    /// face's textures, the hair's tint), by mesh.
+    Composed { model: asset::Model, textures: HashMap<String, Arc<asset::Texture>>, extras: Vec<MeshExtras> },
 }
 
 /// What a mesh of a body put together from a game's parts draws beside its model's material.
@@ -206,7 +207,6 @@ impl Avatar {
                 (body.map_err(|e| tracing::warn!("avatar: {e:#}; drawing the mannequin instead")).ok(), None)
             }
             AvatarSource::Composed { model, textures, extras } => {
-                let textures: HashMap<String, Arc<asset::Texture>> = textures.into_iter().map(|(k, t)| (k, Arc::new(t))).collect();
                 let source = from_model_with(model, extras, |key| textures.get(key).cloned());
                 let body = render::Character::new(gpu, source);
                 (body.map_err(|e| tracing::warn!("avatar: {e:#}; drawing the mannequin instead")).ok(), None)
@@ -528,7 +528,7 @@ pub(crate) struct SourceMaterial {
 /// head and the parts made to it: `morphs/<key>.rvf`) are moved to it first ([`facegen`]), the head
 /// gets its texture morphs and detail map, and the hair its tint.
 pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &[(String, String)], face: Option<&facegen::Face>) -> Result<AvatarSource> {
-    let skel = asset::load_model(dir, skeleton).with_context(|| format!("the skeleton {skeleton}"))?;
+    let skel = cached::model(dir, skeleton).with_context(|| format!("the skeleton {skeleton}"))?;
     // (A swap to a texture the cache doesn't have keeps the part's own.)
     let have = |key: &str| dir.join("textures").join(format!("{key}.{}", asset::TEXTURE_EXT)).is_file();
     let swap = |k: &mut String| {
@@ -536,12 +536,12 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             *k = to.clone();
         }
     };
-    let mut model = asset::Model { version: asset::FORMAT_VERSION, source: format!("{skeleton} with {} parts", parts.len()), bones: skel.bones, ..Default::default() };
+    let mut model = asset::Model { version: asset::FORMAT_VERSION, source: format!("{skeleton} with {} parts", parts.len()), bones: skel.bones.clone(), ..Default::default() };
     let mut extras: Vec<MeshExtras> = Vec::new();
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for key in parts {
-        let part = match asset::load_model(dir, key) {
-            Ok(p) => p,
+        let part = match cached::model(dir, key) {
+            Ok(p) => (*p).clone(),
             Err(e) => {
                 tracing::warn!("avatar: part {key}: {e:#}");
                 continue;
@@ -554,7 +554,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         if let Some(f) = face
             && asset::has_morphs(dir, key)
         {
-            match asset::load_morphs(dir, key) {
+            match cached::morphs(dir, key) {
                 Ok(m) => {
                     if let Some(mesh) = part.meshes.get_mut(m.mesh as usize) {
                         facegen::morph_mesh(mesh, &m, &f.coords);
@@ -609,7 +609,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             if key.is_empty() || textures.contains_key(key) {
                 continue;
             }
-            match asset::load_texture(dir, key) {
+            match cached::texture(dir, key) {
                 Ok(t) => {
                     textures.insert(key.clone(), t);
                 }
@@ -618,6 +618,48 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         }
     }
     Ok(AvatarSource::Composed { model, textures, extras })
+}
+
+/// What [`compose`] loads from an asset cache folder, kept as loaded: a character creator puts the
+/// same parts together again at every slider's move, and the files are big (a head's texture morphs
+/// are ten megabytes). Forgotten all at once past a few hundred things.
+mod cached {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    type Map<T> = Mutex<Option<HashMap<(PathBuf, String), Arc<T>>>>;
+    static MODELS: Map<asset::Model> = Mutex::new(None);
+    static MORPHS: Map<asset::FaceMorphs> = Mutex::new(None);
+    static TEXTURES: Map<asset::Texture> = Mutex::new(None);
+    const KEPT: usize = 400;
+
+    fn get<T>(map: &Map<T>, dir: &Path, key: &str, load: impl FnOnce() -> Result<T>) -> Result<Arc<T>> {
+        let k = (dir.to_path_buf(), key.to_owned());
+        if let Some(v) = map.lock().unwrap().as_ref().and_then(|m| m.get(&k)) {
+            return Ok(v.clone());
+        }
+        let v = Arc::new(load()?);
+        let mut m = map.lock().unwrap();
+        let m = m.get_or_insert_with(HashMap::new);
+        if m.len() >= KEPT {
+            m.clear();
+        }
+        m.insert(k, v.clone());
+        Ok(v)
+    }
+
+    pub fn model(dir: &Path, key: &str) -> Result<Arc<asset::Model>> {
+        get(&MODELS, dir, key, || asset::load_model(dir, key))
+    }
+
+    pub fn morphs(dir: &Path, key: &str) -> Result<Arc<asset::FaceMorphs>> {
+        get(&MORPHS, dir, key, || asset::load_morphs(dir, key))
+    }
+
+    pub fn texture(dir: &Path, key: &str) -> Result<Arc<asset::Texture>> {
+        get(&TEXTURES, dir, key, || asset::load_texture(dir, key))
+    }
 }
 
 /// Puts a part skinned to another skeleton (`part.bones`) on `bones` by the bones' names: each
