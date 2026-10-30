@@ -17,8 +17,13 @@
 //! Islands (the pieces of a mesh whose triangles share corners, corners at the same place being
 //! the same corner) are what plates are chosen from; [`islands`] lists them as the preview shows
 //! them.
+//!
+//! A plate is usually joined to what's next to it (a soft band, or the next plate across a
+//! joint), and the corners they share bend smoothly between them. One marked to come apart at
+//! its seam gets its own copy of those corners ([`cut_seams`]), so it slides over or under what it
+//! meets as a real plate does.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use glam::{Mat4, Vec3};
 use rustvr_asset as asset;
@@ -160,6 +165,9 @@ pub struct Plate {
     pub layer: u8,
     /// Its vertices at rest (positions and normals, in `vertices`' order).
     pub shape: Vec<(Vec3, Vec3)>,
+    /// For a plate that comes apart at its seam, its triangles (their numbers in the mesh), which
+    /// [`cut_seams`] gives corners of their own; else none.
+    pub triangles: Vec<u32>,
 }
 
 /// The bone named `pattern` (a [`marks::glob`]) for something on `side` near `near`: the one on that
@@ -291,6 +299,9 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Mark
                 // island across the body, both legs' leather, gives each leg its own plate);
                 // one made of whole islands, on theirs.
                 for &i in &isl.vertices {
+                    if mark.corners_within.is_some_and(|b| !b.contains(mesh.vertices[i as usize].pos)) {
+                        continue;
+                    }
                     let side = if mark.vertices.is_empty() {
                         isl.side
                     } else {
@@ -310,8 +321,18 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Mark
             unchosen.push(mark.name.clone());
             continue;
         }
-        for ((side, m), vertices) in chosen {
+        for ((side, m), mut vertices) in chosen {
             let mesh = &model.meshes[m];
+            // One that comes apart at its seam is the triangles with a corner chosen, whole.
+            let mut triangles = Vec::new();
+            if mark.seam {
+                let corners: HashSet<u32> = vertices.iter().copied().collect();
+                triangles = mesh.indices.chunks_exact(3).enumerate().filter(|(_, t)| t.iter().any(|i| corners.contains(i))).map(|(t, _)| t as u32).collect();
+                let mut all: Vec<u32> = triangles.iter().flat_map(|&t| mesh.indices[t as usize * 3..t as usize * 3 + 3].iter().copied()).collect();
+                all.sort_unstable();
+                all.dedup();
+                vertices = all;
+            }
             let centre = vertices.iter().map(|&i| Vec3::from_array(mesh.vertices[i as usize].pos)).sum::<Vec3>() / vertices.len() as f32;
             // Its riders: as marked, else its own weights averaged.
             let mut shares: Vec<(usize, f32)> = Vec::new();
@@ -359,11 +380,47 @@ pub fn plates(piece: &marks::Piece, model: &asset::Model, rest: &[Mat4]) -> Mark
             } else {
                 shares.iter().map(|&(b, w)| moves.get(b).map_or(pivot, |m| m.transform_point3(pivot)) * (w / total)).sum()
             };
-            out.push(Plate { name: mark.name.clone(), side, mesh: m, vertices, bones, weights, pivot, layer: mark.layer, shape });
+            out.push(Plate { name: mark.name.clone(), side, mesh: m, vertices, bones, weights, pivot, layer: mark.layer, shape, triangles });
         }
     }
     attach_studs(model, &islands, &moves, &mut out);
     Marked { plates: out, problems, unchosen }
+}
+
+/// Gives each plate that comes apart at its seam its own copy of the corners its triangles share
+/// with the rest of its mesh (added to the mesh, its triangles turned to them), so the rest keeps
+/// its own and the plate moves apart from it instead of dragging it along. Call it on the model
+/// the plates were made of, before they're applied.
+pub fn cut_seams(model: &mut asset::Model, plates: &mut [Plate]) {
+    for p in plates.iter_mut().filter(|p| !p.triangles.is_empty()) {
+        let mesh = &mut model.meshes[p.mesh];
+        let mine: HashSet<u32> = p.triangles.iter().copied().collect();
+        let shared: HashSet<u32> = mesh.indices.chunks_exact(3).enumerate().filter(|(t, _)| !mine.contains(&(*t as u32))).flat_map(|(_, t)| t.iter().copied()).collect();
+        let mut copy_of: HashMap<u32, u32> = HashMap::new();
+        for &t in &p.triangles {
+            for k in t as usize * 3..t as usize * 3 + 3 {
+                let i = mesh.indices[k];
+                if !shared.contains(&i) {
+                    continue;
+                }
+                let copy = match copy_of.get(&i) {
+                    Some(&c) => c,
+                    None => {
+                        mesh.vertices.push(mesh.vertices[i as usize]);
+                        let c = mesh.vertices.len() as u32 - 1;
+                        copy_of.insert(i, c);
+                        c
+                    }
+                };
+                mesh.indices[k] = copy;
+            }
+        }
+        for v in &mut p.vertices {
+            if let Some(&c) = copy_of.get(v) {
+                *v = c;
+            }
+        }
+    }
 }
 
 /// Islands no bigger than this (metres across) are studs, rivets and buckles...
@@ -405,7 +462,7 @@ fn attach_studs(model: &asset::Model, islands: &[Vec<Island>], moves: &[Mat4], o
             out[k].vertices.extend(vertices);
             out[k].shape.extend(shape);
         } else {
-            let plate = Plate { mesh: m, vertices, shape, ..out[k].clone() };
+            let plate = Plate { mesh: m, vertices, shape, triangles: Vec::new(), ..out[k].clone() };
             out.push(plate);
         }
     }

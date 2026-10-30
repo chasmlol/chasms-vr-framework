@@ -346,7 +346,10 @@ fn coloured(source: AvatarSource, dir: &Path, parts: &[String], marks: &ArmourFi
                 let _ = rustvr_avatar::rebind(&mut part, &skel);
             }
             if let Some(piece) = name_of.get(key).and_then(|n| marks.piece(n)) {
-                for p in armour::plates(piece, &part, &[]).plates {
+                // (Cut as `compose` cuts them, so the copies it adds are coloured too.)
+                let mut plates = armour::plates(piece, &part, &[]).plates;
+                armour::cut_seams(&mut part, &mut plates);
+                for p in plates {
                     for &v in &p.vertices {
                         plate_of.insert((first + p.mesh, v), count);
                     }

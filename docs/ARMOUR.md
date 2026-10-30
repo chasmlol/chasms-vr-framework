@@ -118,6 +118,8 @@ narrows the choice; none chooses everything:
 | `largest` | Islands no bigger than this (metres, their bounds' longest side): a plate, not the sleeve it's on |
 | `vertices` | Of the islands chosen, only the corners mostly on one of these bones: a plate that's part of an island (the back of a glove, a boot's toe cap) |
 | `firm` | With `vertices`: only corners with at least this share on that bone, so the corners blended across a joint stay soft and bend smoothly between the plates either side |
+| `corners_within` | Of the islands chosen, only the corners in a box, `{ min = [x, y, z], max = [x, y, z] }`: a plate that's part of an island whose weights don't say where it ends (a cuff whose flare the artist blended between the forearm and the hand) |
+| `seam` | `true`: the plate comes apart from the rest of its island where they meet. It takes the triangles with a corner chosen, whole, and its own copy of the corners it shares, so as the joint bends it slides over or under what it meets instead of stretching or dragging it along (a gauntlet's hand plate joined to its cuff at the rim) |
 
 One plate is made each side (left, right, the middle) of everything a rule chooses there; a plate
 made of `vertices` is on the side of their bones (so an island across the body, both legs'
@@ -141,6 +143,9 @@ leather, gives each leg its own). Write two rules to make two plates of one side
 * **A plate on one side of a joint rides that side's bone**: a vambrace the forearm's twist bone
   (so it rolls with the forearm), a hand plate the hand, a rerebrace the upper arm. When the
   plates either side are one island, split it with `vertices` and keep the joint soft with `firm`.
+  Where the game's weights blend a hard part across the joint (a cuff's flare over the wrist), a
+  soft band there bends the metal: split by place instead (`corners_within`), and let the plate
+  past the joint come apart at its `seam`, as a real gauntlet's hand plate slides over its cuff.
 * **Torso plates** ride the spine bones explicitly: averaged weights often carry a little of the
   head or the neck, and a breastplate turning with the head looks wrong (`ride = { "Bip01 Spine2"
   = 0.6, "Bip01 Spine1" = 0.4 }`). Make the chest rigid and leave the belly soft where the

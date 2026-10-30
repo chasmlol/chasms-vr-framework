@@ -578,7 +578,8 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         if let (Skinning::Marked(marks), Some(name)) = (skinning, names.get(key))
             && let Some(piece) = marks.piece(name)
         {
-            let marked = armour::plates(piece, &part, &rest);
+            let mut marked = armour::plates(piece, &part, &rest);
+            armour::cut_seams(&mut part, &mut marked.plates);
             for p in &marked.problems {
                 tracing::warn!("avatar: {name}: {p}");
             }

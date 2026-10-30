@@ -118,6 +118,17 @@ pub struct Plate {
     /// between the plates either side.
     #[serde(default)]
     pub firm: f32,
+    /// Of the islands chosen, only the corners inside this box (right side; mirrored on the left):
+    /// a plate that is part of an island whose weights don't say where it ends (a cuff whose
+    /// flare the artist blended between the forearm and the hand).
+    #[serde(default)]
+    pub corners_within: Option<Bounds>,
+    /// Comes apart from the rest of its island where they meet: it takes the triangles with a
+    /// corner chosen, whole, and its own copy of the corners it shares with the others, so as the
+    /// joint between them bends it slides over or under what it meets, as a real plate does,
+    /// instead of stretching or dragging that along (a gauntlet's hand plate joined to its cuff).
+    #[serde(default)]
+    pub seam: bool,
     /// What it rides: bones and their shares (none: its own skin's weights, averaged).
     #[serde(default)]
     pub ride: BTreeMap<String, f32>,
