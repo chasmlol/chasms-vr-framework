@@ -647,15 +647,15 @@
 #define RVR_HELD_FACE (1 << 0)
 
 /**
- * Held by its edge like a sheet of paper: the hand at the middle of its foot, the sheet up from it
- * turned to the eyes. The other hand's grip near its far side spreads it between the two (as wide
- * as they're apart, within reason): pulling them apart makes it bigger.
+ * Held like a sheet of paper: the hand at its middle, the sheet turned to the eyes. The other
+ * hand's grip near either side spreads it between the two (the points of it the hands took stay in
+ * them, within reason): pulling them apart makes it bigger.
  */
 #define RVR_HELD_SHEET (1 << 1)
 
 /**
- * Its pages turn by hand: the free hand flicked across them (or the trigger pinched at a page's
- * edge and pulled across the middle) presses [`crate::Action::PageNext`] (leftwards) or
+ * Its pages turn by hand: a flick of the free hand, anywhere (or the trigger pinched at a page's
+ * edge and pulled across the middle), presses [`crate::Action::PageNext`] (leftwards) or
  * [`crate::Action::PagePrev`].
  */
 #define RVR_HELD_PAGES (1 << 2)

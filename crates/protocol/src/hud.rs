@@ -95,12 +95,12 @@ pub const ANCHOR_HELD: u32 = 4;
 /// On the thing's broad face, the one turned to the eyes as it appears (a book's cover): its middle
 /// on the face's, upright along the face's longer side, a few millimetres out from it.
 pub const HELD_FACE: u32 = 1 << 0;
-/// Held by its edge like a sheet of paper: the hand at the middle of its foot, the sheet up from it
-/// turned to the eyes. The other hand's grip near its far side spreads it between the two (as wide
-/// as they're apart, within reason): pulling them apart makes it bigger.
+/// Held like a sheet of paper: the hand at its middle, the sheet turned to the eyes. The other
+/// hand's grip near either side spreads it between the two (the points of it the hands took stay in
+/// them, within reason): pulling them apart makes it bigger.
 pub const HELD_SHEET: u32 = 1 << 1;
-/// Its pages turn by hand: the free hand flicked across them (or the trigger pinched at a page's
-/// edge and pulled across the middle) presses [`crate::Action::PageNext`] (leftwards) or
+/// Its pages turn by hand: a flick of the free hand, anywhere (or the trigger pinched at a page's
+/// edge and pulled across the middle), presses [`crate::Action::PageNext`] (leftwards) or
 /// [`crate::Action::PagePrev`].
 pub const HELD_PAGES: u32 = 1 << 2;
 /// The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on
