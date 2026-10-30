@@ -148,6 +148,9 @@ pub const HUDL_ADDITIVE: u32 = 1 << 1;
 pub const HUDL_ALPHA: u32 = 1 << 2;
 /// The runtime's own settings float beside this menu (the game's pause menu).
 pub const HUDL_SETTINGS: u32 = 1 << 3;
+/// The hands work this menu in the world (a lock picked at the door with the pick in the hand): they
+/// and what they hold go on under it, rather than going idle as under any other menu.
+pub const HUDL_HANDS: u32 = 1 << 4;
 
 
 #[repr(C)]

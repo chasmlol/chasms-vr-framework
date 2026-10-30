@@ -899,7 +899,10 @@ impl Session {
             // torn read keeps the last).
             self.link.read_pockets_into(&mut self.pockets);
             self.rig.set_creature_pockets(&self.pockets, self.link.pocket_events_written());
-            let rig_paused = (menu_mode && !held_open) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
+            // (So does a menu the hands work in the world: a lock picked at the door, its pick in the
+            // hand.)
+            let hands_menu = floating && self.hud_layout.flags & HUDL_HANDS != 0;
+            let rig_paused = (menu_mode && !held_open && !hands_menu) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             let game_name = name_str(&g.name).to_owned();
             self.holsters.before(&self.link, &mut self.rig, &mut self.settings, &game_name, &self.gpu, &mut self.held_objects);
             self.rig_out = self.rig.update(&RigInput {

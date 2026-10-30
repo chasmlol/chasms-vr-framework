@@ -953,6 +953,12 @@
  */
 #define RVR_HUDL_SETTINGS (1 << 3)
 
+/**
+ * The hands work this menu in the world (a lock picked at the door with the pick in the hand): they
+ * and what they hold go on under it, rather than going idle as under any other menu.
+ */
+#define RVR_HUDL_HANDS (1 << 4)
+
 #define RVR_MAX_INV_CATEGORIES 32
 
 #define RVR_MAX_INV_ITEMS 256
