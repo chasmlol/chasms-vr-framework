@@ -495,6 +495,8 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
         ui.checkbox(&mut s.sound.shots, "Gunshot sounds");
         ui.checkbox(&mut s.sound.game_sounds, "The game's own sounds (off: RustVR's)");
     }
+    ui.separator();
+    ui.checkbox(&mut s.voice.enabled, "Talk to the game's characters out loud (the servers in voice.toml)");
 }
 
 fn controls(ui: &mut egui::Ui, s: &mut Settings) {

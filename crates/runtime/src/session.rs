@@ -250,6 +250,8 @@ pub struct Session {
     /// When a slow frame was last logged.
     slow_logged: f64,
     was_alive: bool,
+    /// The voice plugin, while the player has Voice on and a game is connected (`crate::voice`).
+    voice: crate::voice::VoicePlugin,
 }
 
 impl Session {
@@ -389,6 +391,7 @@ impl Session {
             last_tick: std::time::Instant::now(),
             slow_logged: f64::MIN,
             was_alive: false,
+            voice: Default::default(),
         })
     }
 
@@ -442,6 +445,10 @@ impl Session {
                 self.reset_rig();
             }
             self.was_alive = alive;
+        }
+        // (only the player's runtime: tests and scenarios have no settings folder)
+        if let Some(dir) = &self.opts.settings_dir {
+            self.voice.update(self.settings.current.voice.enabled && alive, &self.opts.mapping, dir);
         }
         self.game = if alive { self.link.read_game_state() } else { None };
         // Where the game has the player now: its last step, walked and turned on from when its

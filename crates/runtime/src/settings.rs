@@ -27,6 +27,15 @@ pub struct Settings {
     pub mirror: Mirror,
     pub archery: Archery,
     pub riding: Riding,
+    pub voice: Voice,
+}
+
+/// Talking to the game's characters out loud: the voice plugin (`crate::voice`), with the
+/// servers and the LLM its own `voice.toml` names. Off unless the player turns it on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Voice {
+    pub enabled: bool,
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.
