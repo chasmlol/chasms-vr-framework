@@ -100,7 +100,9 @@ const SWING_END: f32 = 0.6;
 const SWING_REST: f64 = 0.25;
 /// A thrust: the point moving within this of the way the blade points (degrees).
 const THRUST_DEG: f32 = 40.0;
-/// A blow without a weapon (a creature's claws, a fist): the arm behind it weighs about this (kg).
+/// The arm behind a blow or a guard weighs about this (kg; a forearm and hand): it swings the
+/// creature's weapon (or is the blow itself, a creature's claws, a fist), and braces the player's
+/// guard (whose own weapon the rig moves; the arm is its hold, which takes the guard back after).
 const ARM_MASS: f32 = 1.5;
 /// How far a blade a creature's body (or a guard) stops is held off it by its own thickness, past
 /// the damager's radius (m): it's still touching.
@@ -1040,7 +1042,7 @@ impl Combat {
                 // the way it comes (towards the player when it's hardly moving).
                 let blow = if on_blade { va.lerp(vb, t) } else { vb };
                 let way = blow.try_normalize().unwrap_or_else(|| (chest - wb).normalize_or(Vec3::Y));
-                let m_blow = if actor.weapon_mass > 0.0 { actor.weapon_mass } else { ARM_MASS };
+                let m_blow = actor.weapon_mass.max(0.0) + ARM_MASS;
                 let (into_guard, into_blow) = (blow.dot(way).max(0.0), (-guard.dot(way)).max(0.0));
                 // Struck aside: the guard swung across its blade (the arm behind it), with at least
                 // the momentum the blow has against the way the guard goes (none, struck from the
@@ -1048,7 +1050,7 @@ impl Combat {
                 let blade = (wb - wa).normalize_or_zero();
                 let across = guard - blade * guard.dot(blade);
                 let against = (-blow.dot(across.normalize_or_zero())).max(0.0);
-                let parry = across.length() >= DEFAULT_GRIP_SPEED && m_guard * across.length() >= m_blow * against;
+                let parry = across.length() >= DEFAULT_GRIP_SPEED && (m_guard + ARM_MASS) * across.length() >= m_blow * against;
                 // The two meet: the guard takes their collision's impulse along the blow.
                 let closing = (blow - guard).dot(way);
                 if closing > 0.0 {
@@ -1111,7 +1113,7 @@ impl Combat {
             }
             let wb = Vec3::from_array(actor.weapon_b);
             let blow = blades.get(&actor.id).map(|&(_, vb)| vb).filter(|v| v.length() > 0.5).unwrap_or_else(|| (chest - wb).normalize_or(Vec3::Y) * 3.0);
-            let m_blow = if actor.weapon_mass > 0.0 { actor.weapon_mass } else { ARM_MASS };
+            let m_blow = actor.weapon_mass.max(0.0) + ARM_MASS;
             for h in 0..2 {
                 let Some(id) = inp.rig.held(h) else { continue };
                 let Some(at) = inp.rig.swing(id).map(|s| s.com) else { continue };

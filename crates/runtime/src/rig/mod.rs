@@ -2327,6 +2327,10 @@ impl Rig {
             }
         };
         let reach = if on == On::Free { self.reach_of(i, (op, oq), (at, rot)) } else { Vec3::ZERO };
+        if melee {
+            let held = self.drawn_hold(id, other).0;
+            tracing::info!("rig: the {} hand takes the {} hand's weapon {} at {at:.3?} (the other at {held:.3?}): both hands on it", if i == 0 { "left" } else { "right" }, if other == 0 { "left" } else { "right" }, if on == On::Foregrip { "by its haft" } else { "where it is" });
+        }
         let h = &mut self.hands.as_mut().unwrap()[i];
         h.support = Some(Support { id, at, rot, on, reach });
         h.glove = Glove::Idle;
@@ -3829,6 +3833,9 @@ impl Rig {
                         let inertia = self.physics.inertia_about(o.body, now_pos + now_rot * pivot) * s.interaction.weight * 2.0;
                         if inertia > 1e-5 {
                             max_ang_accel = (ARM_TORQUE * self.arm * if two { 3.0 } else { 1.0 } / inertia).max(MIN_HELD_ANG_ACCEL);
+                        }
+                        if self.frame_index % 600 == 0 {
+                            tracing::info!("rig: {id:#x} held in {} ({:.2} kg, {inertia:.3} kg m^2 about the hold): it turns at up to {max_ang_accel:.0} rad/s^2, speeds up at up to {max_accel:.0} m/s^2", if two { "both hands" } else { "one hand" }, mass);
                         }
                     }
                     {
