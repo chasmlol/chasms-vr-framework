@@ -47,7 +47,8 @@ pub struct Attach {
     pub gun: Option<(Mat4, Vec3, Vec3)>,
     /// The off hand's controller grip pose.
     pub off_hand: Option<(Vec3, Quat)>,
-    /// Where the card of the thing in a hand goes (over it, eased), and how strongly it shows.
+    /// The point just over the thing in a hand that its card stands on (eased), and how strongly it
+    /// shows.
     pub held: Option<(Vec3, f32)>,
 }
 
@@ -167,8 +168,9 @@ impl HudPlacer {
                     Some((panel, 1.0))
                 }
                 HUD_HELD if at.held.is_some() => at.held.map(|(c, opacity)| {
+                    // Standing on the point: just over the thing, however tall the game's card is.
                     let (w, h) = sized(HELD_WIDTH / du, f32::MAX);
-                    (facing_eye(c, head_pos, w, h), opacity)
+                    (facing_eye(c + Vec3::Y * h * 0.5, head_pos, w, h), opacity)
                 }),
                 HUD_HIDDEN => None,
                 // The centre, and anything else: where it was on the flat screen.

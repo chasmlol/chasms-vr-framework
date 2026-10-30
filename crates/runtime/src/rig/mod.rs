@@ -1795,11 +1795,18 @@ impl Rig {
         Some((hands[i].felt[3], self.physics.pose(hands[i].body).0))
     }
 
-    /// The pocket nearest hand `i` and where its middle is from the drawn hand (world metres), for
-    /// the log.
+    /// How far hand `i` is from a point: from the nearest of it, its palm or a finger.
+    fn hand_reach(&self, i: usize) -> impl Fn(Vec3) -> f32 + '_ {
+        let c = self.hands.as_ref().map(|h| h[i].collider);
+        move |p: Vec3| c.map_or(f32::MAX, |c| self.physics.closest_point(c, p).distance(p))
+    }
+
+    /// The pocket nearest hand `i` and where its middle is from the nearest of the hand (world
+    /// metres), for the log.
     pub fn nearest_pocket(&self, i: usize) -> Option<(u32, Vec3)> {
-        let palm = self.physics.pose(self.hands.as_ref()?[i].body).0;
-        self.pockets.iter().map(|p| (p.id, Vec3::from_array(p.center) - palm)).min_by(|a, b| a.1.length().total_cmp(&b.1.length()))
+        let c = self.hands.as_ref()?[i].collider;
+        let from = |p: &Pocket| Vec3::from_array(p.center) - self.physics.closest_point(c, Vec3::from_array(p.center));
+        self.pockets.iter().map(|p| (p.id, from(p))).min_by(|a, b| a.1.length().total_cmp(&b.1.length()))
     }
 
     fn pocket(&self, id: u32) -> Option<&Pocket> {
@@ -1869,7 +1876,7 @@ impl Rig {
                             self.drop_copy(id);
                         }
                         // Pulled out: the attempt, for the game to decide.
-                        Some(p) if pockets::out_of(&p, palm, scale) => {
+                        Some(p) if pockets::out_of(&p, self.hand_reach(i), scale) => {
                             let ev = self.pocket_event_of(PE_TAKE, actor, pocket, item, id, i);
                             let n = self.pocket_event(ev);
                             let o = self.objects.get_mut(&id).unwrap();
@@ -1891,7 +1898,7 @@ impl Rig {
                 // A thing to plant brought into a pocket: a brush, and the creature's pickpocketing
                 // opens (what's done there is one of its clicks, not rummaging after it).
                 let plantable = self.objects.get(&id).is_some_and(|o| o.desc.flags & OBJF_LOOT != 0 || o.pocketed == Some(Pocketed::Taken));
-                let into = plantable.then(|| pockets::pocket_at(&self.pockets, palm, before.map(|p| p.pocket), scale)).flatten().and_then(|p| self.pocket(p).copied());
+                let into = plantable.then(|| pockets::pocket_at(&self.pockets, self.hand_reach(i), before.map(|p| p.pocket), scale)).flatten().and_then(|p| self.pocket(p).copied());
                 if let Some(pk) = into.filter(|_| self.hands.as_ref().unwrap()[i].holding == Some(id)) {
                     if before.is_none_or(|b| b.pocket != pk.id) {
                         self.emit(Cue::PocketIn, Some(i), None, palm, 0.6);
@@ -1902,7 +1909,7 @@ impl Rig {
             } else if busy {
                 self.hands.as_mut().unwrap()[i].pocket = None;
             } else {
-                let in_now = pockets::pocket_at(&self.pockets, palm, before.map(|p| p.pocket), scale);
+                let in_now = pockets::pocket_at(&self.pockets, self.hand_reach(i), before.map(|p| p.pocket), scale);
                 match (before, in_now.and_then(|id| self.pocket(id).copied())) {
                     (Some(mut p), Some(pk)) if p.pocket == pk.id => {
                         // On along it: the next thing, felt.
@@ -1953,7 +1960,7 @@ impl Rig {
             .pocket_sessions
             .keys()
             .copied()
-            .filter(|&actor| (0..2).any(|i| pockets::near_actor(&self.pockets, actor, self.physics.pose(self.hands.as_ref().unwrap()[i].body).0, scale) || self.in_pocket(i).is_some_and(|(a, _)| a == actor)))
+            .filter(|&actor| (0..2).any(|i| pockets::near_actor(&self.pockets, actor, self.hand_reach(i), scale) || self.in_pocket(i).is_some_and(|(a, _)| a == actor)))
             .collect();
         let mut closed = Vec::new();
         for (actor, last) in self.pocket_sessions.iter_mut() {
@@ -2731,9 +2738,8 @@ impl Rig {
         // player's still if the game won't: it was never anywhere else); a thing of the game's is let
         // go there as anywhere, and the game takes it if it's planted.
         let taken = pocketed == Some(Pocketed::Taken);
-        let hand_at = self.physics.pose(self.hands.as_ref().unwrap()[i].body).0;
         let plant = (desc.flags & OBJF_LOOT != 0 || taken)
-            .then(|| pockets::pocket_at(&self.pockets, hand_at, self.hands.as_ref().unwrap()[i].pocket.map(|p| p.pocket), self.map.world_per_meter))
+            .then(|| pockets::pocket_at(&self.pockets, self.hand_reach(i), self.hands.as_ref().unwrap()[i].pocket.map(|p| p.pocket), self.map.world_per_meter))
             .flatten()
             .and_then(|pid| self.pocket(pid).copied())
             .filter(|p| p.flags & POCKET_SHUT == 0 && hand_speed < HOLSTER_MAX_SPEED);

@@ -38,13 +38,16 @@ pub const ANSWER_WAIT: f64 = 3.0;
 pub const WATCHED: f32 = 0.66;
 pub const HEARTBEAT: f64 = 0.9;
 
-/// The pocket (of `pockets`) a palm at `palm` is in: the one whose middle it's nearest, within its
-/// radius (`current`, the one it's in already, a little further). `scale`: world metres a metre.
-pub fn pocket_at(pockets: &[Pocket], palm: Vec3, current: Option<u32>, scale: f32) -> Option<u32> {
+/// The pocket (of `pockets`) a hand is in: the one whose middle it's nearest, within its radius
+/// (`current`, the one it's in already, a little further). `reach(p)`: how far the hand is from a
+/// point, from the nearest of it (its palm or a finger; 0 on it): a hand meets a body with its
+/// fingers and palm, a hand's length ahead of its grip, so the grip stays outside a pocket the
+/// fingers are feeling in. `scale`: world metres a metre.
+pub fn pocket_at(pockets: &[Pocket], reach: impl Fn(Vec3) -> f32, current: Option<u32>, scale: f32) -> Option<u32> {
     pockets
         .iter()
         .filter_map(|p| {
-            let d = palm.distance(Vec3::from_array(p.center));
+            let d = reach(Vec3::from_array(p.center));
             let reach = (p.radius + if Some(p.id) == current { EDGE } else { 0.0 }) * scale;
             (d < reach).then_some((p.id, d / reach))
         })
@@ -52,14 +55,14 @@ pub fn pocket_at(pockets: &[Pocket], palm: Vec3, current: Option<u32>, scale: f3
         .map(|(id, _)| id)
 }
 
-/// The palm's out of pocket `p`: past its edge by [`OUT`].
-pub fn out_of(p: &Pocket, palm: Vec3, scale: f32) -> bool {
-    palm.distance(Vec3::from_array(p.center)) > (p.radius + OUT) * scale
+/// The hand's out of pocket `p`: all of it past its edge by [`OUT`] (`reach` as for [`pocket_at`]).
+pub fn out_of(p: &Pocket, reach: impl Fn(Vec3) -> f32, scale: f32) -> bool {
+    reach(Vec3::from_array(p.center)) > (p.radius + OUT) * scale
 }
 
 /// Near any of `actor`'s pockets (its pickpocketing stays open).
-pub fn near_actor(pockets: &[Pocket], actor: u32, palm: Vec3, scale: f32) -> bool {
-    pockets.iter().any(|p| p.actor == actor && palm.distance(Vec3::from_array(p.center)) < (p.radius + NEAR) * scale)
+pub fn near_actor(pockets: &[Pocket], actor: u32, reach: impl Fn(Vec3) -> f32, scale: f32) -> bool {
+    pockets.iter().any(|p| p.actor == actor && reach(Vec3::from_array(p.center)) < (p.radius + NEAR) * scale)
 }
 
 /// The tick a finger feels coming on a thing (seconds, frequency Hz, amplitude): coins a bright

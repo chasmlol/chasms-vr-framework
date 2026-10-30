@@ -1297,7 +1297,7 @@ impl Session {
                         let at = crate::hud::Attach {
                             gun,
                             off_hand: (off.connected != 0).then(|| (Vec3::from_array(off.grip.pos), quat(off.grip.rot))),
-                            held: self.card.map(|(p, opacity)| (p.center, opacity)),
+                            held: self.card.zip(self.item_card.over()).map(|((_, opacity), at)| (at, opacity)),
                         };
                         let aspect = p.width / p.height.max(1e-4);
                         let pieces = self.hud.place(

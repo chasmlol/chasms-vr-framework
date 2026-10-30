@@ -4,7 +4,7 @@
 //! thing, turned to the eyes, follows it, and fades in as it's taken and out as it's let go.
 
 use anyhow::Result;
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use rustvr_gpu::{EguiPainter, Gpu, TexDesc, Texture};
 use rustvr_protocol::*;
 use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
@@ -18,8 +18,9 @@ const HEIGHT_PX: u32 = 360;
 const PIXELS_PER_POINT: f32 = 2.5;
 /// The card's width in the world (metres); its height is half that.
 pub const WIDTH: f32 = 0.18;
-/// How far over the thing's top it floats, and towards the eyes (metres).
-const ABOVE: f32 = 0.06;
+/// How far over the thing's top its bottom edge is, and how far towards the eyes (metres): just over
+/// it, in front of it.
+const ABOVE: f32 = 0.015;
 const TOWARDS: f32 = 0.04;
 /// Seconds to fade in and out; how quickly it catches up with the thing it's over.
 const FADE_IN: f32 = 0.12;
@@ -35,7 +36,8 @@ pub struct ItemCard {
     infos: Box<ItemInfos>,
     /// What's painted on it now (painted again only when that changes).
     painted: Option<ItemInfo>,
-    /// The thing it's over, and where it is (tracking space, eased).
+    /// The thing it's over, and the point just over it that the card stands on (tracking space,
+    /// eased).
     shown: Option<u32>,
     at: Option<Vec3>,
     opacity: f32,
@@ -44,19 +46,26 @@ pub struct ItemCard {
 /// The thing to show a card for: one a hand holds or pulls that the game says what it is (itself, or
 /// the template it's a copy of: a thing out of a pocket): the one shown already while a hand still
 /// has it, else one held, else the one a hand's fingers are on in a pocket (`felt`: its template,
-/// and where the hand is), else one flying in. Where it is (tracking space) and how far its top is
-/// over its middle.
+/// and where the hand is), else one flying in. Where it is (tracking space) and how far the top of
+/// it, as it's turned now, is over that.
 pub fn pick(shown: Option<u32>, states: &ObjectStates, objects: &ObjectTable, infos: &ItemInfos, map: Option<&WorldMap>, felt: Option<(u32, Vec3)>) -> Option<(u32, Vec3, f32)> {
     let states = &states.states[..(states.count as usize).min(MAX_OBJECTS)];
     let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
     let place = |s: &ObjectState| -> Option<(u32, Vec3, f32)> {
         info_of(infos, s)?;
         let p = Vec3::from_array(s.pose.pos);
-        let at = if s.flags & OS_TRACKING != 0 { p } else { map?.inv_point(p) };
+        let tracking = s.flags & OS_TRACKING != 0;
+        let at = if tracking { p } else { map?.inv_point(p) };
         let d = descs.iter().find(|d| d.id == s.desc)?;
-        let world_per_metre = map.map_or(1.0, |m| m.world_per_meter);
-        let r = Vec3::from_array(d.half_extents).length() + Vec3::from_array(d.center).length();
-        Some((s.id, at, r / world_per_metre.max(1e-6)))
+        let world_per_metre = if tracking { 1.0 } else { map.map_or(1.0, |m| m.world_per_meter) };
+        // The highest corner of its box as it's turned now (a plate held flat is low; on its edge,
+        // high), not the ball round it: the card sits just over what's there.
+        let q = Quat::from_array(s.pose.rot);
+        let q = if tracking { q } else { map.map_or(q, |m| m.inv_rot(q)) };
+        let (c, h) = (Vec3::from_array(d.center), Vec3::from_array(d.half_extents));
+        let corner = |k: u32| c + h * Vec3::new(if k & 1 == 0 { -1.0 } else { 1.0 }, if k & 2 == 0 { -1.0 } else { 1.0 }, if k & 4 == 0 { -1.0 } else { 1.0 });
+        let top = (0..8).map(|k| (q * corner(k)).y).fold(f32::MIN, f32::max);
+        Some((s.id, at, top / world_per_metre.max(1e-6)))
     };
     let held = |s: &&ObjectState| s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) != 0;
     let pulled = |s: &&ObjectState| s.flags & OS_PULLED != 0;
@@ -130,7 +139,7 @@ impl ItemCard {
                 }
                 self.shown = Some(id);
                 let toward = (head - at).normalize_or(Vec3::Z);
-                let want = at + Vec3::Y * (top + ABOVE + WIDTH * 0.25) + toward * TOWARDS;
+                let want = at + Vec3::Y * (top + ABOVE) + toward * TOWARDS;
                 let k = 1.0 - (-dt / FOLLOW).exp();
                 self.at = Some(self.at.map_or(want, |a| a.lerp(want, k)));
                 self.opacity = (self.opacity + dt / FADE_IN).min(1.0);
@@ -148,11 +157,19 @@ impl ItemCard {
                 }
             }
         }
-        let Some(at) = self.at.filter(|_| self.opacity > 0.0 && self.painted.is_some()) else { return Ok(None) };
+        let Some(at) = self.over() else { return Ok(None) };
+        // (Standing on the point: its middle half its height over it.)
+        let at = at + Vec3::Y * WIDTH * HEIGHT_PX as f32 / WIDTH_PX as f32 * 0.5;
         let d = (at - head).normalize_or(Vec3::Z);
         let (yaw, pitch) = (d.x.atan2(d.z), -(d.y.clamp(-1.0, 1.0)).asin());
         let eased = self.opacity * self.opacity * (3.0 - 2.0 * self.opacity);
         Ok(Some((Panel::facing(at, yaw, pitch, WIDTH, WIDTH_PX as f32 / HEIGHT_PX as f32), eased)))
+    }
+
+    /// The point just over the shown thing the card stands on (tracking space), while it shows: a
+    /// game's own card stands there too.
+    pub fn over(&self) -> Option<Vec3> {
+        self.at.filter(|_| self.opacity > 0.0 && self.painted.is_some())
     }
 
     fn paint(&mut self, gpu: &Gpu, info: &ItemInfo) -> Result<()> {
@@ -228,7 +245,7 @@ mod tests {
         for (i, (id, flags)) in [(1, 0), (2, OS_PULLED), (3, OS_HELD_RIGHT | OS_TRACKING), (4, OS_HELD_LEFT | OS_TRACKING)].into_iter().enumerate() {
             let mut d = ObjectDesc::zeroed();
             d.id = id;
-            d.half_extents = [0.1, 0.0, 0.0];
+            d.half_extents = [0.1, 0.1, 0.0];
             objects.descs[i] = d;
             states.states[i] = ObjectState { id, desc: id, flags, pose: Pose { pos: [id as f32, 1.0, 0.0], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] }, ..ObjectState::zeroed() };
             if id != 4 {
