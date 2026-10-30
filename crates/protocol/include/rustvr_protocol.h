@@ -667,6 +667,17 @@
 #define RVR_HELD_DRAG (1 << 3)
 
 /**
+ * Its thing comes to the hand (`hand`) if no hand has it: a book read where it lies (activated on a
+ * shelf) flies into the off hand, as the gloves would bring it, and opens there.
+ */
+#define RVR_HELD_BRING (1 << 4)
+
+/**
+ * [`HudHeld::centre`] says where the thing's faces are centred.
+ */
+#define RVR_HELD_CENTRE (1 << 5)
+
+/**
  * [`HudHeld::hand`]: whichever hand the laser doesn't come from (the player's off hand).
  */
 #define RVR_HELD_OFF_HAND 2

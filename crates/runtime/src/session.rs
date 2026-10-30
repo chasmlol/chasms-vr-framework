@@ -726,6 +726,9 @@ impl Session {
                 };
                 tracing::info!("runtime: test: the nearest prop into the {} hand: {got:?}", if hand == 0 { "left" } else { "right" });
             }
+            // (A menu held in the hands keeps them going while the game waits: the book can be moved,
+            // handed over and let go, the map spread. Fights stay paused with the game.)
+            let held_open = floating && self.hud_layout.group_entries().iter().any(|g| g.anchor == ANCHOR_HELD);
             // A sheet spread between the hands, let go by the hand that had it: the other has it now
             // (before the rig sees the grip open, which would put it away).
             let release = self.settings.current.interaction.grip_release;
@@ -735,10 +738,18 @@ impl Session {
                     self.rig.give(id, holder ^ 1);
                 }
             }
+            // A menu held on a thing no hand has (a book read where it lies): the thing to the hand.
+            if held_open {
+                let groups = self.hud_layout.group_entries().len() as u32;
+                for n in 1..=groups {
+                    let Some(h) = self.hud_layout.held_of(n).copied().filter(|h| h.flags & HELD_BRING != 0 && h.object != 0) else { continue };
+                    let hand = if h.hand == HELD_OFF_HAND { dom ^ 1 } else { h.hand as usize & 1 };
+                    if self.rig.bring(h.object, hand) {
+                        tracing::info!("runtime: {:#x} brought to the {} hand for its menu", h.object, if hand == 0 { "left" } else { "right" });
+                    }
+                }
+            }
             let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
-            // (A menu held in the hands keeps them going while the game waits: the book can be moved,
-            // handed over and let go, the map spread. Fights stay paused with the game.)
-            let held_open = floating && self.hud_layout.group_entries().iter().any(|g| g.anchor == ANCHOR_HELD);
             let rig_paused = (menu_mode && !held_open) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,

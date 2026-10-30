@@ -105,8 +105,8 @@ struct Lie {
     /// What it's on and the hand that holds that, as last placed.
     object: u32,
     holder: usize,
-    /// (`HELD_FACE`) the face's middle, right and up in the thing's space.
-    face: Option<(Vec3, Vec3, Vec3)>,
+    /// (`HELD_FACE`) the thing's face its pages lie on.
+    face: Option<Face>,
     /// (`HELD_SHEET`) how it's held.
     hold: Option<Hold>,
     /// Metres per group unit (the HUD texture's height).
@@ -151,17 +151,33 @@ fn piece_size(e: &HudElement, aspect: f32) -> (f32, f32) {
     ((e.uv[2] - e.uv[0]).max(1e-4) * aspect * scale, (e.uv[3] - e.uv[1]).max(1e-4) * scale)
 }
 
-/// The face of a box (centre `c`, half extents `h`, in its own space) turned to `eye` (in the same
-/// space), upright as `up` is: its middle, right and up.
-fn face_toward(c: Vec3, h: Vec3, eye: Vec3, up: Vec3) -> (Vec3, Vec3, Vec3) {
-    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
-    let thin = (0..3).min_by(|&a, &b| h[a].total_cmp(&h[b])).unwrap();
-    let out = axes[thin] * if eye[thin] >= c[thin] { 1.0 } else { -1.0 };
-    // The face's up: whichever of its two sides points most the way the eyes' up does.
-    let side = (0..3).filter(|&k| k != thin).map(|k| axes[k]).flat_map(|a| [a, -a]).max_by(|a, b| a.dot(up).total_cmp(&b.dot(up))).unwrap();
-    // (Right so the face's normal, up x right, is out of it.)
-    let right = out.cross(side);
-    (c + out * (h[thin] + FACE_LIFT), right, side)
+/// Where on a box (centre `c`, half extents `h`, in its own space) its pages lie: its broad faces'
+/// axis and how far out they are, and their up, upright as `up` is then (whichever of the faces' two
+/// sides points most the way it does).
+#[derive(Clone, Copy, Debug)]
+struct Face {
+    centre: Vec3,
+    axis: Vec3,
+    depth: f32,
+    up: Vec3,
+}
+
+impl Face {
+    fn of(c: Vec3, h: Vec3, up: Vec3) -> Face {
+        let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+        let thin = (0..3).min_by(|&a, &b| h[a].total_cmp(&h[b])).unwrap();
+        let side = (0..3).filter(|&k| k != thin).map(|k| axes[k]).flat_map(|a| [a, -a]).max_by(|a, b| a.dot(up).total_cmp(&b.dot(up))).unwrap();
+        // (Out from the middle by the box's half thickness about that middle.)
+        Face { centre: c, axis: axes[thin], depth: h[thin] + FACE_LIFT, up: side }
+    }
+
+    /// The face turned to `eye` (in the box's space; it turns over with the book): its middle,
+    /// right and up.
+    fn toward(&self, eye: Vec3) -> (Vec3, Vec3, Vec3) {
+        let out = self.axis * if (eye - self.centre).dot(self.axis) >= 0.0 { 1.0 } else { -1.0 };
+        // (Right so the face's normal, up x right, is out of it.)
+        (self.centre + out * self.depth, out.cross(self.up), self.up)
+    }
 }
 
 /// Right and up for a sheet at `at` turned to the eye at `eye`, upright as `up` is.
@@ -198,8 +214,9 @@ impl HeldMenus {
             let Some(held) = layout.held_of(n).copied() else { continue };
             let Some(fp) = footprint(layout, n, aspect) else { continue };
             let thing = (held.object != 0).then(|| things.iter().find(|t| t.id == held.object)).flatten();
-            if held.object != 0 && thing.is_none() {
-                // (Not in a hand this frame: nowhere to put it.)
+            if held.object != 0 && thing.is_none() && held.flags & HELD_BRING == 0 {
+                // (Not in a hand this frame: nowhere to put it. One coming to the hand is held in it
+                // as a sheet until it's there.)
                 continue;
             }
             // The hand that holds it, and the other.
@@ -209,21 +226,25 @@ impl HeldMenus {
             let k = match self.lies.iter().position(|l| l.id == g.id) {
                 Some(k) => k,
                 None => {
-                    let face = (held.flags & HELD_FACE != 0).then(|| thing.map(|t| {
-                        let inv = t.rot.inverse();
-                        let f = face_toward(t.centre, t.half, inv * (head_pos - t.pos), inv * head_up);
-                        tracing::info!("held menus: {:#x} lies on {:#x}'s face at {:.3?} (right {:.2?}, up {:.2?}; its box {:.3?} about {:.3?}; held at {:.3?})", g.id, t.id, f.0, f.1, f.2, t.half, t.centre, t.pos);
-                        f
-                    })).flatten();
-                    self.lies.push(Lie { id: g.id, object: held.object, holder, face, hold: None, unit: natural, frame: None, sweep: None, turned: None, gripped: false, pinched: false, drag: None });
+                    self.lies.push(Lie { id: g.id, object: held.object, holder, face: None, hold: None, unit: natural, frame: None, sweep: None, turned: None, gripped: false, pinched: false, drag: None });
                     self.lies.len() - 1
                 }
             };
             let lie = &mut self.lies[k];
+            // On the thing's face turned to the eyes when it's first in the hand.
+            if let (None, true, Some(t)) = (lie.face, held.flags & HELD_FACE != 0, thing) {
+                let centre = if held.flags & HELD_CENTRE != 0 { Vec3::from_array(held.centre) } else { t.centre };
+                let f = Face::of(centre, t.half, t.rot.inverse() * head_up);
+                tracing::info!("held menus: {:#x} lies on {:#x}'s faces along {:.2?} about {centre:.3?} (up {:.2?}; its box {:.3?} about {:.3?}; held at {:.3?})", g.id, t.id, f.axis, f.up, t.half, t.centre, t.pos);
+                lie.face = Some(f);
+            }
             (lie.object, lie.holder) = (held.object, holder);
             // Where it is now: its origin, right and up.
             let frame = match (lie.face, thing) {
-                (Some((c, r, u)), Some(t)) => Some((t.pos + t.rot * c, t.rot * r, t.rot * u)),
+                (Some(f), Some(t)) => {
+                    let (c, r, u) = f.toward(t.rot.inverse() * (head_pos - t.pos));
+                    Some((t.pos + t.rot * c, t.rot * r, t.rot * u))
+                }
                 _ => sheet_frame(lie, &held, fp, holder, thing, hands, head_pos, head_up, natural, dt),
             };
             let Some((origin, right, up)) = frame else { continue };

@@ -2085,6 +2085,17 @@ impl Rig {
         Some(id)
     }
 
+    /// Object `id`, lying free, to hand `i` as the gloves' catch brings it (a book read where it
+    /// lies, to be held open in the hand). False if it isn't free (or the hand is full).
+    pub fn bring(&mut self, id: u32, i: usize) -> bool {
+        let free = self.objects.get(&id).is_some_and(|o| o.holder == Holder::Free);
+        let empty = self.hands.as_ref().is_some_and(|h| h[i].holding.is_none() && h[i].support.is_none());
+        if free && empty {
+            self.take(id, i, true);
+        }
+        free && empty
+    }
+
     /// Object `id`, held by the other hand, into hand `i`'s palm (a sheet spread between both hands,
     /// let go by the one that had it: the other has it now).
     pub fn give(&mut self, id: u32, i: usize) {

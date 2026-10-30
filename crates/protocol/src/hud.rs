@@ -106,6 +106,11 @@ pub const HELD_PAGES: u32 = 1 << 2;
 /// The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on
 /// it, its button down, as the hand moves (a map's pan), until the grip opens.
 pub const HELD_DRAG: u32 = 1 << 3;
+/// Its thing comes to the hand (`hand`) if no hand has it: a book read where it lies (activated on a
+/// shelf) flies into the off hand, as the gloves would bring it, and opens there.
+pub const HELD_BRING: u32 = 1 << 4;
+/// [`HudHeld::centre`] says where the thing's faces are centred.
+pub const HELD_CENTRE: u32 = 1 << 5;
 /// [`HudHeld::hand`]: whichever hand the laser doesn't come from (the player's off hand).
 pub const HELD_OFF_HAND: u32 = 2;
 
@@ -184,6 +189,10 @@ pub struct HudHeld {
     /// Pieces wholly to one side of the group's middle (x = 0) tip towards the eye about it by this
     /// much (radians): an open book's two pages.
     pub fold: f32,
+    /// With [`HELD_CENTRE`]: the middle of what's seen of the thing (its model's, in its own space),
+    /// where its faces are centred instead of on its box (a collision box can be off its model).
+    pub centre: [f32; 3],
+    pub _pad: u32,
 }
 
 #[repr(C)]
@@ -329,8 +338,8 @@ const _: () = {
     use std::mem::size_of;
     assert!(size_of::<HudElement>() == 64);
     assert!(size_of::<HudGroup>() == 32);
-    assert!(size_of::<HudHeld>() == 16);
-    assert!(size_of::<HudLayout>() == 64 + 32 * MAX_HUD_GROUPS + 64 * MAX_HUD_ELEMENTS + 16 * MAX_HUD_GROUPS);
+    assert!(size_of::<HudHeld>() == 32);
+    assert!(size_of::<HudLayout>() == 64 + 32 * MAX_HUD_GROUPS + 64 * MAX_HUD_ELEMENTS + 32 * MAX_HUD_GROUPS);
     assert!(size_of::<HudLayout>() <= 0x1000);
     assert!(OFF_HUD_LAYOUT.is_multiple_of(64));
     assert!(crate::OFF_KICKS + size_of::<crate::KickTable>() <= OFF_HUD_LAYOUT);
