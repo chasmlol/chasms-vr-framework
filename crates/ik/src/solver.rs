@@ -6,7 +6,7 @@ use rustvr_protocol::{JOINT_COUNT, Joint};
 
 use crate::arm::{self, ArmInput, ArmState};
 use crate::legs::{self, Feet, FeetInput};
-use crate::math::{clamp_dt, flat, frame_yz, sanitize_pos, sanitize_rot, smoothing, wrap_angle, yaw_of, UP};
+use crate::math::{clamp_dt, flat, frame_yz, sanitize_pos, sanitize_rot, smoothing, wrap_angle, yaw_of, Follow, UP};
 use crate::skeleton::Skeleton;
 use crate::spine::{self, ChainInput, MAX_PITCH};
 use crate::swim::{self, SwimState};
@@ -32,7 +32,7 @@ const ARM_SPAN_RANGE: [f32; 2] = [0.9, 2.6];
 struct State {
     torso: TorsoYaw,
     root: RootYaw,
-    pitch: f32,
+    pitch: Follow,
     feet: Feet,
     arms: [ArmState; 2],
     com: Vec3,
@@ -202,7 +202,7 @@ impl BodySolver {
             State {
                 torso: TorsoYaw::new(yaw),
                 root: RootYaw::new(yaw, p),
-                pitch: 0.0,
+                pitch: Follow::new(0.0),
                 feet: Feet::new(p, skel, head_joint, yaw),
                 arms: [ArmState::default(); 2],
                 com: eyes,
@@ -238,7 +238,7 @@ impl BodySolver {
                 state.torso = TorsoYaw::new(torso_yaw);
                 state.root = RootYaw::new(mount_yaw, p);
                 state.feet = Feet::new(p, skel, head_joint, mount_yaw);
-                state.pitch = 0.0;
+                state.pitch = Follow::new(0.0);
                 state.hip_drop = 0.0;
                 let up = (saddle.seat.rot * UP).normalize_or(UP);
                 // (The hip joints sit over the seat, the hips joint over them.)
@@ -274,9 +274,9 @@ impl BodySolver {
             let level_eyes_y = head_joint.y - skel.eye_to_head.y;
             let target = spine::target_pitch(p, skel, level_eyes_y, h0, head_pitch);
             let target = target + (state.swim.lean() - target) * floating;
-            state.pitch += (target - state.pitch) * smoothing(dt, p.spine_tau);
+            state.pitch.step(target - state.pitch.value, dt, p.spine_tau);
             let chain_at = |pitch| spine::build(skel, &ChainInput { head_joint, head_rot, torso_yaw, root_yaw, pitch });
-            let mut chain = chain_at(state.pitch);
+            let mut chain = chain_at(state.pitch.value);
 
             // ---- feet ----
             // The centre of mass: most of a body's mass is in its trunk and legs, so it sits a little
@@ -315,14 +315,15 @@ impl BodySolver {
             let (low, _) = hips_range(&chain);
             if chain.hips().y < low && floating < 0.5 {
                 // Too low for the knees: bend the spine further (that raises the hips), then squash it.
-                let (mut lo, mut hi) = (state.pitch, MAX_PITCH);
+                let (mut lo, mut hi) = (state.pitch.value, MAX_PITCH);
                 if chain_at(hi).hips().y >= low {
                     for _ in 0..12 {
                         let mid = 0.5 * (lo + hi);
                         if chain_at(mid).hips().y >= low { hi = mid } else { lo = mid }
                     }
                 }
-                state.pitch = hi;
+                // (Where the knees can't bend further, the spine bends at once.)
+                state.pitch = Follow::new(hi);
                 chain = chain_at(hi);
                 let short = low - chain.hips().y;
                 if short > 0.0 {

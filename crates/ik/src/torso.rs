@@ -6,7 +6,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use glam::Vec3;
 
 use crate::BodyParams;
-use crate::math::{flat, smoothing, smoothstep, wrap_angle, yaw_dir, yaw_of};
+use crate::math::{flat, smoothing, smoothstep, wrap_angle, yaw_dir, yaw_of, Follow};
 
 /// Parger settles the both-hands-behind ambiguity with the head: a hand estimate this far from
 /// the head's yaw is taken to be the flipped one.
@@ -17,6 +17,8 @@ const MIN_HORIZONTAL: [f32; 2] = [0.05, 0.15];
 #[derive(Clone, Copy, Debug)]
 pub struct TorsoYaw {
     pub yaw: f32,
+    /// The yaw as it follows its target (a critically damped follower: no jolt as it starts).
+    follow: Follow,
     /// Last hand yaw with a usable magnitude, for the flip detector.
     prev_raw: Option<f32>,
     flipped: bool,
@@ -24,7 +26,7 @@ pub struct TorsoYaw {
 
 impl TorsoYaw {
     pub fn new(yaw: f32) -> Self {
-        TorsoYaw { yaw, prev_raw: None, flipped: false }
+        TorsoYaw { yaw, follow: Follow::new(yaw), prev_raw: None, flipped: false }
     }
 
     /// `eyes` and `head_joint` are the HMD and neck-pivot positions, `head_yaw` the head's facing,
@@ -59,11 +61,13 @@ impl TorsoYaw {
                 (head_yaw, p.torso_yaw_tau_head_only)
             }
         };
-        self.yaw = wrap_angle(self.yaw + wrap_angle(target - self.yaw) * smoothing(dt, tau));
+        self.follow.value = self.yaw;
+        self.yaw = wrap_angle(self.follow.step(wrap_angle(target - self.yaw), dt, tau));
         // Parger keeps the head within 90° of the neck whatever the filter is doing.
         let off = wrap_angle(self.yaw - head_yaw);
         if off.abs() > FRAC_PI_2 {
             self.yaw = wrap_angle(head_yaw + FRAC_PI_2.copysign(off));
+            self.follow.speed = 0.0;
         }
         self.yaw
     }
