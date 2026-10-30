@@ -50,9 +50,11 @@ const W_INWARD: f32 = 2.0;
 /// The swivel search runs from just above outward round to a little inward under the arm.
 const SWIVEL_RANGE_DEG: [f32; 2] = [30.0, 215.0];
 const SWIVEL_STEP_DEG: f32 = 10.0;
-/// The forearm joint sits halfway along the forearm, so it shows half of the twist between the
-/// elbow hinge and the hand (FRIK spreads forearm roll 0 / 0.5 / 0.5 over its twist bones).
-const FOREARM_JOINT_TWIST: f32 = 0.5;
+/// The forearm joint carries none of the hand's roll about the forearm: that's the radius turning
+/// about the ulna, nothing at the elbow and all of it at the wrist. The avatar spreads it along the
+/// forearm (its twist bones by where they sit, or half on a forearm without them), so the skin at
+/// the elbow doesn't turn with the wrist.
+const FOREARM_JOINT_TWIST: f32 = 0.0;
 /// The elbow is kept out of a box around the ribcage (upper chest space, metres at reference
 /// size): half width, back, front, bottom.
 const TORSO_BOX: [f32; 4] = [0.14, -0.12, 0.11, -0.55];
@@ -329,7 +331,7 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     // The upper arm's +Z faces the way the forearm folds (forward in the T-pose), straight or not.
     let upper = frame_yz(upper_dir, solved.fold, forward);
     // The forearm joint without twist is the upper arm frame turned through the elbow hinge;
-    // it then takes part of the hand's twist about the forearm.
+    // it then takes its share of the hand's twist about the forearm (none, `FOREARM_JOINT_TWIST`).
     let hinge = Quat::from_rotation_arc(upper_dir, solved.forearm);
     let untwisted = hinge * (upper * Vec3::Z);
     let twist = signed_angle(untwisted, hand_rot * Vec3::Z, solved.forearm) * FOREARM_JOINT_TWIST;

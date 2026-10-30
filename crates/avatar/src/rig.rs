@@ -189,7 +189,15 @@ pub struct Rig {
     /// For each copy of a bone (`Drive::Copy`): its pose's model space -> the bind pose's, which
     /// carries the copied bone's visibility plane over to it.
     copied_from: Vec<Option<Mat4>>,
+    /// Each forearm [left, right] has twist bones to carry the hand's roll along it.
+    forearm_twists: [bool; 2],
 }
+
+/// A forearm with no twist bones turns this share of the hand's roll itself: the solver's forearm
+/// joint carries none (the roll is the radius turning about the ulna, nothing at the elbow and all
+/// of it at the wrist), so its skin, weighted between the elbow and the wrist, goes half way (FRIK
+/// spreads the roll 0 / 0.5 / 0.5 over its twist bones).
+const FOREARM_ROLL: f32 = 0.5;
 
 impl Rig {
     /// Builds the rig for a skeleton. `meshes` (vertex lists) place the twist bones' shares.
@@ -289,6 +297,7 @@ impl Rig {
             drive[b] = Drive::Twist { segment, driver, share: share - inherited };
             tracing::debug!("rig: twist bone '{}' takes {:.0}% of the {driver:?}'s roll", bones[b].name, share * 100.0);
         }
+        let forearm_twists = [Joint::LeftLowerArm, Joint::RightLowerArm].map(|j| drive.iter().any(|d| matches!(d, Drive::Twist { segment, .. } if *segment == j)));
         let mut copied_from = vec![None; n];
         for &(copy, of) in copies {
             if copy < n && of < n && copy != of {
@@ -359,6 +368,7 @@ impl Rig {
             scale_pairs,
             hand_length: None,
             copied_from,
+            forearm_twists,
         })
     }
 
@@ -459,6 +469,17 @@ impl Rig {
         // Roots that aren't body parts (Biped's `bip01`, Metro's locators) ride with the hips, or
         // whichever mapped joint comes first.
         let anchor = ANCHORS.iter().find_map(|&j| Some((self.joint_bone[j as usize]?, joint(j)?, j)));
+        // A forearm without twist bones turns part of the hand's roll itself (`FOREARM_ROLL`).
+        let forearm_roll = [(Joint::LeftLowerArm, Joint::LeftHand), (Joint::RightLowerArm, Joint::RightHand)].map(|(lower, hand)| {
+            let side = (lower == Joint::RightLowerArm) as usize;
+            match (self.forearm_twists[side], joint(lower), joint(hand)) {
+                (false, Some((_, a)), Some((_, d))) => {
+                    let rel = a.inverse() * d * self.inv_canonical[hand as usize] * self.canonical[lower as usize];
+                    Quat::from_axis_angle(a * Vec3::Y, FOREARM_ROLL * twist_about(rel, Vec3::Y))
+                }
+                _ => Quat::IDENTITY,
+            }
+        });
         let (anchor_rot, anchor_pos, anchor_bind) = match anchor {
             Some((b, (p, r), j)) => (r * self.inv_canonical[j as usize], p, self.bones[b].bind_pos),
             None => (Quat::IDENTITY, Vec3::ZERO, Vec3::ZERO),
@@ -541,7 +562,14 @@ impl Rig {
             };
             let (rot, pos) = match bone.drive {
                 Drive::Joint(j) => match joint(j) {
-                    Some((p, r)) => (r * self.inv_canonical[j as usize] * bone.bind_rot, p),
+                    Some((p, r)) => {
+                        let roll = match j {
+                            Joint::LeftLowerArm => forearm_roll[0],
+                            Joint::RightLowerArm => forearm_roll[1],
+                            _ => Quat::IDENTITY,
+                        };
+                        (roll * r * self.inv_canonical[j as usize] * bone.bind_rot, p)
+                    }
                     None => follow(out),
                 },
                 Drive::Follow | Drive::Eye => follow(out),
