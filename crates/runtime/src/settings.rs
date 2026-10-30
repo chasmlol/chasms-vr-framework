@@ -44,8 +44,8 @@ pub struct Riding {
     /// How far the reins are pulled back from where they were taken before they slow the mount
     /// (metres): hands resting on the reins drift, and don't slow it. (Steering is finer.)
     pub rein_dead: f32,
-    /// How far a rein is pulled (or the reins moved to one side) for the mount's hardest turn,
-    /// metres.
+    /// How far a rein is pulled (or the reins moved to one side) past the steering's dead zone for
+    /// the mount's hardest turn, metres.
     pub rein_travel: f32,
     /// Both reins pulled back this far (metres) slows the mount hardest (less pulled, less hard);
     /// where it's slowed to, it stays. From a stand, eased and pulled right back again and held, it
@@ -67,7 +67,7 @@ pub struct Riding {
 
 impl Default for Riding {
     fn default() -> Self {
-        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_dead: 0.05, rein_travel: 0.12, rein_pull: 0.15, cruise: 0.7, spur_fade: 8.0, flick: true, coast: 2.5, stride_haptics: true }
+        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_dead: 0.05, rein_travel: 0.10, rein_pull: 0.15, cruise: 0.7, spur_fade: 8.0, flick: true, coast: 2.5, stride_haptics: true }
     }
 }
 

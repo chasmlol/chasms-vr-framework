@@ -16,10 +16,11 @@
 //!   in the rider's own frame (tracking space turned to the mount as it was when the reins were
 //!   taken, so the view turning with the mount in steps never moves them):
 //!   - one rein pulled back further than the other, or both moved to one side (laid on the neck,
-//!     or a rein opened out), turns the mount that way, finely: past [`STEER_DEAD`] (a resting
-//!     hand's tremor; while a hand stays inside it its rest follows it over [`REST_FOLLOW`], so
-//!     drift never adds up), gently at first, as hard as the game turns it at `rein_travel`,
-//!     smoothed over [`STEER_SMOOTH`];
+//!     or a rein opened out), turns the mount that way, finely, measured against the mount itself
+//!     (not from where the reins were taken: hands centred over its mane and level go straight,
+//!     wherever they were when they took the reins): the hands' middle across from the mane past
+//!     [`NECK_DEAD`], one ahead of the other past [`LEVEL_DEAD`]; gently at first, as hard as the
+//!     game turns it at `rein_travel` past that, smoothed over [`STEER_SMOOTH`];
 //!   - its speed is a share of its full gallop, and fluid: a flick of the reins (a hand snapped
 //!     down and stopped, either or both: the whip of Rival Stars and DovaVR's stroke) or the
 //!     trigger of a hand on a rein (a squeeze of the heels) spurs it, as hard as it's done (the
@@ -58,13 +59,17 @@ use crate::settings::Settings;
 
 /// A hand takes a rein this close to where the game's rider holds it (metres).
 const REIN_REACH: f32 = 0.15;
-/// A rein moved less than this from its rest doesn't steer (metres): a resting hand's tremor. A hand
-/// inside it carries its rein's rest along `REST_FOLLOW` slowly (seconds to close most of the
-/// way): drift is taken up, a deliberate move (a few tenths of a second) isn't. The reins' steering
-/// is smoothed over `STEER_SMOOTH` (seconds).
+/// Steering is measured against the mount: the hands' middle this far across from its mane, or one
+/// hand this far ahead of the other, doesn't steer (metres: hands held naturally over the withers
+/// are this near centred and level). Smoothed over `STEER_SMOOTH` (seconds).
+pub const NECK_DEAD: f32 = 0.03;
+pub const LEVEL_DEAD: f32 = 0.025;
+pub const STEER_SMOOTH: f32 = 0.08;
+/// A rein's rest is what a pull is measured from (where the hand took it up): a hand within
+/// `STEER_DEAD` of it carries it along `REST_FOLLOW` slowly (seconds to close most of the way), so
+/// a resting hand's drift is taken up and a deliberate move (a few tenths of a second) isn't.
 pub const STEER_DEAD: f32 = 0.015;
 pub const REST_FOLLOW: f32 = 1.5;
-pub const STEER_SMOOTH: f32 = 0.08;
 /// A full pull begun at a stand and held this long backs the mount up (seconds).
 pub const BACK_AFTER: f64 = 1.2;
 /// The rider's speed (a share of the mount's full gallop): a spur's surge rises to it at `ACCEL` a
@@ -342,23 +347,26 @@ impl Riding {
         let reins_now = self.reins;
         let moved = |h: usize| reins_now[h].map_or(Vec3::ZERO, |rein| turn * (pos(h) - rein.rest));
         let on_side = |side: usize| (0..2).find(|&h| reins_now[h].is_some_and(|r| r.side == side));
-        let travel = s.rein_travel.max(STEER_DEAD + 0.03);
-        // A move past the steering's dead zone as a share of a full turn: gently at first, all of
-        // it at `rein_travel`.
-        let share = |d: f32| {
-            let x = ((d.abs() - STEER_DEAD) / (travel - STEER_DEAD)).clamp(0.0, 1.0);
+        // Where a hand is against the mount: across from its mane (right +) and ahead along it, from
+        // the middle of where its rider holds the reins.
+        let mane = (reins[0] + reins[1]) * 0.5;
+        let across = Vec3::new(reins[1].x - reins[0].x, 0.0, reins[1].z - reins[0].z).normalize_or(Vec3::X);
+        let ahead = across.cross(Vec3::Y);
+        let on_mount = |h: usize| ((pos(h) - mane).dot(across), (pos(h) - mane).dot(ahead));
+        // A move past a dead zone as a share of a full turn: gently at first, all of it
+        // `rein_travel` past the dead zone.
+        let travel = s.rein_travel.max(0.03);
+        let share = |d: f32, dead: f32| {
+            let x = ((d.abs() - dead) / travel).clamp(0.0, 1.0);
             d.signum() * (0.5 * x + 0.5 * x * x)
         };
         let (rein_steer, pull) = match (on_side(0), on_side(1)) {
             (Some(lh), Some(rh)) => {
-                let (l, rt) = (moved(lh), moved(rh));
+                let (l, rt) = (on_mount(lh), on_mount(rh));
                 // The right rein back further turns right, as do both reins moved right.
-                (share(l.z - rt.z) + share(0.5 * (l.x + rt.x)), -l.z.max(rt.z))
+                (share(l.1 - rt.1, LEVEL_DEAD) + share(0.5 * (l.0 + rt.0), NECK_DEAD), -moved(lh).z.max(moved(rh).z))
             }
-            (Some(h), None) | (None, Some(h)) => {
-                let m = moved(h);
-                (share(m.x), -m.z)
-            }
+            (Some(h), None) | (None, Some(h)) => (share(on_mount(h).0, NECK_DEAD), -moved(h).z),
             _ => (0.0, 0.0),
         };
         // (Smoothed: a trembling hand's turn doesn't jitter.)
@@ -545,7 +553,8 @@ impl Riding {
         let hand = |h: usize| match reins_now[h] {
             Some(r) => {
                 let m = turn * (pos(h) - r.rest);
-                format!("{} hand ({} rein) {:+.2} across {:+.2} back", side_name(h), side_name(r.side), m.x, -m.z)
+                let (x, z) = on_mount(h);
+                format!("{} hand ({} rein) {:+.2} across the mane {:+.2} ahead, {:+.2} back from its rest", side_name(h), side_name(r.side), x, z, -m.z)
             }
             None => format!("{} hand free", side_name(h)),
         };
