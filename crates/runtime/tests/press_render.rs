@@ -92,6 +92,7 @@ fn a_hand_pressed_flat_on_a_wall() {
                 eye_height: 1.7,
                 floor: 0.0,
                 saddle: None,
+                hands_only: false,
                 settings: &settings,
             });
         }

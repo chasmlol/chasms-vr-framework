@@ -33,6 +33,7 @@ pub mod settings;
 pub mod spectator;
 pub mod targets;
 pub mod warp;
+pub mod held;
 pub mod locomotion;
 pub mod pacing;
 

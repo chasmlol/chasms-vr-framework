@@ -182,6 +182,7 @@ fn hands_close_on_what_they_take() {
                 eye_height: 1.7,
                 floor: 0.0,
                 saddle: None,
+                hands_only: false,
                 settings: &settings,
             });
         }

@@ -42,6 +42,7 @@
 //! | a thing in the world | at its distance (0.9 to 1.4 m: the laser's comfortable range), 10 degrees under the eyes, beside it on its side wherever it would otherwise cover it (never more than 40 degrees round) |
 //! | the player | 1.1 m ahead of where they faced, 8 degrees under the eyes; it comes round after a turn of 65 degrees |
 //! | a pop-up | 0.8 m ahead of where the eyes look, nearer than what's behind it |
+//! | over a view (a title screen in the world) | 2.5 m out towards the view's subject, beside it on its side (6 degrees clear), its middle 6 degrees under the horizon; it stays put while the player looks round |
 //!
 //! Once placed a group stays put in the world (it's placed again only when its thing moves, or the
 //! head walks away from where it was, gliding over 0.3 s). Its pieces lie on an upright cylinder
@@ -244,6 +245,8 @@ impl HudPlacer {
             let stale = slot.map(|k| &self.groups[k].0).is_none_or(|p| match g.anchor {
                 ANCHOR_WORLD => thing.zip(p.thing).is_some_and(|(t, then)| t.distance(then) > 0.3) || head_pos.distance(p.eye) > 0.8,
                 ANCHOR_PLAYER => crate::wrap_angle(head_yaw - p.yaw).abs() > 65f32.to_radians() || head_pos.distance(p.eye) > 0.8,
+                // (A title over a view stays where it is while the player looks round it.)
+                ANCHOR_VISTA => thing.zip(p.thing).is_some_and(|(t, then)| t.distance(then) > 1.0) || head_pos.distance(p.eye) > 1.5,
                 _ => false,
             });
             if stale {
@@ -460,6 +463,12 @@ impl HudPlacer {
     }
 }
 
+/// How far out a title over a view floats (metres), how far its middle is under the horizon
+/// (degrees), and the room it leaves its subject on either side (degrees).
+const VISTA_DISTANCE: f32 = 2.5;
+const VISTA_PITCH: f32 = 6.0;
+const VISTA_CLEAR: f32 = 6.0;
+
 /// Where a group goes when it's first placed (or placed again): see the module's table.
 fn place_group(g: &HudGroup, fp: [f32; 4], thing: Option<Vec3>, eye: Vec3, head_yaw: f32, head_pitch: f32, per_metre: f32) -> Placed {
     let deg = |d: f32| d.to_radians();
@@ -495,6 +504,20 @@ fn place_group(g: &HudGroup, fp: [f32; 4], thing: Option<Vec3>, eye: Vec3, head_
             }
         }
         (ANCHOR_POPUP, _) => (head_yaw, head_pitch.clamp(-deg(5.0), deg(25.0)), 0.8),
+        // Over a view: out towards its subject, a few metres off (in the laser's reach), clear of it
+        // on its side, a little under the horizon.
+        (ANCHOR_VISTA, Some(t)) => {
+            let v = t - eye;
+            let yaw_t = v.x.atan2(v.z);
+            let unit = VISTA_DISTANCE * per_metre;
+            let half_w = ((fp[2] - fp[0]) * 0.5 * unit / VISTA_DISTANCE).atan();
+            let yaw = match g.side {
+                SIDE_LEFT => yaw_t - half_w - VISTA_CLEAR.to_radians(),
+                SIDE_RIGHT => yaw_t + half_w + VISTA_CLEAR.to_radians(),
+                _ => yaw_t,
+            };
+            (yaw, deg(VISTA_PITCH), VISTA_DISTANCE)
+        }
         // The player's own menus, and a thing the runtime can't place (no world mapping).
         _ => (head_yaw, deg(8.0), 1.1),
     };
@@ -626,5 +649,32 @@ mod tests {
         let at = Attach { off_hand: Some(wrist_down), ..at };
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
         assert!(!p.iter().any(|p| p.role == HUD_STATUS), "a hand at the side isn't");
+    }
+
+    #[test]
+    fn a_title_over_a_view_floats_beside_its_subject_and_stays_while_the_head_turns() {
+        let s = Settings::default();
+        let mut h = HudPlacer::default();
+        let head = Vec3::new(0.0, 1.6, 0.0);
+        // The view's subject far ahead (+Z), a title of two words beside it on its left.
+        let mut l = HudLayout::new(HUDL_ALPHA | HUDL_REST_HIDDEN, &[]);
+        l.text_height = 36.0 / 960.0;
+        let g = l.add_group(HudGroup { anchor: ANCHOR_VISTA, side: SIDE_LEFT, at: [0.0, 1.6, 400.0], id: 7, ..Default::default() });
+        l.push(HudElement::piece(g, [0.4, 0.70, 0.6, 0.76], [0.0, 0.04, 0.0], HUDE_POINT));
+        l.push(HudElement::piece(g, [0.4, 0.78, 0.6, 0.84], [0.0, -0.04, 0.0], HUDE_POINT));
+        let map = WorldMap::IDENTITY;
+        let first = h.place_groups(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, &l, Some(&map));
+        assert_eq!(first.len(), 2);
+        for p in &first {
+            let d = p.panel.center - head;
+            let yaw = d.x.atan2(d.z).to_degrees();
+            assert!(yaw < -VISTA_CLEAR, "on the subject's left, clear of it: {yaw}");
+            assert!((Vec3::new(d.x, 0.0, d.z).length() - VISTA_DISTANCE).abs() < 0.2, "{:?}", p.panel.center);
+            assert!(p.panel.center.y < head.y, "under the horizon");
+        }
+        // The head looks round: it stays where it is.
+        let turned = Quat::from_rotation_y(120f32.to_radians());
+        let after = h.place_groups(&s, head, turned, 0.011, 16.0 / 9.0, &l, Some(&map));
+        assert!(after[0].panel.center.abs_diff_eq(first[0].panel.center, 1e-4));
     }
 }
