@@ -6,12 +6,15 @@ use rustvr_protocol::{JOINT_COUNT, Joint};
 
 use crate::arm::{self, ArmInput, ArmState};
 use crate::legs::{self, Feet, FeetInput};
-use crate::math::{clamp_dt, flat, frame_yz, sanitize_pos, sanitize_rot, smoothing, yaw_of, UP};
+use crate::math::{clamp_dt, flat, frame_yz, sanitize_pos, sanitize_rot, smoothing, wrap_angle, yaw_of, UP};
 use crate::skeleton::Skeleton;
 use crate::spine::{self, ChainInput, MAX_PITCH};
 use crate::torso::{RootYaw, TorsoYaw};
-use crate::{BodyOutput, BodyParams, Calibration, Pose, Side, StraightArms, TrackedInput};
+use crate::{BodyOutput, BodyParams, Calibration, Pose, Saddle, Side, StraightArms, TrackedInput};
 
+/// In a saddle the chest turns with the head this far at most either way (radians): looking
+/// round from a horse's back turns the shoulders a little, the hips stay with the mount.
+const SADDLE_TWIST: f32 = 50.0 * std::f32::consts::PI / 180.0;
 /// Smoothing of the centre-of-mass and head velocities the stepping logic reads (est.).
 const VELOCITY_TAU: f32 = 0.1;
 /// An untracked hand eases from where it was lost to hanging at the side (est.).
@@ -42,12 +45,23 @@ pub struct BodySolver {
     calibration: Calibration,
     skel: Skeleton,
     state: Option<State>,
+    /// Riding: the seat the body sits in instead of standing ([`BodySolver::ride`]).
+    saddle: Option<Saddle>,
 }
 
 impl BodySolver {
     pub fn new(params: BodyParams, calibration: Calibration) -> Self {
         let calibration = sanitize_calibration(calibration, Calibration::default());
-        BodySolver { skel: Skeleton::new(&params, calibration), params, calibration, state: None }
+        BodySolver { skel: Skeleton::new(&params, calibration), params, calibration, state: None, saddle: None }
+    }
+
+    /// Riding: the body sits in this saddle (the game's own seat on its mount) from the next solve
+    /// until it's taken away (None: standing again, the feet under the head).
+    pub fn ride(&mut self, saddle: Option<Saddle>) {
+        if saddle.is_none() && self.saddle.is_some() {
+            self.state = None;
+        }
+        self.saddle = saddle.filter(|s| s.seat.pos.is_finite() && s.seat.rot.is_finite() && s.legs.is_none_or(|l| l.iter().flatten().all(|v| v.is_finite())));
     }
 
     pub fn calibration(&self) -> Calibration {
@@ -152,6 +166,7 @@ impl BodySolver {
     }
 
     fn solve_frame(&mut self, input: &TrackedInput) -> BodyOutput {
+        let saddle = self.saddle;
         let p = &self.params;
         let skel = &self.skel;
         let s = skel.scale;
@@ -196,91 +211,117 @@ impl BodySolver {
         state.eyes = eyes;
         let moving = locomotion.length() > p.moving_speed || state.head_speed > p.moving_speed || state.feet.walking();
 
-        // ---- torso ----
-        let palms = grips.map(|g| g.map(|g| g.pos));
-        let torso_yaw = state.torso.update(p, dt, s, eyes, head_joint, head_yaw, palms);
-        let root_yaw = state.root.update(p, dt, torso_yaw, moving);
-
-        // ---- spine ----
-        let h0 = if input.seated { skel.seated_eye_height(p.seat_height) } else { skel.eye_height };
-        // The drop is the neck's, not the eyes': nodding swings the eyes down about the neck
-        // without the body going anywhere. This is the eye height with a level gaze.
-        let level_eyes_y = head_joint.y - skel.eye_to_head.y;
-        let target = spine::target_pitch(p, skel, level_eyes_y, h0, head_pitch);
-        state.pitch += (target - state.pitch) * smoothing(dt, p.spine_tau);
-        let chain_at = |pitch| spine::build(skel, &ChainInput { head_joint, head_rot, torso_yaw, root_yaw, pitch });
-        let mut chain = chain_at(state.pitch);
-
-        // ---- feet ----
         let hip_joints = |c: &spine::Chain| {
             [-1.0, 1.0].map(|sign| c.pos[0] + c.rot[0] * Vec3::new(sign * skel.hip_half, -skel.hip_down, 0.0))
         };
-        let mut com = chain.hips() + head_joint;
-        let mut weight = 2.0;
-        for palm in palms.iter().flatten() {
-            // VRIK's centre of mass: pelvis and head 1 each, hands 0.2.
-            com += *palm * 0.2;
-            weight += 0.2;
-        }
-        let com = com / weight;
-        if dt > 0.0 {
-            state.com_vel = state.com_vel.lerp((com - state.com) / dt, velocity_a);
-        }
-        state.com = com;
-        let seated_hips = input.seated.then(|| {
-            let [l, r] = hip_joints(&chain);
-            (l + r) * 0.5
-        });
-        let feet_input = FeetInput { com, com_vel: state.com_vel, root_yaw, locomotion, seated_hips };
-        state.feet.update(p, skel, dt, &feet_input);
-        let lifts = state.feet.feet.map(|f| f.lift(p, s));
-
-        // ---- hips: keep both feet planted ----
-        let hips_range = |c: &spine::Chain| {
-            let joints = hip_joints(c);
-            let mut range = (f32::MIN, f32::MAX);
-            for i in 0..2 {
-                let (lo, hi) = legs::hip_height_range(p, skel, joints[i], &state.feet.feet[i], lifts[i]);
-                let offset = joints[i].y - c.hips().y;
-                range = (range.0.max(lo - offset), range.1.min(hi - offset));
+        let (chain, legs) = match saddle {
+            // In a saddle: the hips where the game seats its rider (turned as the mount is), the
+            // spine from them to the head wherever it is, the chest turning part way with the head
+            // as the rider looks round, the legs astride to the game's riding pose.
+            Some(saddle) => {
+                let fwd = flat(saddle.seat.rot * Vec3::Z);
+                let mount_yaw = if fwd.length_squared() > 1e-8 { yaw_of(fwd) } else { head_yaw };
+                let torso_yaw = mount_yaw + wrap_angle(head_yaw - mount_yaw).clamp(-SADDLE_TWIST, SADDLE_TWIST);
+                // (On their feet again, the body starts from here.)
+                state.torso = TorsoYaw::new(torso_yaw);
+                state.root = RootYaw::new(mount_yaw, p);
+                state.feet = Feet::new(p, skel, head_joint, mount_yaw);
+                state.pitch = 0.0;
+                state.hip_drop = 0.0;
+                let up = (saddle.seat.rot * UP).normalize_or(UP);
+                let hips = saddle.seat.pos + up * skel.hip_down;
+                let input = ChainInput { head_joint, head_rot, torso_yaw, root_yaw: mount_yaw, pitch: 0.0 };
+                let chain = spine::seated(skel, &input, hips, up, saddle.seat.rot * Vec3::Z);
+                let joints = hip_joints(&chain);
+                let legs = [0, 1].map(|i| legs::solve_saddle_leg(p, skel, joints[i], &saddle, i));
+                (chain, legs)
             }
-            range
-        };
-        let (low, _) = hips_range(&chain);
-        if chain.hips().y < low {
-            // Too low for the knees: bend the spine further (that raises the hips), then squash it.
-            let (mut lo, mut hi) = (state.pitch, MAX_PITCH);
-            if chain_at(hi).hips().y >= low {
-                for _ in 0..12 {
-                    let mid = 0.5 * (lo + hi);
-                    if chain_at(mid).hips().y >= low { hi = mid } else { lo = mid }
+            None => {
+            // ---- torso ----
+            let palms = grips.map(|g| g.map(|g| g.pos));
+            let torso_yaw = state.torso.update(p, dt, s, eyes, head_joint, head_yaw, palms);
+            let root_yaw = state.root.update(p, dt, torso_yaw, moving);
+
+            // ---- spine ----
+            let h0 = if input.seated { skel.seated_eye_height(p.seat_height) } else { skel.eye_height };
+            // The drop is the neck's, not the eyes': nodding swings the eyes down about the neck
+            // without the body going anywhere. This is the eye height with a level gaze.
+            let level_eyes_y = head_joint.y - skel.eye_to_head.y;
+            let target = spine::target_pitch(p, skel, level_eyes_y, h0, head_pitch);
+            state.pitch += (target - state.pitch) * smoothing(dt, p.spine_tau);
+            let chain_at = |pitch| spine::build(skel, &ChainInput { head_joint, head_rot, torso_yaw, root_yaw, pitch });
+            let mut chain = chain_at(state.pitch);
+
+            // ---- feet ----
+            let mut com = chain.hips() + head_joint;
+            let mut weight = 2.0;
+            for palm in palms.iter().flatten() {
+                // VRIK's centre of mass: pelvis and head 1 each, hands 0.2.
+                com += *palm * 0.2;
+                weight += 0.2;
+            }
+            let com = com / weight;
+            if dt > 0.0 {
+                state.com_vel = state.com_vel.lerp((com - state.com) / dt, velocity_a);
+            }
+            state.com = com;
+            let seated_hips = input.seated.then(|| {
+                let [l, r] = hip_joints(&chain);
+                (l + r) * 0.5
+            });
+            let feet_input = FeetInput { com, com_vel: state.com_vel, root_yaw, locomotion, seated_hips };
+            state.feet.update(p, skel, dt, &feet_input);
+            let lifts = state.feet.feet.map(|f| f.lift(p, s));
+
+            // ---- hips: keep both feet planted ----
+            let hips_range = |c: &spine::Chain| {
+                let joints = hip_joints(c);
+                let mut range = (f32::MIN, f32::MAX);
+                for i in 0..2 {
+                    let (lo, hi) = legs::hip_height_range(p, skel, joints[i], &state.feet.feet[i], lifts[i]);
+                    let offset = joints[i].y - c.hips().y;
+                    range = (range.0.max(lo - offset), range.1.min(hi - offset));
+                }
+                range
+            };
+            let (low, _) = hips_range(&chain);
+            if chain.hips().y < low {
+                // Too low for the knees: bend the spine further (that raises the hips), then squash it.
+                let (mut lo, mut hi) = (state.pitch, MAX_PITCH);
+                if chain_at(hi).hips().y >= low {
+                    for _ in 0..12 {
+                        let mid = 0.5 * (lo + hi);
+                        if chain_at(mid).hips().y >= low { hi = mid } else { lo = mid }
+                    }
+                }
+                state.pitch = hi;
+                chain = chain_at(hi);
+                let short = low - chain.hips().y;
+                if short > 0.0 {
+                    chain.shift_hips(-short);
                 }
             }
-            state.pitch = hi;
-            chain = chain_at(hi);
-            let short = low - chain.hips().y;
-            if short > 0.0 {
-                chain.shift_hips(-short);
+            let (low, high) = hips_range(&chain);
+            // Too high to reach the feet: pull the hips down (the spine stretches). The pull is held and
+            // released slowly so a walking gait doesn't bob the body every step.
+            let excess = (chain.hips().y - high).max(0.0);
+            state.hip_drop = if excess >= state.hip_drop {
+                excess
+            } else {
+                state.hip_drop + (excess - state.hip_drop) * smoothing(dt, p.hip_release_tau)
+            };
+            let drop = state.hip_drop.min((chain.hips().y - low).max(0.0));
+            if drop > 0.0 {
+                chain.shift_hips(drop);
             }
-        }
-        let (low, high) = hips_range(&chain);
-        // Too high to reach the feet: pull the hips down (the spine stretches). The pull is held and
-        // released slowly so a walking gait doesn't bob the body every step.
-        let excess = (chain.hips().y - high).max(0.0);
-        state.hip_drop = if excess >= state.hip_drop {
-            excess
-        } else {
-            state.hip_drop + (excess - state.hip_drop) * smoothing(dt, p.hip_release_tau)
-        };
-        let drop = state.hip_drop.min((chain.hips().y - low).max(0.0));
-        if drop > 0.0 {
-            chain.shift_hips(drop);
-        }
 
-        // ---- legs ----
-        let hips_fwd = chain.rot[0] * Vec3::Z;
-        let joints_at_hips = hip_joints(&chain);
-        let legs = [0, 1].map(|i| legs::solve_leg(p, skel, joints_at_hips[i], &state.feet.feet[i], lifts[i], hips_fwd));
+            // ---- legs ----
+            let hips_fwd = chain.rot[0] * Vec3::Z;
+            let joints_at_hips = hip_joints(&chain);
+            let legs = [0, 1].map(|i| legs::solve_leg(p, skel, joints_at_hips[i], &state.feet.feet[i], lifts[i], hips_fwd));
+                (chain, legs)
+            }
+        };
 
         // ---- arms ----
         let (chest_pos, chest_rot) = chain.upper_chest();

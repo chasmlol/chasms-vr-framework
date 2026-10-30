@@ -41,6 +41,8 @@ pub struct BodyInput<'a> {
     /// Where the game's floor is in tracking space (the body stands on it, whatever the real
     /// floor's height: the game puts your eyes at its own eye height).
     pub floor: f32,
+    /// Riding: the game's seat on its mount (tracking space), where the body sits instead.
+    pub saddle: Option<rustvr_ik::Saddle>,
     pub settings: &'a Settings,
 }
 
@@ -269,6 +271,11 @@ impl PlayerBody {
         // Seated players still play a standing character: the body is drawn standing.
         // The elbows where the headset tracks them (when the player lets it).
         let elbows = f.elbows.map(|e| e.filter(|_| inp.settings.body.tracked_elbows).map(|e| Vec3::from_array(e) - down));
+        // In a saddle the body sits where the game seats its rider.
+        self.solver.ride(inp.saddle.map(|s| rustvr_ik::Saddle {
+            seat: rustvr_ik::Pose { pos: s.seat.pos - down, rot: s.seat.rot },
+            legs: s.legs.map(|l| l.map(|leg| leg.map(|p| p - down))),
+        }));
         let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows });
         for j in out.joints.iter_mut().chain(out.hand_targets.iter_mut()) {
             j.pos += down;
@@ -593,6 +600,7 @@ mod tests {
                 locomotion: Vec3::ZERO,
                 eye_height: 1.7,
                 floor: 0.0,
+                saddle: None,
                 settings: &settings,
             });
         }
@@ -628,6 +636,7 @@ mod tests {
                     locomotion: Vec3::ZERO,
                     eye_height: 1.7 + floor,
                     floor,
+                    saddle: None,
                     settings: &settings,
                 });
             }

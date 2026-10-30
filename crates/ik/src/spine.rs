@@ -61,7 +61,7 @@ impl Chain {
         self.refresh_frames();
     }
 
-    fn refresh_frames(&mut self) {
+    pub(crate) fn refresh_frames(&mut self) {
         for i in 0..4 {
             let up = self.pos[i + 1] - self.pos[i];
             self.rot[i] = frame_yz(up, yaw_dir(self.yaw[i]), UP);
@@ -93,6 +93,62 @@ pub fn build(skel: &Skeleton, input: &ChainInput) -> Chain {
     for i in (0..4).rev() {
         pos[i] = pos[i + 1] - dirs[i] * skel.spine[i];
     }
+    let head_fwd = input.head_rot * Vec3::Z;
+    let neck_fwd = yaw_dir(yaw[3]).lerp(head_fwd, NECK_FOLLOW);
+    let mut chain = Chain { pos, rot: [Quat::IDENTITY; 6], yaw };
+    chain.refresh_frames();
+    chain.rot[4] = frame_yz(neck_dir, neck_fwd, yaw_dir(yaw[3]));
+    chain.rot[5] = input.head_rot;
+    chain
+}
+
+/// The spine of a rider in a saddle: the hips where the game seats its rider (`hips`, the mount's
+/// up `up` and forward `fwd`), the neck under the head wherever the player's head is. The spine
+/// curves between them as a back does: as long as it is, it bows backward over the seat when the
+/// head is nearer the seat than that (hunched over the neck, ducking a branch), and straight, it
+/// lifts the hips off the seat when the head is further (standing in the stirrups).
+pub fn seated(skel: &Skeleton, input: &ChainInput, hips: Vec3, up: Vec3, fwd: Vec3) -> Chain {
+    let twist = wrap_angle(input.torso_yaw - input.root_yaw);
+    let yaw = TWIST_SHARE.map(|s| input.root_yaw + twist * s);
+    let head_up = input.head_rot * UP;
+    let neck_dir = head_up.lerp((input.head_joint - hips).normalize_or(up), NECK_FOLLOW).normalize_or(up);
+    let neck = input.head_joint - neck_dir * skel.neck;
+    let len = skel.spine;
+    let total: f32 = len.iter().sum();
+    let to = neck - hips;
+    let d = to.length();
+    let way = to.normalize_or(up);
+    // Bowed backward: the lower back leans back from the way to the neck, the upper back forward.
+    let axis = way.cross(fwd).try_normalize().unwrap_or_else(|| way.any_orthonormal_vector());
+    let mut along = [0.0f32; 4];
+    let mut s0 = 0.0;
+    for i in 0..4 {
+        along[i] = (s0 + 0.5 * len[i]) / total.max(1e-4) - 0.5;
+        s0 += len[i];
+    }
+    let dirs_at = |bend: f32| -> [Vec3; 4] { std::array::from_fn(|i| Quat::from_axis_angle(axis, bend * along[i]) * way) };
+    let reach = |bend: f32| dirs_at(bend).iter().zip(len).map(|(d, l)| *d * l).sum::<Vec3>();
+    let mut bend = 0.0;
+    if d < total * 0.999 {
+        // (The more it bows, the nearer its end: bisect for the bow that reaches the neck.)
+        let (mut lo, mut hi) = (0.0f32, 2.8f32);
+        for _ in 0..24 {
+            let mid = 0.5 * (lo + hi);
+            if reach(mid).length() > d { lo = mid } else { hi = mid }
+        }
+        bend = hi;
+    }
+    // Turned so its end is on the way to the neck.
+    let end = reach(bend);
+    let fix = Quat::from_rotation_arc(end.normalize_or(way), way);
+    let dirs = dirs_at(bend).map(|d| fix * d);
+    let mut pos = [Vec3::ZERO; 6];
+    pos[0] = if d > total { neck - way * total } else { hips };
+    for i in 0..4 {
+        pos[i + 1] = pos[i] + dirs[i] * len[i];
+    }
+    pos[4] = neck;
+    pos[5] = input.head_joint;
     let head_fwd = input.head_rot * Vec3::Z;
     let neck_fwd = yaw_dir(yaw[3]).lerp(head_fwd, NECK_FOLLOW);
     let mut chain = Chain { pos, rot: [Quat::IDENTITY; 6], yaw };
