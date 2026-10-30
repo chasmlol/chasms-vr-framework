@@ -347,7 +347,9 @@ A group's pieces keep the game's own arrangement, lie on a cylinder round the ey
 from the game's own text (`HudLayout::text_height`) so a line reads at `ui.menu_text_deg` (1.5
 degrees) wherever it floats. With real alpha (`HUDL_ALPHA`) and the game's picture under the menu,
 the world, the body and the hands stay, and the pieces are drawn in the world (before the body, so
-the hands are in front of them), their cut edges soft. The laser picks among the pieces that take it
+the hands are in front of them), their cut edges soft. A piece the adapter says is a page
+(`HUDE_SOLID`) is opaque wherever the game drew half or more of it, whatever coverage its blending
+left in the HUD texture's alpha. The laser picks among the pieces that take it
 (`HUDE_POINT`); where it hits is the game's cursor (`Intents::cursor_uv`), so the game keeps its
 own hover, selection and clicks; the dominant stick scrolls (`Intents::scroll`, the game's mouse
 wheel). The runtime's own settings float beside a game menu only when the layout asks

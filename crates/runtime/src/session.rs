@@ -1385,7 +1385,8 @@ impl Session {
                     } else {
                         [0.0; 2]
                     };
-                    layers.world_panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive: false, soft });
+                    let solid = piece.flags & HUDE_SOLID != 0;
+                    layers.world_panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive: false, soft, solid });
                 }
                 if menu_mode {
                     // A menu nobody described, whole: over the world as the game drew it (its
@@ -1440,7 +1441,7 @@ impl Session {
                             let additive = self.hud_layout.flags & HUDL_ADDITIVE != 0 && info.flags & SLOT_STEREO != 0;
                             // (What floats out in front, beyond the hands, is drawn before them, so a hand in
                             // front of it covers it; what's on the body or the face is drawn over it.)
-                            let layer = PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive, soft: [0.0; 2] };
+                            let layer = PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive, soft: [0.0; 2], solid: false };
                             if matches!(piece.role, HUD_STATUS | HUD_AMMO | HUD_HELD | HUD_OVERLAY) {
                                 layers.panels.push(layer);
                             } else {

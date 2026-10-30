@@ -609,6 +609,13 @@
 #define RVR_HUDE_SOFT (1 << 1)
 
 /**
+ * It's solid where the game drew it: a page (the game's parchment) is never seen through, whatever
+ * coverage the game's blending left in the HUD texture's alpha. Where it drew half or more it's
+ * opaque, in its own colour; fainter edges (a torn edge, a letter's) stay soft.
+ */
+#define RVR_HUDE_SOLID (1 << 2)
+
+/**
  * Beside a thing in the world (`HudGroup::at`, `radius`): a container, a merchant, a speaker. At the
  * thing's distance (within the laser's comfortable range), on its `side`, under the eyes, facing
  * them; it stays put in the world while the menu is open.

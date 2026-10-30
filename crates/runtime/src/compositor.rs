@@ -299,7 +299,14 @@ float4 PSQuad(VOut i) : SV_Target {
         float vignette = saturate((1 - r) * 12);
         return float4(c * vignette, 1);
     }
-    float4 t = sample_footprint(i.uv) * params.z;
+    float4 t = sample_footprint(i.uv);
+    // Solid (`color.z`): covered half or more is opaque, in its own colour (premultiplied again by
+    // the coverage it's given); fainter edges stay soft.
+    if (color.z > 0.5) {
+        float a = saturate(t.a * 2);
+        t = float4(t.rgb * (a / max(t.a, 1e-3)), a);
+    }
+    t *= params.z;
     // A soft edge: faded out over the last part of the quad (`color.xy` of its half-width and
     // half-height).
     if (color.x > 0) t *= smoothstep(0, color.x, 1 - abs(i.local.x)) * smoothstep(0, color.y, 1 - abs(i.local.y));
@@ -426,12 +433,14 @@ pub struct PanelLayer<'a> {
     pub additive: bool,
     /// Its edges fade out over this part of its half-width and half-height (0: a hard edge).
     pub soft: [f32; 2],
+    /// Solid where its texture is half covered or more (`HUDE_SOLID`).
+    pub solid: bool,
 }
 
 impl<'a> PanelLayer<'a> {
     /// The whole texture on `panel`.
     pub fn whole(panel: Panel, srv: &'a ID3D11ShaderResourceView) -> Self {
-        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0], additive: false, soft: [0.0; 2] }
+        PanelLayer { panel, srv, opacity: 1.0, uv: [0.0, 0.0, 1.0, 1.0], additive: false, soft: [0.0; 2], solid: false }
     }
 }
 
@@ -783,7 +792,7 @@ impl Compositor {
         c.axis_x = (p.panel.right * p.panel.width * 0.5).extend(0.0).to_array();
         c.axis_y = (p.panel.up * p.panel.height * 0.5).extend(0.0).to_array();
         c.params = [MODE_TEXTURE, 0.0, p.opacity, if p.additive { 1.0 } else { 0.0 }];
-        c.color = [p.soft[0], p.soft[1], 0.0, 0.0];
+        c.color = [p.soft[0], p.soft[1], if p.solid { 1.0 } else { 0.0 }, 0.0];
         c.uv_rect = p.uv;
         self.draw_quad(gpu, &c, Some(p.srv));
     }

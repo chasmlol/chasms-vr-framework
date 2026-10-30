@@ -68,6 +68,10 @@ pub const HUDE_POINT: u32 = 1 << 0;
 /// Its edges fade out over a few texels, so a piece cut from a bigger picture (the game's parchment)
 /// doesn't end in a hard line.
 pub const HUDE_SOFT: u32 = 1 << 1;
+/// It's solid where the game drew it: a page (the game's parchment) is never seen through, whatever
+/// coverage the game's blending left in the HUD texture's alpha. Where it drew half or more it's
+/// opaque, in its own colour; fainter edges (a torn edge, a letter's) stay soft.
+pub const HUDE_SOLID: u32 = 1 << 2;
 
 // ---- group anchors: where a group floats (see `crates/runtime/src/hud.rs`) ----------------------
 /// Beside a thing in the world (`HudGroup::at`, `radius`): a container, a merchant, a speaker. At the
