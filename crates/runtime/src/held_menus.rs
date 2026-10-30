@@ -8,16 +8,20 @@
 //!   side nearest the eyes' up then, a few millimetres out. It follows the thing exactly, as the rig
 //!   has it, every frame: the pages never swim on the book.
 //! - **Facing the eyes on a thing** (`HELD_FACING`): centred on the thing, turned to the eyes from
-//!   there, upright, a little smoothed, and just in front of it as the eyes see it (so the book under
-//!   the pages, and the fingers round it, stay behind them): however the hand turns the book, its
-//!   pages are read face on.
+//!   there, upright, steadied, and just in front of it as the eyes see it (so the book under the
+//!   pages, and the fingers round it, stay behind them): however the hand turns the book, its pages
+//!   are read face on.
 //! - **A sheet** (`HELD_SHEET`): held at its middle (the hand behind it, hidden by it), always turned
-//!   to the eyes from its middle, upright, a little smoothed. The other hand's grip near either side
+//!   to the eyes from its middle, upright, steadied. The other hand's grip near either side
 //!   spreads it between the two: the points of it the hands took stay in them, so it grows as they
 //!   part (a sheet pulled bigger stays that big) and nothing jumps when the second hand takes it,
 //!   facing the eyes from between them. Let go by the first, the second has it where it took it.
 //! - **Its size**: a line of the game's text is `menu_text_deg` at `held_distance` (0.45 m), kept
 //!   as it moves: nearer is bigger, as with a real book.
+//! - **Steadied**: where pages in one hand are, and how they're turned, go through a one-euro filter
+//!   (Casiez et al., CHI 2012): smoothed hard while the hand is nearly still (its tremor, the rig
+//!   settling the book in it: text that shakes can't be read) and less and less as it moves, so they
+//!   keep up with a deliberate move. Spread between both hands a sheet follows them exactly.
 //! - **Pages** (`HELD_PAGES`): a flick of the free hand, empty, anywhere (sideways as the eyes see
 //!   it, at a medium flick's speed, by the controller's own velocity), or the trigger pinched at a
 //!   page's edge and pulled across the middle, turns a page: leftwards onwards, back the other way.
@@ -85,7 +89,7 @@ const FACING_LIFT: f32 = 0.03;
 /// reaching or pointing moves at a fraction of it), most of its speed sideways (this share), and it
 /// flicks again once it's slowed below this share of it. None counts this long after the pages
 /// appear (the hands are still settling the book).
-const FLICK_SPEED: f32 = 1.0;
+const FLICK_SPEED: f32 = 0.6;
 const FLICK_SIDEWAYS: f32 = 0.7;
 const FLICK_REARM: f32 = 0.4;
 const FLICK_SETTLE: f64 = 0.4;
@@ -102,8 +106,14 @@ const GRIP_BEHIND: f32 = 0.08;
 const FAR_SIDE: f32 = 0.3;
 /// A sheet spread between the hands is this many times its natural size at least and at most.
 const SPREAD: (f32, f32) = (0.6, 2.5);
-/// How quickly a sheet held in one hand turns after it (seconds).
-const SHEET_EASE: f32 = 0.06;
+/// Steadying pages in one hand (a one-euro filter): how far behind they may follow while still (its
+/// cutoff, Hz), how much faster for each metre a second they move (and each radian a second they
+/// turn), and how quickly the speed it goes by follows (Hz). Still, they lag by a third of a second
+/// (a hand's tremor, a few hertz, all but gone); moved at half a metre a second, by a fifteenth.
+const STEADY_HZ: f32 = 0.5;
+const STEADY_BETA: f32 = 4.0;
+const STEADY_TURN_BETA: f32 = 2.0;
+const STEADY_SPEED_HZ: f32 = 1.0;
 
 /// A sheet's hold.
 #[derive(Clone, Copy, Debug)]
@@ -131,8 +141,8 @@ struct Lie {
     since: f64,
     /// Metres per group unit (the HUD texture's height).
     unit: f32,
-    /// The frame it's at now: its origin (the group's (0, 0)), right and up.
-    frame: Option<(Vec3, Vec3, Vec3)>,
+    /// In one hand, where it's held and its right and up, steadied.
+    steady: [Option<Steady>; 3],
     /// A pinch pulled across, under way: where on the pages it started (a share of the half width
     /// from the middle) and when.
     sweep: Option<(f32, f64)>,
@@ -210,9 +220,41 @@ fn facing(at: Vec3, eye: Vec3, up: Vec3) -> (Vec3, Vec3) {
     (n.cross(u), u)
 }
 
-/// `v` eased towards `to` (unit vectors) by `k`.
-fn ease(v: Vec3, to: Vec3, k: f32) -> Vec3 {
-    v.lerp(to, k).normalize_or(to)
+/// A point or a direction steadied as it moves (a one-euro filter): where it was last, as given and
+/// as steadied, and how fast it moves (eased).
+#[derive(Clone, Copy, Debug)]
+struct Steady {
+    raw: Vec3,
+    at: Vec3,
+    speed: f32,
+}
+
+impl Steady {
+    /// `to` steadied, following `beta` hertz faster for each unit a second it moves.
+    fn follow(s: &mut Option<Steady>, to: Vec3, dt: f32, beta: f32) -> Vec3 {
+        let dt = dt.max(1e-4);
+        if let Some(st) = s.as_mut() {
+            st.speed += (to.distance(st.raw) / dt - st.speed) * low_pass(STEADY_SPEED_HZ, dt);
+            st.at = st.at.lerp(to, low_pass(STEADY_HZ + beta * st.speed, dt));
+            st.raw = to;
+            return st.at;
+        }
+        *s = Some(Steady { raw: to, at: to, speed: 0.0 });
+        to
+    }
+}
+
+/// How far a low-pass filter at `hz` moves towards its input in `dt` seconds.
+fn low_pass(hz: f32, dt: f32) -> f32 {
+    let tau = 1.0 / (std::f32::consts::TAU * hz);
+    1.0 / (1.0 + tau / dt)
+}
+
+/// Right and up as given, steadied (`lie.steady[1..]`), square again.
+fn steady_turn(steady: &mut [Option<Steady>; 3], r: Vec3, u: Vec3, dt: f32) -> (Vec3, Vec3) {
+    let sr = Steady::follow(&mut steady[1], r, dt, STEADY_TURN_BETA).normalize_or(r);
+    let su = Steady::follow(&mut steady[2], u, dt, STEADY_TURN_BETA);
+    (sr, (su - sr * su.dot(sr)).normalize_or(u))
 }
 
 impl HeldMenus {
@@ -259,7 +301,7 @@ impl HeldMenus {
                         other_at: Vec2::ZERO,
                         since: now,
                         unit: natural,
-                        frame: None,
+                        steady: [None; 3],
                         sweep: None,
                         armed: true,
                         turned: None,
@@ -293,7 +335,6 @@ impl HeldMenus {
                 _ => sheet_frame(lie, &held, fp, holder, thing, hands, head_pos, head_up, natural, dt),
             };
             let Some((origin, right, up)) = frame else { continue };
-            lie.frame = Some((origin, right, up));
             if now - self.logged > 2.0 {
                 tracing::info!("held menus: {:#x} at {origin:.3?} (right {right:.2?}, up {up:.2?}, {:.3} m a unit), held by hand {holder}{}", g.id, lie.unit, thing.map_or(String::new(), |t| format!(" with {:#x} at {:.3?}", t.id, t.pos)));
             }
@@ -444,6 +485,8 @@ fn sheet_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], holder: usize, thing
         let n = (eye - (at.0 + other) * 0.5).normalize_or(Vec3::NEG_Z);
         let apart = (other - at.0) - n * (other - at.0).dot(n);
         if along.length() > 1e-3 && apart.length() > 1e-3 {
+            // (Exactly where the hands are: a pinch steadied would slide under them.)
+            lie.steady = [None; 3];
             lie.unit = (apart.length() / along.length()).clamp(natural * SPREAD.0, natural * SPREAD.1);
             // (Its right turned from the line between the hands by the angle of that line on it.)
             let e = apart.normalize();
@@ -455,36 +498,27 @@ fn sheet_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], holder: usize, thing
     }
     lie.hold = Some(Hold::One);
     // Turned to the eyes from its middle (not from the hand, which may have it by a side and would
-    // leave it turned away), upright: wherever the hand takes it, it's read face on.
-    let (mut r, mut u) = facing(at.0, eye, head_up);
+    // leave it turned away), upright: wherever the hand takes it, it's read face on. Steadied.
+    let hand = Steady::follow(&mut lie.steady[0], at.0, dt, STEADY_BETA);
+    let (mut r, mut u) = facing(hand, eye, head_up);
     for _ in 0..2 {
-        let middle = at.0 + r * (mid.x - lie.at.x) * lie.unit + u * (mid.y - lie.at.y) * lie.unit;
+        let middle = hand + r * (mid.x - lie.at.x) * lie.unit + u * (mid.y - lie.at.y) * lie.unit;
         (r, u) = facing(middle, eye, head_up);
     }
-    if let Some((_, pr, pu)) = lie.frame {
-        let k = 1.0 - (-dt / SHEET_EASE).exp();
-        r = ease(pr, r, k);
-        u = ease(pu, u, k);
-        u = (u - r * u.dot(r)).normalize_or(u);
-    }
-    let origin = at.0 - r * lie.at.x * lie.unit - u * lie.at.y * lie.unit;
+    let (r, u) = steady_turn(&mut lie.steady, r, u, dt);
+    let origin = hand - r * lie.at.x * lie.unit - u * lie.at.y * lie.unit;
     Some((origin, r, u))
 }
 
 /// Where pages facing the eyes on a thing are now (`HELD_FACING`): their middle on the thing's
-/// (its model's, with `HELD_CENTRE`), turned to the eyes from there, upright, a little smoothed, and
-/// out towards the eyes past the thing's box as they see it, so nothing of it is in front of them.
+/// (its model's, with `HELD_CENTRE`), turned to the eyes from there, upright, steadied, and out
+/// towards the eyes past the thing's box as they see it, so nothing of it is in front of them.
 #[allow(clippy::too_many_arguments)]
 fn facing_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], t: &Thing, eye: Vec3, head_up: Vec3, dt: f32) -> (Vec3, Vec3, Vec3) {
     let centre = if held.flags & HELD_CENTRE != 0 { Vec3::from_array(held.centre) } else { t.centre };
-    let mid = t.pos + t.rot * centre;
-    let (mut r, mut u) = facing(mid, eye, head_up);
-    if let Some((_, pr, pu)) = lie.frame {
-        let k = 1.0 - (-dt / SHEET_EASE).exp();
-        r = ease(pr, r, k);
-        u = ease(pu, u, k);
-        u = (u - r * u.dot(r)).normalize_or(u);
-    }
+    let mid = Steady::follow(&mut lie.steady[0], t.pos + t.rot * centre, dt, STEADY_BETA);
+    let (r, u) = facing(mid, eye, head_up);
+    let (r, u) = steady_turn(&mut lie.steady, r, u, dt);
     // (How far the box reaches towards the eyes from that middle, in its own space.)
     let n = t.rot.inverse() * u.cross(r);
     let reach = (t.centre - centre).dot(n) + n.abs().dot(t.half);
