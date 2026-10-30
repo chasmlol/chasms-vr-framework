@@ -63,7 +63,7 @@ mod torso;
 
 pub use fingers::{FingerInput, FingerSolver, HoldShape};
 pub use params::{BodyParams, HandGeometry, HandOffsets};
-pub use skeleton::REF_EYE_HEIGHT;
+pub use skeleton::{NECK_LEAN, REF_EYE_HEIGHT};
 pub use solver::BodySolver;
 
 use glam::{Quat, Vec3};

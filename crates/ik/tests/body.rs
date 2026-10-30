@@ -90,13 +90,16 @@ fn tpose_gives_the_reference_frames() {
     let o = settle(&mut s, &i, 120);
     for j in Joint::ALL {
         let err = angle_deg(o.joints[j as usize].rot, reference_frame(j));
-        // Knees keep a few degrees of slack, so the bones either side of them lean by about half
-        // that.
+        // Knees keep a few degrees of slack and ease into straight, so the bones either side of
+        // them lean by about half their bend.
         let limit = match j {
             Joint::LeftHand | Joint::RightHand => 0.05,
+            // The neck leans forward from its base as a real one does.
+            Joint::Neck => rustvr_ik::NECK_LEAN.to_degrees() + 2.0,
             Joint::LeftUpperArm | Joint::LeftLowerArm | Joint::RightUpperArm | Joint::RightLowerArm => 10.0,
-            Joint::LeftShoulder | Joint::RightShoulder => 6.0,
-            Joint::LeftUpperLeg | Joint::LeftLowerLeg | Joint::RightUpperLeg | Joint::RightLowerLeg => 6.0,
+            // Arms raised to the horizontal, the shoulder girdle lifts some 15° and swings back.
+            Joint::LeftShoulder | Joint::RightShoulder => 20.0,
+            Joint::LeftUpperLeg | Joint::LeftLowerLeg | Joint::RightUpperLeg | Joint::RightLowerLeg => 8.0,
             _ => 2.0,
         };
         assert!(err < limit, "{j:?}: {err:.2}° from the reference frame");

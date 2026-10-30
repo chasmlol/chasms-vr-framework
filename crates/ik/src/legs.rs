@@ -19,7 +19,7 @@ const KNEE_MIN_FLEXION: f32 = 3.0 * PI / 180.0;
 /// steady rate while the leg lengthens the little it takes (as an arm does into full reach). A
 /// two-bone knee near straight swings a long way for a millimetre of hip height, so a standing
 /// body's knees popped back and forth with every bob of the head.
-const LEG_EASE: f32 = 0.02;
+const LEG_EASE: f32 = 0.01;
 /// A stepping foot rises (and at the end comes down) over this share of the time it's in the
 /// air without travelling.
 const STEP_LIFT_OFF: f32 = 0.15;

@@ -44,6 +44,9 @@ const W_WRIST: f32 = 8.0;
 const W_TWIST: f32 = 4.0;
 const W_PREVIOUS: f32 = 0.3;
 const W_TORSO: f32 = 20.0;
+/// An elbow tucked further in towards the body's middle than both the shoulder and the wrist (the
+/// arm folded across the chest, the upper arm turned right in) pays this per 10 cm past them (est.).
+const W_INWARD: f32 = 2.0;
 /// The swivel search runs from just above outward round to a little inward under the arm.
 const SWIVEL_RANGE_DEG: [f32; 2] = [30.0, 215.0];
 const SWIVEL_STEP_DEG: f32 = 10.0;
@@ -405,6 +408,9 @@ fn swivel_target(
         if inside_torso(skel, chest_rot.inverse() * (arm.elbow - input.chest_pos)) {
             c += W_TORSO;
         }
+        let outward = |v: Vec3| (chest_rot.inverse() * (v - input.chest_pos)).x * sign;
+        let tucked = outward(rest_shoulder).min(outward(wrist)) - outward(arm.elbow);
+        c += W_INWARD * (tucked.max(0.0) / (0.1 * skel.scale)).powi(2);
         c
     };
     let [lo, hi] = SWIVEL_RANGE_DEG.map(f32::to_radians);
