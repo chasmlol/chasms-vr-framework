@@ -1075,12 +1075,14 @@ impl Session {
         Ok(true)
     }
 
-    /// The vignette (eased in while the stick moves you or turns you smoothly) and the fade when the
-    /// head pushes into the game's walls.
+    /// The vignette (eased in while the stick moves you, the arms swim you or you turn smoothly) and
+    /// the fade when the head pushes into the game's walls.
     fn update_comfort(&mut self, frame: &HmdFrame, out: &crate::mechanics::MechOutput, menu: bool) {
         let c = &self.settings.current.comfort;
         let dt = frame.dt.max(1e-4);
-        let moving = Vec2::from_array(out.intents.move_xy).length().min(1.0);
+        // (Swimming by the arms moves the view as the stick does: as much, for its share of full speed.)
+        let swimming = if out.intents.flags & INT_SWIM != 0 && self.swim_out.full_speed > 0.0 { self.swim_out.velocity.length() / self.swim_out.full_speed } else { 0.0 };
+        let moving = Vec2::from_array(out.intents.move_xy).length().max(swimming).min(1.0);
         let turning = if c.turn_mode == crate::settings::TurnMode::Smooth {
             let dom = self.settings.current.dominant();
             (frame.hands[dom].stick[0].abs() - self.settings.current.input.stick_deadzone).max(0.0) / (1.0 - self.settings.current.input.stick_deadzone).max(0.1)
