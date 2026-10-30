@@ -498,6 +498,25 @@ impl Adapter {
         }
     }
 
+    /// What grabbing the creatures needs (see [`ActorBodies`]): every frame, with them.
+    pub fn write_actor_bodies(&self, bodies: &ActorBodies) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_actor_bodies(bodies);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Each hand's grab of a creature (see [`CreatureGrabs`]). False when there's no runtime.
+    pub fn read_creature_grabs(&self, out: &mut CreatureGrabs) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_creature_grabs_into(out),
+            _ => false,
+        }
+    }
+
     /// The blades of the melee weapons the game offers (see [`MeleeTable`]): when they change.
     pub fn write_melee(&self, table: &MeleeTable) -> bool {
         match &self.link {

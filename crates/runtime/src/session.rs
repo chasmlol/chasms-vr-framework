@@ -184,6 +184,9 @@ pub struct Session {
     game_poses: Box<GamePoses>,
     /// Where the hands push them (see `Rig::game_pushes`).
     game_pushes: Box<GamePushes>,
+    /// What grabbing the game's creatures needs (see `rig::creatures`), and each hand's grab.
+    actor_bodies: Box<ActorBodies>,
+    creature_grabs: Box<CreatureGrabs>,
     /// Their convex collision (see `Rig::set_game_hulls`).
     game_hulls: Box<GameHulls>,
     hud: crate::hud::HudPlacer,
@@ -325,6 +328,8 @@ impl Session {
             hud_layout_seq: 0,
             game_poses: bytemuck::zeroed_box(),
             game_pushes: bytemuck::zeroed_box(),
+            actor_bodies: bytemuck::zeroed_box(),
+            creature_grabs: bytemuck::zeroed_box(),
             game_hulls: bytemuck::zeroed_box(),
             game_lighting: bytemuck::zeroed_box(),
             game_lighting_read: bytemuck::zeroed_box(),
@@ -783,6 +788,8 @@ impl Session {
                 self.held_objects.set_overlays(&self.gpu, &self.overlays);
             }
             self.rig.set_actor_parts(self.combat.actor_parts());
+            self.link.read_actor_bodies_into(&mut self.actor_bodies);
+            self.rig.set_actor_bodies(self.combat.actors(), &self.actor_bodies);
             let combat = self.combat.update(&crate::combat::CombatInput {
                 rig: &self.rig,
                 out: &self.rig_out,
@@ -829,6 +836,9 @@ impl Session {
                 self.game_pushes.pushes[i] = *p;
             }
             self.link.write_game_pushes(&self.game_pushes);
+            // The hands on the game's creatures.
+            self.creature_grabs.grabs = *self.rig.creature_grabs();
+            self.link.write_creature_grabs(&self.creature_grabs);
             self.link.write_object_states(&self.states);
             self.held_objects.update(&self.objects, &self.states, &self.game_poses, self.map_now.as_ref(), frame.hands.map(|h| h.trigger), frame.display_time_ns as f64 * 1e-9);
         } else {
@@ -1914,7 +1924,7 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::KnifeThrow => (E::KnifeThrow, S::GloveFlick),
         C::Explosion => (E::Explosion, S::ShotShotgun),
         C::KnifeStick => (E::KnifeStick, S::Impact),
-        C::ExplosionRumble => return None,
+        C::ExplosionRumble | C::Strain => return None,
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

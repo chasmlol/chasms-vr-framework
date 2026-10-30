@@ -677,6 +677,44 @@
 
 #define RVR_OFF_BLOODS RVR_OFF_GORE
 
+#define RVR_OFF_ACTOR_BODIES 5308416
+
+/**
+ * The hands may take hold of it.
+ */
+#define RVR_BODY_GRABBABLE (1 << 0)
+
+/**
+ * All of it is physics now (dead, knocked down, lifted off its feet): nothing of it stands.
+ */
+#define RVR_BODY_RAGDOLL (1 << 1)
+
+/**
+ * Alive and awake enough to struggle (not dead, not knocked out).
+ */
+#define RVR_BODY_CONSCIOUS (1 << 2)
+
+/**
+ * Held now. Without it the grab has been let go of: its last word, with the throw (`vel`), kept
+ * until the hand takes hold of something else.
+ */
+#define RVR_GRAB_HELD (1 << 0)
+
+/**
+ * On the throat: `squeeze` chokes.
+ */
+#define RVR_GRAB_THROAT (1 << 1)
+
+/**
+ * The other hand holds the same creature.
+ */
+#define RVR_GRAB_TWO_HANDS (1 << 2)
+
+/**
+ * The grip slipped (the hand was pulled past its reach): let go without a throw.
+ */
+#define RVR_GRAB_SLIPPED (1 << 3)
+
 
 
 #define RVR_MAX_HUD_ELEMENTS 32
@@ -1756,6 +1794,8 @@ typedef uint32_t RVR_Joint;
 #endif // __cplusplus
 
 #define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, RVR_TexKind_BloomLeft, RVR_TexKind_BloomRight, RVR_TexKind_LensLeft, RVR_TexKind_LensRight, RVR_TexKind_AuxDepth, }
+
+
 
 
 

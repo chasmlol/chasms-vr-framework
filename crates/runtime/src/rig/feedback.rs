@@ -87,6 +87,9 @@ pub enum Cue {
     StringSnap,
     /// The bow's limbs swinging back and forth after a shot, felt in the bow hand.
     BowSpring,
+    /// A hand held back by the weight of a body it holds (a creature, `rig::creatures`): a low,
+    /// steady rumble, harder the further the body holds it back (felt, not heard).
+    Strain,
 }
 
 impl Cue {
@@ -95,6 +98,7 @@ impl Cue {
         match self {
             Cue::Grab => "grab",
             Cue::Release => "release",
+            Cue::Strain => "strain",
             Cue::HolsterIn => "holster_in",
             Cue::HolsterOut => "holster_out",
             Cue::Pouch => "pouch",
@@ -233,6 +237,7 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
             }
             (0.015, 130.0, (0.25 + 0.6 * i).min(0.9))
         }
+        Cue::Strain => (0.05, 55.0, (0.15 + 0.6 * i).min(0.8)),
     })
 }
 

@@ -19,6 +19,7 @@
 
 pub mod actions;
 pub mod bow;
+pub mod creatures;
 pub mod embed;
 pub mod feedback;
 pub mod filters;
@@ -209,6 +210,8 @@ enum Hover {
     Quiver(u32),
     /// The string of the other hand's bow, an arrow resting on it: draw it.
     String(u32),
+    /// A part of one of the game's creatures (its id, the part's index).
+    Creature(u32, usize),
 }
 
 /// A hand holding a hinged action's barrels: which gun, where on them it took them (weapon space,
@@ -286,6 +289,8 @@ struct Hand {
     grip_toggled: bool,
     prev_buttons: u32,
     trigger: f32,
+    /// The grip's squeeze (0..1) as the controller has it.
+    squeeze: f32,
     holding: Option<u32>,
     /// Where on what it holds it has it.
     on: On,
@@ -336,6 +341,8 @@ struct Hand {
     barrels: Option<BarrelGrab>,
     /// On a valve's rim.
     valve: Option<valve::ValveGrip>,
+    /// On a creature's part ([`creatures`]).
+    creature: Option<creatures::Hold>,
     /// The controller's turn rate (world, rad/s) from its last two rotations: the wrist's flicks
     /// (whatever a heavy gun in it manages to follow).
     turn_rate: Vec3,
@@ -646,6 +653,9 @@ const SHOULDER_DROP: f32 = 0.25;
 const SHOULDER_OUT: f32 = 0.18;
 /// Faster than this (m/s), a hand pushes the way it moves.
 const PUSH_MOVING: f32 = 0.2;
+/// A hand squeezing its grip less than this is open (it shoves; squeezing more, it's taking hold or
+/// a fist).
+const OPEN_HAND: f32 = 0.3;
 const LEASH: f32 = 0.7;
 /// A turn (radians) or a move (metres) of the player's mapping in one step past which it's a snap
 /// turn or a teleport, not a walk (as `crate::locomotion` tells them apart).
@@ -704,6 +714,14 @@ pub struct Rig {
     proxies: HashMap<(u32, usize), (RigidBodyHandle, ColliderHandle, f32, f32)>,
     /// What blades stuck in creatures drag them by this frame (pushes for the game).
     drags: Vec<GamePush>,
+    /// What the game says about its creatures' bodies (for the hands that take hold of them).
+    bodies: HashMap<u32, creatures::Body>,
+    /// How strong the game says the player is (1: an average person).
+    game_strength: f32,
+    /// Each hand's grab of a creature, for the game ([`CreatureGrabs`]), and the last number given
+    /// to one.
+    grabs: [CreatureGrab; 2],
+    grab_serial: u32,
     /// Where the game says its own simulated objects are (`OBJF_GAME_SIMULATED`, world space).
     game_poses: HashMap<u32, (Vec3, Quat)>,
     /// Where the hands push the game's own free objects after this step (see [`GamePush`]).
@@ -747,6 +765,10 @@ impl Default for Rig {
             actor_parts: HashMap::new(),
             proxies: HashMap::new(),
             drags: Vec::new(),
+            bodies: HashMap::new(),
+            game_strength: 1.0,
+            grabs: [CreatureGrab::default(); 2],
+            grab_serial: 0,
             game_pushes: Vec::new(),
             game_hulls: HashMap::new(),
             templates: Vec::new(),
@@ -1409,6 +1431,7 @@ impl Rig {
                 h.target = (map.point(h.grip_t.0), map.rot(h.grip_t.1));
                 h.aim_rot = map.rot(h.aim_t.1);
                 h.trigger = c.trigger;
+                h.squeeze = c.squeeze;
                 h.history.push(inp.now, h.grip_t.0, Some(h.vel_t), h.ang_t, map);
             }
         }
@@ -1471,7 +1494,7 @@ impl Rig {
             // As the drawn hand's are, from the controller; an empty hand's as what it's pressed
             // on pushes them open.
             let curls = if h.reach_from.is_some() { h.curls } else { h.drawn_curls };
-            h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none() && h.valve.is_none();
+            h.fingers_on = h.holding.is_none() && h.support.is_none() && h.handle.is_none() && h.barrels.is_none() && h.pin.is_none() && h.valve.is_none() && h.creature.is_none();
             // The fingers are the hand's own collider (curled as the controller has them): what
             // the hand meets, they meet too, and nothing goes through them.
             let local = fingers::segments((hand.pos, hand.rot), i == 1, curls);
@@ -1625,10 +1648,12 @@ impl Rig {
         for (&(actor, part), &(_, proxy, ..)) in &self.proxies {
             for c in self.physics.touching(proxy) {
                 // Who's pressing, and how far behind where it's driven it is (what it presses with).
-                let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0)).or_else(|| {
-                    self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }))
+                // (Only an open hand shoves: one closing is taking hold, a fist punches, the game's
+                // own blow.)
+                let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0, Some(if h.squeeze < OPEN_HAND { self.map.vel(h.vel_t) } else { Vec3::ZERO }))).or_else(|| {
+                    self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
                 });
-                let Some((body, lag)) = pusher else { continue };
+                let Some((body, lag, controller)) = pusher else { continue };
                 let Some((point, normal, depth)) = self.physics.overlap(c, proxy).or_else(|| {
                     // Resting against it: the nearest points.
                     let p = self.physics.closest_point(proxy, self.physics.pose(body).0);
@@ -1639,8 +1664,11 @@ impl Rig {
                 };
                 let vel = self.physics.velocity(body).0;
                 let speed = (vel.dot(normal).max(0.0) + lag.dot(normal).max(0.0) * PUSH_LAG + depth * PUSH_OUT).min(PUSH_MAX);
+                // (A hand stopped on the body has lost its speed: its controller's is how hard it
+                // came.)
+                let moving = controller.unwrap_or(vel).dot(normal).max(0.0);
                 if speed > 0.05 {
-                    keep(GamePush { id: actor, part: part as u32 + 1, point: point.extend(1.0).to_array(), normal: normal.extend(speed).to_array(), ..Default::default() });
+                    keep(GamePush { id: actor, part: part as u32 + 1, moving, point: point.extend(1.0).to_array(), normal: normal.extend(speed).to_array(), ..Default::default() });
                 }
             }
         }
@@ -1675,6 +1703,7 @@ impl Rig {
                 grip_toggled: false,
                 prev_buttons: 0,
                 trigger: 0.0,
+                squeeze: 0.0,
                 holding: None,
                 on: On::Free,
                 hold: None,
@@ -1701,6 +1730,7 @@ impl Rig {
                 pin: None,
                 barrels: None,
                 valve: None,
+                creature: None,
                 turn_rate: Vec3::ZERO,
                 trigger_was: 0.0,
                 squeeze_peak: 0.0,
@@ -1778,7 +1808,7 @@ impl Rig {
     fn update_hover(&mut self, i: usize, s: &Settings, zones: &[Zone; SLOT_COUNT_BODY], ammo: &[Zone; 2], quiver: &[Zone]) {
         let hands = self.hands.as_ref().unwrap();
         let h = &hands[i];
-        if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.valve.is_some() {
+        if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.valve.is_some() || h.creature.is_some() {
             self.hands.as_mut().unwrap()[i].hover = Hover::None;
             return;
         }
@@ -1932,6 +1962,28 @@ impl Rig {
             }
             if let Some((id, _)) = best {
                 hover = Hover::Object(id);
+            }
+        }
+        // 4. A creature's part the hand is on (the palm or a finger touching it, or all but): any
+        // part of anyone the game lets the hands take hold of.
+        if hover == Hover::None {
+            let prev = match h.hover {
+                Hover::Creature(a, p) => Some((a, p)),
+                _ => None,
+            };
+            let mut best: Option<((u32, usize), f32)> = None;
+            for (&k, &(_, c, ..)) in &self.proxies {
+                if !self.bodies.get(&k.0).is_some_and(|b| b.grabbable()) {
+                    continue;
+                }
+                let d = self.physics.distance_between(hand_c, c);
+                let (d, limit) = if Some(k) == prev { (d - 0.01, TOUCH * 1.5) } else { (d, TOUCH) };
+                if d < limit && best.is_none_or(|b| d < b.1) {
+                    best = Some((k, d));
+                }
+            }
+            if let Some(((actor, part), _)) = best {
+                hover = Hover::Creature(actor, part);
             }
         }
         // A tick as the hand enters a holster or pouch, so you can find them without looking.
@@ -2161,6 +2213,7 @@ impl Rig {
                 }
             }
             Hover::String(bid) => self.take_string(i, bid),
+            Hover::Creature(actor, part) => self.take_creature(i, actor, part),
         }
         let _ = inp;
     }
@@ -2468,6 +2521,11 @@ impl Rig {
                 return;
             }
             if h.support.take().is_some() || h.pin.take().is_some() {
+                return;
+            }
+            if h.creature.is_some() {
+                let throw = h.history.release(self.now).lin;
+                self.let_go_creature(i, Some(throw));
                 return;
             }
             if h.valve.take().is_some() {
@@ -3808,7 +3866,7 @@ impl Rig {
         let s = &inp.settings.interaction;
         let now = self.now;
         let h = &self.hands.as_ref().unwrap()[i];
-        if !s.gravity_gloves || h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.barrels.is_some() || h.valve.is_some() {
+        if !s.gravity_gloves || h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.barrels.is_some() || h.valve.is_some() || h.creature.is_some() {
             if !matches!(h.glove, Glove::Flight(_)) {
                 self.set_glove(i, Glove::Idle);
             }
@@ -3911,6 +3969,153 @@ impl Rig {
                 if !matches!(o.holder, Holder::Pulled { .. }) {
                     self.set_glove(i, Glove::Idle);
                 }
+            }
+        }
+    }
+
+    // ---- creatures held (creatures.rs) ---------------------------------------------------------------
+    /// What the game says about its creatures' bodies this frame ([`ActorBodies`], beside their
+    /// parts in [`Actors`]): which the hands may take hold of, how each part turns, and how strong
+    /// the player is.
+    pub fn set_actor_bodies(&mut self, actors: &[Actor], bodies: &ActorBodies) {
+        self.bodies.clear();
+        for a in actors {
+            self.bodies.insert(a.id, creatures::Body::from(a, bodies.get(a.id)));
+        }
+        self.game_strength = if bodies.strength > 0.0 && bodies.strength.is_finite() { bodies.strength } else { 1.0 };
+    }
+
+    /// Each hand's grab of a creature, for the game (see [`CreatureGrab`]).
+    pub fn creature_grabs(&self) -> &[CreatureGrab; 2] {
+        &self.grabs
+    }
+
+    /// The creature hand `hand` holds, if any.
+    pub fn holds_creature(&self, hand: usize) -> Option<u32> {
+        self.hands.as_ref()?[hand].creature.map(|c| c.actor)
+    }
+
+    /// Where part `part` of creature `actor` is now: its frame (see [`creatures::frame`]).
+    fn part_frame(&self, actor: u32, part: usize) -> Option<(Vec3, Quat)> {
+        let &(a, b, _) = self.actor_parts.get(&(actor, part))?;
+        let rot = self.bodies.get(&actor).and_then(|b| b.parts.get(part)).and_then(|p| p.rot);
+        Some(creatures::frame(a, b, rot))
+    }
+
+    /// Hand `i` takes hold of part `part` of creature `actor` where it is on it: neither the hand
+    /// nor the body moves, and the fingers close on it from where they are.
+    fn take_creature(&mut self, i: usize, actor: u32, part: usize) {
+        let (Some(frame), Some(&(a, b, radius))) = (self.part_frame(actor, part), self.actor_parts.get(&(actor, part))) else { return };
+        let at = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
+        let (on, _) = creatures::surface(a, b, radius, at.0);
+        let kind = self.bodies.get(&actor).and_then(|b| b.parts.get(part)).map_or(PART_TORSO, |p| p.kind);
+        let throat = creatures::on_throat(kind, a, b, on);
+        self.grab_serial += 1;
+        let inv = inverse(frame);
+        let hold = creatures::Hold { actor, part, hand: compose(inv, at), point: inv.0 + inv.1 * on, throat, serial: self.grab_serial, since: self.now, slipping: None, strained: 0.0 };
+        self.grabs[i] = CreatureGrab {
+            serial: hold.serial,
+            flags: GRAB_HELD | if throat { GRAB_THROAT } else { 0 },
+            actor,
+            part: part as u32,
+            point: hold.point.to_array(),
+            target: on.to_array(),
+            target_rot: frame.1.to_array(),
+            ..Default::default()
+        };
+        let h = &mut self.hands.as_mut().unwrap()[i];
+        h.creature = Some(hold);
+        h.returning = None;
+        let c = h.collider;
+        self.physics.set_groups(c, groups_none());
+        self.debug.grabs += 1;
+        tracing::info!("rig: the {} hand takes hold of creature {actor:#x}'s part {part} at {on:.2?}{}", if i == 0 { "left" } else { "right" }, if throat { ", by the throat" } else { "" });
+        self.emit(Cue::Grab, Some(i), None, on, 0.8);
+    }
+
+    /// Hand `i` lets go of the creature it holds, with the throw (none: its grip slipped, or the
+    /// creature went): its grab's last word for the game. The hand is on the body's surface where it
+    /// let go, and a free hand again from there: held back by the body if its controller is in it,
+    /// catching up eased as a hand held back does (never a jump, never through the body).
+    fn let_go_creature(&mut self, i: usize, throw: Option<Vec3>) {
+        let Some(hold) = self.hands.as_mut().unwrap()[i].creature.take() else { return };
+        let g = &mut self.grabs[i];
+        g.flags = (g.flags & !GRAB_HELD) | if throw.is_none() { GRAB_SLIPPED } else { 0 };
+        g.vel = throw.unwrap_or(Vec3::ZERO).to_array();
+        let h = &mut self.hands.as_mut().unwrap()[i];
+        let from = self.physics.pose(h.body);
+        h.reach_from = Some((from.0, h.target.0));
+        h.blocked = false;
+        let c = h.collider;
+        self.physics.set_groups(c, groups_hand(i));
+        tracing::info!(
+            "rig: the {} hand lets go of creature {:#x}{}",
+            if i == 0 { "left" } else { "right" },
+            hold.actor,
+            match throw {
+                Some(v) => format!(", thrown at {:.2} m/s", v.length()),
+                None => ": its grip slipped".into(),
+            }
+        );
+        self.emit(Cue::Release, Some(i), None, from.0, 0.6);
+    }
+
+    /// The hands on creatures: each where it holds its part now (the body's weight holds it back
+    /// from its controller), and its grab for the game: where the controller would have the point
+    /// it holds, how hard it pulls and how hard it squeezes. Pulled past its reach for a moment, its
+    /// grip slips.
+    fn creature_holds(&mut self, inp: &RigInput) {
+        let s = &inp.settings.interaction;
+        let force = s.creature_strength * self.game_strength;
+        let map = self.map;
+        for i in 0..2 {
+            let Some(hold) = self.hands.as_ref().unwrap()[i].creature else { continue };
+            let Some(frame) = self.part_frame(hold.actor, hold.part) else {
+                self.let_go_creature(i, None);
+                continue;
+            };
+            let both = self.hands.as_ref().unwrap()[i ^ 1].creature.is_some_and(|c| c.actor == hold.actor);
+            let now = self.now;
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            let at = compose(frame, hold.hand);
+            // Where the controller would have the part: the hold carried by it.
+            let want = compose(h.target, inverse(hold.hand));
+            let target = want.0 + want.1 * hold.point;
+            let held = frame.0 + frame.1 * hold.point;
+            let apart = h.target.0.distance(at.0);
+            h.blocked = apart > BLOCKED;
+            let slipping = (apart > creatures::REACH * map.world_per_meter).then(|| hold.slipping.unwrap_or(now));
+            // The body's weight, felt: the further it holds the hand back, the harder.
+            let strain = (apart > creatures::STRAIN_FROM * map.world_per_meter && now - hold.strained >= creatures::STRAIN_EVERY)
+                .then(|| ((apart / map.world_per_meter - creatures::STRAIN_FROM) / (creatures::STRAIN_FULL - creatures::STRAIN_FROM)).clamp(0.0, 1.0));
+            if let Some(c) = h.creature.as_mut() {
+                c.slipping = slipping;
+                if strain.is_some() {
+                    c.strained = now;
+                }
+            }
+            self.physics.set_pose(h.body, at.0, at.1);
+            self.physics.set_velocity(h.body, Vec3::ZERO, Vec3::ZERO);
+            self.grabs[i] = CreatureGrab {
+                serial: hold.serial,
+                flags: GRAB_HELD | if hold.throat { GRAB_THROAT } else { 0 } | if both { GRAB_TWO_HANDS } else { 0 },
+                actor: hold.actor,
+                part: hold.part as u32,
+                point: hold.point.to_array(),
+                force,
+                target: target.to_array(),
+                squeeze: creatures::squeeze_past(inp.frame.hands[i].squeeze, s.grip_press),
+                target_rot: want.1.to_array(),
+                vel: map.vel(h.vel_t).to_array(),
+                stretch: held.distance(target),
+                ang_vel: (map.rot(Quat::IDENTITY) * h.ang_t).to_array(),
+                _p0: 0.0,
+            };
+            if let Some(k) = strain {
+                self.emit(Cue::Strain, Some(i), None, at.0, k);
+            }
+            if slipping.is_some_and(|t| now - t > creatures::SLIP_TIME) {
+                self.let_go_creature(i, None);
             }
         }
     }
@@ -4248,6 +4453,7 @@ impl Rig {
             }
         }
         self.valves(dt, s.interaction.grab_transition, s.interaction.mechanism_stiffness);
+        self.creature_holds(inp);
         // Empty hands follow their controllers; past the leash they snap back, unless the
         // controller is through the world (a wall, the floor): then the hand stays against it.
         let now = self.now;
@@ -4262,7 +4468,7 @@ impl Rig {
             drawn[1] = drawn[1].max(0.0);
             h.drawn_curls = drawn;
             let was_on = std::mem::replace(&mut h.was_on, h.holding.or(h.support.as_ref().map(|s| s.id)));
-            if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() || h.valve.is_some() {
+            if h.holding.is_some() || h.support.is_some() || h.barrels.is_some() || h.valve.is_some() || h.creature.is_some() {
                 h.reach_from = None;
                 h.give = [0.0; 5];
                 h.round = Round::No;
@@ -4713,7 +4919,7 @@ impl Rig {
             if h.blocked && inp.settings.interaction.ghost_hands {
                 out.ghosts[i] = Some(pose(h.grip_t.0, h.grip_t.1));
             }
-            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some();
+            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.creature.is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if matches!(o.attach, Attach::Gun) => rustvr_ik::HoldShape::PistolGrip,
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::Foregrip,
@@ -4729,12 +4935,16 @@ impl Rig {
                 Some(_) => rustvr_ik::HoldShape::Large,
                 None if h.support.is_some() || h.handle.is_some() || h.barrels.is_some() => rustvr_ik::HoldShape::Foregrip,
                 None if h.pin.is_some() => rustvr_ik::HoldShape::Small,
-                None => rustvr_ik::HoldShape::None,
+                None => match h.creature.and_then(|c| self.actor_parts.get(&(c.actor, c.part))) {
+                    Some(&(_, _, radius)) => creatures::hold_shape(radius),
+                    None => rustvr_ik::HoldShape::None,
+                },
             };
             if let Glove::Flight(id) = h.glove {
                 out.pulled[i] = self.obj_pose(id).map(|(p, _)| map.inv_point(p));
             }
-            out.hand_targeting[i] = h.hover != Hover::None || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
+            // (A hand on a person still has the trigger's use: touch someone's shoulder to talk.)
+            out.hand_targeting[i] = !matches!(h.hover, Hover::None | Hover::Creature(..)) || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
         }
         // Primary gun: the firing hand's, else any held gun.
         let gun_in = |hand: usize| hands[hand].holding.filter(|id| self.objects.get(id).is_some_and(|o| matches!(o.attach, Attach::Gun)));
@@ -4808,6 +5018,24 @@ impl Rig {
     /// trigger.
     fn grasp_now(&self, i: usize) -> Option<((u32, On), rustvr_avatar::Grasp)> {
         let h = &self.hands.as_ref()?[i];
+        if let Some(c) = h.creature {
+            // Round the part it's on, and what of the creature is beside it (the neck's and the
+            // torso's capsules at the throat).
+            let (hp, _) = self.physics.pose(h.body);
+            let mut g = rustvr_avatar::Grasp { fingers: rustvr_avatar::grasp::ALL_FINGERS, ..Default::default() };
+            for (&(actor, part), &(a, b, radius)) in &self.actor_parts {
+                if actor != c.actor || creatures::surface(a, b, radius, hp).0.distance(hp) >= creatures::GRASP_NEAR {
+                    continue;
+                }
+                // On the throat, round the neck itself.
+                let kind = self.bodies.get(&actor).and_then(|b| b.parts.get(part)).map_or(PART_TORSO, |p| p.kind);
+                match creatures::neck(kind, a, b).filter(|_| c.throat) {
+                    Some((na, nb)) => g.solids.push(rustvr_avatar::Solid::Capsule { a: na, b: nb, radius: creatures::THROAT_RADIUS * self.map.world_per_meter }),
+                    None => g.solids.push(rustvr_avatar::Solid::Capsule { a, b, radius }),
+                }
+            }
+            return Some(((c.actor, On::Free), g));
+        }
         let (id, on) = match (h.holding, h.support) {
             (Some(id), _) => (id, h.on),
             (None, Some(sup)) => (sup.id, sup.on),

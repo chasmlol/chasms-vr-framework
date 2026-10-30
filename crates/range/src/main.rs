@@ -532,6 +532,10 @@ impl Game {
         if self.adapter.read_game_pushes(&mut pushes) {
             self.dummies.push(&pushes);
         }
+        let mut grabs: CreatureGrabs = bytemuck::Zeroable::zeroed();
+        if self.adapter.read_creature_grabs(&mut grabs) {
+            self.dummies.grab(&grabs);
+        }
         if self.combat_for != self.adapter.connections() && self.adapter.connected() {
             self.combat_for = self.adapter.connections();
             let swords: Vec<u32> = self.armory.as_ref().map(|a| a.ids_of_kind(OBJ_MELEE)).unwrap_or_default();
@@ -575,6 +579,7 @@ impl Game {
         }
         self.dummies.step(dt);
         self.adapter.write_actors(&self.dummies.actors());
+        self.adapter.write_actor_bodies(&self.dummies.bodies());
     }
 
     fn object_boxes(&self, v: &View) -> Vec<ObjBox> {
