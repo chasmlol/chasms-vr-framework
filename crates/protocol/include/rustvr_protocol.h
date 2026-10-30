@@ -287,6 +287,11 @@
  */
 #define RVR_WATER_WALKING (1 << 3)
 
+/**
+ * The game gives its bob: the desktop view's "the game's own" shows this one, not the runtime's.
+ */
+#define RVR_BOB_GIVEN (1 << 0)
+
 #define RVR_RIG_HAS_SIGHT (1 << 0)
 
 #define RVR_RIG_HAS_MUZZLE (1 << 1)
