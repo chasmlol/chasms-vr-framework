@@ -931,11 +931,13 @@ impl Gore {
             self.decals.push(d);
             return self.decals.len() - 1;
         }
-        // Full: the oldest splat goes (a pool only when there's nothing else); a decal a run is
-        // still drawing stays.
+        // Full: the oldest splat goes (a pool when pools are half of them); a decal a run is still
+        // drawing stays.
         let busy: Vec<usize> = self.runners.iter().map(|r| r.decal).collect();
         let oldest = |want_pool: bool, list: &[Decal]| list.iter().enumerate().filter(|(i, x)| (x.tex == DECAL_STAIN) == want_pool && !busy.contains(i)).min_by(|a, b| a.1.born.total_cmp(&b.1.born)).map(|(i, _)| i);
-        let i = oldest(false, &self.decals).or_else(|| oldest(true, &self.decals)).unwrap_or(0);
+        // (Pools keep at most half the decals.)
+        let pools = self.decals.iter().filter(|x| x.tex == DECAL_STAIN).count();
+        let i = if pools > MAX_DECALS / 2 { oldest(true, &self.decals) } else { None }.or_else(|| oldest(false, &self.decals)).or_else(|| oldest(true, &self.decals)).unwrap_or(0);
         self.decals[i] = d;
         i
     }
