@@ -105,7 +105,10 @@ pub struct MeleeBlade {
     /// 0: it eases in and out). All zero: its kind's own.
     pub curve: [f32; 4],
     pub slopes: [f32; 2],
-    pub _p0: [f32; 2],
+    /// What its point coming out the far side does (0: nothing), and how far a slash's cut runs
+    /// along its edge before it comes off the end (metres; 0: its length).
+    pub skewer: f32,
+    pub slide_length: f32,
     /// The damping a penetration slides against (N s/m): with a hand on it going in, coming out,
     /// and with none. 0: its kind's own.
     pub damper_in: f32,
@@ -140,7 +143,10 @@ pub struct MeleeWeapon {
     pub break_impulse: f32,
     /// Its balance (object space): the centre of mass, which a grip turns it about.
     pub balance: [f32; 3],
-    pub _pad: [u32; 8],
+    /// Its tier (0..5: 2 a common one), which picks its rows of the damage tables and
+    /// how fast it must cut to sever.
+    pub tier: u32,
+    pub _pad: [u32; 7],
     pub handle: [MeleeHandle; MAX_HANDLES],
     pub blade: [MeleeBlade; MAX_BLADES],
 }

@@ -70,6 +70,10 @@ const AXE_MIN_SPEED: f32 = 3.0;
 const GLANCING: f32 = 0.3;
 /// Above this the parry is a parry: the player's weapon moving into the attack (m/s).
 const PARRY_SPEED: f32 = 2.0;
+/// A creature's swing met by the player's weapon moving at least this fast is parried (m/s).
+const PARRY_MIN_SPEED: f32 = 1.0;
+/// One blow per swing: a creature's weapon strikes the player at most this often (s).
+const STRUCK_COOLDOWN: f64 = 0.6;
 /// The chest, this far under the eyes (metres): where a blow's way ends.
 const CHEST_BELOW_EYES: f32 = 0.35;
 /// A guard closer to the chest than this is the body itself being hit, not a block (metres).
@@ -99,6 +103,28 @@ const AIM_ASSIST_RANGE: f32 = 25.0;
 const SHOULDER_SIDE: f32 = 0.18;
 /// A charged hand touching a body: within this of a capsule's surface (m).
 const TOUCH: f32 = 0.08;
+
+/// The player's body as capsules a creature's blow can land on (world: ends, radius, `PART_*`), from
+/// the solved body's joints (tracking space): the head, the torso, the arms and the legs.
+pub fn player_capsules(joints: &[Pose; JOINT_COUNT], map: &WorldMap) -> Vec<(Vec3, Vec3, f32, u32)> {
+    let at = |j: Joint| map.point(Vec3::from_array(joints[j as usize].pos));
+    let w = map.world_per_meter;
+    let up = (at(Joint::Head) - at(Joint::Neck)).normalize_or(Vec3::Y);
+    let mut out = vec![(at(Joint::Neck), at(Joint::Head) + up * 0.08 * w, 0.1 * w, PART_HEAD), (at(Joint::Hips), at(Joint::UpperChest), 0.15 * w, PART_TORSO)];
+    for (a, b, r, kind) in [
+        (Joint::LeftUpperArm, Joint::LeftLowerArm, 0.05, PART_ARM),
+        (Joint::LeftLowerArm, Joint::LeftHand, 0.045, PART_ARM),
+        (Joint::RightUpperArm, Joint::RightLowerArm, 0.05, PART_ARM),
+        (Joint::RightLowerArm, Joint::RightHand, 0.045, PART_ARM),
+        (Joint::LeftUpperLeg, Joint::LeftLowerLeg, 0.07, PART_LEG),
+        (Joint::LeftLowerLeg, Joint::LeftFoot, 0.055, PART_LEG),
+        (Joint::RightUpperLeg, Joint::RightLowerLeg, 0.07, PART_LEG),
+        (Joint::RightLowerLeg, Joint::RightFoot, 0.055, PART_LEG),
+    ] {
+        out.push((at(a), at(b), r * w, kind));
+    }
+    out
+}
 
 /// The impact speed (m/s) a damage type needs against a material (the damage tables' four: flesh,
 /// leather, chainmail, plate; the rest as the nearest).
@@ -187,6 +213,35 @@ pub fn judge(c: &Contact) -> Option<(f32, u32)> {
         flags |= CEF_PENETRATED;
     }
     Some((strength, flags))
+}
+
+/// Where a point swept from `p0` to `p1` first comes within `reach` of the segment `a`..`b`: (its
+/// share of the sweep, the point, the nearest point on the segment, whether it touches at all).
+fn entry(p0: Vec3, p1: Vec3, a: Vec3, b: Vec3, reach: f32) -> (f32, Vec3, Vec3, bool) {
+    let (s, t) = closest_segments(p0, p1, a, b);
+    let (deep, axis) = (p0.lerp(p1, s), a.lerp(b, t));
+    if deep.distance(axis) > reach {
+        return (s, deep, axis, false);
+    }
+    // Back from the deepest point to where it came in: halving the gap between a share that
+    // touches and one before it that doesn't.
+    let near = |u: f32| {
+        let p = p0.lerp(p1, u);
+        let (_, t) = closest_segments(p, p, a, b);
+        (p, a.lerp(b, t))
+    };
+    let (mut lo, mut hi) = (0.0f32, s);
+    if near(0.0).0.distance(near(0.0).1) <= reach {
+        let (p, q) = near(0.0);
+        return (0.0, p, q, true);
+    }
+    for _ in 0..12 {
+        let mid = 0.5 * (lo + hi);
+        let (p, q) = near(mid);
+        if p.distance(q) <= reach { hi = mid } else { lo = mid }
+    }
+    let (p, q) = near(hi);
+    (hi, p, q, true)
 }
 
 /// A capsule `a`..`b` of `radius` as the box around it (12 triangles), for drawing.
@@ -307,6 +362,14 @@ pub struct Combat {
     pub weapons: Box<MeleeWeapons>,
     pub items: Box<ActorItems>,
     pub rules: Box<MeleeRules>,
+    /// The weapons a hand's spell has filled, by id (`crate::rig::melee`'s imbuing), and which
+    /// spells are fire (the damage tables' fire rows).
+    pub imbues: HashMap<u32, Imbue>,
+    pub fire_spells: Vec<u32>,
+    /// The creatures' swinging weapons' blades last frame (world), and when each may strike the
+    /// player again.
+    item_prev: HashMap<u32, Vec<(Vec3, Vec3)>>,
+    struck_until: HashMap<u32, f64>,
     /// Each held weapon's damager points last frame (world), by object (0, 1: the fists).
     prev: HashMap<u32, Vec<[Vec3; SAMPLES]>>,
     /// Each body part's centre last frame, by (actor, part index).
@@ -336,6 +399,10 @@ impl Default for Combat {
             weapons: bytemuck::zeroed_box(),
             items: bytemuck::zeroed_box(),
             rules: bytemuck::zeroed_box(),
+            imbues: HashMap::new(),
+            fire_spells: Vec::new(),
+            item_prev: HashMap::new(),
+            struck_until: HashMap::new(),
             prev: HashMap::new(),
             prev_parts: HashMap::new(),
             touching: Default::default(),
@@ -364,6 +431,23 @@ pub struct CombatInput<'a> {
     pub dt: f32,
     /// Menus, pauses, loading: nothing is judged.
     pub paused: bool,
+    /// The player's body as capsules (world: ends, radius, `PART_*`), for the creatures' blows.
+    pub player: &'a [(Vec3, Vec3, f32, u32)],
+}
+
+/// A damager's hit on a body part: whose, which part (its index, kind and radius), where, how
+/// fast, out of which surface, and how it was judged.
+struct JudgedHit {
+    actor: u32,
+    index: usize,
+    part_kind: u32,
+    radius: f32,
+    point: Vec3,
+    #[allow(dead_code)]
+    vel: Vec3,
+    #[allow(dead_code)]
+    normal: Vec3,
+    judged: rustvr_melee::Judged,
 }
 
 /// A world-space capsule of a creature: its id, the part's index, the part.
@@ -415,6 +499,11 @@ impl Combat {
             .iter()
             .flat_map(|a| a.parts[..(a.count as usize).min(MAX_ACTOR_PARTS)].iter().enumerate().map(move |(i, p)| ((a.id, i), (Vec3::from_array(p.a), Vec3::from_array(p.b), p.radius))))
             .collect()
+    }
+
+    /// The game's own index for creature `actor`'s part `index` (as [`ActorPart::game_part`]).
+    pub fn game_part(&self, actor: u32, index: usize) -> u32 {
+        self.actors().iter().find(|a| a.id == actor).and_then(|a| a.parts.get(index)).map_or(index as u32, |p| p.game_part)
     }
 
     /// The creatures as the game last said (for the gore: whose body a hit drew blood from).
@@ -490,6 +579,12 @@ impl Combat {
         let mut seen = HashMap::new();
         for h in 0..2 {
             let held = inp.rig.held(h);
+            // A weapon with its full melee numbers is judged by them.
+            if let Some(id) = held
+                && self.judge_weapon(inp, &bodies, h, id, dt, &mut events, &mut seen)
+            {
+                continue;
+            }
             let weapon = held.and_then(|id| Some((id, *self.melee_desc(id)?, inp.rig.swing_pose(id)?)));
             if let Some((id, desc, (p, q))) = weapon {
                 // The weapon's damagers in the world now (the rig's physics is in the world).
@@ -530,16 +625,16 @@ impl Combat {
                         };
                         if let Some((actor, part, point, vel, material)) = hit {
                             if vel.length() >= speed_needed && biteable(material) {
-                                self.embeds.push(embed::Request { object: id, into: embed::Into::Actor { id: actor, part }, point, dir: way, sample: local(point), depth, max_depth });
+                                self.embeds.push(embed::Request { object: id, into: embed::Into::Actor { id: actor, part }, point, dir: way, sample: local(point), depth, max_depth, dampers: embed::DAMPERS, slide: None, wounding: Default::default() });
                             }
                             continue;
                         }
                         if let Some((point, _)) = self.bite_world(inp, d.kind, d.flags, frame, edge, &prev[di], &now[di], dt, speed_needed) {
-                            self.embeds.push(embed::Request { object: id, into: embed::Into::World, point, dir: way, sample: local(point), depth, max_depth });
+                            self.embeds.push(embed::Request { object: id, into: embed::Into::World, point, dir: way, sample: local(point), depth, max_depth, dampers: embed::DAMPERS, slide: None, wounding: Default::default() });
                             continue;
                         }
                         if let Some((thing, point)) = Self::bite_thing(inp, id, d.kind, d.flags, frame, edge, &prev[di], &now[di], dt, speed_needed) {
-                            self.embeds.push(embed::Request { object: id, into: embed::Into::Object { id: thing }, point, dir: way, sample: local(point), depth, max_depth });
+                            self.embeds.push(embed::Request { object: id, into: embed::Into::Object { id: thing }, point, dir: way, sample: local(point), depth, max_depth, dampers: embed::DAMPERS, slide: None, wounding: Default::default() });
                         }
                     }
                     self.blocks(inp, h, id, &desc, &prev, &now, dt, &mut events);
@@ -564,6 +659,10 @@ impl Combat {
         }
         self.prev = seen;
         self.touching = std::mem::take(&mut self.touching_now);
+        if !inp.paused {
+            self.struck(inp, dt, &mut events);
+        }
+        self.struck_until.retain(|_, &mut t| t > inp.now);
         self.magic(inp, &bodies, &mut events);
         self.hit_until.retain(|_, &mut t| t > inp.now);
         self.block_until.retain(|_, &mut t| t > inp.now);
@@ -755,6 +854,414 @@ impl Combat {
                 break;
             }
         }
+    }
+
+    // ---- the full melee (a weapon the game describes in [`MeleeWeapons`]) -----------------------------
+    /// A held weapon the game describes with its full melee numbers: each of its damagers swept from
+    /// last frame to where the hand swings it this frame against every body part, each contact
+    /// judged (`rustvr_melee::judge`: the impact velocity against the damager's angles and the
+    /// material's minimum, then its curve, tier and the material's multiplier); a blow that goes in
+    /// stays in ([`embed`]). False: it isn't one (the older table's path judges it).
+    #[allow(clippy::too_many_arguments)]
+    fn judge_weapon(&mut self, inp: &CombatInput, bodies: &[Body], hand: usize, id: u32, dt: f32, events: &mut Vec<CombatEvent>, seen: &mut HashMap<u32, Vec<[Vec3; SAMPLES]>>) -> bool {
+        let (Some(w), Some((wp, wq))) = (self.weapons.get(id).copied(), inp.rig.swing_pose(id)) else { return false };
+        let blades = w.blades();
+        let now: Vec<[Vec3; SAMPLES]> = blades
+            .iter()
+            .map(|b| {
+                let (a, bb) = (Vec3::from_array(b.a), Vec3::from_array(b.b));
+                std::array::from_fn(|k| wp + wq * a.lerp(bb, k as f32 / (SAMPLES - 1) as f32))
+            })
+            .collect();
+        let prev = self.prev.get(&id).filter(|v| v.len() == now.len()).cloned();
+        seen.insert(id, now.clone());
+        let Some(prev) = prev else { return true };
+        if inp.paused {
+            return true;
+        }
+        let two = inp.rig.two_handed_melee(id);
+        let embedded = inp.rig.embedded(id);
+        // A contact's damagers are tried point first, then edge, then blunt: the first that hits a
+        // body takes it.
+        let mut order: Vec<usize> = (0..blades.len()).collect();
+        order.sort_by_key(|&k| match blades[k].kind {
+            DMG_PIERCE => 0,
+            DMG_SLASH => 1,
+            _ => 2,
+        });
+        let mut struck: Vec<(u32, usize)> = Vec::new();
+        for bi in order {
+            let b = blades[bi];
+            let along = (wq * (Vec3::from_array(b.b) - Vec3::from_array(b.a))).normalize_or_zero();
+            let edge = if b.kind == DMG_PIERCE { along } else { (wq * Vec3::from_array(b.edge)).normalize_or_zero() };
+            let Some(hit) = self.judge_sweep(inp, bodies, hand, id, bi, &b, w.tier, along, edge, &prev[bi], &now[bi], dt, two, &struck, events) else {
+                // A point or an axe meeting the world's wood (or a loose thing) bites in as fast as
+                // the damage tables let it into wood (a stab 3 m/s, an axe 5).
+                let axe = b.kind == DMG_SLASH && b.flags & DMGF_AXE != 0;
+                if (b.kind == DMG_PIERCE || axe) && b.depth > 0.0 && !embedded && !self.embeds.iter().any(|e| e.object == id) {
+                    let row = rustvr_melee::row(rustvr_melee::modifier_of(&b), MAT_WOOD, w.tier, false);
+                    let speed = row.map_or(f32::INFINITY, |r| r.pen_speed) * inp.map.world_per_meter;
+                    let way = if axe { edge } else { along };
+                    let (a, bb) = (Vec3::from_array(b.a), Vec3::from_array(b.b));
+                    let local = |p: Vec3| {
+                        let l = wq.inverse() * (p - wp);
+                        let t = if (bb - a).length_squared() > 1e-9 { ((l - a).dot(bb - a) / (bb - a).length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+                        a.lerp(bb, t)
+                    };
+                    let dampers = [b.damper_in, b.damper_out, b.damper_free].map(|d| d * row.map_or(1.0, |r| r.damper));
+                    let depth = b.depth.min(row.map_or(0.0, |r| r.depth_cap));
+                    let request = |into, point| embed::Request { object: id, into, point, dir: way, sample: local(point), depth: depth * 0.5, max_depth: depth, dampers, slide: None, wounding: Default::default() };
+                    if let Some((point, _)) = self.bite_world(inp, b.kind, b.flags, along, edge, &prev[bi], &now[bi], dt, speed) {
+                        self.embeds.push(request(embed::Into::World, point));
+                    } else if let Some((thing, point)) = Self::bite_thing(inp, id, b.kind, b.flags, along, edge, &prev[bi], &now[bi], dt, speed) {
+                        self.embeds.push(request(embed::Into::Object { id: thing }, point));
+                    }
+                }
+                continue;
+            };
+            struck.push((hit.actor, hit.index));
+            // Gone in: it stays in (a cut 3 mm and sliding along its edge, an axe and a point as
+            // deep as they go), unless it's already in something.
+            if hit.judged.flags & CEF_PENETRATED != 0 && !embedded && !self.embeds.iter().any(|e| e.object == id) {
+                self.embeds.push(self.judge_embed(inp, id, &b, &hit, along, edge, (wp, wq)));
+            }
+        }
+        let desc = Self::as_desc(&w);
+        self.blocks(inp, hand, id, &desc, &prev, &now, dt, events);
+        self.item_blocks(inp, hand, id, &desc, &prev, &now, dt, events);
+        true
+    }
+
+    /// The older table's damagers for a weapon described in [`MeleeWeapons`] (for the blocks).
+    fn as_desc(w: &MeleeWeapon) -> MeleeDesc {
+        let mut d = MeleeDesc { id: w.id, ..Default::default() };
+        for b in w.blades().iter().take(MAX_DAMAGERS) {
+            d.damagers[d.count as usize] = Damager { kind: b.kind, flags: b.flags, depth: b.depth, radius: b.radius, a: b.a, b: b.b, edge: b.edge, ..Default::default() };
+            d.count += 1;
+        }
+        d
+    }
+
+    /// One damager's sweep against every body: the earliest new contact, judged and reported.
+    #[allow(clippy::too_many_arguments)]
+    fn judge_sweep(&mut self, inp: &CombatInput, bodies: &[Body], hand: usize, object: u32, blade: usize, b: &MeleeBlade, tier: u32, along: Vec3, edge: Vec3, prev: &[Vec3; SAMPLES], now: &[Vec3; SAMPLES], dt: f32, two: bool, struck: &[(u32, usize)], events: &mut Vec<CombatEvent>) -> Option<JudgedHit> {
+        let w = inp.map.world_per_meter;
+        let mut best: Option<(f32, usize, Vec3, Vec3, Vec3)> = None;
+        for (bi, body) in bodies.iter().enumerate() {
+            let (a, bb) = (Vec3::from_array(body.part.a), Vec3::from_array(body.part.b));
+            let reach = body.part.radius + b.radius * w;
+            // Where along its sweep the sample first touches the capsule (not where it's deepest:
+            // a fast blade passes right through a limb in a frame, and the surface it met is
+            // where it went in).
+            let contact = |k: usize| entry(prev[k], now[k], a, bb, reach);
+            let entry = (body.actor.id, object, blade);
+            // Still in contact since last frame: no new hit (a contact is one hit until it's
+            // lost), but a point pressed on may go in by pressure.
+            if self.touching.contains(&entry) {
+                if (0..SAMPLES).any(|k| contact(k).3) {
+                    self.touching_now.insert(entry);
+                    if b.kind == DMG_PIERCE && b.flags & DMGF_PRESSURE != 0 && !inp.rig.embedded(object) {
+                        let k = SAMPLES - 1;
+                        let (_, p, on_axis, _) = contact(k);
+                        let normal = (p - on_axis).normalize_or(-along);
+                        if let Some(hit) = self.pressure(inp, object, b, tier, along, normal, body, bi, p, (now[k] - prev[k]) / dt - body.vel) {
+                            return Some(hit);
+                        }
+                    }
+                }
+                continue;
+            }
+            if struck.contains(&(body.actor.id, body.index)) || self.hit_until.get(&(body.actor.id, object)).is_some_and(|&t| t > inp.now) {
+                continue;
+            }
+            for k in 0..SAMPLES {
+                let (s, p, on_axis, touches) = contact(k);
+                if touches && best.is_none_or(|(bs, ..)| s < bs) {
+                    let vel = (now[k] - prev[k]) / dt - body.vel;
+                    let normal = (p - on_axis).normalize_or(-vel.normalize_or_zero());
+                    best = Some((s, bi, p, vel, normal));
+                }
+            }
+        }
+        let (_, bi, point, vel, normal) = best?;
+        let body = &bodies[bi];
+        self.touching_now.insert((body.actor.id, object, blade));
+        let thrown = !inp.rig.held(hand).is_some_and(|h| h == object);
+        let contact = rustvr_melee::Contact { along, edge, vel: vel / w, normal, material: body.part.material, tier, thrown, fire: self.imbued_with_fire(object) };
+        let judged = rustvr_melee::judge(b, &contact);
+        if debug_combat() {
+            let dir = vel.normalize_or_zero();
+            let across = (dir - along * dir.dot(along)).normalize_or_zero();
+            let deg = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
+            tracing::info!(
+                "combat: blade {blade} (kind {}) of {object:#x} met {:#x} part {} (kind {}, material {}): {:.1} m/s, across the blade vs its edge {:.0} deg, into the surface vs the edge {:.0} deg, along vs its way {:.0} deg -> {judged:?}",
+                b.kind,
+                body.actor.id,
+                body.index,
+                body.part.kind,
+                body.part.material,
+                vel.length() / w,
+                deg(across, edge),
+                deg(-normal, edge),
+                deg(dir, along)
+            );
+        }
+        let judged = judged?;
+        self.hit_until.insert((body.actor.id, object), inp.now + rustvr_melee::HIT_DELAY);
+        let mut flags = judged.flags | if two { CEF_TWO_HANDED } else { 0 } | if thrown { CEF_THROWN } else { 0 };
+        // An edge that went in fast and square enough cuts through: the game cuts off what it can.
+        let limb = (Vec3::from_array(body.part.b) - Vec3::from_array(body.part.a)).normalize_or_zero();
+        if body.part.kind != PART_TORSO && rustvr_melee::severs(b, &judged, tier, limb, edge, 0.0) {
+            flags |= CEF_SEVER;
+        }
+        let spell = self.imbued(object).map_or(0, |i| i.spell);
+        if spell != 0 {
+            flags |= CEF_IMBUED;
+        }
+        let ev = CombatEvent {
+            kind: CE_HIT,
+            flags,
+            actor: body.actor.id,
+            part: body.part.game_part,
+            object,
+            what: judged.kind,
+            hand: hand as u32,
+            material: body.part.material,
+            strength: Self::strength_of(judged.kind, judged.speed),
+            speed: judged.speed,
+            depth: judged.depth,
+            damage: judged.damage,
+            point: point.to_array(),
+            blade: blade as u32,
+            dir: vel.normalize_or_zero().to_array(),
+            spell,
+        };
+        tracing::info!(
+            "combat: {object:#x}'s {} hit {:#x} part {} at {:.1} m/s: {:.2} damage{}{}{}",
+            match judged.kind {
+                DMG_SLASH => "edge",
+                DMG_PIERCE => "point",
+                _ => "blunt",
+            },
+            body.actor.id,
+            body.index,
+            judged.speed,
+            judged.damage,
+            if flags & CEF_PENETRATED != 0 { ", in" } else { "" },
+            if flags & CEF_SEVER != 0 { ", severing" } else { "" },
+            if flags & CEF_GLANCING != 0 { " (glancing)" } else { "" }
+        );
+        self.debug.hits += 1;
+        self.debug.last = Some(ev);
+        // The hit felt in the hand(s), as hard as it was (the buzz goes by the hit sound's
+        // loudness, its intensity over 0.25..15 m/s).
+        let k = rustvr_melee::intensity(judged.speed);
+        for h in [hand, hand ^ 1] {
+            if h == hand || two {
+                self.pulses.push(Pulse { hand: h, seconds: 0.05 + 0.15 * k, frequency: if judged.kind == DMG_BLUNT { 70.0 } else { 120.0 }, amplitude: (0.3 + 0.7 * k).min(1.0) });
+            }
+        }
+        events.push(ev);
+        Some(JudgedHit { actor: body.actor.id, index: body.index, part_kind: body.part.kind, radius: body.part.radius, point, vel, normal, judged })
+    }
+
+    /// A point pressed on a body (in contact since last frame) goes in once the hand pushes it
+    /// hard enough for how fast it's being drawn (a pressure stab): no damage as it starts, its
+    /// wound when it's deep.
+    #[allow(clippy::too_many_arguments)]
+    fn pressure(&mut self, inp: &CombatInput, object: u32, b: &MeleeBlade, tier: u32, along: Vec3, normal: Vec3, body: &Body, bi: usize, point: Vec3, vel: Vec3) -> Option<JudgedHit> {
+        let _ = bi;
+        let w = inp.map.world_per_meter;
+        let row = rustvr_melee::row(rustvr_melee::modifier_of(b), body.part.material, tier, self.imbued_with_fire(object))?;
+        if row.pressure <= 0.0 || !row.pen_speed.is_finite() {
+            return None;
+        }
+        // Pushed along the blade into the body: the hand's joint's pull that way, a step's worth
+        // over the weapon's mass (the contact's impulse over the mass).
+        let (lag, spring, max_force) = inp.rig.melee_pull(object)?;
+        let push = (lag.dot(along) * spring).clamp(0.0, max_force);
+        if along.dot(-normal) < 0.5 {
+            return None;
+        }
+        let kick = push * inp.dt.max(1e-4) / inp.rig.mass_of(object);
+        let sliding = (vel / w - along * (vel / w).dot(along)).length();
+        if kick < rustvr_melee::pressure_needed(sliding) * row.pressure {
+            return None;
+        }
+        let judged = rustvr_melee::Judged { damage: 0.0, kind: DMG_PIERCE, flags: CEF_PENETRATED | CEF_PRESSURE, push: 0, speed: vel.length() / w, depth: b.depth.min(row.depth_cap), damper: row.damper };
+        tracing::info!("combat: {object:#x}'s point pressed into {:#x} part {} ({push:.0} N)", body.actor.id, body.index);
+        Some(JudgedHit { actor: body.actor.id, index: body.index, part_kind: body.part.kind, radius: body.part.radius, point, vel, normal, judged })
+    }
+
+    /// The stay in a body a blow that went in makes.
+    #[allow(clippy::too_many_arguments)]
+    fn judge_embed(&self, inp: &CombatInput, id: u32, b: &MeleeBlade, hit: &JudgedHit, along: Vec3, edge: Vec3, (wp, wq): (Vec3, Quat)) -> embed::Request {
+        let w = inp.map.world_per_meter;
+        let (a, bb) = (Vec3::from_array(b.a), Vec3::from_array(b.b));
+        let l = wq.inverse() * (hit.point - wp);
+        let t = if (bb - a).length_squared() > 1e-9 { ((l - a).dot(bb - a) / (bb - a).length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+        let sample = a.lerp(bb, t);
+        let axe = b.kind == DMG_SLASH && b.flags & DMGF_AXE != 0;
+        let (dir, slide) = match b.kind {
+            DMG_PIERCE => (along, None),
+            _ if axe => (edge, None),
+            _ => (edge, (b.flags & DMGF_SLIDES != 0).then(|| (along, if b.slide_length > 0.0 { b.slide_length * 0.5 } else { a.distance(bb) / w * 0.5 }))),
+        };
+        let defaults = if axe { [0.0, 10000.0, 5000.0] } else { embed::DAMPERS };
+        let dampers = [b.damper_in, b.damper_out, b.damper_free];
+        let dampers: [f32; 3] = std::array::from_fn(|k| if dampers.iter().any(|&d| d > 0.0) { dampers[k] } else { defaults[k] } * hit.judged.damper);
+        let max_depth = hit.judged.depth.max(0.003);
+        // Its swing carries it in a little (its momentum against the damper going in), the hand's
+        // push the rest.
+        let mass = inp.rig.mass_of(id);
+        let first = (mass * hit.judged.speed / dampers[0].max(1.0)).min(max_depth);
+        let part = rustvr_melee::body::Part::of(hit.part_kind, false);
+        let wounding = embed::Wounding {
+            blade: self.blade_index(id, b),
+            kind: b.kind,
+            damage: b.penetration_damage,
+            deep: if b.kind == DMG_PIERCE { part.deep().0 } else { 0.0 },
+            skewer: b.skewer,
+            through: 2.0 * hit.radius / w,
+        };
+        let into = embed::Into::Actor { id: hit.actor, part: hit.index };
+        embed::Request { object: id, into, point: hit.point, dir, sample, depth: first, max_depth, dampers, slide, wounding }
+    }
+
+    fn blade_index(&self, id: u32, b: &MeleeBlade) -> u32 {
+        self.weapons.get(id).and_then(|w| w.blades().iter().position(|x| x == b)).unwrap_or(0) as u32
+    }
+
+    /// The spell weapon `id` is filled with, if a hand is imbuing it (or did).
+    fn imbued(&self, id: u32) -> Option<Imbue> {
+        self.imbues.get(&id).copied().filter(|i| i.charge > 0.0)
+    }
+
+    fn imbued_with_fire(&self, id: u32) -> bool {
+        self.imbued(id).is_some_and(|i| self.fire_spells.contains(&i.spell))
+    }
+
+    /// A hit's strength for a game that scales its own damage by it (1: a full-strength blow), from
+    /// the speed past the kind's least.
+    fn strength_of(kind: u32, speed: f32) -> f32 {
+        let (full, _) = full_and_power(kind);
+        let least = match kind {
+            DMG_PIERCE => 1.0,
+            DMG_SLASH => 3.0,
+            _ => 1.0,
+        };
+        ((speed - least) / (full - least).max(0.5)).clamp(0.05, 1.5)
+    }
+
+    // ---- the creatures' weapons ([`ActorItems`]) ------------------------------------------------------
+    /// A creature's weapon's blades (world: each damager's ends, radius, and the damager), where the
+    /// rig has it now.
+    fn item_blades(&self, inp: &CombatInput, id: u32) -> Vec<(Vec3, Vec3, f32, MeleeBlade)> {
+        let (Some(w), Some((p, q))) = (self.weapons.get(id), inp.rig.object_world_pose(id)) else { return Vec::new() };
+        let wpm = inp.map.world_per_meter;
+        w.blades().iter().map(|b| (p + q * Vec3::from_array(b.a), p + q * Vec3::from_array(b.b), b.radius * wpm, *b)).collect()
+    }
+
+    /// The player's weapon meeting a creature's: its swing parried, or its guard blocking the
+    /// player's blow. Both are told to the game (`CE_BLOCK`, `what` the
+    /// creature's weapon), which rolls the creature's dice; `CEF_PARRY` when the player's weapon met
+    /// it moving faster than [`PARRY_MIN_SPEED`], 1 m/s.
+    #[allow(clippy::too_many_arguments)]
+    fn item_blocks(&mut self, inp: &CombatInput, hand: usize, object: u32, desc: &MeleeDesc, prev: &[[Vec3; SAMPLES]], now: &[[Vec3; SAMPLES]], dt: f32, events: &mut Vec<CombatEvent>) {
+        let items: Vec<ActorItem> = self.items.entries().to_vec();
+        for item in items {
+            if self.block_until.get(&item.id).is_some_and(|&t| t > inp.now) {
+                continue;
+            }
+            let theirs = self.item_blades(inp, item.id);
+            'mine: for (di, d) in desc.damagers[..now.len()].iter().enumerate() {
+                let (a, b) = (now[di][0], now[di][SAMPLES - 1]);
+                for &(ta, tb, tr, _) in &theirs {
+                    let (s, t) = closest_segments(a, b, ta, tb);
+                    let (p, q) = (a.lerp(b, s), ta.lerp(tb, t));
+                    if p.distance(q) > tr + d.radius * inp.map.world_per_meter + 0.01 {
+                        continue;
+                    }
+                    let k = ((s * (SAMPLES - 1) as f32).round() as usize).min(SAMPLES - 1);
+                    let mine = (now[di][k] - prev[di][k]) / dt;
+                    let speed = (mine - Vec3::from_array(item.vel)).length() / inp.map.world_per_meter;
+                    let parry = mine.length() / inp.map.world_per_meter > PARRY_MIN_SPEED;
+                    self.block_until.insert(item.id, inp.now + BLOCK_COOLDOWN);
+                    let ev = CombatEvent {
+                        kind: CE_BLOCK,
+                        flags: if parry { CEF_PARRY } else { 0 },
+                        actor: item.actor,
+                        object,
+                        what: item.id,
+                        hand: hand as u32,
+                        material: MAT_PLATE,
+                        strength: (speed / 6.0).min(1.5),
+                        speed,
+                        point: p.to_array(),
+                        dir: mine.normalize_or_zero().to_array(),
+                        ..Default::default()
+                    };
+                    tracing::info!("combat: {object:#x} met {:#x}'s {:#x} at {speed:.1} m/s ({})", item.actor, item.id, if item.flags & AI_ATTACKING != 0 { "its swing" } else { "its guard" });
+                    self.debug.blocks += 1;
+                    self.debug.last = Some(ev);
+                    // The clash in the hand: as hard as it was.
+                    let k = rustvr_melee::intensity(speed);
+                    self.pulses.push(Pulse { hand, seconds: 0.06 + 0.1 * k, frequency: 80.0, amplitude: (0.4 + 0.6 * k).min(1.0) });
+                    events.push(ev);
+                    break 'mine;
+                }
+            }
+        }
+    }
+
+    /// The creatures' weapons swinging at the player (`AI_ATTACKING`: in its blow's damage window):
+    /// each blade swept from last frame to now against the player's body, judged as any contact but
+    /// with no angle test (a creature's blow needn't land square), told to the game (`CE_STRUCK`).
+    fn struck(&mut self, inp: &CombatInput, dt: f32, events: &mut Vec<CombatEvent>) {
+        let items: Vec<ActorItem> = self.items.entries().iter().filter(|i| i.flags & AI_ATTACKING != 0).copied().collect();
+        let mut now_blades: HashMap<u32, Vec<(Vec3, Vec3, f32, MeleeBlade)>> = HashMap::new();
+        for item in &items {
+            now_blades.insert(item.id, self.item_blades(inp, item.id));
+        }
+        for item in items {
+            let blades = &now_blades[&item.id];
+            let Some(prev) = self.item_prev.get(&item.id).filter(|p| p.len() == blades.len()).cloned() else { continue };
+            if self.struck_until.get(&item.id).is_some_and(|&t| t > inp.now) {
+                continue;
+            }
+            'blades: for (bi, &(a, b, r, blade)) in blades.iter().enumerate() {
+                let (pa, pb) = prev[bi];
+                for &(ca, cb, cr, kind) in inp.player {
+                    // Its tip's and middle's sweeps against the capsule.
+                    for (p0, p1) in [(pa, a), (pb, b), (pa.lerp(pb, 0.5), a.lerp(b, 0.5))] {
+                        let (s, t) = closest_segments(p0, p1, ca, cb);
+                        let (p, q) = (p0.lerp(p1, s), ca.lerp(cb, t));
+                        if p.distance(q) > r + cr {
+                            continue;
+                        }
+                        let vel = (p1 - p0) / dt / inp.map.world_per_meter;
+                        let normal = (p - q).normalize_or(-vel.normalize_or_zero());
+                        let along = (b - a).normalize_or_zero();
+                        let mut free = blade;
+                        free.horizontal = 180.0;
+                        free.vertical = 180.0;
+                        free.normal = 180.0;
+                        let contact = rustvr_melee::Contact { along, edge: along, vel, normal, material: MAT_FLESH, tier: 2, thrown: false, fire: false };
+                        let Some(j) = rustvr_melee::judge(&free, &contact) else { continue };
+                        self.struck_until.insert(item.id, inp.now + STRUCK_COOLDOWN);
+                        let ev = CombatEvent { kind: CE_STRUCK, flags: j.flags, actor: item.actor, part: kind, object: item.id, what: j.kind, material: MAT_FLESH, strength: Self::strength_of(j.kind, j.speed), speed: j.speed, damage: j.damage, point: p.to_array(), blade: bi as u32, dir: vel.normalize_or_zero().to_array(), ..Default::default() };
+                        tracing::info!("combat: struck by {:#x}'s {:#x} at {:.1} m/s on the player's part kind {kind}", item.actor, item.id, j.speed);
+                        // Felt in both hands: the player was hit.
+                        for h in 0..2 {
+                            self.pulses.push(Pulse { hand: h, seconds: 0.15, frequency: 60.0, amplitude: 1.0 });
+                        }
+                        events.push(ev);
+                        break 'blades;
+                    }
+                }
+            }
+        }
+        self.item_prev = now_blades.into_iter().map(|(id, v)| (id, v.into_iter().map(|(a, b, ..)| (a, b)).collect())).collect();
     }
 
     fn magic(&mut self, inp: &CombatInput, bodies: &[Body], events: &mut Vec<CombatEvent>) {

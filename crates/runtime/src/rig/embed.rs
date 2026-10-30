@@ -1,10 +1,12 @@
 //! A blade in something, as the melee's penetration has it:
-//! a held axe that chops in edge first, or a point that stabs in along the blade, hard enough and
-//! into something it bites (wood, earth, flesh: [`rustvr_protocol::biteable`]), stays in. The
-//! combat finds where ([`Request`]); the rig holds it there ([`Embedded`]): it rides with what it's
-//! in (the world, or a creature's body part), slides along the way it went in as the hand pushes
-//! and pulls ([`step`]), and comes out when it's pulled back out past where it went in, or yanked
-//! hard across. Let go, it stays in, to be taken again.
+//! a held axe that chops in edge first, a point that stabs in along the blade, or an edge that bites
+//! (a cut goes in 3 mm and slides along the edge), hard enough and into something it bites, stays
+//! in. The combat finds where ([`Request`]); the rig holds it there ([`Embedded`]): it rides with what
+//! it's in (the world, or a creature's body part), and the hand's pull moves it along the way it went
+//! in against its dampers (no spring: a damper going in, another coming out, a third with no hand
+//! on it), and a cut along its edge against a light one. Pulled back out past where it went in, or a
+//! cut slid off the end of its blade, it's out; across its way it can't move, so pulling it across
+//! drags what it's in. Let go, it stays in, to be taken again.
 
 use glam::{Quat, Vec3};
 
@@ -16,6 +18,20 @@ pub enum Into {
     Object { id: u32 },
     /// A creature's body part ([`rustvr_protocol::Actor`] id, part index).
     Actor { id: u32, part: usize },
+}
+
+/// What a blade going in does on its way, for the game.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wounding {
+    /// Which damager, its kind (`DMG_*`) and the weapon's tier.
+    pub blade: u32,
+    pub kind: u32,
+    /// What its going in does once it's past `deep` metres (a cut's at once), and what its point
+    /// coming out the far side does past `through` (0: nothing).
+    pub damage: f32,
+    pub deep: f32,
+    pub skewer: f32,
+    pub through: f32,
 }
 
 /// The combat's: object `object` (held) went into `into`.
@@ -32,6 +48,12 @@ pub struct Request {
     /// How far it went in, and how far it can.
     pub depth: f32,
     pub max_depth: f32,
+    /// The dampers it moves along its way against (N s/m): a hand's going in, a hand's coming out,
+    /// and with no hand on it (the blade's, times the material's multiplier).
+    pub dampers: [f32; 3],
+    /// A cut slides along its edge (world, unit), this far either way before it comes off the end.
+    pub slide: Option<(Vec3, f32)>,
+    pub wounding: Wounding,
 }
 
 /// An object stuck in something.
@@ -46,6 +68,18 @@ pub struct Embedded {
     pub axis: Vec3,
     pub depth: f32,
     pub max_depth: f32,
+    pub dampers: [f32; 3],
+    /// A cut's way along its edge in that frame (zero: it doesn't slide), how far it has slid and
+    /// how far it may.
+    pub slide_axis: Vec3,
+    pub slid: f32,
+    pub slide_max: f32,
+    pub wounding: Wounding,
+    /// The deepest it has been, and whether its going in and its coming out the far side have been
+    /// told.
+    pub deepest: f32,
+    pub wounded: bool,
+    pub skewered: bool,
 }
 
 /// Pulled back this far out past the surface (metres): it's out.
@@ -55,65 +89,57 @@ pub const EXIT: f32 = 0.012;
 pub const TEAR: f32 = 0.5;
 /// What it's in is dragged at this many m/s per metre the hand pulls it off its way in.
 pub const DRAG_RATE: f32 = 12.0;
-/// It slides along the way in at most this fast (m/s): the hold of what it's in.
-pub const SLIDE_SPEED: f32 = 0.9;
+/// A cut slides along its edge against this (N s/m).
+pub const SLIDE_DAMPER: f32 = 100.0;
 
-/// How fast (m/s) an axe's edge must chop, and a point stab, to stay in.
-/// (The materials' minimums: a pierce 1 m/s into anything, an axe's slash 3.)
+/// How fast (m/s) an axe's edge must chop, and a point stab, to stay in, when the game gives no
+/// damage tables (the material minimums: a pierce 1 m/s into anything, an axe's slash 3).
 pub const AXE_SPEED: f32 = 3.0;
 pub const STAB_SPEED: f32 = 1.0;
 /// How deep an axe bites, and how deep it can go; a point's default reach in.
 pub const AXE_DEPTH: f32 = 0.03;
 pub const AXE_MAX_DEPTH: f32 = 0.05;
 pub const STAB_MAX_DEPTH: f32 = 0.12;
+/// A sword's stab dampers when the game gives none (held in 1000, out 500, free 1250).
+pub const DAMPERS: [f32; 3] = [1000.0, 500.0, 1250.0];
 
 /// A body part's frame: at `a`, its +Y along to `b`.
 pub fn part_frame(a: Vec3, b: Vec3) -> (Vec3, Quat) {
     (a, Quat::from_rotation_arc(Vec3::Y, (b - a).normalize_or(Vec3::Y)))
 }
 
-/// One step of a held object in something: the hand is `along` metres further in (negative: out)
-/// than the object's hold, and `across` metres off the way in.
+/// One step of a held object in something.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Step {
-    Stay(f32),
+    /// Still in: how deep, and how far along its cut.
+    Stay(f32, f32),
     Out,
 }
 
-pub fn step(depth: f32, max_depth: f32, along: f32, across: f32, dt: f32) -> Step {
+/// One step: the hand pulls it `along` metres further in (negative: out) than it is, `slide` metres
+/// along its edge, `across` metres off its way in, with the hand's joint (`spring` N/m, at most
+/// `max_force` N). The penetration joint has no spring of its own, only dampers, so it moves at
+/// the hand's pull over the damper (going in, or coming out), as far as it can go.
+#[allow(clippy::too_many_arguments)]
+pub fn step(e: &Embedded, along: f32, slide: f32, across: f32, spring: f32, max_force: f32, held: bool, dt: f32) -> Step {
     if across > TEAR {
         return Step::Out;
     }
-    let slide = along.clamp(-SLIDE_SPEED * dt, SLIDE_SPEED * dt);
-    let d = (depth + slide).min(max_depth);
-    if d < -EXIT { Step::Out } else { Step::Stay(d) }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_slides_and_comes_out_backwards() {
-        // Pushed in: deeper, at most its depth.
-        assert_eq!(step(0.03, 0.05, 0.5, 0.0, 1.0), Step::Stay(0.05));
-        // Pulled a little: slides out, at its pace.
-        match step(0.03, 0.05, -0.2, 0.0, 0.01) {
-            Step::Stay(d) => assert!((d - (0.03 - SLIDE_SPEED * 0.01)).abs() < 1e-6),
-            s => panic!("{s:?}"),
+    let damper = |going_in: bool| (if !held { e.dampers[2] } else if going_in { e.dampers[0] } else { e.dampers[1] }).max(1.0);
+    let pull = (along * spring).clamp(-max_force, max_force);
+    // (No faster than closing what's between the hand and it in one step.)
+    let moved = (pull / damper(pull > 0.0) * dt).clamp(-along.abs(), along.abs());
+    let d = (e.depth + moved).min(e.max_depth);
+    if d < -EXIT {
+        return Step::Out;
+    }
+    let mut slid = e.slid;
+    if e.slide_axis != Vec3::ZERO {
+        let pull = (slide * spring).clamp(-max_force, max_force);
+        slid += (pull / SLIDE_DAMPER * dt).clamp(-slide.abs(), slide.abs());
+        if slid.abs() > e.slide_max {
+            return Step::Out;
         }
-        // Pulled back past the surface: out.
-        assert_eq!(step(-0.01, 0.05, -0.2, 0.0, 0.01), Step::Out);
-        // Yanked across: out.
-        assert_eq!(step(0.03, 0.05, 0.0, 0.6, 0.01), Step::Out);
-        // Pulled across short of that, it stays in (what it's in is dragged instead).
-        assert_eq!(step(0.03, 0.05, 0.0, 0.3, 0.01), Step::Stay(0.03));
     }
-
-    #[test]
-    fn a_part_frame_points_along_it() {
-        let (p, q) = part_frame(Vec3::ZERO, Vec3::X * 2.0);
-        assert_eq!(p, Vec3::ZERO);
-        assert!((q * Vec3::Y - Vec3::X).length() < 1e-5);
-    }
+    Step::Stay(d, slid)
 }

@@ -195,6 +195,11 @@ pub const SPELL_CASTABLE: u32 = 1 << 1;
 pub const SPELL_POWER: u32 = 1 << 2;
 /// The player has it on a quick slot (a favourite).
 pub const SPELL_FAVOURITE: u32 = 1 << 3;
+/// Fire, or shock: a hand charged with it held to a blade fills the blade with it (imbuing,
+/// [`crate::RtMelee::imbue`]), and the blade's hits carry it (the fire rows of the damage tables;
+/// burning, a shock's stun, for the game).
+pub const SPELL_FIRE: u32 = 1 << 4;
+pub const SPELL_SHOCK: u32 = 1 << 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

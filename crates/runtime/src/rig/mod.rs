@@ -877,6 +877,9 @@ pub struct Rig {
     touches: HashMap<u32, sheet::Touches>,
     /// The melee weapons and the hands' hold on them ([`melee`]).
     melee: melee::MeleeRig,
+    /// What blades stuck in creatures did this frame (gone in deep, out the far side, pulled out),
+    /// for the game: their part is the creature's part index.
+    pub embed_events: Vec<CombatEvent>,
 }
 
 /// Something the player did with the body's slots that the runtime keeps (in its settings) or
@@ -945,6 +948,7 @@ impl Default for Rig {
             grind_felt: [0.0; 2],
             touches: HashMap::new(),
             melee: melee::MeleeRig { strength: 1.0, ..Default::default() },
+            embed_events: Vec::new(),
         }
     }
 }
@@ -2202,6 +2206,7 @@ impl Rig {
     fn pushes(&self) -> Vec<GamePush> {
         let Some(hands) = &self.hands else { return Vec::new() };
         let mut out = self.actor_pushes();
+        out.extend(self.item_pushes());
         for (id, o) in &self.objects {
             let constrained = o.desc.flags & OBJF_CONSTRAINED != 0;
             let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && (constrained || self.now - o.free_since > GAME_HANDBACK as f64);
@@ -5755,22 +5760,40 @@ impl Rig {
         let surface = (r.point - q * r.sample, q);
         let rel = compose(inverse(parent), surface);
         let axis = parent.1.inverse() * r.dir;
-        let pos = surface.0 + r.dir * r.depth;
+        let pos = surface.0 + r.dir * r.depth * self.map.world_per_meter;
         let (body, collider) = (o.body, o.collider);
         let at = inverse(parent).0 + parent.1.inverse() * r.point;
-        self.objects.get_mut(&r.object).unwrap().embed = Some(embed::Embedded { into: r.into, at, rel, axis, depth: r.depth, max_depth: r.max_depth });
+        let slide_axis = r.slide.map_or(Vec3::ZERO, |(s, _)| parent.1.inverse() * s);
+        self.objects.get_mut(&r.object).unwrap().embed = Some(embed::Embedded {
+            into: r.into,
+            at,
+            rel,
+            axis,
+            depth: r.depth,
+            max_depth: r.max_depth,
+            dampers: r.dampers,
+            slide_axis,
+            slid: 0.0,
+            slide_max: r.slide.map_or(0.0, |s| s.1),
+            wounding: r.wounding,
+            deepest: r.depth,
+            wounded: false,
+            skewered: false,
+        });
         self.physics.set_kinematic(body, true);
         self.physics.set_groups(collider, groups_none());
         self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
         self.physics.set_pose(body, pos, q);
         self.debug.embeds += 1;
         self.emit(Cue::KnifeStick, Some(hand), Some(r.object), r.point, 1.0);
+        // A cut goes in at once: its wound's told with the hit (a slash's deep damage at any depth).
+        self.embed_wound(r.object);
     }
 
     /// Out of what it was stuck in: free to move again (in the hand, or falling).
     fn unembed(&mut self, id: u32) {
         let Some(o) = self.objects.get_mut(&id) else { return };
-        o.embed = None;
+        let was = o.embed.take();
         let (body, collider, holder) = (o.body, o.collider, o.holder);
         self.physics.set_kinematic(body, false);
         self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
@@ -5778,13 +5801,62 @@ impl Rig {
             Holder::Held(hand) => self.physics.set_groups(collider, groups_held(hand)),
             _ => self.free_body(id, groups_free()),
         }
+        // Out of a creature: the game is told (its exit, its blood spurt).
+        if let Some(e) = was
+            && let embed::Into::Actor { id: actor, part } = e.into
+        {
+            let point = self.embed_parent(e.into).map_or(Vec3::ZERO, |p| p.0 + p.1 * e.at);
+            let hand = if let Holder::Held(h) = holder { h as u32 } else { 2 };
+            self.embed_events.push(CombatEvent { kind: CE_PULLED_OUT, actor, part: part as u32, object: id, what: e.wounding.kind, hand, depth: e.deepest, blade: e.wounding.blade, point: point.to_array(), ..Default::default() });
+        }
     }
 
-    /// Where it is while stuck: at the surface, `depth` in.
+    /// Where it is while stuck: at the surface, `depth` in, slid `slid` along its cut.
     fn embedded_pose(&self, e: &embed::Embedded) -> Option<(Vec3, Quat)> {
         let parent = self.embed_parent(e.into)?;
         let surface = compose(parent, e.rel);
-        Some((surface.0 + parent.1 * e.axis * e.depth, surface.1))
+        let w = self.map.world_per_meter;
+        Some((surface.0 + parent.1 * (e.axis * e.depth + e.slide_axis * e.slid) * w, surface.1))
+    }
+
+    /// A blade in a creature, as deep as it goes: its going in is told once it's past its deep
+    /// depth (a cut's at once), its point coming out the far side once it's through (its
+    /// deep damage and skewer damage, once each).
+    fn embed_wound(&mut self, id: u32) {
+        let Some(o) = self.objects.get_mut(&id) else { return };
+        let hand = if let Holder::Held(h) = o.holder { h as u32 } else { 2 };
+        let Some(e) = o.embed.as_mut() else { return };
+        let embed::Into::Actor { id: actor, part } = e.into else { return };
+        e.deepest = e.deepest.max(e.depth);
+        let mut out = Vec::new();
+        if !e.wounded && e.wounding.damage > 0.0 && e.deepest >= e.wounding.deep {
+            e.wounded = true;
+            out.push((0, e.wounding.damage, e.deepest));
+        }
+        if !e.skewered && e.wounding.skewer > 0.0 && e.wounding.through > 0.0 && e.deepest >= e.wounding.through {
+            e.skewered = true;
+            out.push((CEF_SKEWER, e.wounding.skewer, e.deepest));
+        }
+        let ee = *e;
+        let (point, dir) = self.embed_parent(ee.into).map_or((Vec3::ZERO, Vec3::ZERO), |p| (p.0 + p.1 * ee.at, p.1 * ee.axis));
+        for (flags, damage, depth) in out {
+            tracing::info!("rig: {id:#x} {} creature {actor:#x} part {part}: {damage:.1} at {depth:.3} m deep", if flags & CEF_SKEWER != 0 { "through" } else { "into" });
+            self.embed_events.push(CombatEvent {
+                kind: CE_WOUND,
+                flags: flags | CEF_PENETRATED,
+                actor,
+                part: part as u32,
+                object: id,
+                what: ee.wounding.kind,
+                hand,
+                damage,
+                depth,
+                blade: ee.wounding.blade,
+                point: point.to_array(),
+                dir: dir.to_array(),
+                ..Default::default()
+            });
+        }
     }
 
     /// A held object stuck in something, the hand at `target`: false once it's out.
@@ -5800,48 +5872,67 @@ impl Rig {
             Attach::Gun => v3(o.desc.grip),
             Attach::Fixed(p, q) => inverse((p, q)).0,
         };
+        let w = self.map.world_per_meter;
         let axis = parent.1 * e.axis;
+        let slide_w = parent.1 * e.slide_axis;
         let d = (target.0 + target.1 * pivot) - (now.0 + now.1 * pivot);
         let along = d.dot(axis);
-        let across = (d - axis * along).length();
-        // In a creature, what the blade can't follow (across its way in, or out faster than it
-        // slides) drags the creature by where it went in.
-        let strain = d - axis * along.clamp(-embed::SLIDE_SPEED * dt, embed::SLIDE_SPEED * dt);
+        let slide = if slide_w != Vec3::ZERO { d.dot(slide_w) } else { 0.0 };
+        let across = (d - axis * along - slide_w * slide).length();
+        // The hand's joint pulls it (the player's hold); the penetration's dampers resist.
+        let strength = self.melee.strength.max(0.05);
+        let step = embed::step(&e, along / w, slide / w, across / w, physics::HOLD_SPRING * strength, physics::HOLD_MAX_FORCE * strength, true, dt);
+        // In a creature, what the blade can't follow (across its way in, or more than it moves
+        // this step) drags the creature by where it went in.
+        let moved = match step {
+            embed::Step::Stay(depth, slid) => (axis * (depth - e.depth) + slide_w * (slid - e.slid)) * w,
+            embed::Step::Out => d,
+        };
+        let strain = d - moved;
         if let embed::Into::Actor { id: actor, part } = e.into
-            && strain.length() > 0.005
+            && strain.length() > 0.005 * w
         {
             let entry = parent.0 + parent.1 * e.at;
-            let speed = (strain.length() * embed::DRAG_RATE).min(PUSH_MAX);
+            let speed = (strain.length() / w * embed::DRAG_RATE).min(PUSH_MAX);
             self.drags.push(GamePush { id: actor, part: part as u32 + 1, point: entry.extend(1.0).to_array(), normal: strain.normalize().extend(speed).to_array(), ..Default::default() });
         }
         // In a loose thing, the same, on the thing itself: what its point there lacks of the pull.
         if let embed::Into::Object { id: thing } = e.into
-            && strain.length() > 0.005
+            && strain.length() > 0.005 * w
             && let Some(t) = self.objects.get(&thing)
         {
             let entry = parent.0 + parent.1 * e.at;
             let dir = strain.normalize();
-            let want = (strain.length() * embed::DRAG_RATE).min(PUSH_MAX);
+            let want = (strain.length() / w * embed::DRAG_RATE).min(PUSH_MAX);
             let (body, mass) = (t.body, t.desc.mass.max(0.05));
             let lacking = want - self.physics.velocity(body).0.dot(dir);
             if lacking > 0.0 {
                 self.physics.apply_impulse(body, dir * (lacking * mass).min(DRAG_IMPULSE_MAX), entry);
             }
         }
-        match embed::step(e.depth, e.max_depth, along, across, dt) {
+        match step {
             embed::Step::Out => {
                 self.unembed(id);
                 self.emit(Cue::Release, Some(hand), Some(id), now.0, 0.8);
                 false
             }
-            embed::Step::Stay(depth) => {
+            embed::Step::Stay(depth, slid) => {
+                // A buzz in the hand every centimetre it goes in or comes out, and every two it
+                // slides (0.9 a centimetre in or out, 0.8 each
+                // 2 cm).
+                let went = (depth / 0.01).floor() != (e.depth / 0.01).floor();
+                if went || (slid / 0.02).floor() != (e.slid / 0.02).floor() {
+                    self.emit(Cue::Slide, Some(hand), Some(id), now.0, if went { 0.9 } else { 0.8 });
+                }
                 let o = self.objects.get_mut(&id).unwrap();
                 if let Some(e) = o.embed.as_mut() {
                     e.depth = depth;
+                    e.slid = slid;
                 }
                 let body = o.body;
                 let surface = compose(parent, e.rel);
-                self.physics.move_kinematic(body, surface.0 + axis * depth, surface.1);
+                self.physics.move_kinematic(body, surface.0 + (axis * depth + slide_w * slid) * w, surface.1);
+                self.embed_wound(id);
                 true
             }
         }
@@ -6063,7 +6154,18 @@ impl Rig {
                     {
                         let (body, collider) = (o.body, o.collider);
                         self.physics.set_kinematic(body, true);
-                        self.physics.set_groups(collider, if constrained { physics::groups_panel() } else if self.bowls.contains_key(id) { physics::groups_game_bowl() } else { groups_game_prop() });
+                        // (A creature's weapon is solid to the hands and what they hold: it blocks
+                        // and is pushed, rather than being gone through like a loose prop.)
+                        let groups = if constrained {
+                            physics::groups_panel()
+                        } else if self.bowls.contains_key(id) {
+                            physics::groups_game_bowl()
+                        } else if self.creature_item(*id) {
+                            physics::groups_actor()
+                        } else {
+                            groups_game_prop()
+                        };
+                        self.physics.set_groups(collider, groups);
                         self.physics.move_kinematic(body, p, q);
                     }
                 }

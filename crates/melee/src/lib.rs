@@ -242,3 +242,14 @@ pub fn intensity(speed: f32) -> f32 {
 
 /// Metal sparks show only above this intensity (about 7.6 m/s).
 pub const SPARKS_FROM: f32 = 0.5;
+
+/// The push a point pressed slowly into flesh needs to go in (the pressure curve
+/// for swords and daggers: 5 at a standstill, 1.5 drawn at 0.5 m/s, 0.25 at 1 m/s; a velocity change
+/// a step, m/s), before the material's pressure multiplier: the faster it's drawn, the less it takes.
+pub fn pressure_needed(sliding: f32) -> f32 {
+    if sliding <= 0.5 {
+        curve([0.0, 5.0, 0.5, 1.5], [0.0, -7.124_971], sliding)
+    } else {
+        curve([0.5, 1.5, 1.0, 0.25], [-7.124_971, 0.0], sliding)
+    }
+}

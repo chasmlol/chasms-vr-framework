@@ -3,27 +3,156 @@
 //! bolt, so the runtime's melee and magic can be played and tested without a game
 //! (`rustvr_protocol::combat`).
 
-use glam::{Quat, Vec3};
+use glam::Vec3;
+use rustvr_melee::body::Part as BodyPart;
 use rustvr_protocol::*;
 
 
-/// The dummy's id, as the game knows it.
-pub const DUMMY_ID: u32 = 7001;
-/// Where it stands (its feet), in front of the player's start.
-pub const DUMMY_AT: Vec3 = Vec3::new(0.15, 0.0, 1.15);
-/// The fire bolt's id.
+/// The fire bolt's id: fire, so a hand charged with it fills a blade with fire.
 pub const FIRE_BOLT: u32 = 1;
+/// A shock spell: a hand charged with it fills a blade with lightning.
+pub const SHOCK: u32 = 2;
 
-/// The second dummy: off to the left, turned a little towards the player, behind the throwables'
-/// table (clear of the sword's blade lying across it).
-pub const DUMMY_LEFT_AT: Vec3 = Vec3::new(-0.85, 0.0, 1.88);
+/// The range is the game: a hit on one of its people does what the melee rules say
+/// (`rustvr_melee`): its damage (the runtime's, by the damager's curve, tier and the material's
+/// multiplier) times the body part's (a head x3, the limbs x0.5, the hands x0.25); its push level
+/// (by the material's speeds) staggers or floors it by the push table; a blunt blow to the head fast
+/// enough knocks it out (the tables' knockout speeds: our call, written in
+/// `docs/MELEE.md`); a cut that severs takes the limb off; a hand hit at push level 2, or a stab
+/// through the arm, makes it let go of what it holds; and it's left a wound where it was hit.
+pub fn hit(people: &mut crate::arena::People, ev: &CombatEvent, weapons: &MeleeWeapons) -> Vec<Bled> {
+    let mut out = Vec::new();
+    let d = &mut people.dummies;
+    let Some(k) = d.find(ev.actor) else { return out };
+    let part = ev.part as usize;
+    let kind = d.part_kind(k, part);
+    let (a, b, _) = d.capsule(k, part);
+    let point = Vec3::from_array(ev.point);
+    let dir = Vec3::from_array(ev.dir).normalize_or_zero();
+    // The throat: the lower part of the head's capsule (the neck).
+    let throat = kind == PART_HEAD && (point - a).dot(b - a) / (b - a).length_squared().max(1e-6) < 0.45;
+    let body = BodyPart::of(kind, throat);
+    let weapon = weapons.get(ev.object);
+    let blade = weapon.and_then(|w| w.blades().get(ev.blade as usize)).copied();
+    let tier = weapon.map_or(2, |w| w.tier);
+    let modifier = match (blade, ev.flags & CEF_GLANCING != 0) {
+        (_, true) => rustvr_melee::MOD_BLUNT_LIGHT,
+        (Some(b), _) => rustvr_melee::modifier_of(&b),
+        (None, _) if ev.object == 0 => rustvr_melee::MOD_PUNCH,
+        _ => rustvr_melee::MOD_BLUNT,
+    };
+    let fire = ev.flags & CEF_IMBUED != 0 && ev.spell == FIRE_BOLT;
+    let thrown = ev.flags & CEF_THROWN != 0;
+    let row = rustvr_melee::row(modifier, ev.material, tier, fire);
+    let damage = ev.damage * body.damage();
+    let alive = d.people[k].alive;
+    d.hurt(k, damage, point);
+    let share = damage / rustvr_melee::body::HEALTH;
+    let now = people.dummies.time;
+    if let Some(brain) = people.brain_of(k) {
+        brain.hurt(share, now);
+    }
+    let d = &mut people.dummies;
+    let level = row.map_or(0, |r| r.push_level(ev.speed, thrown));
+    // The mace and shield damagers shove what they hit (an acceleration a moment
+    // long: about 0.17 of the speed): felt by a body already down; a standing one's pins take it.
+    let shove = if ev.what == DMG_BLUNT { 0.17 * ev.speed * 2.0 } else { 0.0 };
+    d.react(k, part, level, dir, point, shove);
+    // A blunt blow to the head fast enough knocks it out.
+    if let Some(r) = row
+        && ev.what == DMG_BLUNT
+        && body == BodyPart::Head
+        && ev.speed >= if thrown { r.knockout_thrown } else { r.knockout }
+        && d.people[k].alive
+    {
+        let seconds = (rustvr_melee::body::KNOCKOUT_TIME * r.knockout_time) as f64;
+        tracing::info!("range: {:#x} knocked out for {seconds:.1} s ({:.1} m/s to the head)", ev.actor, ev.speed);
+        d.knock_out(k, seconds, point);
+    }
+    // A cut through a limb takes it off (the head by its neck).
+    if ev.flags & CEF_SEVER != 0 && body.severable() && kind != PART_TORSO && d.sever(k, part, dir) {
+        tracing::info!("range: {:#x}'s part {part} cut off at {:.1} m/s", ev.actor, ev.speed);
+    }
+    // Disarmed: a hand hit at exactly push level 2, or a point
+    // through the arm.
+    let hand = (0..2).find(|&h| [crate::anim::HAND[h], crate::anim::FOREARM[h], crate::anim::UPPER_ARM[h]].contains(&part));
+    if let Some(h) = hand {
+        let on_hand = part == crate::anim::HAND[h] && level == 2 && ev.what != DMG_PIERCE;
+        let stabbed = ev.what == DMG_PIERCE && ev.flags & CEF_PENETRATED != 0;
+        if (on_hand || stabbed)
+            && let Some(item) = d.drop_item(k, h)
+        {
+            tracing::info!("range: {:#x} lets go of {item:#x}", ev.actor);
+            d.happened.push(crate::ragdoll::Happened::Disarmed { id: ev.actor, item });
+        }
+    }
+    let intensity = rustvr_melee::intensity(ev.speed);
+    if ev.damage > 0.0 {
+        d.wound(k, part, point, ev.what, intensity);
+        out.push(Bled { actor: ev.actor, point, dir, strength: intensity, kind: ev.what });
+    }
+    tracing::info!(
+        "range: {:#x} part {part} ({body:?}) hit by {:#x} at {:.1} m/s: {damage:.1} of its health ({:.0} left), push level {level}{}",
+        ev.actor,
+        ev.object,
+        ev.speed,
+        d.people[k].health.max(0.0),
+        if alive && !d.people[k].alive { ", dead" } else { "" }
+    );
+    out
+}
 
-/// The training dummies (people, as ragdolls: `crate::ragdoll`), facing the player, among the
-/// range's walls and furniture: `DUMMY_ID` at `DUMMY_AT`, the next at `DUMMY_LEFT_AT`.
-pub fn dummies() -> crate::ragdoll::Dummies {
-    let facing = |turn: f32| Quat::from_rotation_y(std::f32::consts::PI + turn);
-    let world: Vec<(Vec3, Vec3)> = crate::content::shell().into_iter().chain(crate::content::furniture().into_iter().map(|(lo, hi, _)| (lo, hi))).collect();
-    crate::ragdoll::Dummies::new(&[(DUMMY_AT, facing(0.0)), (DUMMY_LEFT_AT, facing(0.35))], DUMMY_ID, &world)
+/// A blade going in deep, or out the far side (the runtime's `CE_WOUND`): its penetration damage,
+/// times the part's: a stab's deep multiplier (a head or a neck x32, the torso x2), a cut's (the
+/// neck x32), a skewer's.
+pub fn wound(people: &mut crate::arena::People, ev: &CombatEvent) {
+    let d = &mut people.dummies;
+    let Some(k) = d.find(ev.actor) else { return };
+    let part = ev.part as usize;
+    let kind = d.part_kind(k, part);
+    let (a, b, _) = d.capsule(k, part);
+    let point = Vec3::from_array(ev.point);
+    let throat = kind == PART_HEAD && (point - a).dot(b - a) / (b - a).length_squared().max(1e-6) < 0.45;
+    let body = BodyPart::of(kind, throat);
+    let mult = if ev.flags & CEF_SKEWER != 0 {
+        body.skewer()
+    } else if ev.what == DMG_PIERCE {
+        body.deep().1
+    } else {
+        body.cut()
+    };
+    let damage = ev.damage * mult;
+    d.hurt(k, damage, point);
+    let now = people.dummies.time;
+    if let Some(brain) = people.brain_of(k) {
+        brain.hurt(damage / rustvr_melee::body::HEALTH, now);
+    }
+    tracing::info!("range: {:#x} part {part} ({body:?}) {}: {damage:.1}, {:.0} left", ev.actor, if ev.flags & CEF_SKEWER != 0 { "run through" } else { "wounded deep" }, people.dummies.people[k].health.max(0.0));
+}
+
+/// Where blood comes from a hit (for the range's own effects).
+#[derive(Clone, Copy, Debug)]
+pub struct Bled {
+    pub actor: u32,
+    pub point: Vec3,
+    pub dir: Vec3,
+    pub strength: f32,
+    pub kind: u32,
+}
+
+/// The range's blood: the runtime's own look (its built-in splat), a person's worth.
+pub fn bloods() -> BloodTable {
+    let mut t: BloodTable = bytemuck::Zeroable::zeroed();
+    let b = &mut t.bloods[0];
+    b.flags = BLOOD_LIQUID;
+    b.amount = 1.0;
+    b.viscosity = 1.0;
+    b.atlas = 1;
+    Blood::set_texture(&mut b.splat, "builtin/splat");
+    Blood::set_texture(&mut b.splatter, "builtin/splatter");
+    Blood::set_texture(&mut b.stain, "builtin/stain");
+    t.count = 1;
+    t
 }
 
 /// The melee weapons' blades as the runtime's simpler table has them ([`MeleeTable`]: four damagers
@@ -48,7 +177,7 @@ pub fn spells() -> Spells {
     let mut bolt: Spell = bytemuck::Zeroable::zeroed();
     bolt.id = FIRE_BOLT;
     bolt.delivery = DELIVER_TARGET;
-    bolt.flags = SPELL_SELECTED | SPELL_CASTABLE;
+    bolt.flags = SPELL_SELECTED | SPELL_CASTABLE | SPELL_FIRE;
     bolt.cost = 10.0;
     bolt.color = [1.0, 0.45, 0.1];
     bolt.set_name("Fire bolt");

@@ -30,6 +30,7 @@ pub struct Arm {
 /// damage, dampers held in / held out / free, dismemberment speed, thrown multiplier).
 #[derive(Clone, Copy)]
 struct Dmg {
+    skewer: f32,
     kind: u32,
     flags: u32,
     modifier: u32,
@@ -44,26 +45,26 @@ struct Dmg {
 
 /// A one-handed sword's slash (tier 2: 0.9; damage by speed 2 -> 1, 20 -> 2; penetration 15;
 /// held in 10000, out 100, free 100; dismemberment 12 m/s; slides).
-const SWORD_SLASH: Dmg = Dmg { kind: DMG_SLASH, flags: DMGF_BOTH_WAYS | DMGF_SLIDES | DMGF_BLUNT_BAD, modifier: MOD_SLASH, tier: 0.9, curve: [2.0, 1.0, 20.0, 2.0], slopes: [0.0; 2], pen_damage: 15.0, dampers: [10000.0, 100.0, 100.0], dismember: 12.0, thrown: 1.0 };
+const SWORD_SLASH: Dmg = Dmg { skewer: 0.0, kind: DMG_SLASH, flags: DMGF_BOTH_WAYS | DMGF_SLIDES | DMGF_BLUNT_BAD, modifier: MOD_SLASH, tier: 0.9, curve: [2.0, 1.0, 20.0, 2.0], slopes: [0.0; 2], pen_damage: 15.0, dampers: [10000.0, 100.0, 100.0], dismember: 12.0, thrown: 1.0 };
 /// A two-hander's slash (tier 2: 1.1; dismemberment 11; the heavier slash table).
 const SWORD_SLASH_2H: Dmg = Dmg { modifier: MOD_SLASH_HEAVY, tier: 1.1, dismember: 11.0, ..SWORD_SLASH };
 /// A sword's point (tier any: 1; 0 -> 1, 20 -> 10; penetration 5; held in 1000, out 500,
 /// free 1250; pressure stabs; skewers; thrown x1.5).
-const SWORD_PIERCE: Dmg = Dmg { kind: DMG_PIERCE, flags: DMGF_PRESSURE, modifier: MOD_PIERCE, tier: 1.0, curve: rustvr_melee::SWORD_PIERCE_CURVE, slopes: rustvr_melee::SWORD_PIERCE_SLOPES, pen_damage: 5.0, dampers: [1000.0, 500.0, 1250.0], dismember: 0.0, thrown: 1.5 };
+const SWORD_PIERCE: Dmg = Dmg { skewer: 15.0, kind: DMG_PIERCE, flags: DMGF_PRESSURE, modifier: MOD_PIERCE, tier: 1.0, curve: rustvr_melee::SWORD_PIERCE_CURVE, slopes: rustvr_melee::SWORD_PIERCE_SLOPES, pen_damage: 5.0, dampers: [1000.0, 500.0, 1250.0], dismember: 0.0, thrown: 1.5 };
 /// A dagger's point (0 -> 1, 20 -> 5; penetration 7.5; held in 500, out 250, free 500;
 /// thrown x3).
-const DAGGER_PIERCE: Dmg = Dmg { kind: DMG_PIERCE, flags: DMGF_PRESSURE, modifier: MOD_PIERCE_FINE, tier: 1.0, curve: rustvr_melee::DAGGER_PIERCE_CURVE, slopes: rustvr_melee::DAGGER_PIERCE_SLOPES, pen_damage: 7.5, dampers: [500.0, 250.0, 500.0], dismember: 0.0, thrown: 3.0 };
+const DAGGER_PIERCE: Dmg = Dmg { skewer: 7.5, kind: DMG_PIERCE, flags: DMGF_PRESSURE, modifier: MOD_PIERCE_FINE, tier: 1.0, curve: rustvr_melee::DAGGER_PIERCE_CURVE, slopes: rustvr_melee::DAGGER_PIERCE_SLOPES, pen_damage: 7.5, dampers: [500.0, 250.0, 500.0], dismember: 0.0, thrown: 3.0 };
 /// A dagger's edge (tier 2: 0.5; penetration 5; dismemberment 13).
 const DAGGER_SLASH: Dmg = Dmg { modifier: MOD_SLASH_WEAK, tier: 0.5, pen_damage: 5.0, dismember: 13.0, ..SWORD_SLASH };
 /// An axe's edge (tier 2: 0.9; 2 -> 1, 20 -> 3; penetration 25; held in 0, out 10000, free
 /// 5000; dismemberment 9; doesn't slide).
-const AXE_SLASH: Dmg = Dmg { kind: DMG_SLASH, flags: DMGF_AXE | DMGF_BLUNT_BAD, modifier: MOD_SLASH_AXE, tier: 0.9, curve: [2.0, 1.0, 20.0, 3.0], slopes: [0.0; 2], pen_damage: 25.0, dampers: [0.0, 10000.0, 5000.0], dismember: 9.0, thrown: 1.0 };
+const AXE_SLASH: Dmg = Dmg { skewer: 10.0, kind: DMG_SLASH, flags: DMGF_AXE | DMGF_BLUNT_BAD, modifier: MOD_SLASH_AXE, tier: 0.9, curve: [2.0, 1.0, 20.0, 3.0], slopes: [0.0; 2], pen_damage: 25.0, dampers: [0.0, 10000.0, 5000.0], dismember: 9.0, thrown: 1.0 };
 /// A mace's head (tier 2: 2.4; 2 -> 1, 20 -> 5), a two-handed one's (tier 2: 2.7).
-const MACE: Dmg = Dmg { kind: DMG_BLUNT, flags: 0, modifier: MOD_BLUNT, tier: 2.4, curve: [2.0, 1.0, 20.0, 5.0], slopes: [0.0; 2], pen_damage: 0.0, dampers: [0.0; 3], dismember: 0.0, thrown: 1.0 };
+const MACE: Dmg = Dmg { skewer: 0.0, kind: DMG_BLUNT, flags: 0, modifier: MOD_BLUNT, tier: 2.4, curve: [2.0, 1.0, 20.0, 5.0], slopes: [0.0; 2], pen_damage: 0.0, dampers: [0.0; 3], dismember: 0.0, thrown: 1.0 };
 const MACE_2H: Dmg = Dmg { tier: 2.7, ..MACE };
 /// A light handle's damager (the light blunt: 2 -> 1, 20 -> 2; thrown x2.3) and a heavy one's
 /// (2 -> 1, 20 -> 5; thrown x2): pommels, hafts, staves.
-const HANDLE_LIGHT: Dmg = Dmg { kind: DMG_BLUNT, flags: 0, modifier: MOD_BLUNT_LIGHT, tier: 1.0, curve: [2.0, 1.0, 20.0, 2.0], slopes: [0.0; 2], pen_damage: 0.0, dampers: [0.0; 3], dismember: 0.0, thrown: 2.3 };
+const HANDLE_LIGHT: Dmg = Dmg { skewer: 0.0, kind: DMG_BLUNT, flags: 0, modifier: MOD_BLUNT_LIGHT, tier: 1.0, curve: [2.0, 1.0, 20.0, 2.0], slopes: [0.0; 2], pen_damage: 0.0, dampers: [0.0; 3], dismember: 0.0, thrown: 2.3 };
 const HANDLE_HEAVY: Dmg = Dmg { modifier: MOD_BLUNT, curve: [2.0, 1.0, 20.0, 5.0], thrown: 2.0, ..HANDLE_LIGHT };
 /// A shield's rim (tier 2: 0.95; 2 -> 1, 20 -> 5).
 const SHIELD: Dmg = Dmg { tier: 0.95, ..HANDLE_HEAVY };
@@ -84,6 +85,7 @@ fn blade(d: Dmg, a: Vec3, b: Vec3, radius: f32, edge: Vec3, depth: f32) -> Melee
         curve: d.curve,
         slopes: d.slopes,
         modifier: d.modifier,
+        skewer: d.skewer,
         damper_in: d.dampers[0],
         damper_out: d.dampers[1],
         damper_free: d.dampers[2],
@@ -133,6 +135,8 @@ fn melee(flags: u32, handles: &[MeleeHandle], blades: &[MeleeBlade], balance: Ve
     w.handle[..w.handles as usize].copy_from_slice(&handles[..w.handles as usize]);
     w.blade[..w.blades as usize].copy_from_slice(&blades[..w.blades as usize]);
     w.balance = balance.to_array();
+    // The common weapons are tier 2.
+    w.tier = 2;
     w
 }
 
@@ -266,7 +270,7 @@ pub fn spear() -> Arm {
     let thing = thing("kit_spear", "Spear", vec![m], 1.65, [Vec3::new(0.0, 0.0, -1.45), Vec3::new(0.0, 0.0, 0.2)], 0.014, grip, (flat(), 0.017));
     let pierce = Dmg { tier: 1.0, ..SWORD_PIERCE };
     let slash = Dmg { tier: 1.3, ..SWORD_SLASH_2H };
-    let melee = melee(
+    let mut melee = melee(
         0,
         &[handle(Vec3::new(0.0, 0.0, -1.45), Vec3::new(0.0, 0.0, 0.2), 0.014, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip)],
         &[
@@ -276,6 +280,8 @@ pub fn spear() -> Arm {
         ],
         Vec3::new(0.0, 0.0, -0.45),
     );
+    // (`SpearBladed` is tier 4.)
+    melee.tier = 4;
     Arm { thing, melee }
 }
 

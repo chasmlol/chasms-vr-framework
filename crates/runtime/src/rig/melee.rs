@@ -21,7 +21,7 @@ use glam::{Quat, Vec3};
 use rustvr_protocol::*;
 
 use super::physics::{self, Joint};
-use super::{Attach, On, Rig, compose, inverse, v3};
+use super::{Attach, Holder, On, Rig, compose, inverse, v3};
 
 /// A held weapon this far (metres) behind where its hand would have it, and stopped by something:
 /// the hand lets it go (the stuck rule: the grip point an arm's length off).
@@ -57,6 +57,8 @@ pub struct MeleeRig {
     /// Each hand sliding along a handle: the weapon, which handle, where along it (metres from its
     /// `a`), and its offset from the line (weapon space).
     pub slides: [Option<Slide>; 2],
+    /// The game's creatures' weapons and shields this frame (their object ids).
+    pub creature_items: std::collections::HashSet<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -307,5 +309,74 @@ impl Rig {
         let drawn = compose(inverse((pos, rot)), hand);
         let on = if self.melee_handle(id, drawn.0).is_some() { On::Grip } else { On::Free };
         (Attach::Fixed(rel.0, rel.1), on, Some(drawn))
+    }
+}
+
+impl Rig {
+    /// Both hands on weapon `id`.
+    pub fn two_handed_melee(&self, id: u32) -> bool {
+        let Some(hands) = self.hands.as_ref() else { return false };
+        hands.iter().any(|h| h.holding == Some(id)) && hands.iter().any(|h| h.supporting() == Some(id))
+    }
+
+    /// How far weapon `id`'s hold is behind where its hand would have it (world), and the most its
+    /// hand's joint pulls with (N): the push a pressed blade has.
+    pub fn melee_pull(&self, id: u32) -> Option<(Vec3, f32, f32)> {
+        let o = self.objects.get(&id)?;
+        let strength = self.melee.strength.max(0.05) * if self.two_handed_melee(id) { 2.0 } else { 1.0 };
+        Some((o.lag / self.map.world_per_meter, physics::HOLD_SPRING * strength, physics::HOLD_MAX_FORCE * strength))
+    }
+
+    /// Thing `id`'s mass (kg).
+    pub fn mass_of(&self, id: u32) -> f32 {
+        self.objects.get(&id).map_or(1.0, |o| o.desc.mass.max(0.05))
+    }
+
+    /// Thing `id` is stuck in something.
+    pub fn embedded(&self, id: u32) -> bool {
+        self.objects.get(&id).is_some_and(|o| o.embed.is_some())
+    }
+}
+
+impl Rig {
+    /// What the game's creatures hold this frame ([`ActorItems`]): solid to the hands and what they
+    /// hold (a creature's weapon blocks the player's, and is pushed by it), not as a loose prop the
+    /// hands go through.
+    pub fn set_actor_items(&mut self, items: &ActorItems) {
+        self.melee.creature_items = items.entries().iter().map(|i| i.id).collect();
+    }
+
+    /// A creature's weapon or shield (the game moves it in its holder's hand).
+    pub(super) fn creature_item(&self, id: u32) -> bool {
+        self.melee.creature_items.contains(&id)
+    }
+
+    /// What the player's held things push the creatures' weapons and shields by: each pressed on
+    /// one, at the contact, the way it presses (its own speed into it, and what the hand would have
+    /// it go further: the hand's joint pushing it).
+    pub(super) fn item_pushes(&self) -> Vec<GamePush> {
+        let mut out: Vec<GamePush> = Vec::new();
+        for id in &self.melee.creature_items {
+            let Some(item) = self.objects.get(id) else { continue };
+            if !matches!(item.holder, Holder::Free) {
+                continue;
+            }
+            for c in self.physics.touching(item.collider) {
+                let Some(o) = self.objects.values().find(|o| o.collider == c && matches!(o.holder, Holder::Held(_))) else { continue };
+                let Some((point, normal, depth)) = self.physics.overlap(c, item.collider).or_else(|| {
+                    let p = self.physics.closest_point(item.collider, self.physics.pose(o.body).0);
+                    let n = (p - self.physics.pose(o.body).0).normalize_or_zero();
+                    (n != Vec3::ZERO).then_some((p, n, 0.0))
+                }) else {
+                    continue;
+                };
+                let vel = self.physics.velocity(o.body).0;
+                let speed = (vel.dot(normal).max(0.0) + o.lag.dot(normal).max(0.0) * super::PUSH_LAG + depth * super::PUSH_OUT).min(super::PUSH_MAX * 2.0);
+                if speed > 0.05 && out.len() < MAX_GAME_PUSHES / 2 {
+                    out.push(GamePush { id: *id, part: 0, moving: vel.dot(normal).max(0.0), point: point.extend(1.0).to_array(), normal: normal.extend(speed).to_array(), ..Default::default() });
+                }
+            }
+        }
+        out
     }
 }

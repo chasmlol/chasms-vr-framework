@@ -1059,6 +1059,9 @@ impl Session {
             self.rig.set_actor_parts(self.combat.actor_parts());
             self.link.read_actor_bodies_into(&mut self.actor_bodies);
             self.rig.set_actor_bodies(self.combat.actors(), &self.actor_bodies);
+            // What the creatures' weapons can strike: the player's body as capsules (world).
+            let player = crate::combat::player_capsules(&self.body.body.joints, &rig_map);
+            self.rig.set_actor_items(&self.combat.items);
             let combat = self.combat.update(&crate::combat::CombatInput {
                 rig: &self.rig,
                 out: &self.rig_out,
@@ -1069,6 +1072,7 @@ impl Session {
                 now,
                 dt: frame.dt,
                 paused: rig_paused || menu_mode,
+                player: &player,
             });
             for ev in &combat {
                 self.link.push_combat_event(ev);
@@ -1094,6 +1098,12 @@ impl Session {
             // Blades that went in and stay in.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);
+            }
+            // What blades stuck in creatures did (gone in deep, out the far side, pulled out), the
+            // part as the game numbers it.
+            for mut ev in std::mem::take(&mut self.rig.embed_events) {
+                ev.part = self.combat.game_part(ev.actor, ev.part as usize);
+                self.link.push_combat_event(&ev);
             }
             for p in &self.combat.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);

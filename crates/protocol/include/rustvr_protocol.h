@@ -566,6 +566,15 @@
 #define RVR_SPELL_FAVOURITE (1 << 3)
 
 /**
+ * Fire, or shock: a hand charged with it held to a blade fills the blade with it
+ * (imbuing, [`crate::RtMelee::imbue`]), and the blade's hits carry it (the fire rows of the damage
+ * tables; burning, a shock's stun, for the game).
+ */
+#define RVR_SPELL_FIRE (1 << 4)
+
+#define RVR_SPELL_SHOCK (1 << 5)
+
+/**
  * The game draws its own casting art where the runtime's casting is ([`crate::Casters`]): the
  * runtime draws none of its own (no glow in the palm).
  */

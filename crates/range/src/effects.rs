@@ -485,6 +485,34 @@ impl Effects {
         }
     }
 
+    /// A blade striking metal at `at` (armour, another blade), `n` out of it, `intensity` how hard
+    /// (none below 0.5, about 7.6 m/s): a flare and a spray of sparks.
+    pub fn sparks(&mut self, at: Vec3, n: Vec3, intensity: f32) {
+        let n = n.normalize_or(Vec3::Y);
+        let k = ((intensity - 0.5) / 0.5).clamp(0.2, 1.0);
+        let mut flare = Self::particle(self.sprites.sparks, FxBlend::Add, at + n * 0.01, 0.1 + 0.1 * k, 0.1, [1.5, 1.2, 0.8, 1.0]);
+        flare.animate = true;
+        flare.roll = self.range(0.0, 6.28);
+        self.push(flare);
+        for _ in 0..(4.0 + 10.0 * k) as usize {
+            let v = (n * 0.5 + self.unit()).normalize() * self.range(1.5, 4.0 + 3.0 * k);
+            let spark = Particle { vel: v, gravity: 9.81, drag: 0.6, streak: 0.012, ..Self::particle(self.sprites.dot, FxBlend::Add, at, 0.01, self.range(0.15, 0.4), [3.0, 2.0, 0.8, 1.0]) };
+            self.push(spark);
+        }
+        self.light(at + n * 0.05, Vec3::new(1.6, 1.0, 0.5), 0.8 * k, 0.05, false);
+    }
+
+    /// A spray of blood off a hit at `at` along `dir`, as hard as `strength` (0..1): the game's own
+    /// look of the moment (the runtime's blood flies and lands on its own).
+    pub fn blood(&mut self, at: Vec3, dir: Vec3, strength: f32) {
+        let dir = dir.normalize_or(Vec3::Y);
+        for _ in 0..(3.0 + 8.0 * strength) as usize {
+            let v = (dir * 0.6 + self.unit() * 0.6).normalize() * self.range(0.5, 1.5 + 2.5 * strength);
+            let drop = Particle { vel: v, gravity: 9.81, drag: 0.4, streak: 0.006, ..Self::particle(self.sprites.dot, FxBlend::Alpha, at, 0.008, self.range(0.25, 0.6), [0.35, 0.01, 0.01, 1.0]) };
+            self.push(drop);
+        }
+    }
+
     /// A knife went in at `at` (a little puff, sparks off a target plate).
     pub fn knife_hit(&mut self, at: Vec3, metal: bool) {
         if metal {

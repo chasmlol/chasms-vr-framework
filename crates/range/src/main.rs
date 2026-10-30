@@ -26,8 +26,10 @@
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
 mod anim;
+mod arena;
 mod arenas;
 mod arsenal;
+mod brain;
 mod combat;
 mod content;
 mod effects;
@@ -128,8 +130,15 @@ struct Game {
     effects: Effects,
     gun_fx: Vec<GunFx>,
     world: hits::World,
-    /// The training dummies: people the player's hands meet, hit, push and stab.
-    dummies: ragdoll::Dummies,
+    /// The range's people: the training dummies, the bench's and the arena's fighters
+    /// (`arena`), who the player's hands meet, hit, push, stab and hold.
+    people: arena::People,
+    /// The player's health (100), what the fighters' blows take from it, and when it was last
+    /// struck.
+    player_health: f32,
+    struck_at: f64,
+    /// Each fighter's weapon's throwable (for drawing it), by its object id.
+    npc_meshes: HashMap<u32, usize>,
     /// The melee weapons' handles and damagers (`arsenal`), for the runtime.
     melee_weapons: Box<MeleeWeapons>,
 }
@@ -216,8 +225,27 @@ impl Game {
         let mut scenery = scenery;
         // The melee weapons' handles and damagers, by the ids they're registered with.
         let mut melee_weapons: Box<MeleeWeapons> = bytemuck::zeroed_box();
+        // The people, among the room's walls and furniture.
+        let solid: Vec<(Vec3, Vec3)> = content::shell()
+            .into_iter()
+            .chain(content::furniture().into_iter().chain(throwables::furniture()).chain(arenas::furniture()).map(|(lo, hi, _)| (lo, hi)))
+            .collect();
+        let people = arena::People::new(&solid);
+        let mut npc_meshes = HashMap::new();
         if let Some(a) = &mut armory {
-            let placed = throwables::layout(&throw_list);
+            let mut placed = throwables::layout(&throw_list);
+            // The fighters' weapons: the game's own objects, lying in the arena until handed out.
+            for (n, (id, key)) in people.pool_objects().into_iter().enumerate() {
+                let Some(i) = throw_list.iter().position(|t| t.key == key) else { continue };
+                let mut d = throw_list[i].desc;
+                d.id = id;
+                d.flags |= OBJF_GAME_SIMULATED;
+                d.spawn_seq = 1;
+                let at = Vec3::new(arenas::ARENA.0.x + 0.5 + 0.3 * n as f32, 0.05, arenas::ARENA.1.z - 0.3);
+                d.spawn_pose = Pose { pos: at.to_array(), valid: 1, rot: throw_list[i].lying.0.to_array() };
+                npc_meshes.insert(id, i);
+                placed.push((i, d));
+            }
             let arms = arsenal::all();
             for (i, d) in &placed {
                 let Some(arm) = arms.iter().find(|w| w.thing.key == throw_list[*i].key) else { continue };
@@ -308,7 +336,10 @@ impl Game {
             effects: Effects::new(sprites),
             gun_fx,
             world,
-            dummies: combat::dummies(),
+            people,
+            player_health: rustvr_melee::body::PLAYER_HEALTH,
+            struck_at: -10.0,
+            npc_meshes,
             melee_weapons,
         })
     }
@@ -365,7 +396,7 @@ impl Game {
             a.register(&self.adapter);
             a.update(&self.adapter);
         }
-        self.combat(now, dt);
+        self.combat(now, dt, f);
 
         // ---- game logic
         if pressed(&presses, Action::Menu) {
@@ -552,14 +583,14 @@ impl Game {
     /// The loose objects a bullet can hit, as boxes (not what the hands hold or wear).
     /// The dummies, the sword's blade and the fire bolt for the runtime; its hits and casts counted.
     /// The dummies are pushed by the hands (and what they hold), hit, then stepped and published.
-    fn combat(&mut self, _now: f64, dt: f32) {
+    fn combat(&mut self, _now: f64, dt: f32, f: &RtFrame) {
         let mut pushes: GamePushes = bytemuck::Zeroable::zeroed();
         if self.adapter.read_game_pushes(&mut pushes) {
-            self.dummies.push(&pushes);
+            self.people.dummies.push(&pushes);
         }
         let mut grabs: CreatureGrabs = bytemuck::Zeroable::zeroed();
         if self.adapter.read_creature_grabs(&mut grabs) {
-            self.dummies.grab(&grabs);
+            self.people.dummies.grab(&grabs);
         }
         if self.combat_for != self.adapter.connections() && self.adapter.connected() {
             self.combat_for = self.adapter.connections();
@@ -567,14 +598,33 @@ impl Game {
             self.melee_weapons.seq = self.melee_weapons.seq.wrapping_add(2);
             self.adapter.write_melee_weapons(&self.melee_weapons);
             self.adapter.write_spells(&combat::spells());
+            let mut bloods = combat::bloods();
+            bloods.seq = 2;
+            self.adapter.write_bloods(&bloods);
+        }
+        // The fighters' weapons the player's hands have: moved where the runtime has them (their
+        // holders dragged after them), and handed back where the runtime let them go.
+        if let Some(a) = &self.armory {
+            for s in a.states().iter().filter(|s| s.id >= arena::NPC_ITEM_BASE) {
+                let held = s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) != 0;
+                let pose = (s.flags & OS_TRACKING != 0).then_some(()).and(None).or_else(|| held.then(|| (Vec3::from_array(s.pose.pos), Quat::from_array(s.pose.rot).normalize())));
+                let pose = match (held, s.flags & OS_TRACKING != 0) {
+                    (true, true) => self.view_of(f).map(|v| (v.point(Vec3::from_array(s.pose.pos)), v.rot(Quat::from_array(s.pose.rot).normalize()))),
+                    _ => pose,
+                };
+                self.people.dummies.players_item(s.id, if held { pose } else { None }, (Vec3::from_array(s.lin_vel), Vec3::from_array(s.ang_vel)));
+            }
         }
         for ev in self.adapter.combat_events() {
             tracing::info!(
-                "range: combat {} on {} (part {}) by {}, strength {:.2}, speed {:.1} m/s, flags {:#x}, at {:.2?} towards {:.2?}",
+                "range: combat {} on {} (part {}) by {}, strength {:.2}, speed {:.1} m/s, damage {:.2}, depth {:.3}, flags {:#x}, at {:.2?} towards {:.2?}",
                 match ev.kind {
                     CE_HIT => "hit",
                     CE_BLOCK => "block",
                     CE_CAST => "cast",
+                    CE_STRUCK => "struck",
+                    CE_WOUND => "wound",
+                    CE_PULLED_OUT => "pulled out",
                     _ => "?",
                 },
                 ev.actor,
@@ -582,30 +632,123 @@ impl Game {
                 ev.object,
                 ev.strength,
                 ev.speed,
+                ev.damage,
+                ev.depth,
                 ev.flags,
                 ev.point,
                 ev.dir
             );
             match ev.kind {
                 CE_HIT => {
-                    self.dummies.hit(&ev);
+                    let bled = combat::hit(&mut self.people, &ev, &self.melee_weapons);
                     self.stats_f[rs::F_MELEE_HITS] += 1.0;
                     if ev.flags & CEF_POWER != 0 {
                         self.stats_f[rs::F_MELEE_POWER] += 1.0;
                     }
+                    for b in bled {
+                        self.effects.blood(b.point, b.dir, b.strength);
+                    }
+                    // Sparks off metal (only above an intensity of 0.5, about 7.6 m/s).
+                    if matches!(ev.material, MAT_CHAINMAIL | MAT_PLATE) && rustvr_melee::intensity(ev.speed) > rustvr_melee::SPARKS_FROM {
+                        self.effects.sparks(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), rustvr_melee::intensity(ev.speed));
+                    }
+                }
+                CE_WOUND => combat::wound(&mut self.people, &ev),
+                CE_PULLED_OUT => self.effects.blood(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), 0.5),
+                CE_BLOCK => {
+                    // The player's weapon met a fighter's: its swing parried (a roll for a chain, nothing
+                    // or a recoil), or its guard blocked a blow (a riposte maybe).
+                    let now = self.people.dummies.time;
+                    if let Some(k) = self.people.dummies.find(ev.actor) {
+                        let recoil = self.people.brain_of(k).map(|b| if b.attacking() { b.parried(now) } else {
+                            b.blocked(now);
+                            false
+                        });
+                        if recoil == Some(true) {
+                            let dir = Vec3::from_array(ev.dir);
+                            self.people.dummies.react(k, crate::anim::TORSO, 3, dir, Vec3::from_array(ev.point), 0.0);
+                        }
+                    }
+                    if rustvr_melee::intensity(ev.speed) > rustvr_melee::SPARKS_FROM {
+                        self.effects.sparks(Vec3::from_array(ev.point), Vec3::from_array(ev.dir), rustvr_melee::intensity(ev.speed));
+                    }
+                }
+                CE_STRUCK => {
+                    // A fighter's blow on the player: clamped to 5..15 of the player's 100.
+                    let damage = rustvr_melee::body::player_damage(ev.damage, 2);
+                    self.player_health = (self.player_health - damage).max(0.0);
+                    self.struck_at = self.time;
+                    self.adapter.rumble((0.4 + damage / 30.0).min(1.0));
+                    tracing::info!("range: the player is struck for {damage:.0} ({:.0} left)", self.player_health);
+                    if self.player_health <= 0.0 {
+                        tracing::info!("range: the player falls, and gets up again");
+                        self.player_health = rustvr_melee::body::PLAYER_HEALTH;
+                    }
                 }
                 CE_CAST => {
                     self.stats_f[rs::F_CASTS] += 1.0;
-                    if ev.actor == combat::DUMMY_ID {
+                    if ev.actor == arena::DUMMY_ID {
                         self.stats_f[rs::F_CASTS_AT_DUMMY] += 1.0;
                     }
                 }
                 _ => {}
             }
         }
-        self.dummies.step(dt);
-        self.adapter.write_actors(&self.dummies.actors());
-        self.adapter.write_actor_bodies(&self.dummies.bodies());
+        // The fighters see the player and their weapons.
+        let sight = self.sight(f);
+        self.people.think(dt, &sight);
+        self.people.dummies.step(dt);
+        // The player heals slowly while nothing strikes them.
+        if self.time - self.struck_at > 5.0 {
+            self.player_health = (self.player_health + 2.0 * dt).min(rustvr_melee::body::PLAYER_HEALTH);
+        }
+        for h in self.people.happened() {
+            if let ragdoll::Happened::Severed { id, part, at, out, radius } = h {
+                let ev = GoreEvent { kind: GE_SEVER, actor: id, limb: ragdoll::limb_of(part), at: at.to_array(), radius, out: out.to_array(), blood: 0, strength: 1.0, push_speed: rustvr_melee::SLICE_PUSH, push: out.to_array(), ..Default::default() };
+                self.adapter.push_gore_event(&ev);
+            }
+        }
+        self.adapter.write_actors(&self.people.dummies.actors());
+        self.adapter.write_actor_bodies(&self.people.dummies.bodies());
+        let (mut items, poses) = self.people.items_for_runtime();
+        items.frame = f.frame_index;
+        self.adapter.write_actor_items(&items);
+        let mut gp: GamePoses = bytemuck::Zeroable::zeroed();
+        for (i, (id, p, q)) in poses.into_iter().take(MAX_OBJECTS).enumerate() {
+            gp.poses[i] = GamePose { id, pose: Pose { pos: p.to_array(), valid: 1, rot: q.to_array() }, ..Default::default() };
+            gp.count = i as u32 + 1;
+        }
+        self.adapter.write_game_poses(&gp);
+        let mut gore = self.people.dummies.gore();
+        gore.frame = f.frame_index;
+        self.adapter.write_gore_bodies(&gore);
+    }
+
+    /// The view this frame maps tracking space with (the adapter's last).
+    fn view_of(&self, _f: &RtFrame) -> Option<View> {
+        self.adapter.tracking.last_view()
+    }
+
+    /// What the fighters see of the player: the head and feet, how they move, and each of their
+    /// melee weapons' blades and how fast their tips go.
+    fn sight(&self, f: &RtFrame) -> brain::Sight {
+        let Some(v) = self.view_of(f) else { return brain::Sight::default() };
+        let head = v.point(Vec3::from_array(f.hmd.pos));
+        let feet = Vec3::new(head.x, self.feet.y, head.z);
+        let mut weapons = Vec::new();
+        if let Some(a) = &self.armory {
+            for s in a.states().iter().filter(|s| s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT | OS_THROWN) != 0) {
+                let Some(w) = self.melee_weapons.get(s.id).or_else(|| self.melee_weapons.get(s.desc)) else { continue };
+                let (p, q) = physical::Armory::world_pose(s, &v);
+                let reach = w.blades().iter().map(|b| Vec3::from_array(b.b)).max_by(|x, y| x.z.total_cmp(&y.z)).unwrap_or(Vec3::Z);
+                let base = w.blades().iter().map(|b| Vec3::from_array(b.a)).min_by(|x, y| x.z.total_cmp(&y.z)).unwrap_or(Vec3::ZERO);
+                let vel = if s.flags & OS_TRACKING != 0 { v.dir(Vec3::from_array(s.lin_vel)) } else { Vec3::from_array(s.lin_vel) };
+                let ang = if s.flags & OS_TRACKING != 0 { v.dir(Vec3::from_array(s.ang_vel)) } else { Vec3::from_array(s.ang_vel) };
+                let tip = p + q * reach;
+                weapons.push((p + q * base, tip, vel + ang.cross(tip - p)));
+            }
+        }
+        arena::sight(head, feet, Vec3::ZERO, &weapons)
     }
 
     fn object_boxes(&self, v: &View) -> Vec<ObjBox> {
@@ -750,9 +893,15 @@ impl Game {
         for i in 0..self.scene.scenery.len() {
             draws.push((SCENERY + i, Mat4::IDENTITY, [1.0; 4], 0.0, false));
         }
-        // The dummies, part by part.
-        for (m, tint) in self.dummies.draws() {
+        // The people, part by part, and what they hold.
+        for (m, tint) in self.people.dummies.draws() {
             draws.push((200, m, tint, 0.0, false));
+        }
+        for (id, m) in self.people.dummies.item_draws() {
+            let Some(&i) = self.npc_meshes.get(&id) else { continue };
+            for (part, _) in self.throwables[i].parts.iter().enumerate() {
+                draws.push((throwables::part_id(i, part), m * self.throwables[i].fix, [1.0; 4], 0.0, false));
+            }
         }
         let targets_at = 100;
         for i in 0..self.scene.target_meshes.len() {
@@ -775,7 +924,9 @@ impl Game {
         }
         if let Some(a) = &self.armory {
             let ws: Vec<&Weapon> = self.scene.weapons.iter().map(|g| &g.w).collect();
-            draws.extend(a.draws(v, &ws, f.hands.map(|h| h.trigger)));
+            // (The fighters' weapons the range draws itself, where its own physics has them, unless
+            // the player has one.)
+            draws.extend(a.draws(v, &ws, f.hands.map(|h| h.trigger), &|s: &ObjectState| s.id >= arena::NPC_ITEM_BASE && s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) == 0));
             // The throwables: without the pin once it's out, the lever once it's flown.
             for s in a.states() {
                 let Some(i) = a.throwable(s.desc).filter(|_| s.flags & OS_SPENT == 0) else { continue };

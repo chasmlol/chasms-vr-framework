@@ -741,10 +741,13 @@ impl Armory {
 
     /// Draw items for every object the range draws (not the ones the runtime does). `triggers`:
     /// each controller's trigger (a held gun's trigger follows its hand's).
-    pub fn draws(&self, v: &View, weapons: &[&Weapon], triggers: [f32; 2]) -> Vec<DrawItem> {
+    pub fn draws(&self, v: &View, weapons: &[&Weapon], triggers: [f32; 2], skip: &dyn Fn(&ObjectState) -> bool) -> Vec<DrawItem> {
         let mut out = Vec::new();
         for s in self.states() {
             let Some(kind) = self.kinds.get(&s.desc) else { continue };
+            if skip(s) {
+                continue;
+            }
             if self.descs.get(&s.desc).is_some_and(|d| d.flags & OBJF_RUNTIME_DRAWS != 0) {
                 continue;
             }
