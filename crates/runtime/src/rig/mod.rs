@@ -338,6 +338,9 @@ struct Hand {
     blocked: bool,
     /// Controller grip target in the world, and the aim rotation.
     target: (Vec3, Quat),
+    /// How fast the target moves in the world (the player's walking with it), from its last two
+    /// places; zero across a jump (a snap turn, a teleport).
+    target_vel: Vec3,
     aim_rot: Quat,
     /// Tracking-space controller grip pose.
     grip_t: (Vec3, Quat),
@@ -649,6 +652,9 @@ const TWO_HANDS_APART: f32 = 0.06;
 const GRASP_TIME: f64 = 0.12;
 /// The support hand lets go of the foregrip when its controller is this far from the gun's line.
 const FOREGRIP_BREAK: f32 = 0.3;
+/// A controller that moves faster than this (m/s) in the world has jumped (the player snap-turned
+/// or was moved), not moved: no hand goes that fast.
+const TARGET_JUMP: f32 = 15.0;
 /// Letting go of something faster than this throws it rather than holstering it.
 const HOLSTER_MAX_SPEED: f32 = 1.2;
 /// A throw lets go when the grip eases this far off its hardest squeeze while the hand swings
@@ -1401,7 +1407,10 @@ impl Rig {
                 h.aim_t = (v3(c.aim.pos), q4(c.aim.rot));
                 h.vel_t = v3(c.vel);
                 h.ang_t = v3(c.ang_vel);
-                h.target = (map.point(h.grip_t.0), map.rot(h.grip_t.1));
+                let target = (map.point(h.grip_t.0), map.rot(h.grip_t.1));
+                let moved = (target.0 - h.target.0) / dt.max(1e-4);
+                h.target_vel = if moved.length() < TARGET_JUMP * map.world_per_meter { moved } else { Vec3::ZERO };
+                h.target = target;
                 h.aim_rot = map.rot(h.aim_t.1);
                 h.trigger = c.trigger;
                 h.history.push(inp.now, h.grip_t.0, Some(h.vel_t), h.ang_t, map);
@@ -1523,7 +1532,9 @@ impl Rig {
                     g.wrist = w;
                     pulls.push(valve::Pull::Twist { to: g.turn0 + g.twisted });
                 } else {
-                    pulls.push(valve::Pull::Rim { at: g.at, toward: h.target.0 });
+                    // (The slack a hand that took it from further off had closes as it comes nearer.)
+                    g.slack = g.slack.min(v.lead(g.at, h.target.0).abs()).max(valve::ARM_STRETCH * self.map.world_per_meter);
+                    pulls.push(valve::Pull::Rim { at: g.at, toward: h.target.0, vel: h.target_vel, slack: g.slack });
                 }
                 grips.push((i, *g));
             }
@@ -1545,7 +1556,7 @@ impl Rig {
                     let Some((at, normal, gap)) = self.physics.touch(h.collider, collider, PRESS_GAP * self.map.world_per_meter) else { continue };
                     let depth = (h.target.0 - self.physics.pose(h.body).0).dot(normal) - gap.max(0.0);
                     if depth > 0.0 {
-                        pulls.push(valve::Pull::Press { at: v.local(at), normal, depth: depth / self.map.world_per_meter });
+                        pulls.push(valve::Pull::Press { at: v.local(at), normal, depth: depth / self.map.world_per_meter, vel: h.target_vel.dot(normal) / self.map.world_per_meter });
                         h.pressing = Some(id);
                     }
                 }
@@ -1770,6 +1781,7 @@ impl Rig {
                 euro: OneEuro::new(1.0, 8.0, 1.0),
                 blocked: false,
                 target: (Vec3::ZERO, Quat::IDENTITY),
+                target_vel: Vec3::ZERO,
                 aim_rot: Quat::IDENTITY,
                 grip_t: (Vec3::ZERO, Quat::IDENTITY),
                 aim_t: (Vec3::ZERO, Quat::IDENTITY),
@@ -2124,7 +2136,8 @@ impl Rig {
                 let now = self.now;
                 let h = &mut self.hands.as_mut().unwrap()[i];
                 let wrist = v.wrist(h.target.1);
-                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now, turn0: v.angle, twisted: 0.0, wrist });
+                let slack = v.lead(at, h.target.0).abs().max(valve::ARM_STRETCH * self.map.world_per_meter);
+                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now, turn0: v.angle, twisted: 0.0, wrist, slack });
                 let c = h.collider;
                 self.physics.set_groups(c, groups_none());
                 tracing::info!("rig: hand {i} takes valve {id:#x} at {at:.3?} (its frame), turned {:.3}", v.angle);

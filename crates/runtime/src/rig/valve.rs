@@ -16,21 +16,23 @@
 //! leaf), anywhere on its collider, just where the hand is. It turns it one of two ways:
 //!
 //! * **cranked** (a wheel, a door): the hand pulls its point towards the controller like an arm
-//!   would, up to [`ARM_FORCE`]; so the leverage is the arm's (near a door's hinge it hardly moves
-//!   it, at its edge it swings it);
+//!   would, up to [`ARM_FORCE`] once it's stretched [`ARM_STRETCH`]; so the leverage is the arm's
+//!   (near a door's hinge it hardly moves it, at its edge it swings it). Past that stretch the body
+//!   pulls (the player leans, or walks off with it): the point comes along with the hand, wherever
+//!   the part can take it, rather than the arm stretching on;
 //! * **twisted** (a knob, `JOINT_TWIST`, anything smaller than [`TWIST_RADIUS`], or anything held
 //!   within that of its axle: a switch's handle by its middle): the wrist turns it as far as the
 //!   hand has turned about the axle since it took hold, up to [`WRIST_TORQUE`].
 //!
 //! A part that swings through the room (`JOINT_PANEL`, a door's leaf) is pushed by a hand pressed
 //! on it too: the arm's push where it presses ([`Pull::Press`]), never a pull, so a door can be
-//! shoved open with a palm or the back of a hand.
+//! shoved open with a palm or the back of a hand; and the body's, pressed in past the arm's stretch.
 //!
 //! One the game moves itself (`OBJF_GAME_MOVED`: a valve on a gate the game may let down, a door an
 //! NPC opens) follows the game's pose of it ([`Valve::follow`]) whenever no hand is turning it.
 //!
-//! Either way each hand adds its own: a light one follows the hand, a stiff one needs both hands
-//! or won't give, and the hand stays on it (the ghost shows where the controller is) until its
+//! Either way each hand adds its own: a light one follows the hand, a stiff one needs both arms or
+//! the body, and the hand stays on it (the ghost shows where the controller is) until its
 //! controller is [`BREAK`] away. It may turn within a range only (`turn_min`..`turn_max`, a
 //! switch's quarter turn, a door's swing), clicking into either end and holding there against up
 //! to `detent` (N m). Its own weight may move it (`JOINT_GRAVITY`: a lid falls shut), a spring may
@@ -41,10 +43,14 @@
 
 use glam::{Quat, Vec3};
 
-/// How hard an arm pulls the hand's point on the rim towards the controller, N per metre apart,
-/// and most a hand can pull, N.
-pub const ARM_STIFFNESS: f32 = 600.0;
+/// Most an arm pulls the hand's point towards the controller (N), and how far it stretches doing it
+/// (metres): its pull grows with the stretch, its stiffness (N a metre) the one over the other.
+/// Past that the body pulls, without limit: the point comes along within the stretch of the
+/// controller. (Without it a heavy door trailed a walking hand by a quarter of a metre: there's
+/// no weight in a controller to feel, only the drawn hand left behind it.)
 pub const ARM_FORCE: f32 = 180.0;
+pub const ARM_STRETCH: f32 = 0.05;
+pub const ARM_STIFFNESS: f32 = ARM_FORCE / ARM_STRETCH;
 /// How hard a wrist twists a knob towards where the hand has turned, N m per radian, and most a
 /// wrist can twist, N m (about what a firm grip turns a stiff tap with).
 pub const WRIST_STIFFNESS: f32 = 60.0;
@@ -59,12 +65,12 @@ const DETENT_SPRING: f32 = 40.0;
 pub const GAME_FOLLOW: f32 = 6.0;
 /// How far from the rim (metres) a palm takes hold of it.
 pub const REACH: f32 = 0.1;
-/// A hand held on it lets go once its controller is this far (metres) from where it holds it: a
-/// part fixed in the world can't come with the hand. Sooner than an empty hand's leash (0.7 m), as
-/// the constrained grips of other games let go sooner than free ones (SteamVR's drives at 20 cm,
-/// Godot XR's handles at 30), but late enough that a stiff wheel or a heavy door is leaned on with
-/// the whole arm.
-pub const BREAK: f32 = 0.5;
+/// A hand held on it lets go once its controller is this far (metres) from where it holds it: the
+/// way the part can't go (off its hinge, past its stops), the body can't bring it. Sooner than an
+/// empty hand's leash (0.7 m), as the constrained grips of other games let go sooner than free ones
+/// (SteamVR's drives at 20 cm, Godot XR's handles at 30, and the rig's own foregrip at 30): along
+/// the way it goes, the body brings it, so nothing is leaned on with a stretched arm.
+pub const BREAK: f32 = 0.3;
 const SUBSTEPS: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
@@ -103,13 +109,17 @@ pub struct Valve {
 /// What one hand does to it this step.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pull {
-    /// Cranked: where the hand holds it (the wheel's own frame), pulled towards the controller.
-    Rim { at: Vec3, toward: Vec3 },
+    /// Cranked: where the hand holds it (the wheel's own frame), pulled towards the controller (where
+    /// it is at the end of the step, and how fast it's going: world), and how far the point may lag
+    /// along the way it moves before the body pulls (at least [`ARM_STRETCH`]; more while a hand
+    /// that took it from further off hasn't come nearer, so taking it doesn't jerk it).
+    Rim { at: Vec3, toward: Vec3, vel: Vec3, slack: f32 },
     /// Twisted: the angle the wrist turns it towards.
     Twist { to: f32 },
     /// Pressed on (a palm on a door's leaf): where (the wheel's own frame), the way it's pushed
-    /// (world) and how deep the controller is in it past the surface: the arm pushes, never pulls.
-    Press { at: Vec3, normal: Vec3, depth: f32 },
+    /// (world), how deep the controller is in it past the surface at the end of the step and how fast
+    /// it's going on in (m/s along `normal`): the arm pushes, never pulls.
+    Press { at: Vec3, normal: Vec3, depth: f32, vel: f32 },
 }
 
 /// A hand on a valve: where it holds it (a point in the wheel's own frame) and how the hand sits
@@ -127,6 +137,8 @@ pub struct ValveGrip {
     pub turn0: f32,
     pub twisted: f32,
     pub wrist: f32,
+    /// Cranked: how far its point may lag its controller before the body pulls (see [`Pull::Rim`]).
+    pub slack: f32,
 }
 
 impl Valve {
@@ -217,7 +229,18 @@ impl Valve {
 
     /// How fast its point `local` (its own frame) moves now (world).
     pub fn point_vel(&self, local: Vec3) -> Vec3 {
-        if self.slide { self.axis() * self.vel } else { self.axis().cross(self.point(local) - self.centre) * self.vel }
+        self.moves(local) * self.vel
+    }
+
+    /// How its point `local` moves (world) for each radian it turns (a slide's, each metre).
+    pub fn moves(&self, local: Vec3) -> Vec3 {
+        if self.slide { self.axis() } else { self.axis().cross(self.point(local) - self.centre) }
+    }
+
+    /// How far `toward` (world) is ahead of its point `local` along the way that point moves (behind:
+    /// less than 0).
+    pub fn lead(&self, local: Vec3, toward: Vec3) -> f32 {
+        (toward - self.point(local)).dot(self.moves(local).normalize_or_zero())
     }
 
     /// What a force `f` (world) at its point `local` does to it: the torque about the axle (a
@@ -279,28 +302,36 @@ impl Valve {
 
     /// One step: each gripping hand pulls or twists (each its own: two hands, twice the force),
     /// each pressing one pushes, its weight, spring and clicks pull it, friction holds or drags,
-    /// and its range stops it. `stiffness` scales its friction and clicks (the player's setting: 1
-    /// as the game made it).
+    /// the body brings each hand's point along past the arm's stretch, and its range stops it.
+    /// `stiffness` scales its friction and clicks (the player's setting: 1 as the game made it).
     pub fn step(&mut self, pulls: &[Pull], dt: f32, stiffness: f32) {
         let h = dt / SUBSTEPS as f32;
         let (friction, detent) = (self.friction * stiffness, self.detent * stiffness);
-        // An arm, and a wrist, are damped springs: critically damped on what they move.
+        // An arm, and a wrist, are damped springs: critically damped on what they move, the arm's
+        // damping on how fast it stretches (so it keeps up with a hand that moves on steadily).
         let wrist_damp = 2.0 * (WRIST_STIFFNESS * self.inertia).sqrt();
-        for _ in 0..SUBSTEPS {
+        // Where each pressed point was as the step began (the press's depth is as it ends: it's
+        // less as the point gives way).
+        let pressed: Vec<Vec3> = pulls.iter().map(|p| if let Pull::Press { at, .. } = *p { self.point(at) } else { Vec3::ZERO }).collect();
+        for k in 0..SUBSTEPS {
+            // (The controllers are where they are at the end of the step: this far before that.)
+            let early = dt - (k + 1) as f32 * h;
             let mut torque = 0.0;
-            for pull in pulls {
+            for (pull, from) in pulls.iter().zip(&pressed) {
                 torque += match *pull {
-                    Pull::Rim { at, toward } => {
+                    Pull::Rim { at, toward, vel, .. } => {
                         let damp = 2.0 * (ARM_STIFFNESS * self.mass_at(at)).sqrt();
-                        let f = ((toward - self.point(at)) * ARM_STIFFNESS - self.point_vel(at) * damp).clamp_length_max(ARM_FORCE);
+                        let toward = toward - vel * early;
+                        let f = ((toward - self.point(at)) * ARM_STIFFNESS - (self.point_vel(at) - vel) * damp).clamp_length_max(ARM_FORCE);
                         self.drive(at, f)
                     }
                     Pull::Twist { to } => ((to - self.angle) * WRIST_STIFFNESS - self.vel * wrist_damp).clamp(-WRIST_TORQUE, WRIST_TORQUE),
-                    Pull::Press { at, normal, depth } => {
+                    Pull::Press { at, normal, depth, vel } => {
                         // (Moving away from the hand faster than it presses, it's pushed less: the
                         // hand never holds it back.)
                         let damp = 2.0 * (ARM_STIFFNESS * self.mass_at(at)).sqrt();
-                        let f = (depth * ARM_STIFFNESS - self.point_vel(at).dot(normal) * damp).clamp(0.0, ARM_FORCE);
+                        let depth = depth - vel * early - (self.point(at) - *from).dot(normal);
+                        let f = (depth * ARM_STIFFNESS - (self.point_vel(at).dot(normal) - vel) * damp).clamp(0.0, ARM_FORCE);
                         self.drive(at, normal * f)
                     }
                 };
@@ -321,23 +352,66 @@ impl Valve {
                 }
             }
             // Friction: holds still against less than it, drags against motion.
+            let start = self.angle;
             if self.vel.abs() < 1e-3 && torque.abs() <= friction {
                 self.vel = 0.0;
-                continue;
+            } else {
+                let dir = if self.vel.abs() >= 1e-3 { self.vel.signum() } else { torque.signum() };
+                let v = self.vel + (torque - dir * friction) * h / self.inertia;
+                // (Friction stops it; it doesn't turn it back.)
+                self.vel = if self.vel != 0.0 && v.signum() != self.vel.signum() && torque.abs() <= friction { 0.0 } else { v };
+                if self.max_speed > 0.0 {
+                    self.vel = self.vel.clamp(-self.max_speed, self.max_speed);
+                }
+                self.angle += self.vel * h;
             }
-            let dir = if self.vel.abs() >= 1e-3 { self.vel.signum() } else { torque.signum() };
-            let v = self.vel + (torque - dir * friction) * h / self.inertia;
-            // (Friction stops it; it doesn't turn it back.)
-            self.vel = if self.vel != 0.0 && v.signum() != self.vel.signum() && torque.abs() <= friction { 0.0 } else { v };
-            if self.max_speed > 0.0 {
-                self.vel = self.vel.clamp(-self.max_speed, self.max_speed);
+            for (pull, from) in pulls.iter().zip(&pressed) {
+                self.body_pull(pull, *from, early, h, start);
             }
-            self.angle += self.vel * h;
             // Its stops.
             if self.limited() && (self.angle < self.min || self.angle > self.max) {
                 self.angle = self.angle.clamp(self.min, self.max);
                 self.vel = 0.0;
             }
+        }
+    }
+
+    /// Past an arm's stretch the body pulls (or presses on in): the hand's point is brought along
+    /// the way it moves to within the stretch of its controller (`early` seconds before the end of
+    /// the step), and goes on at least as fast as the controller goes that way. No faster than its
+    /// gearing, all told this substep (from `start`: a wheel geared to a gate stays behind, until the
+    /// hand comes off it), and only the way it moves (pulled off its hinge, it stays: the hand comes
+    /// off).
+    fn body_pull(&mut self, pull: &Pull, from: Vec3, early: f32, h: f32, start: f32) {
+        let (at, gap, along, speed) = match *pull {
+            Pull::Rim { at, toward, vel, slack } => {
+                let m = self.moves(at).normalize_or_zero();
+                let lead = (toward - vel * early - self.point(at)).dot(m);
+                (at, lead.abs() - slack.max(ARM_STRETCH), m * lead.signum(), vel.dot(m) * lead.signum())
+            }
+            Pull::Press { at, normal, depth, vel } => (at, depth - vel * early - (self.point(at) - from).dot(normal) - ARM_STRETCH, normal, vel),
+            Pull::Twist { .. } => return,
+        };
+        // How far it turns (or slides) for the point to go `gap` the way the body takes it: as far
+        // as the point goes that way, when the way it moves is off it (a palm pressed slantwise).
+        let m = self.moves(at);
+        let (reach, square) = (m.dot(along), m.length_squared());
+        if gap <= 0.0 || reach.abs() <= 1e-4 || square < 1e-8 {
+            return;
+        }
+        let dir = reach.signum();
+        let mut turn = gap * reach.abs() / square;
+        if self.max_speed > 0.0 {
+            turn = turn.min((self.max_speed * h - (self.angle - start) * dir).max(0.0));
+        }
+        self.angle += turn * dir;
+        // (As fast as the controller goes that way, and never away from it.)
+        let mut follow = speed.max(0.0) * reach.abs() / square;
+        if self.max_speed > 0.0 {
+            follow = follow.min(self.max_speed);
+        }
+        if self.vel * dir < follow {
+            self.vel = follow * dir;
         }
     }
 }
@@ -393,11 +467,14 @@ mod tests {
         let steps = (turn / std::f32::consts::FRAC_PI_2 * 90.0) as usize;
         for k in 1..=steps + 30 {
             let t = (k as f32 / steps as f32).min(1.0) * turn / std::f32::consts::FRAC_PI_2;
+            let rate = if k <= steps { std::f32::consts::FRAC_PI_2 } else { 0.0 };
             let pulls: Vec<Pull> = start
                 .iter()
                 .map(|&a| {
                     let want = a + t * std::f32::consts::FRAC_PI_2;
-                    Pull::Rim { at: v.ring(a), toward: v.centre + v.base * Vec3::new(v.radius * want.cos(), v.radius * want.sin(), 0.0) }
+                    let toward = v.centre + v.base * Vec3::new(v.radius * want.cos(), v.radius * want.sin(), 0.0);
+                    let vel = v.base * Vec3::new(-want.sin(), want.cos(), 0.0) * v.radius * rate;
+                    Pull::Rim { at: v.ring(a), toward, vel, slack: ARM_STRETCH }
                 })
                 .collect();
             v.step(&pulls, 1.0 / 90.0, 1.0);
@@ -412,21 +489,34 @@ mod tests {
     }
 
     #[test]
-    fn a_stiff_valve_wont_give_to_one_hand_but_does_to_two() {
-        // 45 N m on a 20 cm rim. Each hand pulls round, its controller 25 cm ahead of where it holds
-        // along the rim (150 N): one hand manages 30 N m, two 60.
+    fn a_stiff_valve_wont_give_to_one_arm_but_does_to_two_or_the_body() {
+        // 45 N m on a 20 cm rim. Each hand pulls round, its controller 4 cm ahead of where it holds
+        // along the rim and going round with it (144 N, within the arm's stretch): one arm manages
+        // 29 N m, two 58.
         let lead = |v: &mut Valve, hands: &[f32]| {
             for _ in 0..90 {
-                let pulls: Vec<Pull> = hands.iter().map(|&a| Pull::Rim { at: v.ring(a), toward: v.rim(a) + v.axis().cross(v.rim(a) - v.centre).normalize() * 0.25 }).collect();
+                let pulls: Vec<Pull> = hands
+                    .iter()
+                    .map(|&a| {
+                        let ahead = v.axis().cross(v.rim(a) - v.centre).normalize() * 0.04;
+                        Pull::Rim { at: v.ring(a), toward: v.rim(a) + ahead, vel: v.point_vel(v.ring(a)), slack: ARM_STRETCH }
+                    })
+                    .collect();
                 v.step(&pulls, 1.0 / 90.0, 1.0);
             }
         };
         let mut v = wheel(45.0);
         lead(&mut v, &[std::f32::consts::FRAC_PI_2]);
-        assert!(v.angle.abs() < 1e-3, "one hand can't move it: {}", v.angle);
+        assert!(v.angle.abs() < 1e-3, "one arm can't move it: {}", v.angle);
         let mut v = wheel(45.0);
         lead(&mut v, &[std::f32::consts::FRAC_PI_2, -std::f32::consts::FRAC_PI_2]);
-        assert!(v.angle > 1.0, "two hands turn it: {}", v.angle);
+        assert!(v.angle > 1.0, "two arms turn it: {}", v.angle);
+        // One hand going on round, a quarter turn: past the arm's stretch the body brings it round
+        // with it, a stretch behind.
+        let mut v = wheel(45.0);
+        turn(&mut v, &[std::f32::consts::FRAC_PI_2], std::f32::consts::FRAC_PI_2);
+        let behind = (ARM_STRETCH / v.radius).asin();
+        assert!((v.angle - (std::f32::consts::FRAC_PI_2 - behind)).abs() < 0.01, "the body turns it: {}", v.angle);
     }
 
     #[test]
