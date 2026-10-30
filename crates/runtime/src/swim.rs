@@ -46,6 +46,11 @@ const GLIDE: f32 = 1.4;
 /// The strokes' push (both hands', m/s past the dead zone, averaged over the stroke) that holds the
 /// game's full swim speed against the drag.
 const FULL_PUSH: f32 = 0.9;
+/// At the surface (the head out of the water) a stroke must take the player down faster than this
+/// (m/s) to dive: below it they stay at the surface. Every real stroke has a little up and down in
+/// it, and the game floats a swimmer only once they stop: a long swim at the surface sank them a
+/// couple of centimetres a second.
+const SURFACE_HOLD: f32 = 0.2;
 /// A grip squeezed past this is a fist (or a hold): it doesn't swim.
 const FIST: f32 = 0.6;
 /// A hand going into the water faster than this (m/s, downwards) slaps it: a pulse.
@@ -208,10 +213,14 @@ impl Swim {
         let gain = drag * full / (FULL_PUSH / inp.ease.clamp(0.25, 4.0));
         self.velocity += (push * gain - self.velocity * drag) * dt;
         // (Pushing up with the head out of the water does nothing: the game holds the player at its
-        // surface, and brings them back to it after a stroke takes them a little under.)
+        // surface.)
         self.velocity = self.velocity.clamp_length_max(full);
         if !self.velocity.is_finite() {
             self.velocity = Vec3::ZERO;
+        }
+        let mut velocity = self.velocity;
+        if water.is_some_and(|w| w.flags & WATER_HEAD_UNDER == 0) {
+            velocity.y = (velocity.y + SURFACE_HOLD).min(0.0);
         }
         let effort = (push.length() / FULL_PUSH * inp.ease).min(1.0);
         self.effort += (effort - self.effort) * (1.0 - (-dt / 0.25).exp());
@@ -229,7 +238,7 @@ impl Swim {
                 head.y,
             );
         }
-        SwimOut { velocity: self.velocity, effort: self.effort, swimming, full_speed: full }
+        SwimOut { velocity, effort: self.effort, swimming, full_speed: full }
     }
 
     /// The heart in the hands while the breath runs low under the water: a beat (two thumps, the
