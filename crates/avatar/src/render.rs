@@ -97,6 +97,8 @@ Texture2D lens_tex : register(t12);
 // A FaceGen head's texture morphs' texture and its detail map (Gamebryo's FaceGen blend).
 Texture2D face_tex : register(t13);
 Texture2D face_detail_tex : register(t14);
+// The hair's highlight table, by (N·L, N·H): its alpha (Gamebryo's hair shader's AnisoMap).
+Texture2D hair_aniso : register(t15);
 SamplerState samp : register(s0);
 SamplerState clamp_samp : register(s1);
 
@@ -499,10 +501,22 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     float3 v = normalize(eye_pos.xyz - i.world);
     float3 glow = options.y > 0 && !hair ? detail_tex.Sample(samp, i.uv).rgb * surf_color.rgb : 0;
     bool skin = (uint)material.z == GB_SKIN;
-    float gloss = surf_params.y > 0 ? surf_params.x : 0;
+    // (The hair's highlight is its own, below.)
+    float gloss = surf_params.y > 0 && !hair ? surf_params.x : 0;
     float3 d = 0, s = 0;
     uint count = (uint)envc.w;
     for (uint k = 0; k < count; k++) gb_light(lights[k], i.world, n, v, skin, hair, gloss, nm.a, d, s);
+    // The hair's anisotropic highlight, each light's, tinted towards its colour.
+    if (hair && options.w > 0) {
+        float3 tint = (0.5 + i.ao * (surf_color.rgb - 0.5)) * 0.5 + 0.15;
+        for (uint k = 0; k < count; k++) {
+            float3 to;
+            float att;
+            if (!gb_reach(lights[k], i.world, to, att)) continue;
+            float a = hair_aniso.Sample(clamp_samp, float2(dot(n, to), dot(n, normalize(to + v)))).a;
+            s += saturate(tint * nm.a * lights[k].color.rgb * a * att);
+        }
+    }
     // (The hair's light isn't capped: its shader adds the ambient to its lights as they are.)
     float3 col = saturate(c * (hair ? amb.rgb + d : saturate(amb.rgb + glow + d)) + s);
     if (fog_fade.y != 0) col = lerp(col, fog_color.rgb, saturate(length(eye_pos.xyz - i.world) * fog_fade.y + fog_fade.x));
@@ -1013,7 +1027,7 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
             // Gamebryo's: whether it has a normal map and a glow map, and a FaceGen head's
             // textures (1: its texture morphs, 2: and its detail map).
             let face = if mat.face.is_none() { 0 } else if mat.face_detail.is_none() { 1 } else { 2 };
-            [mat.bump.is_some() as u32 as f32, mat.detail.is_some() as u32 as f32, face as f32, 0.0]
+            [mat.bump.is_some() as u32 as f32, mat.detail.is_some() as u32 as f32, face as f32, (mat.class == Class::GamebryoHair && mat.env.is_some()) as u32 as f32]
         } else {
             [mat.env.is_some() as u32 as f32, mat.fresnel as u32 as f32, 0.0, 0.0]
         }
@@ -2026,6 +2040,12 @@ fn draw_mesh(ctx: &ID3D11DeviceContext, m: &GpuMesh, range: usize) {
         ctx.IASetIndexBuffer(&m.ib, DXGI_FORMAT_R32_UINT, 0);
         ctx.PSSetConstantBuffers(2, Some(&[Some(m.material.clone())]));
         match &m.metro {
+            // (The hair's highlight table is a flat texture: its own slot, not the environment cube's.)
+            Some(mm) if mm.class == Class::GamebryoHair => {
+                ctx.PSSetShaderResources(0, Some(&[Some(mm.base.clone())]));
+                ctx.PSSetShaderResources(2, Some(&[mm.bump.clone(), mm.detail.clone(), None]));
+                ctx.PSSetShaderResources(15, Some(&[mm.env.clone()]));
+            }
             Some(mm) => {
                 ctx.PSSetShaderResources(0, Some(&[Some(mm.base.clone())]));
                 ctx.PSSetShaderResources(2, Some(&[mm.bump.clone(), mm.detail.clone(), mm.env.clone()]));

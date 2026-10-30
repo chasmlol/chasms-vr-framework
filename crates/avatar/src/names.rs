@@ -94,8 +94,9 @@ pub fn classify(name: &str) -> Option<Class> {
         if let Some(f) = finger {
             return Some(Class::Finger(side, f, has("meta") || has("carpal")));
         }
-        // (The eye itself: not its lid, brow or lashes.)
-        if joined == "eye" || joined == "eyeball" {
+        // (The eye itself, as humanoid rigs name it: not its lid, brow or lashes, nor a game's own
+        // eyeball helpers.)
+        if joined == "eye" {
             return Some(Class::Eye(side));
         }
         let limb = if has("forearm") || has("lowerarm") || has("elbow") {

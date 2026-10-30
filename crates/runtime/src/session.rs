@@ -966,7 +966,12 @@ impl Session {
             },
             // The mirror's glass, and its world rendered from the head reflected (between the eyes the
             // game is given).
-            mirror: self.mirror.view(frame.index, (Vec3::from_array(ahead.eyes[0].pos) + Vec3::from_array(ahead.eyes[1].pos)) * 0.5, self.settings.current.mirror.game_world),
+            mirror: self.mirror.view(
+                frame.index,
+                (Vec3::from_array(ahead.eyes[0].pos) + Vec3::from_array(ahead.eyes[1].pos)) * 0.5,
+                quat(ahead.hmd.rot) * Vec3::Z,
+                self.settings.current.mirror.game_world,
+            ),
         };
         if frame.hmd.valid == 0 {
             rt.flags &= !RT_ACTIVE;

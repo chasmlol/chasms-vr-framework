@@ -19,8 +19,10 @@
 //!
 //! * the hair's (`HAIR2000`): each light's `colour · (max(N·L, 0) + (1 − max(N·V, 0))³)`, its rim
 //!   at full strength and nothing capped; its base tinted, `base · 2 · (0.5 + mask · (tint − 0.5))`
-//!   (the mask the vertex colour's green). Its height map's parallax, its layer map and its
-//!   anisotropic highlight are left out;
+//!   (the mask the vertex colour's green); its layer map laid over the base by its alpha; each
+//!   light's anisotropic highlight added, `(tint' · ½ + 0.15) · mask · colour · aniso(N·L, N·H).a`
+//!   (`tint'` the tint as the mask has it, `mask` the normal map's alpha, `aniso` the game's
+//!   highlight table, `textures\effects\aniso.dds`). Its height map's parallax is left out;
 //! * the head's FaceGen blend (`SKIN2001`): its colour `4 · detail · (base + 2 · (morphs − 0.5))`
 //!   before the skin's lighting ([`face`]).
 //!
@@ -161,19 +163,27 @@ void gb_frame(float3 dpx, float3 dpy, float2 dux, float2 duy, float3 n, out floa
 float gb_soft(float nl) { return nl <= 0.2 ? max(nl + 0.5, 0) : 1; }
 
 // One light's diffuse (added to d) and specular (added to s) at p, normal n, towards the eye v.
-void gb_light(MLight l, float3 p, float3 n, float3 v, bool skin, bool hair, float gloss, float mask, inout float3 d, inout float3 s) {
-    float3 to;
-    float att = 1;
+// Whether a light reaches p: the direction towards it and its attenuation.
+bool gb_reach(MLight l, float3 p, out float3 to, out float att) {
+    to = 0;
+    att = 1;
     if (l.info.x == GB_DIRECTIONAL) {
         to = normalize(l.pos.xyz);
     } else if (l.info.x == GB_POINT) {
         float3 dd = l.pos.xyz - p;
         att = saturate(1 - dot(dd, dd) * l.pos.w);
-        if (att <= 0) return;
+        if (att <= 0) return false;
         to = normalize(dd);
     } else {
-        return;
+        return false;
     }
+    return true;
+}
+
+void gb_light(MLight l, float3 p, float3 n, float3 v, bool skin, bool hair, float gloss, float mask, inout float3 d, inout float3 s) {
+    float3 to;
+    float att;
+    if (!gb_reach(l, p, to, att)) return;
     float3 c = l.color.rgb;
     float nl = dot(n, to);
     float3 dif;

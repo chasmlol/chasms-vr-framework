@@ -185,6 +185,10 @@ struct Curtains {
     together: Option<f64>,
 }
 
+/// The glass is rendered while some of it is within this angle of where the head looks (radians:
+/// past the headset's edge, so it's there before it comes into view).
+const SEEN_WITHIN: f32 = 1.35;
+
 /// A mirror farther than this from the head (metres) is put away.
 const FORGET_FARTHER: f32 = 25.0;
 
@@ -346,9 +350,12 @@ impl Mirror {
     }
 
     /// The view of the mirror for the game this frame (`frame`): its glass, and the camera to
-    /// render its world from, the head (`head`, between the eyes) reflected.
-    pub fn view(&mut self, frame: u64, head: Vec3, render: bool) -> MirrorView {
+    /// render its world from, the head (`head`, between the eyes) reflected. (Not rendered while
+    /// the head looks away from the glass, `look` its forward: the game's extra render is saved.)
+    pub fn view(&mut self, frame: u64, head: Vec3, look: Vec3, render: bool) -> MirrorView {
         let Some(g) = self.glass else { return MirrorView::default() };
+        let seen = g.corners().into_iter().chain([g.center]).any(|p| (p - head).normalize_or_zero().dot(look) > SEEN_WITHIN.cos());
+        let render = render && seen;
         let mut v = MirrorView {
             flags: MIR_SHOWN,
             frame: frame as u32,
