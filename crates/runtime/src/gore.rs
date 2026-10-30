@@ -491,8 +491,10 @@ impl Gore {
         });
         let list = self.held_splats.entry(ev.object).or_default();
         let mut add = |at: Vec3, r: f32| {
-            if list.len() >= MAX_HELD_SPLATS {
-                list.remove(0);
+            if list.len() >= MAX_HELD_SPLATS
+                && let Some(i) = list.iter().enumerate().min_by(|a, b| a.1.radius.total_cmp(&b.1.radius)).map(|(i, _)| i)
+            {
+                list.remove(i);
             }
             list.push(Splat { at: inv * (at - wp), normal: inv * out, radius: r, wet: 1.0, born: inp.now });
         };
@@ -747,11 +749,22 @@ impl Gore {
             gone[i] = true;
             if let (true, Some((wp, wq))) = (self.liquid(d.blood), rig.swing_pose(id)) {
                 let inv = wq.inverse();
+                let at = inv * (d.pos - wp);
+                let r = (d.size * 5.0).clamp(0.008, 0.02);
                 let list = self.held_splats.entry(id).or_default();
-                if list.len() >= MAX_HELD_SPLATS {
-                    list.remove(0);
+                // On blood already there it adds to it; else a splat of its own (the smallest goes
+                // for it when the blade's full).
+                if let Some(s) = list.iter_mut().find(|s| s.at.distance(at) < s.radius) {
+                    s.radius = (s.radius * s.radius + 0.3 * r * r).sqrt().min(0.05);
+                    s.wet = 1.0;
+                } else {
+                    if list.len() >= MAX_HELD_SPLATS
+                        && let Some(i) = list.iter().enumerate().min_by(|a, b| a.1.radius.total_cmp(&b.1.radius)).map(|(i, _)| i)
+                    {
+                        list.remove(i);
+                    }
+                    list.push(Splat { at, normal: inv * -d.vel.normalize_or(Vec3::Y), radius: r, wet: 1.0, born: now });
                 }
-                list.push(Splat { at: inv * (d.pos - wp), normal: inv * -d.vel.normalize_or(Vec3::Y), radius: (d.size * 5.0).clamp(0.008, 0.02), wet: 1.0, born: now });
             }
         }
         for &(i, at, normal) in &landed {
@@ -795,7 +808,7 @@ impl Gore {
             return;
         }
         // (A drop spreads as it hits: a few times its size, more the faster it lands.)
-        let r = (size * (5.0 + 0.9 * speed)).clamp(0.01, 0.1) * if dust { 1.5 } else { 1.0 };
+        let r = (size * (8.0 + 1.2 * speed)).clamp(0.012, 0.14) * if dust { 1.5 } else { 1.0 };
         // Close to a splat already there: it wets that one and adds to it.
         let roll = self.rand();
         if let Some(s) = self.decals.iter_mut().rev().take(250).find(|s| matches!(s.tex, DECAL_SPLAT | DECAL_SPLATTER) && s.blood == blood && s.center.distance(at) < (s.hv + r) * 0.6 && s.normal.dot(normal) > 0.8) {

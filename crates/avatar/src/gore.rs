@@ -338,13 +338,15 @@ CapOut VSCap(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     float3 a = normalize(cross(o, other)), b = cross(o, a);
     float r = c.radius * length(g_tv(float3(1, 0, 0)));
     float2 xy = float2(cos(phi), sin(phi)) * rr;
-    // A low dome, its rim a little inside the stump.
-    float3 p = g_tw(c.center) + (a * xy.x + b * xy.y) * r * 0.95 + o * r * (0.22 * lift - 0.1);
+    // A dome over the end of the stump: the meshes close up to a point at the joint (their bones
+    // shrunk there), so it sits a little back from it, wider than the limb, and rises over that point.
+    float3 p = g_tw(c.center) + (a * xy.x + b * xy.y) * r * 1.05 + o * r * (0.45 * lift - 0.28);
     CapOut co;
     co.pos = mul(view_proj, float4(p, 1));
     co.world = p;
     co.n = normalize(a * xy.x + b * xy.y + o * (lift * 1.6 + 0.2));
-    co.uv = xy * 0.5 + 0.5;
+    // (The middle of the game's stump: its flesh and bone, not the skin round its edge.)
+    co.uv = xy * 0.32 + 0.5;
     co.view_z = dot(view_z.xyz, p) + view_z.w;
     return co;
 }
@@ -352,8 +354,9 @@ CapOut VSCap(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
 float4 PSCap(CapOut i) : SV_Target {
     if (behind_game(i.pos, i.view_z)) discard;
     // (The game's flesh, darkened with the blood over it.)
-    float3 base = (g_tex.x > 0 ? g_tex0.Sample(samp, i.uv).rgb : g_color.rgb) * float3(0.75, 0.55, 0.52);
-    float3 col = g_fog(g_lit(i.world, normalize(i.n), base, 0.45), i.world);
+    // (Bone, for what bleeds dust, as it is.)
+    float3 base = (g_tex.x > 0 ? g_tex0.Sample(samp, i.uv).rgb : g_color.rgb) * (g_info.z > 0 ? float3(0.9, 0.9, 0.9) : float3(0.8, 0.42, 0.38));
+    float3 col = g_fog(g_lit(i.world, normalize(i.n), base, g_info.z > 0 ? 0 : 0.7), i.world);
     return float4(m_display_to_linear(col), 1);
 }
 "#;
