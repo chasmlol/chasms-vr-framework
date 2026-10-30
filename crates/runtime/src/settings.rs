@@ -47,9 +47,14 @@ pub struct Riding {
     /// How far a rein is pulled (or the reins moved to one side) for the mount's hardest turn,
     /// metres.
     pub rein_travel: f32,
-    /// Both reins pulled back this far (metres) slows the mount a gait; held, it slows to a stand.
-    /// From a stand, eased and pulled again and held, it backs.
+    /// Both reins pulled back this far (metres) slows the mount hardest (less pulled, less hard);
+    /// where it's slowed to, it stays. From a stand, eased and pulled right back again and held, it
+    /// backs.
     pub rein_pull: f32,
+    /// Spurred, the mount surges to its full gallop and settles back to this share of it (0..1).
+    pub cruise: f32,
+    /// How slowly a spur's surge settles back (seconds to go most of the way).
+    pub spur_fade: f32,
     /// A flick of the reins spurs the mount on (as well as the trigger of a hand on the reins).
     pub flick: bool,
     /// Let go of the reins: the mount keeps its gait this long (seconds), then slows a gait at a
@@ -61,7 +66,7 @@ pub struct Riding {
 
 impl Default for Riding {
     fn default() -> Self {
-        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_dead: 0.05, rein_travel: 0.17, rein_pull: 0.10, flick: true, coast: 2.5, stride_haptics: true }
+        Riding { turn: TurnMode::Smooth, turn_step: 30.0, vignette: 0.5, fade_on_off: true, rein_dead: 0.05, rein_travel: 0.17, rein_pull: 0.15, cruise: 0.55, spur_fade: 8.0, flick: true, coast: 2.5, stride_haptics: true }
     }
 }
 

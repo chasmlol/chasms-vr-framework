@@ -7,16 +7,28 @@
 //! both held, their bight hangs between the hands. One hand alone holds both, as on a western
 //! saddle.
 //!
+//! Each strap is a rope ([`Rope`]): a chain of points carried from frame to frame, swinging under
+//! gravity (and settling over [`SWING`]), each a fixed share of its length from the next, held at
+//! its ends (the bit and a hand, or where the rider holds it let go) and kept out of the neck. Its
+//! shape only ever moves on from the last frame's, so it can't jump. Out of the neck, above the
+//! middle of its ellipse, a point goes straight out from that middle (a strap crossing to a hand on
+//! the other side goes over the top); below it, straight out sideways on the side it's on, which
+//! it learns only while it's out of the neck (so it never flips across). The neck's ends and bends
+//! are rounded (`CAP`). Near a hand (`HAND_FADE`) a rope is kept out of the neck less and less: a
+//! hand in the horse (the hands go through it) keeps its rein in it there, hidden by the game's
+//! depth, not fought over. The game's depth hides the reins a little later than the body
+//! ([`DEPTH_SLACK`]): a strap lying on the horse's skin doesn't flicker against it.
+//!
 //! A strap is a chain of cross-sections, each a part of the model (one of its bones): placed where
 //! its share of the strap's length is along its curve, turned along the curve, the strap's flat
 //! carried along from the bit without twisting (parallel transport). Without the leather (a game
 //! that doesn't name it, or it didn't load), the same curves are drawn as flat ribbons of its
 //! colour.
 //!
-//! The mount's end of them (its bit, its neck, where they're held) is where each picture shows the
-//! mount ([`Reins::place`]): a game picture moved on to where the head is now (the session's warp)
-//! moves the mount in it with the rest of its world, so the reins on it go the same way, and the
-//! hands' end stays in the hands. A rein that has further to go for it stretches.
+//! The reins are laid once a frame, where the game has the mount. A game picture moved on to where
+//! the head is now (the session's warp) moves the mount in it with the rest of its world, so each
+//! picture's reins ([`Reins::place`]) go with it at the mount's end (the bit, where they're held),
+//! less and less towards the hands, which stay in the hands.
 
 use glam::{Mat4, Quat, Vec3};
 use rustvr_avatar::{HeldDraw, HeldModel};
@@ -25,9 +37,27 @@ use rustvr_protocol::*;
 
 use crate::compositor::Ribbon;
 
-/// Each rein's cross-sections (bit to hand), and the bight's.
+/// Each rein's cross-sections (bit to hand), and the bight's; and the points of their ropes.
 const REIN_RINGS: usize = 24;
 const BIGHT_RINGS: usize = 14;
+const REIN_POINTS: usize = 28;
+const BIGHT_POINTS: usize = 14;
+/// A rope's swing: gravity (m/s²), how long its swinging takes to die away most of the way
+/// (seconds: leather reins settle at once; and a point on the neck stops there, as leather on a
+/// horse's coat does), and how many times a frame its points are put their length apart and out of
+/// the neck. A frame longer than `LONGEST` (seconds) counts as that long; an
+/// end that moves further than `TELEPORT` in a frame (metres) starts the rope afresh.
+const GRAVITY: f32 = 9.8;
+pub const SWING: f32 = 0.05;
+const ITERATIONS: usize = 12;
+const LONGEST: f32 = 0.05;
+const TELEPORT: f32 = 0.5;
+/// A rope's ends further apart than it's long: it's that much longer than they're apart (a hand
+/// slides along it).
+const TAUT_SLIP: f32 = 0.03;
+/// How fast a rope's points may slide on their own (m/s), beyond where its ends carry them: a rein
+/// tipping over the crest slips over it, not across in a frame.
+const SLIDE: f32 = 1.5;
 /// The strap (metres): a rein's leather, 16 mm wide and 4 mm thick; and how long its model is laid
 /// out (the texture runs along that much; a rein stretches to its length as it's drawn).
 const WIDTH: f32 = 0.016;
@@ -37,14 +67,26 @@ const BIGHT_LENGTH: f32 = 0.6;
 /// Slack: a rein at rest is this much longer than its way from the bit over the neck to where it's
 /// held (a share), and hangs this deep for it (a share of a free rope's); the bight's spare length
 /// between two hands (metres).
-const SLACK: f32 = 0.12;
+const SLACK: f32 = 0.06;
 const SAG: f32 = 0.7;
+/// How gently a strap's last slack goes as it's pulled taut (metres).
+const TAUT: f32 = 0.02;
 const BIGHT: f32 = 0.25;
 /// How far off the neck a strap lies (metres): its half thickness, and the little the neck's
 /// ellipses fall inside the game's own surface. And how many times a curve is laid on the neck and
 /// smoothed.
 const CLEAR: f32 = 0.01;
 const LAY_PASSES: usize = 4;
+/// Past the neck's first and last cross-sections, and round the outside of its bends, it rounds off
+/// over this (metres) rather than stopping square; and within this of a hand along a rein, the rein
+/// is laid on it less and less (none at the hand).
+const CAP: f32 = 0.1;
+const HAND_FADE: f32 = 0.12;
+/// How far behind the game's surface the reins may be before it hides them (metres): the skin they
+/// lie on is the game's, a pixel's depth on a neck seen along it spans centimetres, and the neck's
+/// ellipses fall inside it in places; the neck between the eye and the far rein is a quarter of a
+/// metre through.
+const DEPTH_SLACK: f32 = 0.03;
 
 /// The reins this frame.
 #[derive(Default)]
@@ -56,22 +98,31 @@ pub struct Reins {
     parts: Vec<Option<Mat4>>,
     /// Without the leather: the curves as ribbons.
     ribbons: Vec<Ribbon>,
-    /// This frame's mount and hands, for each picture's place of them ([`Reins::place`]).
-    now: Option<(Riding, [Option<usize>; 2], [Vec3; 2])>,
+    /// This frame's straps laid, for each picture's place of them ([`Reins::place`]); their ropes,
+    /// and which rein each hand held when they were made.
+    laid: [Curve; 3],
+    ropes: [Option<Rope>; 3],
+    last_held: [Option<usize>; 2],
 }
 
 impl Reins {
-    /// Where the reins are this frame: `held`, which rein each hand holds; `hands`, the hands'
-    /// grips (tracking space); `light`, the game's (for the ribbons).
-    pub fn update(&mut self, gpu: &Gpu, r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2], light: Option<&LightHint>) {
+    /// Where the reins are this frame (`dt` seconds after the last): `held`, which rein each hand
+    /// holds; `hands`, the hands' grips (tracking space); `light`, the game's (for the ribbons).
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, gpu: &Gpu, r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2], light: Option<&LightHint>, dt: f32) {
         self.parts.clear();
         self.ribbons.clear();
-        self.now = None;
+        self.laid = [None, None, None];
         if r.flags & RIDE_BITS == 0 || !r.mounted() {
+            self.ropes = [None, None, None];
             return;
         }
-        self.now = Some((*r, held, hands));
-        let curves = curves(r, held, hands);
+        // (A rein taken or let go: the ropes are new.)
+        if held != self.last_held {
+            self.ropes = [None, None, None];
+            self.last_held = held;
+        }
+        self.laid = straps(r, held, hands, &mut self.ropes, dt.clamp(0.0, LONGEST));
         if let Some(leather) = r.reins_leather() {
             if self.model.as_ref().is_none_or(|(name, uv, _)| name != leather || *uv != r.reins_uv) {
                 let model = load(gpu, leather, r.reins_uv).map_err(|e| tracing::warn!("reins: their leather {leather}: {e:#} (drawn as ribbons)")).ok();
@@ -84,44 +135,49 @@ impl Reins {
             self.model = None;
         }
         if self.model.as_ref().is_some_and(|(_, _, m)| m.is_some()) {
-            self.parts = parts(&curves);
+            self.parts = parts(&self.laid);
         } else {
             let lit = light
                 .map(|l| Vec3::from_array(l.ambient) + Vec3::from_array(l.sun_color) * l.sun_dir[1].max(0.0))
                 .filter(|l| l.max_element() > 1e-3)
                 .unwrap_or(Vec3::ONE);
             let color = (Vec3::new(r.reins_color[0], r.reins_color[1], r.reins_color[2]) * lit).clamp(Vec3::ZERO, Vec3::ONE).extend(1.0);
-            for (points, _) in curves.iter().flatten() {
+            for (points, _, _) in self.laid.iter().flatten() {
                 self.ribbons.extend(points.windows(2).map(|w| Ribbon { a: w[0], b: w[1], width: WIDTH, color }));
             }
         }
     }
 
     /// The reins for a picture whose mount is `picture` from where the game had it (tracking space
-    /// to tracking space: the picture's mapping then, to the one it's shown with): the mount's end
-    /// of them goes with it. The identity: as the game had it.
+    /// to tracking space: the picture's mapping then, to the one it's shown with): at the mount's
+    /// end they go with it, less and less towards a hand. The identity: as the game had it.
     pub fn place(&mut self, picture: Mat4) {
-        let Some((mut r, held, hands)) = self.now else { return };
-        if self.model.as_ref().is_none_or(|(_, _, m)| m.is_none()) {
+        if self.model.as_ref().is_none_or(|(_, _, m)| m.is_none()) || self.laid.iter().all(Option::is_none) {
             return;
         }
-        if picture != Mat4::IDENTITY {
-            let point = |p: &mut [f32; 4]| {
-                let q = picture.transform_point3(Vec3::new(p[0], p[1], p[2]));
-                p[..3].copy_from_slice(&q.to_array());
-            };
-            let vector = |p: &mut [f32; 4]| {
-                let q = picture.transform_vector3(Vec3::new(p[0], p[1], p[2]));
-                p[..3].copy_from_slice(&q.to_array());
-            };
-            r.bits.iter_mut().chain(r.reins.iter_mut()).for_each(point);
-            for n in r.neck.iter_mut() {
-                point(&mut n.centre);
-                vector(&mut n.side);
-                vector(&mut n.up);
-            }
+        if picture == Mat4::IDENTITY {
+            self.parts = parts(&self.laid);
+            return;
         }
-        self.parts = parts(&curves(&r, held, hands));
+        let moved: [Curve; 3] = std::array::from_fn(|i| {
+            self.laid[i].as_ref().map(|(points, flat, ends)| {
+                let total = length(points).max(1e-6);
+                let mut walked = 0.0;
+                let carried = points
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &q)| {
+                        if k > 0 {
+                            walked += q.distance(points[k - 1]);
+                        }
+                        let share = ends[0] as u32 as f32 + (ends[1] as u32 as f32 - ends[0] as u32 as f32) * walked / total;
+                        q + (picture.transform_point3(q) - q) * share
+                    })
+                    .collect();
+                (carried, picture.transform_vector3(*flat), *ends)
+            })
+        });
+        self.parts = parts(&moved);
     }
 
     /// The reins as a held model to draw with the body, when they're of the game's leather.
@@ -136,9 +192,106 @@ impl Reins {
     }
 }
 
-/// The reins' curves (tracking space) and the way each one's flat faces at its start: the left
-/// rein, the right, and their bight between two hands.
-type Curve = Option<(Vec<Vec3>, Vec3)>;
+/// A strap laid (tracking space): its points, the way its flat faces at its start, and whether its
+/// start and its end are the mount's (the bit, where it's held) rather than a hand's.
+type Curve = Option<(Vec<Vec3>, Vec3, [bool; 2])>;
+
+/// A strap as a rope: its points now and a frame ago (their swing), each one's side of the neck
+/// across its right (-1, 1; 0 not known), and its length.
+struct Rope {
+    x: Vec<Vec3>,
+    was: Vec<Vec3>,
+    sides: Vec<f32>,
+    length: f32,
+}
+
+impl Rope {
+    /// A rope `length` long from `from` to `to`, hanging by its slack, of `n` points on `side`.
+    fn new(from: Vec3, to: Vec3, length: f32, n: usize, side: f32) -> Rope {
+        let x = hanging(from, to, length, n);
+        Rope { was: x.clone(), x, sides: vec![side; n], length }
+    }
+
+    /// A frame of `dt` seconds: its ends at `from` and `to` (`hands`: which of them are hands), its
+    /// points swung on by their own way and gravity, then a few times over each put its share of the
+    /// length from the next and out of the neck (towards a hand, less and less); then each learns
+    /// its side, where it's out of the neck. Never shorter than its ends are apart: a hand further
+    /// off than the rein reaches slides along it, as a rider's does, rather than snapping it taut.
+    #[allow(clippy::too_many_arguments)]
+    fn step(&mut self, from: Vec3, to: Vec3, hands: [bool; 2], dt: f32, neck: &[NeckSection], right: Vec3) {
+        let n = self.x.len();
+        let before = self.x.clone();
+        let carried = (from - before[0], to - before[n - 1]);
+        let keep = (-dt / SWING).exp();
+        for k in 1..n - 1 {
+            let way = (self.x[k] - self.was[k]) * keep;
+            self.was[k] = self.x[k];
+            self.x[k] += way - Vec3::Y * GRAVITY * dt * dt;
+        }
+        (self.x[0], self.x[n - 1]) = (from, to);
+        (self.was[0], self.was[n - 1]) = (from, to);
+        self.length = self.length.max(from.distance(to) * (1.0 + TAUT_SLIP));
+        let seg = self.length / (n - 1) as f32;
+        let weight: Vec<f32> = (0..n)
+            .map(|k| {
+                let fade = |d: f32| {
+                    let x = (d / HAND_FADE).min(1.0);
+                    x * x * (3.0 - 2.0 * x)
+                };
+                let mut w = 1.0;
+                if hands[0] {
+                    w *= fade(k as f32 * seg);
+                }
+                if hands[1] {
+                    w *= fade((n - 1 - k) as f32 * seg);
+                }
+                // (Each pass's share of it, so that all of them come to that much.)
+                1.0 - (1.0 - w).powf(1.0 / ITERATIONS as f32)
+            })
+            .collect();
+        let mut touching = vec![false; n];
+        for _ in 0..ITERATIONS {
+            for k in 0..n - 1 {
+                let d = self.x[k + 1] - self.x[k];
+                let len = d.length();
+                if len < 1e-6 {
+                    continue;
+                }
+                let fix = d * ((len - seg) / len);
+                // (Its ends stay where they're held.)
+                let (a, b) = (if k == 0 { 0.0 } else { 1.0 }, if k + 1 == n - 1 { 0.0 } else { 1.0 });
+                if a + b > 0.0 {
+                    self.x[k] += fix * (a / (a + b));
+                    self.x[k + 1] -= fix * (b / (a + b));
+                }
+            }
+            for k in 1..n - 1 {
+                let q = self.x[k];
+                let on = off_neck(q, neck, right, self.sides[k]);
+                if on != q {
+                    touching[k] = true;
+                    self.x[k] = q + (on - q) * weight[k];
+                }
+            }
+        }
+        // (A point slides on its own only so fast; on the neck it stops there: its swing is gone.)
+        for k in 1..n - 1 {
+            let expected = before[k] + carried.0.lerp(carried.1, k as f32 / (n - 1) as f32);
+            let own = self.x[k] - expected;
+            if own.length() > SLIDE * dt {
+                self.x[k] = expected + own.normalize() * SLIDE * dt;
+            }
+            if touching[k] {
+                self.was[k] = self.x[k];
+            }
+        }
+        for (q, side) in self.x.iter().zip(self.sides.iter_mut()) {
+            if let Some(now) = side_of(*q, neck, right) {
+                *side = now;
+            }
+        }
+    }
+}
 
 /// Each cross-section's place along the curves (None: a strap not drawn).
 fn parts(curves: &[Curve; 3]) -> Vec<Option<Mat4>> {
@@ -146,47 +299,61 @@ fn parts(curves: &[Curve; 3]) -> Vec<Option<Mat4>> {
     let laid = [(REIN_RINGS, REIN_LENGTH), (REIN_RINGS, REIN_LENGTH), (BIGHT_RINGS, BIGHT_LENGTH)];
     for (curve, (rings, length)) in curves.iter().zip(laid) {
         match curve {
-            Some((points, flat)) => place(&mut out, &resample(points, rings), *flat, length),
+            Some((points, flat, _)) => place(&mut out, &resample(points, rings), *flat, length),
             None => out.extend(std::iter::repeat_n(None, rings)),
         }
     }
     out
 }
 
-fn curves(r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2]) -> [Curve; 3] {
+/// The left rein, the right, and their bight between two hands, as their ropes (`ropes`, made
+/// afresh when there's none or an end leapt) have them after a frame of `dt` seconds.
+fn straps(r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2], ropes: &mut [Option<Rope>; 3], dt: f32) -> [Curve; 3] {
     let v = |p: [f32; 4]| Vec3::new(p[0], p[1], p[2]);
     let neck = r.neck();
     let bits = [v(r.bits[0]), v(r.bits[1])];
+    // (The mount's right, across it.)
+    let right = (bits[1] - bits[0]).normalize_or(Vec3::X);
     let holding: Vec<usize> = (0..2).filter(|&h| held[h].is_some()).collect();
-    let rein = |side: usize| -> Curve {
+    let mut out: [Curve; 3] = [None, None, None];
+    for side in 0..2 {
         let (bit, rest) = (bits[side], v(r.reins[side]));
-        // Its length: its way from the bit along the neck to where it's held, and its slack.
-        let way = length(&lay(&straight(bit, rest, REIN_RINGS), neck, true));
-        let length = way * (1.0 + SLACK);
-        // To the hand holding it; let go, back to where it's held. One hand alone holds both: each
-        // comes along its own side of the neck to where it's held, then up to the hand.
-        let points = match holding.as_slice() {
-            [h] => {
-                let mut along = hanging(bit, rest, length, REIN_RINGS);
-                along.extend(hanging(rest, hands[*h], rest.distance(hands[*h]) * (1.0 + SLACK), REIN_RINGS / 3).into_iter().skip(1));
-                lay(&along, neck, false)
-            }
-            _ => match (0..2).find(|&h| held[h] == Some(side)) {
-                Some(h) => lay(&hanging(bit, hands[h], length, REIN_RINGS), neck, false),
-                None => lay(&hanging(bit, rest, length, REIN_RINGS), neck, true),
-            },
+        let own = if side == 0 { -1.0 } else { 1.0 };
+        // To the hand holding it (one hand alone holds both); let go, to where it's held, put on the
+        // neck.
+        let hand = match holding.as_slice() {
+            [h] => Some(*h),
+            _ => (0..2).find(|&h| held[h] == Some(side)),
         };
+        let end = hand.map_or_else(|| off_neck(rest, neck, right, own), |h| hands[h]);
+        let fresh = |rope: &Rope| rope.x[0].distance(bit) > TELEPORT || rope.x[rope.x.len() - 1].distance(end) > TELEPORT;
+        if ropes[side].as_ref().is_none_or(fresh) {
+            // Its length: its way from the bit along the neck to where it's held (or to the hand,
+            // if that's further), and its slack.
+            let way = length(&lay(&straight(bit, rest, REIN_POINTS), neck, right, own)).max(bit.distance(end));
+            ropes[side] = Some(Rope::new(bit, end, way * (1.0 + SLACK), REIN_POINTS, own));
+        }
+        let rope = ropes[side].as_mut().unwrap();
+        rope.step(bit, end, [false, hand.is_some()], dt, neck, right);
         // (Its flat against the face at the bit: out from the head.)
-        Some((points, (bits[side] - bits[1 - side]).normalize_or(Vec3::X)))
-    };
-    let bight = match holding.as_slice() {
+        out[side] = Some((rope.x.clone(), (bits[side] - bits[1 - side]).normalize_or(Vec3::X), [true, hand.is_none()]));
+    }
+    match holding.as_slice() {
         [a, b] => {
             let (a, b) = (hands[*a], hands[*b]);
-            Some((lay(&hanging(a, b, a.distance(b) + BIGHT, BIGHT_RINGS), neck, false), Vec3::Y))
+            let fresh = |rope: &Rope| rope.x[0].distance(a) > TELEPORT || rope.x[rope.x.len() - 1].distance(b) > TELEPORT;
+            if ropes[2].as_ref().is_none_or(fresh) {
+                ropes[2] = Some(Rope::new(a, b, a.distance(b) + BIGHT, BIGHT_POINTS, 0.0));
+            }
+            let rope = ropes[2].as_mut().unwrap();
+            // (The reins slide through the hands: their bight keeps its slack.)
+            rope.length = a.distance(b) + BIGHT;
+            rope.step(a, b, [true, true], dt, neck, right);
+            out[2] = Some((rope.x.clone(), Vec3::Y, [false, false]));
         }
-        _ => None,
-    };
-    [rein(0), rein(1), bight]
+        _ => ropes[2] = None,
+    }
+    out
 }
 
 /// `n` points from `a` to `b`.
@@ -195,10 +362,13 @@ fn straight(a: Vec3, b: Vec3, n: usize) -> Vec<Vec3> {
 }
 
 /// `n` points from `a` to `b` of a strap `length` long, hanging by its slack (a parabola as deep as
-/// `SAG` of a free rope's).
+/// `SAG` of a free rope's). Pulled nearly taut, its last slack goes out of it gently (`TAUT`), not
+/// all at once, as a hand trembling at the end of it would make it.
 fn hanging(a: Vec3, b: Vec3, length: f32, n: usize) -> Vec<Vec3> {
     let chord = a.distance(b);
-    let sag = 0.5 * (length * length - chord * chord).max(0.0).sqrt() * SAG;
+    let slack = (length - chord).max(0.0);
+    let slack = (slack * slack + TAUT * TAUT).sqrt() - TAUT;
+    let sag = 0.5 * (slack * (2.0 * chord + slack)).sqrt() * SAG;
     (0..n)
         .map(|k| {
             let t = k as f32 / (n - 1) as f32;
@@ -207,18 +377,17 @@ fn hanging(a: Vec3, b: Vec3, length: f32, n: usize) -> Vec<Vec3> {
         .collect()
 }
 
-/// A curve laid on the neck: what passes through it put on it, smoothed, and laid again. Its ends
-/// stay (the bit, a hand), but for a free end (`free_end`: a rein let go), laid on the neck too.
-fn lay(points: &[Vec3], neck: &[NeckSection], free_end: bool) -> Vec<Vec3> {
+/// A curve laid on the neck (its way along it, for a rope's length): what passes through it put on
+/// it (on `side`), smoothed, and laid again; its first point stays (the bit).
+fn lay(points: &[Vec3], neck: &[NeckSection], right: Vec3, side: f32) -> Vec<Vec3> {
     let mut p = points.to_vec();
     let n = p.len();
     if neck.len() < 2 || n < 3 {
         return p;
     }
-    let last = if free_end { n } else { n - 1 };
     for pass in 0..=LAY_PASSES {
-        for q in &mut p[1..last] {
-            *q = off_neck(*q, neck);
+        for q in p.iter_mut().skip(1) {
+            *q = off_neck(*q, neck, right, side);
         }
         if pass == LAY_PASSES {
             break;
@@ -231,45 +400,90 @@ fn lay(points: &[Vec3], neck: &[NeckSection], free_end: bool) -> Vec<Vec3> {
     p
 }
 
-/// `p` put on the neck and head (`CLEAR` off them) if it's inside them: between two of their
-/// cross-sections, inside the ellipse there (the two blended), it goes out from the ellipse's middle
-/// to its edge (deep inside, over the top). Below the ellipse's middle the neck goes straight down
-/// (the throat, and the chest under it, are wider than the ellipse): there it goes out to its side.
-fn off_neck(mut p: Vec3, neck: &[NeckSection]) -> Vec3 {
-    let v = |a: [f32; 4]| Vec3::new(a[0], a[1], a[2]);
-    for w in neck.windows(2) {
-        let (ca, cb) = (v(w[0].centre), v(w[1].centre));
-        let axis = cb - ca;
-        if axis.length_squared() < 1e-8 {
-            continue;
+/// The way to a point's side of the neck across `right` (-1, 1), if it's out of the neck; None in
+/// it.
+fn side_of(p: Vec3, neck: &[NeckSection], right: Vec3) -> Option<f32> {
+    let mut nearest = (f32::MAX, 0.0);
+    for (c, sx, x, across, y, half_h, half_w, _, rounded) in sections(p, neck) {
+        let inside = if rounded { (x / half_w).powi(2) + (y / half_h).powi(2) < 1.0 - 1e-3 } else { y < half_h && x.abs() < across - 1e-4 };
+        if inside {
+            return None;
         }
-        let t = (p - ca).dot(axis) / axis.length_squared();
-        if !(0.0..=1.0).contains(&t) {
-            continue;
+        let d = p.distance(c);
+        if d < nearest.0 {
+            nearest = (d, x * sx.dot(right).signum());
         }
-        let c = ca.lerp(cb, t);
-        let (side, up) = (v(w[0].side).lerp(v(w[1].side), t), v(w[0].up).lerp(v(w[1].up), t));
-        let (half_w, half_h) = (side.length() + CLEAR, up.length() + CLEAR);
-        let (sx, uy) = (side.normalize_or_zero(), up.normalize_or_zero());
-        let (x, y) = ((p - c).dot(sx), (p - c).dot(uy));
-        if y < 0.0 {
-            if x.abs() < half_w {
-                p += sx * (half_w.copysign(x) - x);
+    }
+    if nearest.0 == f32::MAX {
+        let v = |a: [f32; 4]| Vec3::new(a[0], a[1], a[2]);
+        nearest.1 = neck.iter().map(|n| p - v(n.centre)).min_by(|a, b| a.length_squared().total_cmp(&b.length_squared())).map_or(0.0, |d| d.dot(right));
+    }
+    Some(if nearest.1 >= 0.0 { 1.0 } else { -1.0 })
+}
+
+/// `p` put on the neck and head (`CLEAR` off them) if it's in them. Above the ellipse's middle,
+/// straight out from its middle to its edge: a strap's points go out where they are, and one
+/// crossing to a hand on the other side goes over the top. Below it, straight out sideways to the
+/// surface on `side` (across `right`; 0: the nearer), never across. In the rounded ends (past the
+/// end sections, round the outside of a bend) the ellipse is all there is, and every point goes
+/// straight out from its middle: a strap slides round an end, not into a wall.
+fn off_neck(mut p: Vec3, neck: &[NeckSection], right: Vec3, side: f32) -> Vec3 {
+    for (_, sx, x, across, y, half_h, half_w, uy, rounded) in sections(p, neck) {
+        if rounded {
+            let e = (x / half_w).powi(2) + (y / half_h).powi(2);
+            if e < 1.0 {
+                p += (sx * x + uy * y) * (1.0 / e.sqrt().max(1e-3) - 1.0);
             }
             continue;
         }
-        let e = (x / half_w).powi(2) + (y / half_h).powi(2);
-        if e >= 1.0 {
+        if y >= half_h || x.abs() >= across {
             continue;
         }
-        if e < 1e-4 {
-            p += uy * (half_h - y);
-        } else {
-            let k = 1.0 / e.sqrt() - 1.0;
+        if y > 0.0 {
+            let k = 1.0 / ((x / half_w).powi(2) + (y / half_h).powi(2)).sqrt().max(1e-3) - 1.0;
             p += (sx * x + uy * y) * k;
+        } else {
+            let way = if side != 0.0 { side * sx.dot(right).signum() } else if x >= 0.0 { 1.0 } else { -1.0 };
+            p += sx * (way * across - x);
         }
     }
     p
+}
+
+/// The neck's cross-sections round `p`: for each pair of them it's between (the two blended), and
+/// past the pair's ends within `CAP` (the nearer one shrunk smoothly to nothing, its top kept on the
+/// crest: the neck's ends and the outside of its bends rounded off), the middle, the way across,
+/// `p` across from the middle, the neck's half width at `p`'s height (`CLEAR` off it: the
+/// ellipse's above its middle, all of it below: the throat, and the chest under it, are wider than
+/// the ellipse), `p` up from the middle, the half height, the half width, the way up, and whether
+/// it's in a rounded end. The neck is the ellipse above its middle and goes straight down below it;
+/// a rounded end is the ellipse alone.
+#[allow(clippy::type_complexity)]
+fn sections(p: Vec3, neck: &[NeckSection]) -> impl Iterator<Item = (Vec3, Vec3, f32, f32, f32, f32, f32, Vec3, bool)> + '_ {
+    let v = |a: [f32; 4]| Vec3::new(a[0], a[1], a[2]);
+    neck.windows(2).filter_map(move |w| {
+        let (ca, cb) = (v(w[0].centre), v(w[1].centre));
+        let axis = cb - ca;
+        let along = axis.length();
+        if along < 1e-4 {
+            return None;
+        }
+        let t = (p - ca).dot(axis) / (along * along);
+        let past = if t < 0.0 { -t * along } else { (t - 1.0).max(0.0) * along };
+        if past >= CAP {
+            return None;
+        }
+        let s = past / CAP;
+        let round = 1.0 - s * s * (3.0 - 2.0 * s);
+        let t = t.clamp(0.0, 1.0);
+        let (side, up) = (v(w[0].side).lerp(v(w[1].side), t), v(w[0].up).lerp(v(w[1].up), t));
+        let c = ca.lerp(cb, t) + up * (1.0 - round);
+        let (half_w, half_h) = ((side.length() + CLEAR) * round, (up.length() + CLEAR) * round);
+        let (sx, uy) = (side.normalize_or_zero(), up.normalize_or_zero());
+        let (x, y) = ((p - c).dot(sx), (p - c).dot(uy));
+        let across = if y > 0.0 { half_w * (1.0 - (y / half_h).powi(2)).max(0.0).sqrt() } else { half_w };
+        Some((c, sx, x, across, y, half_h, half_w, uy, past > 0.0))
+    })
 }
 
 fn length(points: &[Vec3]) -> f32 {
@@ -330,7 +544,7 @@ fn load(gpu: &Gpu, leather: &str, uv: [f32; 4]) -> anyhow::Result<HeldModel> {
         bone += rings;
     }
     let model = rustvr_asset::Model { source: format!("the reins, of {leather}"), meshes: vec![mesh], ..Default::default() };
-    HeldModel::load_bent(gpu, &dir, &model)
+    HeldModel::load_bent(gpu, &dir, &model, DEPTH_SLACK)
 }
 
 /// A strap of `rings` cross-sections (bones `first`..), `laid` long along +Z: a flat band `WIDTH`
@@ -343,7 +557,8 @@ fn strap(mesh: &mut rustvr_asset::Mesh, first: usize, rings: usize, laid: f32, u
     let edge = (u1 - u0) * THICK / WIDTH;
     let (w, h) = (WIDTH * 0.5, THICK * 0.5);
     // Each face: its two corners (across, up), their u, and its normal.
-    let faces: [([f32; 2], [f32; 2], [f32; 2], [f32; 3]); 4] = [
+    type Face = ([f32; 2], [f32; 2], [f32; 2], [f32; 3]);
+    let faces: [Face; 4] = [
         ([-w, h], [w, h], [u0, u1], [0.0, 1.0, 0.0]),
         ([w, h], [w, -h], [u1 - edge, u1], [1.0, 0.0, 0.0]),
         ([w, -h], [-w, -h], [u1, u0], [0.0, -1.0, 0.0]),

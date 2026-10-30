@@ -20,19 +20,22 @@
 //!   - one rein pulled back further than the other, or both moved to one side (laid on the neck,
 //!     or a rein opened out), turns the mount that way: gently at first, as hard as the game turns
 //!     it at `rein_travel`;
-//!   - both pulled back past `rein_pull` slow it a gait; held, a gait every [`PULL_REPEAT`] to a
-//!     stand, and there it stays. Backing up is asked for on its own, from a stand: the reins
-//!     eased and pulled back again, and held for [`BACK_AFTER`]; eased, it stands;
-//!   - a flick of the reins (a hand snapped down and stopped, either or both: the whip of Rival
-//!     Stars and DovaVR's stroke) or the trigger of a hand on a rein (a squeeze of the heels)
-//!     spurs it on a gait, up to its fastest, whatever the reins are doing: reins held back are
-//!     given (where the hands are is their rest from then on).
+//!   - its speed is a share of its full gallop, and fluid: a flick of the reins (a hand snapped
+//!     down and stopped, either or both: the whip of Rival Stars and DovaVR's stroke) or the
+//!     trigger of a hand on a rein (a squeeze of the heels) spurs it: it surges to its full gallop
+//!     (rising at [`ACCEL`]), and the surge fades slowly (over `spur_fade`) to a cruise (`cruise`
+//!     of its gallop): to keep it at full, keep spurring. Reins held back are given by a spur
+//!     (where the hands are is their rest from then on);
+//!   - both pulled back slow it, as hard as they're pulled: nothing at the dead zone, [`BRAKE`] a
+//!     second at `rein_pull`. Where it's slowed to when they're eased, it stays (a walk, a stand).
+//!     Backing up is asked for on its own, from a stand: the reins eased and pulled right back
+//!     again, and held for [`BACK_AFTER`]; eased, it stands;
 //!
 //!   One hand alone holds both reins, as on a western saddle: to the side it turns, back it slows.
 //!   What the hands did and what the mount was told goes into the log twice a second while a rein
 //!   is held, and each time the reins start or stop turning it.
-//! * **Let go** of the reins, the mount keeps its gait for `coast` seconds, then slows a gait every
-//!   [`COAST_STEP`] to a stand (the game's own slowing from one gait to the next).
+//! * **Let go** of the reins, the mount keeps its speed for `coast` seconds, then eases off at
+//!   [`LET_GO_EASE`] to a stand.
 //! * **The stick** rides too: pushed ahead or to a side, the mount goes at the push (it walks; with
 //!   sprint, the fastest gait) and the sideways push steers, so a hard turn keeps it going; pulled
 //!   back (within 60° of straight back), it backs up. The turning stick steers alone. Let go, the
@@ -57,10 +60,17 @@ const REIN_REACH: f32 = 0.15;
 /// A hand inside the dead zone carries its rein's rest along this slowly (seconds to close most of
 /// the way): drift is taken up, a deliberate move (a few tenths of a second) isn't.
 pub const REST_FOLLOW: f32 = 1.5;
-/// Held pulled back, the mount slows another gait this often (seconds); a pull begun at a stand
-/// and held this long backs it up.
-pub const PULL_REPEAT: f64 = 0.9;
+/// A full pull begun at a stand and held this long backs the mount up (seconds).
 pub const BACK_AFTER: f64 = 1.2;
+/// The rider's speed (a share of the mount's full gallop): a spur's surge rises to it at `ACCEL` a
+/// second (from a stand to full in two seconds; the game's own acceleration comes on top); reins
+/// pulled right back take `BRAKE` a second off it (less as they're pulled less: from a full gallop
+/// to a stand in a second and a half); let go, past the coast, it eases off at `LET_GO_EASE` a
+/// second. Under `STAND` it stands.
+pub const ACCEL: f32 = 0.5;
+pub const BRAKE: f32 = 0.7;
+pub const LET_GO_EASE: f32 = 0.2;
+const STAND: f32 = 0.02;
 /// The reins' log while they're held, this often (seconds).
 const LOG_EVERY: f64 = 0.5;
 /// Taking up a rein: the hand has come to rest when it's moved slower than `SETTLE_STILL` (m/s) for
@@ -73,8 +83,6 @@ pub const SETTLE_MAX: f64 = 2.5;
 const TAKE_TRIGGER: f64 = 0.4;
 /// The reins turn the mount (for the log) past this share of a full turn.
 const LOG_TURNING: f32 = 0.05;
-/// Let go of the reins, past the coast the mount slows a gait this often (seconds).
-pub const COAST_STEP: f64 = 1.5;
 /// A flick: a rein hand snapped down faster than this (m/s), then stopped (slower than
 /// `FLICK_STOP` down) within `FLICK_WINDOW`, `FLICK_TRAVEL` or more lower.
 const FLICK_DOWN: f32 = 1.1;
@@ -127,19 +135,24 @@ pub struct Riding {
     reins: [Option<Rein>; 2],
     /// The rider's frame: the mount's yaw in tracking space when the first rein was taken.
     frame_yaw: f32,
-    /// The gait asked for (as `Riding::gait`).
+    /// The gait asked for (as `Riding::gait`: by the reins -1 backing, 0 standing, 1 going).
     gait: i32,
-    /// Both reins pulled back since; when the next gait down is; whether the pull began with the
-    /// mount standing (the reins eased since it stopped): held, it backs.
+    /// By the reins: the speed asked for, where the last spur's surge stands (fading to the
+    /// cruise), and the cruise (each a share of the mount's full gallop); whether the reins are
+    /// slowing it.
+    speed: f32,
+    surge: f32,
+    cruise: f32,
+    braking: bool,
+    /// The reins pulled right back since, and whether the pull began with the mount standing (the
+    /// reins eased since it stopped): held, it backs.
     pulling: Option<f64>,
-    pull_step_at: f64,
     from_stand: bool,
     /// The reins' last log, and which way they last turned the mount (-1, 0, 1).
     logged_at: f64,
     reins_turning: i32,
-    /// The reins let go at; when the next gait down is.
+    /// The reins let go at.
     let_go_at: Option<f64>,
-    coast_step_at: f64,
     stick_was: bool,
     spur_at: f64,
     /// Each hand: its last place (for the flick's speed), a down stroke started (when, how high),
@@ -358,19 +371,24 @@ impl Riding {
             }
         }
 
-        // The gait from the reins.
+        // The speed from the reins: a spur surges it to a full gallop, which fades to a cruise; a
+        // pull takes it down as hard as it's pulled, and where it's eased it stays.
         let was = self.gait;
         let mut why = "";
         if !held.is_empty() {
             self.let_go_at = None;
-            let on = s.rein_pull.max(dead_zone + 0.02);
+            let full = s.rein_pull.max(dead_zone + 0.03);
+            // (How hard the reins are pulled: nothing at the dead zone, all of it at `rein_pull`.)
+            let brake = ((pull - dead_zone) / (full - dead_zone)).clamp(0.0, 1.0);
             if let Some(how) = spur.filter(|_| now - self.spur_at > SPUR_COOLDOWN) {
                 // A spur is always heard: reins held back are given, and where the hands are now
                 // is their rest.
                 self.spur_at = now;
-                self.gait = (self.gait.max(0) + 1).min(gaits);
+                self.surge = 1.0;
+                self.cruise = self.cruise.max(s.cruise.clamp(0.05, 1.0));
+                self.gait = self.gait.max(0);
                 why = how;
-                if self.pulling.take().is_some() {
+                if self.pulling.take().is_some() || brake > 0.0 {
                     for &h in &held {
                         if let Some(rein) = self.reins[h].as_mut() {
                             rein.rest = pos(h);
@@ -378,50 +396,65 @@ impl Riding {
                     }
                     tracing::info!("riding: spurred with the reins held back ({:.2} m): the reins given", pull);
                 }
+                self.braking = false;
+                tracing::info!("riding: {}: a surge to a full gallop (from {:.2} of it), settling at {:.2}", how, self.speed, self.cruise);
                 for &h in &held {
                     self.haptics.push((h, 0.08, 80.0, 0.8));
                 }
-            } else if pull > on {
+            } else if brake > 0.0 && self.gait >= 0 {
+                // (Off the surge and the cruise both: where it's slowed to, it stays.)
+                self.surge = (self.surge - BRAKE * brake * dt).max(0.0);
+                self.cruise = self.cruise.min(self.surge);
+                self.speed = self.speed.min(self.surge);
+                if !self.braking && self.speed > STAND {
+                    self.braking = true;
+                    tracing::info!("riding: the reins slow it ({:.2} m back: {:.0}% of the hardest), from {:.2} of a gallop", pull, brake * 100.0, self.speed);
+                    for &h in &held {
+                        self.haptics.push((h, 0.04, 60.0, 0.4));
+                    }
+                }
+            }
+            if brake <= 0.0 && self.braking {
+                self.braking = false;
+                tracing::info!("riding: the reins eased: it keeps {:.2} of a gallop", self.speed);
+            }
+            // Backing up: from a stand, a full pull begun there and held.
+            if brake >= 0.9 {
                 match self.pulling {
                     None => {
                         self.pulling = Some(now);
-                        self.from_stand = self.gait == 0;
-                        tracing::info!("riding: the reins pulled back {:.2} m{}", pull, if self.from_stand { " at a stand (held, it backs)" } else { "" });
-                        if self.gait > 0 {
-                            self.slow(now);
-                            why = "the reins pulled";
+                        self.from_stand = self.speed < STAND && self.gait == 0;
+                        if self.from_stand {
+                            tracing::info!("riding: the reins pulled right back at a stand ({:.2} m): held, it backs", pull);
                         }
                     }
-                    Some(_) if self.gait > 0 && now >= self.pull_step_at => {
-                        self.slow(now);
-                        why = "the reins held back";
-                    }
-                    Some(since) if self.gait == 0 && self.from_stand && now - since >= BACK_AFTER => {
+                    Some(since) if self.from_stand && self.gait == 0 && now - since >= BACK_AFTER => {
                         self.gait = -1;
                         why = "the reins held back at a stand";
                     }
                     _ => {}
                 }
-            } else if pull < on * 0.5 && self.pulling.take().is_some() {
-                tracing::info!("riding: the reins eased ({:.2} m back)", pull.max(0.0));
-                if self.gait < 0 {
-                    self.gait = 0;
-                    why = "the reins eased";
-                }
+            } else if brake < 0.5 && self.pulling.take().is_some() && self.gait < 0 {
+                self.gait = 0;
+                why = "the reins eased";
             }
         } else {
             self.pulling = None;
+            self.braking = false;
             if self.gait < 0 {
                 self.gait = 0;
             }
-            let since = *self.let_go_at.get_or_insert_with(|| {
-                self.coast_step_at = now + s.coast.max(0.0) as f64;
-                now
-            });
-            if self.gait > 0 && now >= self.coast_step_at && now - since >= s.coast.max(0.0) as f64 {
-                self.gait -= 1;
-                self.coast_step_at = now + COAST_STEP;
+            let since = *self.let_go_at.get_or_insert(now);
+            if now - since >= s.coast.max(0.0) as f64 {
+                self.surge = (self.surge - LET_GO_EASE * dt).max(0.0);
+                self.cruise = self.cruise.min(self.surge);
             }
+        }
+        // The surge fades to the cruise; the speed rises to it at `ACCEL` and follows it down.
+        self.surge = self.cruise + (self.surge - self.cruise).max(0.0) * (-dt / s.spur_fade.max(0.5)).exp();
+        self.speed = if self.surge > self.speed { (self.speed + ACCEL * dt).min(self.surge) } else { self.surge };
+        if self.gait >= 0 {
+            self.gait = (self.speed > STAND) as i32;
         }
 
         // The stick rides too: pushed, its gait and pace (and, let go, the mount stops, as the
@@ -441,12 +474,18 @@ impl Riding {
             out.gait = gait;
             out.pace = pace;
             steer = stick.x;
+            // (The stick has the mount: what the reins asked of it is over.)
+            (self.speed, self.surge, self.cruise) = (0.0, 0.0, 0.0);
         } else {
             if self.stick_was {
                 self.gait = 0;
             }
             out.gait = self.gait;
             out.pace = if self.gait != 0 { 1.0 } else { 0.0 };
+            if self.gait > 0 {
+                out.flags |= RR_SPEED;
+                out.speed = self.speed;
+            }
         }
         if turning != 0.0 {
             out.flags |= RR_STICK;
@@ -475,14 +514,17 @@ impl Riding {
                 }
             }
             tracing::info!(
-                "riding: reins: {}, {}; pull {:.2} (slows at {:.2}){} -> gait {} pace {:.2} steer {:+.2}{}",
+                "riding: reins: {}, {}; pull {:.2} (slows from {:.2}, hardest at {:.2}){} -> gait {} speed {:.2} (surge {:.2}, settling at {:.2}) steer {:+.2}{}",
                 hand(0),
                 hand(1),
                 pull,
-                s.rein_pull.max(dead_zone + 0.02),
-                if self.pulling.is_some() { ", held" } else { "" },
+                dead_zone,
+                s.rein_pull.max(dead_zone + 0.03),
+                if self.braking { ", slowing it" } else { "" },
                 out.gait,
-                out.pace,
+                if out.flags & RR_SPEED != 0 { out.speed } else { out.pace },
+                self.surge,
+                self.cruise,
                 out.steer,
                 if out.flags & RR_STICK != 0 { " (the stick)" } else { "" }
             );
@@ -504,6 +546,9 @@ impl Riding {
                 for &h in &held {
                     self.haptics.push((h, 0.05, 60.0, 0.5));
                 }
+            }
+            if self.gait == 0 && !by_stick {
+                (self.speed, self.surge, self.cruise) = (0.0, 0.0, 0.0);
             }
         }
 
@@ -577,11 +622,6 @@ impl Riding {
         out
     }
 
-    /// Down a gait (not past standing), and the next one after `PULL_REPEAT` if the pull's held.
-    fn slow(&mut self, now: f64) {
-        self.gait = (self.gait - 1).max(0);
-        self.pull_step_at = now + PULL_REPEAT;
-    }
 }
 
 fn side_name(h: usize) -> &'static str {

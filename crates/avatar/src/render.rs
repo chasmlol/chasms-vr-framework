@@ -65,7 +65,7 @@ cbuffer Material : register(b2) {
     float4 material;     // x: textured, y: alpha test, z: the game's shading class (M_*), w: emissive ×
     float4 surf_params;  // the game's surf_params
     float4 surf_color;
-    float4 options;      // x: use_env, y: use_fresnel (the class's shader permutation)
+    float4 options;      // x: use_env, y: use_fresnel (the class's shader permutation); z: depth slack
 };
 // The game's lighting (metro.rs), when it publishes it.
 cbuffer Lighting : register(b3) {
@@ -464,7 +464,8 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     float3 dpx = ddx(i.world), dpy = ddy(i.world);
     float2 dux = ddx(i.uv), duy = ddy(i.uv);
     if (i.vis < 0) discard;
-    if (behind_game(i.pos, i.view_z)) discard;
+    // (A strap lying on the game's model may be a little behind its surface: options.z.)
+    if (behind_game(i.pos, i.view_z - options.z)) discard;
     if (plain.w > 1.5) return float4(plain.rgb, 1);
     float4 base = albedo.Sample(samp, i.uv);
     if (material.y > 0 && base.a < 0.5) discard;
@@ -975,7 +976,7 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
         _ => None,
     };
     let (surf_params, surf_color, emissive) = m.material.as_ref().map_or(([0.0; 4], [0.0; 4], 0.0), |mat| (mat.params, mat.color, mat.emissive));
-    let options = m.material.as_ref().map_or([0.0; 4], |mat| {
+    let mut options = m.material.as_ref().map_or([0.0; 4], |mat| {
         if mat.class.gamebryo() {
             // Gamebryo's: whether it has a normal map and a glow map.
             [mat.bump.is_some() as u32 as f32, mat.detail.is_some() as u32 as f32, 0.0, 0.0]
@@ -983,6 +984,8 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
             [mat.env.is_some() as u32 as f32, mat.fresnel as u32 as f32, 0.0, 0.0]
         }
     });
+    // (How far behind the game's surface it may be before it's hidden: a strap on the game's model.)
+    options[2] = m.depth_slack.max(0.0);
     let class = metro.as_ref().map_or(0.0, |mm| mm.class as u32 as f32);
     let material = MaterialCb {
         tint: [m.tint[0], m.tint[1], m.tint[2], 1.0],

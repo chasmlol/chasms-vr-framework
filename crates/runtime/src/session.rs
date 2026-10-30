@@ -1323,7 +1323,7 @@ impl Session {
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
         // A mount's reins, from its bit to the hands holding them (the game's mount has none): of
         // the game's own leather, drawn with the body; without it, flat ribbons over the picture.
-        self.reins.update(&self.gpu, &self.ride.riding, self.riding.reins_held(), frame.hands.map(|h| Vec3::from_array(h.grip.pos)), self.game.as_ref().map(|g| &g.light));
+        self.reins.update(&self.gpu, &self.ride.riding, self.riding.reins_held(), frame.hands.map(|h| Vec3::from_array(h.grip.pos)), self.game.as_ref().map(|g| &g.light), frame.dt);
         layers.ribbons = self.reins.ribbons();
         if let (Some(p), Some(srv)) = (obs_panel, self.obs.srv()) {
             layers.private.push(PanelLayer::whole(p, srv));

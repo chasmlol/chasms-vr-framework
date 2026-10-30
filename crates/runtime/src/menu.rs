@@ -271,7 +271,9 @@ fn comfort(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::R
     ui.checkbox(&mut r.fade_on_off, "Fade out while getting on and off");
     slider(ui, "Reins do nothing until moved", &mut r.rein_dead, 0.01, 0.12, " m", 2);
     slider(ui, "Rein travel for a full turn", &mut r.rein_travel, 0.08, 0.30, " m", 2);
-    slider(ui, "Rein pull to slow down", &mut r.rein_pull, 0.05, 0.20, " m", 2);
+    slider(ui, "Rein pull to slow hardest", &mut r.rein_pull, 0.08, 0.30, " m", 2);
+    slider(ui, "Spurred, it settles at (of a gallop)", &mut r.cruise, 0.2, 1.0, "", 2);
+    slider(ui, "A spur's surge fades over", &mut r.spur_fade, 2.0, 30.0, " s", 0);
     ui.checkbox(&mut r.flick, "Flick the reins to spur on");
     slider(ui, "Reins let go: keeps its pace for", &mut r.coast, 0.0, 10.0, " s", 1);
     ui.checkbox(&mut r.stride_haptics, "Feel the stride in the reins");

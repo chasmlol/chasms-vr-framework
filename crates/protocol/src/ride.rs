@@ -203,6 +203,9 @@ pub const RR_REIN_LEFT: u32 = 1 << 1;
 pub const RR_REIN_RIGHT: u32 = 1 << 2;
 /// The stick rides (rather than the reins).
 pub const RR_STICK: u32 = 1 << 3;
+/// Going forward at [`RtRide::speed`] (rather than a gait at a pace): the adapter gives the game
+/// whichever of its gaits, at whatever pace, makes that speed.
+pub const RR_SPEED: u32 = 1 << 4;
 
 /// What the rider does with the mount (runtime -> game).
 #[repr(C)]
@@ -224,7 +227,10 @@ pub struct RtRide {
     pub mount_seq: u32,
     /// Get off: goes up by one each time.
     pub dismount_seq: u32,
-    pub _pad: [u32; 6],
+    /// Going forward (`RR_SPEED`, `gait` 1): how fast, as a share of the mount's fastest gait's
+    /// full speed (0..1).
+    pub speed: f32,
+    pub _pad: [u32; 5],
 }
 
 const _: () = {

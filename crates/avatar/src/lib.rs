@@ -461,8 +461,10 @@ impl HeldModel {
     /// A model that bends (a strap, a rope) from an asset cache folder (`dir`, its textures by
     /// key): its meshes whole, each vertex moving with its own bones as weighted, and a part for
     /// each bone ([`HeldDraw::parts`] places them: bone space -> tracking space). Drawn with the
-    /// body as anything held is: in its depth, with the game's materials and lighting.
-    pub fn load_bent(gpu: &Gpu, dir: &std::path::Path, model: &asset::Model) -> Result<HeldModel> {
+    /// body as anything held is: in its depth, with the game's materials and lighting; the game's
+    /// surface hides it only once it's `depth_slack` (metres) behind it (a strap lying on the
+    /// game's own model).
+    pub fn load_bent(gpu: &Gpu, dir: &std::path::Path, model: &asset::Model, depth_slack: f32) -> Result<HeldModel> {
         let mut cache: HashMap<String, Option<Arc<asset::Texture>>> = HashMap::new();
         let mut texture = |key: &str| -> Option<Arc<asset::Texture>> {
             if key.is_empty() {
@@ -476,7 +478,8 @@ impl HeldModel {
         let mut meshes = Vec::new();
         for (i, m) in model.meshes.iter().enumerate() {
             let one = asset::Model { source: model.source.clone(), meshes: vec![m.clone()], ..Default::default() };
-            let Some(source) = from_model(one, &mut texture).meshes.pop() else { continue };
+            let Some(mut source) = from_model(one, &mut texture).meshes.pop() else { continue };
+            source.depth_slack = depth_slack;
             meshes.push((source, HeldMeshInfo { part: 0, source: i, name: m.name.clone(), special: false }));
         }
         render::HeldModel::bent(gpu, meshes)
@@ -498,6 +501,9 @@ pub(crate) struct SourceMesh {
     pub tint: [f32; 3],
     /// How the game shades it, when that's known and its textures are all there.
     pub material: Option<SourceMaterial>,
+    /// How far behind the game's surface it may be before it's hidden (metres, on top of the
+    /// body's own allowance): 0 but for a strap lying on the game's model.
+    pub depth_slack: f32,
 }
 
 pub(crate) struct SourceMaterial {
@@ -669,7 +675,7 @@ fn from_model(model: asset::Model, mut texture: impl FnMut(&str) -> Option<Arc<a
                 let emissive = if mat.emissive > 0.0 { mat.emissive } else { 2.0 };
                 Some(SourceMaterial { class, params: mat.params, color: mat.color, alpha_test: mat.alpha_test, emissive, fresnel: mat.fresnel, bump, detail, env })
             });
-            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material }
+            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material, depth_slack: 0.0 }
         })
         .collect();
     Source { bones: model.bones, meshes }
