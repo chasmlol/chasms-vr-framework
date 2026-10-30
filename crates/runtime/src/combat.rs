@@ -1056,6 +1056,9 @@ impl Combat {
                 if closing > 0.0 {
                     let mu = m_guard * m_blow / (m_guard + m_blow);
                     self.blows.push((object, way * mu * closing, p));
+                    if debug_combat() {
+                        tracing::info!("combat: the blow knocks the guard: {:.1} N s, {:.1} m/s on it", mu * closing, mu * closing / m_guard);
+                    }
                 }
                 self.block_until.insert(actor.id, inp.now + BLOCK_COOLDOWN);
                 let ev = CombatEvent {
