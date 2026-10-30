@@ -3554,8 +3554,7 @@ impl Rig {
         }
     }
 
-    // ---- blades stuck in things (embed.rs) -----------------------------------------------------------
-    /// The creatures' body parts this frame (world), for what's stuck in them.
+    // ---- creatures held (creatures.rs) ---------------------------------------------------------------
     /// What the game says about its creatures' bodies this frame ([`ActorBodies`], beside their
     /// parts in [`Actors`]): which the hands may take hold of, how each part turns, and how strong
     /// the player is.
@@ -3702,6 +3701,8 @@ impl Rig {
         }
     }
 
+    // ---- blades stuck in things (embed.rs) -----------------------------------------------------------
+    /// The creatures' body parts this frame (world), for what's stuck in them.
     pub fn set_actor_parts(&mut self, parts: impl IntoIterator<Item = ((u32, usize), (Vec3, Vec3, f32))>) {
         self.actor_parts.clear();
         self.actor_parts.extend(parts);
