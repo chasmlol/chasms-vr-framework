@@ -377,6 +377,80 @@ impl Link {
     pub fn read_bows_into(&self, out: &mut Bows) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_BOWS), out) }
     }
+    // ---- voice ([`crate::voice`]) ------------------------------------------------------------------
+    /// Adapter: who's around to be talked to and who's listening ([`VoiceScene`]).
+    pub fn write_voice_scene(&self, v: &VoiceScene) {
+        unsafe { seq_write(self.base.add(OFF_VOICE_SCENE), v) }
+    }
+    pub fn read_voice_scene_into(&self, out: &mut VoiceScene) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_VOICE_SCENE), out) }
+    }
+    /// The scene's seqlock word: it changed when this did.
+    pub fn voice_scene_seq(&self) -> u32 {
+        self.u32_at(OFF_VOICE_SCENE).load(Ordering::Acquire)
+    }
+    /// Adapter: something for the characters' memory ([`VoiceEvent`]).
+    pub fn push_voice_event(&self, ev: &VoiceEvent) {
+        let written = self.u64_at(OFF_VOICE_EVENTS + offset_of!(VoiceEvents, written));
+        let n = written.load(Ordering::Relaxed);
+        let slot = OFF_VOICE_EVENTS + offset_of!(VoiceEvents, events) + (n as usize % VOICE_EVENT_SLOTS) * size_of::<VoiceEvent>();
+        unsafe { plain_write(self.base.add(slot), ev) };
+        written.store(n + 1, Ordering::Release);
+    }
+    /// Voice plugin: the events after the `read` first ones (as [`Link::read_combat_events`]).
+    pub fn read_voice_events(&self, read: &mut u64) -> Vec<VoiceEvent> {
+        let written = self.u64_at(OFF_VOICE_EVENTS + offset_of!(VoiceEvents, written)).load(Ordering::Acquire);
+        if written < *read {
+            *read = written; // the adapter started again
+        }
+        let from = (*read).max(written.saturating_sub(VOICE_EVENT_SLOTS as u64));
+        let out = (from..written)
+            .map(|n| {
+                let slot = OFF_VOICE_EVENTS + offset_of!(VoiceEvents, events) + (n as usize % VOICE_EVENT_SLOTS) * size_of::<VoiceEvent>();
+                unsafe { plain_read(self.base.add(slot)) }
+            })
+            .collect();
+        *read = written;
+        out
+    }
+    /// Voice plugin: a line for the game ([`VoiceLine`]).
+    pub fn push_voice_line(&self, line: &VoiceLine) {
+        let written = self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, written));
+        let n = written.load(Ordering::Relaxed);
+        let slot = OFF_VOICE_LINES + offset_of!(VoiceLines, lines) + (n as usize % VOICE_LINE_SLOTS) * size_of::<VoiceLine>();
+        unsafe { plain_write(self.base.add(slot), line) };
+        written.store(n + 1, Ordering::Release);
+    }
+    /// Adapter: the lines after the `read` first ones (as [`Link::read_combat_events`]).
+    pub fn read_voice_lines(&self, read: &mut u64) -> Vec<VoiceLine> {
+        let written = self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, written)).load(Ordering::Acquire);
+        if written < *read {
+            *read = written; // the plugin started again
+        }
+        let from = (*read).max(written.saturating_sub(VOICE_LINE_SLOTS as u64));
+        let out = (from..written)
+            .map(|n| {
+                let slot = OFF_VOICE_LINES + offset_of!(VoiceLines, lines) + (n as usize % VOICE_LINE_SLOTS) * size_of::<VoiceLine>();
+                unsafe { plain_read(self.base.add(slot)) }
+            })
+            .collect();
+        *read = written;
+        out
+    }
+    /// Voice plugin: it's running (its pid, now).
+    pub fn heartbeat_voice(&self) {
+        self.u32_at(OFF_VOICE_LINES + offset_of!(VoiceLines, pid)).store(unsafe { GetCurrentProcessId() }, Ordering::Relaxed);
+        self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, heartbeat_ms)).store(now_ms(), Ordering::Release);
+    }
+    /// Adapter: the voice plugin beat within the last [`HEARTBEAT_TIMEOUT_MS`].
+    pub fn voice_alive(&self) -> bool {
+        let beat = self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, heartbeat_ms)).load(Ordering::Acquire);
+        beat != 0 && now_ms().saturating_sub(beat) <= HEARTBEAT_TIMEOUT_MS
+    }
+    /// The lines written so far (where an adapter that just connected starts reading).
+    pub fn voice_lines_written(&self) -> u64 {
+        self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, written)).load(Ordering::Acquire)
+    }
     /// Adapter: the mount the player rides and the mounts near them ([`Ride`]), every game frame.
     pub fn write_ride(&self, v: &Ride) {
         unsafe { seq_write(self.base.add(OFF_RIDE), v) }

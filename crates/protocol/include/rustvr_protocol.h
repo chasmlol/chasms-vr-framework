@@ -1808,6 +1808,84 @@
  */
 #define RVR_RR_SPEED (1 << 4)
 
+#define RVR_MAX_VOICE_SPEAKERS 8
+
+#define RVR_VOICE_NAME_BYTES 64
+
+#define RVR_VOICE_KEY_BYTES 88
+
+#define RVR_VOICE_PATH_BYTES 256
+
+#define RVR_VOICE_PERSONA_BYTES 8192
+
+#define RVR_VOICE_SITUATION_BYTES 1536
+
+#define RVR_VOICE_EVENT_SLOTS 16
+
+#define RVR_VOICE_EVENT_TEXT_BYTES 240
+
+#define RVR_VOICE_LINE_SLOTS 16
+
+#define RVR_VOICE_HOW_BYTES 64
+
+#define RVR_VOICE_TEXT_BYTES 416
+
+/**
+ * [`VoiceScene::flags`]: the adapter can play lines (its game is in a state to).
+ */
+#define RVR_VS_READY (1 << 0)
+
+/**
+ * The game isn't listening now (a menu is open, the game is paused or loading): the plugin hears
+ * nothing, and no one is cut off.
+ */
+#define RVR_VS_DEAF (1 << 1)
+
+/**
+ * [`VoiceEvent::kind`]: the game saved; `text` is the save's name.
+ */
+#define RVR_VE_SAVED 1
+
+/**
+ * The game loaded a save; `text` is its name. Every character remembers what they did then.
+ */
+#define RVR_VE_LOADED 2
+
+/**
+ * Something happened that `speaker` saw or heard, in words; with [`VEF_REACT`] it may make them
+ * speak (only with the plugin's decision model on), else it only goes in their memory.
+ */
+#define RVR_VE_HAPPENED 3
+
+#define RVR_VEF_REACT (1 << 0)
+
+/**
+ * [`VoiceLine::kind`]: the player started talking. The one they talk to now (whom the adapter
+ * picks, and says in [`VoiceScene::listener`] by the time the words are known) turns to listen.
+ */
+#define RVR_VL_LISTEN 1
+
+/**
+ * What the player said to `speaker`, as it was heard (`text`).
+ */
+#define RVR_VL_HEARD 2
+
+/**
+ * `speaker` says a sentence: `text`, said as `how` (the line's own words for it, "angrily",
+ * "with a laugh"; empty: plainly), its files `<line>.wav` and `<line>.lips`, `duration_ms` long.
+ */
+#define RVR_VL_SAY 3
+
+/**
+ * `speaker`'s whole line has been said (their last [`VL_SAY`] is its end).
+ */
+#define RVR_VL_END 4
+
+/**
+ * Stop talking at once: the player talked over them, or a save was loaded.
+ */
+#define RVR_VL_STOP 5
+
 #define RVR_SHOTS 0
 
 #define RVR_HITS 1
@@ -2014,6 +2092,8 @@ typedef uint32_t RVR_Joint;
 
 
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
+
+
 
 
 

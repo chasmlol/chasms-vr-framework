@@ -43,6 +43,7 @@
 //! | [`OFF_GORE`] | the game's blood, its creatures' stumps, limbs cut off (see [`gore`]) | adapter -> runtime | seqlock, SPSC ring |
 //! | [`OFF_ACTOR_BODIES`], [`OFF_CREATURE_GRABS`] | [`ActorBodies`] (adapter -> runtime), [`CreatureGrabs`] (runtime -> adapter): see [`grab`] | | seqlock |
 //! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
+//! | [`OFF_VOICE_SCENE`] .. [`OFF_VOICE_LINES`] | [`VoiceScene`], [`VoiceEvents`] (adapter -> voice plugin), [`VoiceLines`] (voice plugin -> adapter): talking to the game's characters (see [`voice`]) | | seqlock, rings |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
 //! the item cards, the face, the magic, the ride, the gore, the creature grabs and the bows (a new
@@ -82,6 +83,7 @@ pub mod lighting;
 pub mod magic;
 pub mod player;
 pub mod ride;
+pub mod voice;
 
 pub use archery::*;
 pub use avatar::*;
@@ -96,6 +98,7 @@ pub use lighting::*;
 pub use magic::*;
 pub use player::*;
 pub use ride::*;
+pub use voice::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
 pub const VERSION: u32 = 13;
@@ -994,6 +997,9 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_ACTOR_BODIES, size_of::<ActorBodies>()),
     (OFF_CREATURE_GRABS, size_of::<CreatureGrabs>()),
     (OFF_BOWS, size_of::<Bows>()),
+    (OFF_VOICE_SCENE, size_of::<VoiceScene>()),
+    (OFF_VOICE_EVENTS, size_of::<VoiceEvents>()),
+    (OFF_VOICE_LINES, size_of::<VoiceLines>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 
