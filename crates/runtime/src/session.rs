@@ -822,7 +822,7 @@ impl Session {
                     .collect();
                 let hands = [0, 1].map(|i| {
                     let c = &frame.hands[i];
-                    crate::held_menus::Hand { grip: (c.connected != 0).then(|| (Vec3::from_array(c.grip.pos), quat(c.grip.rot))), squeeze: c.squeeze, trigger: c.trigger }
+                    crate::held_menus::Hand { grip: (c.connected != 0).then(|| (Vec3::from_array(c.grip.pos), quat(c.grip.rot))), vel: Vec3::from_array(c.vel), squeeze: c.squeeze, trigger: c.trigger }
                 });
                 let held = self.held_menus.update(&self.settings.current, head_pos, head_rot, frame.dt, now, hud_aspect.unwrap(), &self.hud_layout, &things, &hands);
                 for &a in &held.presses {
