@@ -123,6 +123,9 @@ enum Holder {
     Gone,
     /// A thing to take ([`OBJF_LOOT`]) put in this body slot: the game's to take.
     Stowed(u32),
+    /// Shown still at slot `0` of the player's things while their editor is open: what it gives
+    /// first, where it is ([`pockets`]).
+    Shown(usize),
 }
 
 /// How a held object sits in the hand.
@@ -185,6 +188,8 @@ struct Obj {
     /// A thing drawn from one of the body's slots ([`pockets`]): the runtime's copy of one of the
     /// player's things.
     drawn: Option<pockets::Drawn>,
+    /// Shown at a slot while the editor is open: the stack ([`InvItem::id`]) it shows.
+    shown: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1147,6 +1152,7 @@ impl Rig {
                 valve_shape: Vec::new(),
                 embed: None,
                 drawn: None,
+                shown: None,
             },
         );
         // A valve's wheel turns on its axle, never anywhere else.
@@ -2667,7 +2673,46 @@ impl Rig {
     /// The things drawn from the slots, as the runtime describes them (for drawing: they're in no
     /// adapter's table).
     pub fn drawn_descs(&self) -> Vec<ObjectDesc> {
-        self.objects.values().filter(|o| o.drawn.is_some()).map(|o| o.desc).collect()
+        self.objects.values().filter(|o| o.drawn.is_some() || o.shown.is_some()).map(|o| o.desc).collect()
+    }
+
+    /// While the slots' editor is open, the first thing of the slot picked in it (`picked`) shown
+    /// still at its place on the body, the game's own model, so the player sees where it is (and
+    /// what it gives); none once it closes. One at a time: the chest's slots are close under the
+    /// eyes, and a scroll there is big. Not a thing the hands can take.
+    pub fn show_pockets(&mut self, picked: Option<usize>) {
+        let out = self.drawn_out();
+        let want: Vec<Option<InvItem>> =
+            self.pockets.iter().enumerate().map(|(k, p)| if Some(k) == picked { pockets::contents(p, &self.inventory, &out).first().map(|i| **i) } else { None }).collect();
+        let shown: Vec<(u32, usize, u32)> = self.objects.iter().filter_map(|(id, o)| match (o.holder, o.shown) {
+            (Holder::Shown(k), Some(item)) => Some((*id, k, item)),
+            _ => None,
+        }).collect();
+        for &(id, k, item) in &shown {
+            if want.get(k).copied().flatten().is_none_or(|w| w.id != item) {
+                self.remove(id);
+            }
+        }
+        for (k, item) in want.iter().enumerate() {
+            let Some(item) = item else { continue };
+            if shown.iter().any(|&(_, sk, si)| sk == k && si == item.id) {
+                continue;
+            }
+            let id = self.next_spawn;
+            self.next_spawn = self.next_spawn.wrapping_add(1).max(SPAWN_BASE);
+            let mut d = pockets::object_desc(item, id);
+            d.flags &= !(OBJF_GRABBABLE | OBJF_PULLABLE);
+            let at = self.pocket_zones.get(k).map_or(Vec3::ZERO, |z| self.map.point(self.anchor.zone_center(&z.take)));
+            self.add(d, id, true, at, self.map.rot(self.anchor.rot()));
+            if let Some(o) = self.objects.get_mut(&id) {
+                o.holder = Holder::Shown(k);
+                o.shown = Some(item.id);
+                o.handled = true;
+                let (body, collider) = (o.body, o.collider);
+                self.physics.set_kinematic(body, true);
+                self.physics.set_groups(collider, groups_none());
+            }
+        }
     }
 
     /// Hand `i` reaches into slot `k`: its first thing into the fist (the runtime's copy of it), or,
@@ -4058,6 +4103,14 @@ impl Rig {
                     self.objects.get_mut(id).unwrap().carried = carried;
                     self.physics.set_gravity(body, 0.0);
                 }
+                Holder::Shown(k) => {
+                    // Its middle at the slot's, turned with the body (`pockets::shown_rot`).
+                    let Some(z) = self.pocket_zones.get(k) else { continue };
+                    let (pt, rt) = (self.anchor.zone_center(&z.take), self.anchor.rot() * pockets::shown_rot(self.objects[id].desc.half_extents));
+                    let (p, q) = (self.map.point(pt), self.map.rot(rt));
+                    let o = &self.objects[id];
+                    self.physics.move_kinematic(o.body, p - q * v3(o.desc.center), q);
+                }
                 Holder::Holstered(slot) => {
                     let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize]);
                     let grip = v3(self.objects[id].desc.grip);
@@ -4716,7 +4769,7 @@ impl Rig {
             let (lv, av) = self.physics.velocity(o.body);
             // A valve turns on its axle at its own speed (its body is only moved there).
             let (lv, av) = o.valve.map_or((lv, av), |v| (Vec3::ZERO, v.axis() * v.vel));
-            let tracking = matches!(o.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. });
+            let tracking = matches!(o.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. } | Holder::Shown(_));
             let tracking = tracking || matches!(o.holder, Holder::InWeapon(w) if self.objects.get(&w).is_some_and(|w| matches!(w.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. })));
             let pose_out = if tracking { pose(map.inv_point(p), map.inv_rot(q)) } else { pose(p, q) };
             let mut flags = OS_SIMULATED | if tracking { OS_TRACKING } else { 0 };
@@ -4728,7 +4781,7 @@ impl Rig {
                 Holder::Pulled { .. } => flags |= OS_PULLED,
                 Holder::Stuck { .. } => flags |= OS_STUCK,
                 Holder::Stowed(_) => flags |= OS_STOWED,
-                Holder::Free | Holder::Gone => {}
+                Holder::Free | Holder::Gone | Holder::Shown(_) => {}
             }
             if let Some(t) = &o.throw {
                 flags |= t.flags_out();

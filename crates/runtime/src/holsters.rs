@@ -108,6 +108,8 @@ impl HolsterLink {
         }
         // (The slots first: a new one is placed by hand as it's made.)
         rig.set_pockets(&self.slots(settings, game));
+        // While the editor is open, the picked slot's first thing shows where the slot is.
+        rig.show_pockets((self.edits.editing as usize).checked_sub(1));
         if self.edits.place_seq != self.place_seq {
             self.place_seq = self.edits.place_seq;
             let slot = self.edits.place_slot as usize;

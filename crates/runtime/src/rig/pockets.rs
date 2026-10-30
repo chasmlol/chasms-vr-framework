@@ -280,6 +280,21 @@ pub fn hold_rot(item: &InvItem) -> Quat {
     }
 }
 
+/// How a thing shown at its slot while the editor is open lies (in the body's frame): as it stands
+/// in the world, but a long thing (an arrow, a scroll) laid across the body, not up into the face.
+pub fn shown_rot(half_extents: [f32; 3]) -> Quat {
+    use std::f32::consts::FRAC_PI_2;
+    let h = Vec3::from_array(half_extents).abs();
+    let long = |a: f32, b: f32, c: f32| a > 2.0 * b && a > 2.0 * c;
+    if long(h.y, h.x, h.z) {
+        Quat::from_rotation_z(FRAC_PI_2)
+    } else if long(h.z, h.x, h.y) {
+        Quat::from_rotation_y(FRAC_PI_2)
+    } else {
+        Quat::IDENTITY
+    }
+}
+
 /// The mouth (tracking space) for the head at `head`.
 pub fn mouth(head: (Vec3, Quat)) -> Vec3 {
     head.0 + head.1 * MOUTH

@@ -298,7 +298,11 @@ pub struct SlotEdits {
     /// index; past the last: stop placing).
     pub place_seq: u32,
     pub place_slot: u32,
-    pub _pad: [u32; 11],
+    /// While the editor is open, the slot picked in it, plus one (0: it's closed): the runtime shows
+    /// that slot's first thing at its place on the body (the game's model, still), so the player
+    /// sees where it is.
+    pub editing: u32,
+    pub _pad: [u32; 10],
     pub slots: [SlotDesc; MAX_BODY_SLOTS],
 }
 
