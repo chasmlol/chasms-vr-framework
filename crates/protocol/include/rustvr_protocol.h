@@ -367,6 +367,22 @@
 
 #define RVR_HAPTIC_OFF_HAND 3
 
+/**
+ * High in the free space before the HUD layout, clear of the regions that grow from the combat
+ * tables.
+ */
+#define RVR_OFF_BOWS 5341184
+
+#define RVR_MAX_BOWS 8
+
+#define RVR_BOW_SPRING_KEYS 16
+
+/**
+ * [`BowDesc::flags`]: the game plays the bow's own draw and release sounds (the runtime plays
+ * none of its own for them).
+ */
+#define RVR_BOWF_GAME_SOUNDS (1 << 0)
+
 #define RVR_MAX_AVATAR_PARTS 24
 
 #define RVR_MAX_AVATAR_SWAPS 32
@@ -558,6 +574,14 @@
  * [`crate::ObjectDesc::casts`]), else 0.
  */
 #define RVR_CE_CAST 3
+
+/**
+ * An arrow loosed from the bow `object` (`hand`: the string hand): `what` the arrow (its template's
+ * id), from `point` (its tip) along `dir`; `strength` the draw (0..1 of the bow's full draw);
+ * `speed` how fast the bow's table says the game's arrow flies at that draw. The game fires its own
+ * arrow.
+ */
+#define RVR_CE_LOOSE 4
 
 /**
  * A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
@@ -779,6 +803,26 @@
  * on its rim). The runtime takes any valve smaller than a hand's grip as one.
  */
 #define RVR_JOINT_TWIST (1 << 0)
+
+/**
+ * A bow, in the guns' object space: the arrow flies along +Z, its upper limb is +Y, X across it.
+ * Held by its grip (`grip_line`, `grip`, `grip_rot` for the right hand; the left takes the mirror
+ * image), the arrow resting at `muzzle` (on the bow hand's side of the bow: `muzzle.x` is for the
+ * right hand, the left's is the other way), its string's nock point at rest at `handle`, drawn
+ * back along -Z by at most `handle_travel` (the bow's full draw). It shoots the arrows
+ * ([`OBJ_ARROW`] templates) of its `ammo_type`; the [`crate::Bows`] table says how it bends and
+ * how its arrows fly. Its state's `slide` is how far it's bent (the draw's share of
+ * `handle_travel`, and its limbs' spring after a shot), `rounds` whether an arrow is nocked.
+ */
+#define RVR_OBJ_BOW 8
+
+/**
+ * An arrow (a template the quiver hands out: [`OBJF_TEMPLATE`]), its point along +Z: its tip at
+ * `muzzle`, its nock (where the string goes) at `mag_well`, where the fingers pinch it at `grip`.
+ * It fits the bows of its `ammo_type`; with [`OBJF_GAME_AMMO`] its `rounds` are how many the game
+ * says the player has (0: the quiver is empty).
+ */
+#define RVR_OBJ_ARROW 9
 
 #define RVR_OBJF_GRABBABLE (1 << 0)
 

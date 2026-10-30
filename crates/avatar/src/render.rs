@@ -874,12 +874,39 @@ const HANDS: usize = 2;
 struct GpuMesh {
     vb: ID3D11Buffer,
     ib: ID3D11Buffer,
+    /// A mesh that bends (a bow's limbs and string): its vertex buffer is rewritten as it does.
+    bent: Option<Bent>,
     /// (first index, count) per view.
     ranges: [(u32, u32); 3],
     srv: Option<ID3D11ShaderResourceView>,
     material: ID3D11Buffer,
     /// How the game shades it, when that's known.
     metro: Option<MetroMesh>,
+}
+
+/// A mesh that bends between its own shape and another (a bow drawn: the game's morph of it at
+/// full draw): its vertices at rest, each one's offset (position, normal) at full bend, and the
+/// bend its vertex buffer holds now.
+struct Bent {
+    rest: Vec<Vertex>,
+    offsets: Vec<[[f32; 3]; 2]>,
+    bend: std::cell::Cell<f32>,
+}
+
+impl Bent {
+    /// The mesh's vertices bent `bend` of the way (past 1, or below 0, beyond either shape the
+    /// same way: a bow's limbs springing past straight).
+    fn vertices(&self, bend: f32) -> Vec<Vertex> {
+        self.rest
+            .iter()
+            .zip(&self.offsets)
+            .map(|(v, o)| {
+                let pos = Vec3::from_array(v.pos) + Vec3::from_array(o[0]) * bend;
+                let n = (Vec3::from_array(v.normal) + Vec3::from_array(o[1]) * bend).normalize_or(Vec3::from_array(v.normal));
+                Vertex { pos: pos.to_array(), normal: n.to_array(), ..*v }
+            })
+            .collect()
+    }
 }
 
 /// A mesh's game material on the GPU: its class and the views of t0 and t2..t4 (raw: the game's
@@ -1058,11 +1085,15 @@ impl Character {
     }
 }
 
+/// A mesh's vertices as the GPU takes them.
+fn gpu_vertices(m: &crate::SourceMesh) -> Vec<Vertex> {
+    m.vertices.iter().map(|v| Vertex { pos: v.pos, normal: v.normal, uv: v.uv, bones: v.bones, weights: v.weights, ao: [v.ao, 0, 0, 0] }).collect()
+}
+
 /// One mesh on the GPU: its vertices, `indices` (the views' `ranges` in them), its base texture
 /// and material, and the game's material when it has one with all its textures.
 fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u32); 3], upload: &mut impl FnMut(&Arc<asset::Texture>, &str) -> Option<GpuTex>) -> Result<GpuMesh> {
-    let vertices: Vec<Vertex> =
-        m.vertices.iter().map(|v| Vertex { pos: v.pos, normal: v.normal, uv: v.uv, bones: v.bones, weights: v.weights, ao: [v.ao, 0, 0, 0] }).collect();
+    let vertices = gpu_vertices(m);
     let base = m.texture.as_ref().and_then(|t| upload(t, &m.name));
     // The game's own flag where it has one, else a guess from the texture.
     let cutout = base.is_some() && m.material.as_ref().map_or_else(|| m.texture.as_deref().is_some_and(is_cutout), |mat| mat.alpha_test);
@@ -1103,12 +1134,17 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
     Ok(GpuMesh {
         vb: static_buffer(gpu, bytemuck::cast_slice(&vertices), D3D11_BIND_VERTEX_BUFFER)?,
         ib: static_buffer(gpu, bytemuck::cast_slice(indices), D3D11_BIND_INDEX_BUFFER)?,
+        bent: None,
         ranges,
         srv,
         material: static_buffer(gpu, bytemuck::bytes_of(&material), D3D11_BIND_CONSTANT_BUFFER)?,
         metro,
     })
 }
+
+/// A held model's mesh as it's loaded: the mesh, what part it is, and for one that bends each
+/// vertex's offset at full bend (position, normal).
+pub(crate) type HeldSource = (crate::SourceMesh, crate::HeldMeshInfo, Option<Vec<[[f32; 3]; 2]>>);
 
 /// A rigid model in parts that move on their own (a gun: its body, magazine, bolt, trigger,
 /// rounds), drawn with the body: each part is one "bone" of the palette, placed where the frame
@@ -1124,10 +1160,11 @@ pub struct HeldModel {
 }
 
 impl HeldModel {
-    /// `meshes`: each with the part it belongs to (its vertices' bones are ignored) and whether a
-    /// special draw takes it instead (see [`crate::SpecialDraw`]).
-    pub(crate) fn new(gpu: &Gpu, meshes: Vec<(crate::SourceMesh, crate::HeldMeshInfo)>) -> Result<HeldModel> {
-        let parts = meshes.iter().map(|(_, i)| i.part + 1).max().unwrap_or(0);
+    /// `meshes`: each with the part it belongs to (its vertices' bones are ignored), whether a
+    /// special draw takes it instead (see [`crate::SpecialDraw`]), and for one that bends, each
+    /// vertex's offset at full bend (position, normal; see [`crate::HeldDraw::bend`]).
+    pub(crate) fn new(gpu: &Gpu, meshes: Vec<HeldSource>) -> Result<HeldModel> {
+        let parts = meshes.iter().map(|(_, i, _)| i.part + 1).max().unwrap_or(0);
         anyhow::ensure!(parts <= MAX_BONES, "{parts} parts (at most {MAX_BONES})");
         let mut uploaded: HashMap<*const asset::Texture, Option<GpuTex>> = HashMap::new();
         let mut upload = |t: &Arc<asset::Texture>, what: &str| {
@@ -1138,14 +1175,21 @@ impl HeldModel {
         };
         let mut out = Vec::new();
         let mut info = Vec::new();
-        for (mut m, i) in meshes.into_iter().filter(|(m, _)| !m.indices.is_empty()) {
+        for (mut m, i, offsets) in meshes.into_iter().filter(|(m, ..)| !m.indices.is_empty()) {
             for v in &mut m.vertices {
                 v.bones = [i.part as u8, 0, 0, 0];
                 v.weights = [255, 0, 0, 0];
             }
             fix_winding(&mut m);
             let n = m.indices.len() as u32;
-            out.push(gpu_mesh(gpu, &m, &m.indices, [(0, n); 3], &mut upload)?);
+            let mut g = gpu_mesh(gpu, &m, &m.indices, [(0, n); 3], &mut upload)?;
+            if let Some(offsets) = offsets.filter(|o| o.len() == m.vertices.len()) {
+                // Its vertices rewritten as it bends: a buffer the CPU writes.
+                let rest = gpu_vertices(&m);
+                g.vb = pipeline::dynamic_buffer(gpu, bytemuck::cast_slice(&rest), D3D11_BIND_VERTEX_BUFFER)?;
+                g.bent = Some(Bent { rest, offsets, bend: std::cell::Cell::new(0.0) });
+            }
+            out.push(g);
             info.push(i);
         }
         Ok(HeldModel { meshes: out, info, parts, palette: std::cell::RefCell::new(Box::new(BonesCb::zeroed())), cb: ConstantBuffer::new(gpu)?, then_cb: ConstantBuffer::new(gpu)? })
@@ -1161,9 +1205,16 @@ impl HeldModel {
         self.parts
     }
 
-    /// Uploads the parts' places (tracking space; None or missing: hidden).
-    fn upload(&self, ctx: &ID3D11DeviceContext, parts: &[Option<Mat4>]) {
+    /// Uploads the parts' places (tracking space; None or missing: hidden), and bends the meshes
+    /// that bend as far as `bend` (rewritten only when it changes).
+    fn upload(&self, ctx: &ID3D11DeviceContext, parts: &[Option<Mat4>], bend: f32) {
         self.upload_to(ctx, parts, &self.cb);
+        for m in &self.meshes {
+            if let Some(b) = m.bent.as_ref().filter(|b| (b.bend.get() - bend).abs() > 1e-4) {
+                b.bend.set(bend);
+                pipeline::write_dynamic(ctx, &m.vb, bytemuck::cast_slice(&b.vertices(bend)));
+            }
+        }
     }
 
     /// Uploads where the parts were in the game's pictures ([`Renderer::draw_reprojected`]).
@@ -1669,7 +1720,7 @@ impl Renderer {
         }
         if !held.is_empty() {
             for h in held {
-                h.model.upload(ctx, h.parts);
+                h.model.upload(ctx, h.parts, h.bend);
                 unsafe { ctx.VSSetConstantBuffers(1, Some(&[Some(h.model.cb.buf.clone())])) };
                 let meshes: Vec<&GpuMesh> = h.model.meshes.iter().zip(&h.model.info).filter(|(_, i)| !i.special).map(|(m, _)| m).collect();
                 self.draw_shaded(ctx, &meshes, ALL);
@@ -1867,7 +1918,7 @@ impl Renderer {
             draw_mesh(ctx, m, range);
         }
         for (h, then_parts) in held {
-            h.model.upload(ctx, h.parts);
+            h.model.upload(ctx, h.parts, h.bend);
             h.model.upload_then(ctx, then_parts);
             unsafe {
                 ctx.VSSetConstantBuffers(1, Some(&[Some(h.model.cb.buf.clone())]));
@@ -1919,7 +1970,7 @@ impl Renderer {
             let Some(o) = &h.overlay else { continue };
             self.overlay_cb.update(ctx, &OverlayCb::of(o));
             let blend = if o.overlay.flags & rustvr_protocol::OVL_ADDITIVE != 0 { &self.additive } else { &self.alpha_blend };
-            h.model.upload(ctx, h.parts);
+            h.model.upload(ctx, h.parts, h.bend);
             unsafe {
                 ctx.OMSetBlendState(blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
                 ctx.VSSetConstantBuffers(1, Some(&[Some(h.model.cb.buf.clone())]));
@@ -2125,7 +2176,7 @@ fn draw_opaque(ctx: &ID3D11DeviceContext, main: &Character, range: usize, held: 
         draw_mesh(ctx, m, range);
     }
     for h in held {
-        h.model.upload(ctx, h.parts);
+        h.model.upload(ctx, h.parts, h.bend);
         unsafe { ctx.VSSetConstantBuffers(1, Some(&[Some(h.model.cb.buf.clone())])) };
         for (m, _) in h.model.meshes.iter().zip(&h.model.info).filter(|(m, i)| !i.special && !forward(m)) {
             draw_mesh(ctx, m, ALL);

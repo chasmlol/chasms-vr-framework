@@ -119,7 +119,7 @@ fn hands_close_on_what_they_take() {
             for _ in 0..n {
                 f.index += 1;
                 now += DT as f64;
-                out = rig.update(&RigInput { frame: f, map: WorldMap::IDENTITY, dt: DT, now, settings: &settings, eye_height: 1.7, crouched: false, paused: false, infinite_ammo: false });
+                out = rig.update(&RigInput { frame: f, map: WorldMap::IDENTITY, dt: DT, now, settings: &settings, eye_height: 1.7, crouched: false, paused: false, infinite_ammo: false, arm_length: 0.0 });
             }
             out
         };
@@ -216,7 +216,7 @@ fn hands_close_on_what_they_take() {
             let (cam, rot) = look_at(eye_at, centre);
             let fov = Fov { left: -0.6, right: 0.6, up: 0.48, down: -0.48 };
             let light = LightHint { sun_dir: Vec3::new(-0.4, 0.8, -0.45).normalize().to_array(), sun_color: [1.0, 0.95, 0.9], ambient: [0.3, 0.32, 0.36], ..Default::default() };
-            body.draw(&gpu, &target, &pose(cam, rot), &fov, light, None, &[HeldDraw { model: &held, parts: &place, key: "", overlay: None }]);
+            body.draw(&gpu, &target, &pose(cam, rot), &fov, light, None, &[HeldDraw { model: &held, parts: &place, key: "", overlay: None, bend: 0.0 }]);
             rustvr_gpu::save_png(&out_dir().join(format!("{}_{view}.png", case.name)), width, height, &tex.read_rgba8(&gpu).unwrap()).unwrap();
         }
     }

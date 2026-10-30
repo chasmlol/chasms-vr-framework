@@ -25,6 +25,7 @@ pub struct Settings {
     pub sound: Sound,
     pub spectator: Spectator,
     pub mirror: Mirror,
+    pub archery: Archery,
 }
 
 /// The mirror (`crate::mirror`): where it stands when called up, and how big it is.
@@ -286,6 +287,37 @@ pub struct Interaction {
     /// in one hand, and with both hands but off the shoulder.
     pub recoil_one_hand: f32,
     pub recoil_unbraced: f32,
+}
+
+/// The bow (`rig::bow`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Archery {
+    /// Where the hand takes an arrow while the other holds a bow.
+    pub quiver: Quiver,
+    /// The game's crosshair straight out along a drawn arrow.
+    pub crosshair: bool,
+    /// The full draw fits the arm: the bow's own, or as far as the arm draws to the chin when
+    /// that's shorter (off: always the bow's own).
+    pub fit_draw: bool,
+}
+
+impl Default for Archery {
+    fn default() -> Self {
+        Archery { quiver: Quiver::Both, crosshair: false, fit_draw: true }
+    }
+}
+
+/// Where the quiver is (see [`Archery::quiver`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Quiver {
+    /// Over the string hand's shoulder, behind the head.
+    Shoulder,
+    /// At the string hand's hip.
+    Hip,
+    /// Both.
+    Both,
 }
 
 /// How a grenade arms (see `rig::throwable`).

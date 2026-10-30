@@ -68,7 +68,7 @@ fn a_hand_pressed_flat_on_a_wall() {
         f.hands[1].aim = f.hands[1].grip;
         f.index += 1;
         now += DT as f64;
-        out = rig.update(&RigInput { frame: &f, map: WorldMap::IDENTITY, dt: DT, now, settings: &settings, eye_height: 1.7, crouched: false, paused: false, infinite_ammo: false });
+        out = rig.update(&RigInput { frame: &f, map: WorldMap::IDENTITY, dt: DT, now, settings: &settings, eye_height: 1.7, crouched: false, paused: false, infinite_ammo: false, arm_length: 0.0 });
     }
     eprintln!("pressed: hand {:.3?}, finger give {:.2?}", out.hands[1].pose.pos, out.finger_give[1]);
     let model = box_model(Vec3::new(0.4, 0.4, 0.05));
@@ -103,7 +103,7 @@ fn a_hand_pressed_flat_on_a_wall() {
             let (cam, rot) = look_at(eye, at + Vec3::new(0.0, 0.0, 0.06));
             let fov = Fov { left: -0.6, right: 0.6, up: 0.48, down: -0.48 };
             let light = LightHint { sun_dir: Vec3::new(-0.4, 0.8, -0.45).normalize().to_array(), sun_color: [1.0, 0.95, 0.9], ambient: [0.3, 0.32, 0.36], ..Default::default() };
-            body.draw(&gpu, &target, &pose(cam, rot), &fov, light, None, &[HeldDraw { model: &wall, parts: &wall_at, key: "", overlay: None }]);
+            body.draw(&gpu, &target, &pose(cam, rot), &fov, light, None, &[HeldDraw { model: &wall, parts: &wall_at, key: "", overlay: None, bend: 0.0 }]);
             rustvr_gpu::save_png(&out_dir.join(format!("{case}_{view}.png")), width, height, &tex.read_rgba8(&gpu).unwrap()).unwrap();
         }
     }

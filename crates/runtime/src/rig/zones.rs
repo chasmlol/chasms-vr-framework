@@ -15,6 +15,7 @@ use glam::{Quat, Vec3};
 use rustvr_protocol::*;
 
 use super::filters::alpha;
+use crate::settings::Quiver;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Zone {
@@ -73,6 +74,24 @@ pub fn ammo_zones(eye_height: f32, dominant: usize) -> [Zone; 2] {
         Zone::new(Vec3::new(0.0, -0.34 * (eye_height / 1.70).clamp(0.6, 1.3), 0.13), 0.16),
         Zone::new(Vec3::new(0.1 * off, belt(eye_height) + 0.05, 0.13), 0.13),
     ]
+}
+
+/// Where a hand takes an arrow from the quiver while the other holds a bow (`string`: the hand
+/// taking it): over that hand's shoulder behind the head (where Oblivion wears its quiver, the
+/// arrows at the right shoulder), at that hand's hip (for a headset that loses the hand behind the
+/// head), or both. The quiver is a set of zones arrows come from, so a holster for arrows can be
+/// another.
+pub fn quiver_zones(eye_height: f32, string: usize, place: Quiver) -> Vec<Zone> {
+    let z = slot_zones(eye_height, string);
+    let (back, hip) = if string == 1 { (SLOT_BACK_RIGHT, SLOT_HIP_RIGHT) } else { (SLOT_BACK_LEFT, SLOT_HIP_LEFT) };
+    // A little more generous than the holsters: an arrow is reached for often, fast, unseen.
+    let shoulder = Zone { radius: 0.22, ..z[back as usize] };
+    let hip = Zone { radius: 0.15, ..z[hip as usize] };
+    match place {
+        Quiver::Shoulder => vec![shoulder],
+        Quiver::Hip => vec![hip],
+        Quiver::Both => vec![shoulder, hip],
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

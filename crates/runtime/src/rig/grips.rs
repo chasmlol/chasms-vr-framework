@@ -111,7 +111,8 @@ pub fn grip(d: &ObjectDesc, rot: Option<Quat>) -> Option<Handle> {
     let reversible = d.flags & OBJF_UPRIGHT == 0;
     if let Some(axis) = line(d.grip_line) {
         let rot = rot.unwrap_or_else(|| fist_along(axis.1 - axis.0));
-        return Some(along(at, rot, axis, radius, reversible));
+        // (A bow only one way up: held the other way round it would shoot back at the archer.)
+        return Some(along(at, rot, axis, radius, reversible && d.kind != OBJ_BOW));
     }
     let rot = rot?;
     if handled {

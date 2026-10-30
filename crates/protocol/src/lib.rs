@@ -39,6 +39,7 @@
 //! | [`OFF_BODY`] .. [`OFF_KICKS`] | the player rig's regions: see [`world`] | both | seqlock, SPSC ring |
 //! | [`OFF_SOUNDS`] | [`SoundPack`]: the game's own sounds (see [`sound`]) | adapter -> runtime | seqlock |
 //! | [`OFF_CASTERS`], [`OFF_OVERLAYS`] | [`Casters`] (runtime -> adapter), [`Overlays`] (adapter -> runtime): see [`magic`] | | seqlock |
+//! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
 //!
 //! # Frames
 //!
@@ -60,6 +61,7 @@ use bytemuck::{Pod, Zeroable};
 
 #[cfg(windows)]
 pub mod link;
+pub mod archery;
 pub mod avatar;
 pub mod combat;
 pub mod hud;
@@ -70,6 +72,7 @@ pub mod lighting;
 pub mod magic;
 pub mod player;
 
+pub use archery::*;
 pub use avatar::*;
 pub use combat::*;
 pub use hud::*;

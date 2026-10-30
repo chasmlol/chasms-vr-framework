@@ -521,6 +521,18 @@ impl Adapter {
         }
     }
 
+    /// How the game's bows bend and their arrows fly (see [`Bows`]): with the objects, when they
+    /// change.
+    pub fn write_bows(&self, bows: &Bows) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_bows(bows);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The player's body as the game makes it up (see [`AvatarDesc`]): when it changes.
     pub fn write_avatar(&self, desc: &AvatarDesc) -> bool {
         match &self.link {

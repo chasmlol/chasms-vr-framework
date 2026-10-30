@@ -72,6 +72,21 @@ pub enum Cue {
     /// An air gun's pump stroke (pressure building), and its trigger without the pressure to fire.
     Pump,
     AirHiss,
+    // Bows (`rig::bow`).
+    /// An arrow taken from the quiver (the bow it's for is the object).
+    Quiver,
+    /// An arrow going onto the string: a click in both hands.
+    BowNock,
+    /// The string drawn (or let back) a centimetre: a tick in both hands, stronger the further it's
+    /// drawn (`intensity`: the draw's share of full).
+    BowCreak,
+    /// Held at full draw: a low strain now and then.
+    BowStrain,
+    /// An arrow loosed: the bow's kick in the bow hand, and the string's snap in the string hand.
+    BowRelease,
+    StringSnap,
+    /// The bow's limbs swinging back and forth after a shot, felt in the bow hand.
+    BowSpring,
 }
 
 impl Cue {
@@ -123,6 +138,13 @@ impl Cue {
             Cue::PumpForward => "pump_forward",
             Cue::Pump => "pump",
             Cue::AirHiss => "air_hiss",
+            Cue::Quiver => "quiver",
+            Cue::BowNock => "bow_nock",
+            Cue::BowCreak => "bow_creak",
+            Cue::BowStrain => "bow_strain",
+            Cue::BowRelease => "bow_release",
+            Cue::StringSnap => "string_snap",
+            Cue::BowSpring => "bow_spring",
         }
     }
 }
@@ -196,6 +218,21 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::BoltForward | Cue::PumpForward => (0.045, 140.0, 0.85),
         Cue::Pump => (0.04, 90.0, 0.6),
         Cue::AirHiss => (0.03, 320.0, 0.25),
+        Cue::Quiver => (0.02, 160.0, 0.4),
+        Cue::BowNock => (0.02, 210.0, 0.6),
+        // The Longbow's draw: a tick a centimetre, from a faint one at rest to one five times as
+        // long at full draw.
+        Cue::BowCreak => (0.004 + 0.008 * i, 170.0, 0.15 + 0.45 * i),
+        // Low at full draw, and longer and stronger as the string is drawn on past it.
+        Cue::BowStrain => (0.02 + 0.04 * i, 80.0, 0.35 + 0.5 * i),
+        Cue::BowRelease => (0.05, 110.0, (0.5 + 0.5 * i).min(1.0)),
+        Cue::StringSnap => (0.02, 240.0, (0.4 + 0.5 * i).min(1.0)),
+        Cue::BowSpring => {
+            if i < 0.05 {
+                return None;
+            }
+            (0.015, 130.0, (0.25 + 0.6 * i).min(0.9))
+        }
     })
 }
 

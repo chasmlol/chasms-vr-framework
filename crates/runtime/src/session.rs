@@ -126,6 +126,9 @@ pub struct Session {
     mirror: crate::mirror::Mirror,
     menu_beside_said: bool,
     card: Option<(panels::Panel, f32)>,
+    /// The bow's crosshair (the Hands tab's option), and this frame's place for it.
+    crosshair: crate::crosshair::Crosshair,
+    bow_mark: Option<(panels::Panel, f32)>,
     layout: panels::Layout,
     targets: Option<SharedTargets>,
     generation: u32,
@@ -147,6 +150,8 @@ pub struct Session {
     /// read.
     overlays: Box<Overlays>,
     overlays_seq: u32,
+    /// How the game's bows bend and their arrows fly (read with the objects).
+    bows: Box<Bows>,
     states: Box<ObjectStates>,
     /// How long after the runtime's frame the game's picture of it is shown, seconds (smoothed).
     game_lag: f32,
@@ -274,6 +279,8 @@ impl Session {
             mirror: crate::mirror::Mirror::default(),
             menu_beside_said: false,
             card: None,
+            crosshair: Default::default(),
+            bow_mark: None,
             gpu,
             link,
             sec: Security::for_this_user(),
@@ -297,6 +304,7 @@ impl Session {
             objects: bytemuck::zeroed_box(),
             overlays: bytemuck::zeroed_box(),
             overlays_seq: 0,
+            bows: bytemuck::zeroed_box(),
             states: bytemuck::zeroed_box(),
             game_lag: 0.0,
             frame_log: [(0, 0, 0.0); 32],
@@ -614,8 +622,13 @@ impl Session {
             let seq = self.link.objects_seq();
             if seq != self.objects_seq && self.link.read_objects_into(&mut self.objects) {
                 self.objects_seq = seq;
+                // (The game writes its bows before the objects they're for.)
+                if !self.link.read_bows_into(&mut self.bows) {
+                    self.bows.count = 0;
+                }
+                self.rig.set_bows(&self.bows);
                 self.rig.sync(&self.objects);
-                self.held_objects.sync(&self.gpu, &self.objects);
+                self.held_objects.sync(&self.gpu, &self.objects, &self.bows);
                 // The valves the runtime draws are taken by the part of their model that turns.
                 for (desc, shape) in self.held_objects.valve_shapes(&self.objects) {
                     self.rig.set_valve_shape(desc, &shape);
@@ -706,6 +719,8 @@ impl Session {
                 crouched: g.flags & GS_CROUCHED != 0,
                 paused: rig_paused,
                 infinite_ammo: g.flags & GS_INFINITE_AMMO != 0,
+                // (The span is grip to grip with the arms out: an arm each side of the shoulders.)
+                arm_length: ((self.body.arm_span() - 0.36) * 0.5).max(0.0),
             });
             // One event, one frame: the pulse and the sound together. The same cue for the same
             // object twice in a frame (both hands' pulses for one shot, or for one seat) is one
@@ -752,6 +767,9 @@ impl Session {
             // What the thing in a hand is, on a card beside it.
             self.item_card.read(&self.link);
             self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
+            // Where a drawn arrow points, when the player asks for it.
+            let head = (Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot));
+            self.bow_mark = self.crosshair.update(&self.gpu, self.settings.current.archery.crosshair, &self.rig, &self.bows, self.map_now.as_ref(), head, frame.dt);
             // The body the game makes up, when it changes.
             self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
@@ -781,6 +799,12 @@ impl Session {
             casters.frame = frame.index;
             casters.hands = self.combat.casting;
             self.link.write_casters(&casters);
+            // The arrows loosed: the game fires its own, from where they were along the bow.
+            for l in std::mem::take(&mut self.rig.loosed) {
+                let speed = self.bows.get(l.bow).map_or(0.0, |b| b.flight(l.strength).0);
+                let ev = CombatEvent { kind: CE_LOOSE, object: l.bow, what: l.arrow, hand: l.hand as u32, strength: l.strength, speed, point: l.point.to_array(), dir: l.dir.to_array(), ..Default::default() };
+                self.link.push_combat_event(&ev);
+            }
             // Blades that went in and stay in.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);
@@ -800,6 +824,7 @@ impl Session {
         } else {
             self.held_objects.clear();
             self.card = None;
+            self.bow_mark = None;
         }
         if let (true, Some(a)) = (self.opts.offline_audio && !self.opts.audio, &self.audio) {
             a.render((frame.dt.clamp(0.0, 0.1) * OFFLINE_RATE as f32).round() as usize);
@@ -1396,6 +1421,9 @@ impl Session {
         if let Some((p, opacity)) = self.card.filter(|_| !menu_mode && !game_card) {
             layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, self.item_card.srv()) });
         }
+        if let (Some((p, opacity)), Some(srv)) = (self.bow_mark.filter(|_| !menu_mode), self.crosshair.srv()) {
+            layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, srv) });
+        }
         if let Some(p) = layout.runtime_menu {
             layers.panels.push(PanelLayer::whole(p, self.menu.srv()));
         }
@@ -1876,6 +1904,12 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::ShellIn => (E::MagIn, S::MagSeat),
         C::ShellOut | C::CaseEject => (E::MagOut, S::MagEject),
         C::AirHiss => (E::DryFire, S::EmptyClick),
+        // An arrow out of the quiver sounds like something drawn from a holster; going on the
+        // string, a soft click (players of rapid fire hate a harsh one). The draw, the shot and
+        // the limbs are felt: a game's bow plays its own sounds for them (Oblivion's draw and shot).
+        C::Quiver => (E::HolsterOut, S::HolsterOut),
+        C::BowNock => (E::ZoneTick, S::ZoneTick),
+        C::BowCreak | C::BowStrain | C::BowRelease | C::StringSnap | C::BowSpring => return None,
     })
 }
 

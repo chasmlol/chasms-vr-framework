@@ -454,6 +454,9 @@ pub struct HeldDraw<'a> {
     pub key: &'a str,
     /// The game's effect shader over it (an enchanted weapon's shimmer).
     pub overlay: Option<OverlayDraw>,
+    /// How far a model that bends is bent ([`HeldModel::load_bent`]: 0 its own shape, 1 the bent
+    /// one; a bow drawn); 0 for any other.
+    pub bend: f32,
 }
 
 /// The game's effect shader over a held model ([`rustvr_protocol::Overlay`]): its fill and edge,
@@ -501,6 +504,13 @@ impl HeldModel {
     /// `parts`. Meshes with the game's materials whose shader isn't reproduced here are marked
     /// [`HeldMeshInfo::special`].
     pub fn load(gpu: &Gpu, dir: &std::path::Path, model: &asset::Model, parts: &[HeldPart]) -> Result<HeldModel> {
+        Self::load_bent(gpu, dir, model, None, parts)
+    }
+
+    /// The same, for a model that bends as it's used (a bow as its string is drawn): `bent` is the
+    /// same meshes and vertices, in the same order, bent all the way (the game's morph target); it's
+    /// drawn as far between the two as each draw's [`HeldDraw::bend`] says.
+    pub fn load_bent(gpu: &Gpu, dir: &std::path::Path, model: &asset::Model, bent: Option<&asset::Model>, parts: &[HeldPart]) -> Result<HeldModel> {
         let mut cache: HashMap<String, Option<Arc<asset::Texture>>> = HashMap::new();
         let mut texture = |key: &str| -> Option<Arc<asset::Texture>> {
             if key.is_empty() {
@@ -523,7 +533,18 @@ impl HeldModel {
             // Shaders not reproduced here, and the whole of a collimator (its reticle, the lens's
             // reflection, pane and refraction, which the game draws in that order: `collimator`).
             let special = game_materials && (metro::Class::of(m.material.shader).is_none() || collimator::takes(model, p.mesh));
-            meshes.push((source, HeldMeshInfo { part: p.part, source: p.mesh, name: m.name.clone(), special }));
+            // Each vertex's offset to the bent shape, where there's one with the same vertices.
+            let offsets = bent.and_then(|b| b.meshes.get(p.mesh)).filter(|b| b.vertices.len() == m.vertices.len()).map(|b| {
+                p.vertices
+                    .iter()
+                    .map(|&i| {
+                        let (r, t) = (&m.vertices[i as usize], &b.vertices[i as usize]);
+                        let d = |a: [f32; 3], b: [f32; 3]| [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                        [d(r.pos, t.pos), d(r.normal, t.normal)]
+                    })
+                    .collect::<Vec<_>>()
+            });
+            meshes.push((source, HeldMeshInfo { part: p.part, source: p.mesh, name: m.name.clone(), special }, offsets));
         }
         render::HeldModel::new(gpu, meshes)
     }

@@ -18,6 +18,7 @@
 //! adapter maps them with the same view as the hands and they never trail behind while walking.
 
 pub mod actions;
+pub mod bow;
 pub mod embed;
 pub mod feedback;
 pub mod filters;
@@ -122,6 +123,9 @@ enum Holder {
     Gone,
     /// A thing to take ([`OBJF_LOOT`]) put in this body slot: the game's to take.
     Stowed(u32),
+    /// An arrow on a bow's string ([`bow`]): it goes where the bow and the draw put it (the hand
+    /// drawing it, if any, holds it too).
+    Nocked { bow: u32 },
 }
 
 /// How a held object sits in the hand.
@@ -181,6 +185,8 @@ struct Obj {
     valve_shape: Vec<Vec3>,
     /// Stuck in something it chopped or stabbed into ([`embed`]).
     embed: Option<embed::Embedded>,
+    /// A bow's string and the arrow on it ([`bow`]).
+    bow: Option<bow::BowState>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +205,10 @@ enum Hover {
     Chamber(u32, usize),
     /// A valve's rim.
     Valve(u32),
+    /// The quiver, while the other hand holds this bow: an arrow for it.
+    Quiver(u32),
+    /// The string of the other hand's bow, an arrow resting on it: draw it.
+    String(u32),
 }
 
 /// A hand holding a hinged action's barrels: which gun, where on them it took them (weapon space,
@@ -443,6 +453,11 @@ pub struct RigDebug {
     pub pumps: u32,
     pub hisses: u32,
     pub last_strength: f32,
+    /// Arrows taken from the quiver, nocked and loosed, and the last loose's strength.
+    pub quiver_draws: u32,
+    pub nocks: u32,
+    pub looses: u32,
+    pub last_loose: f32,
 }
 
 /// A push from the game (its explosion, a bullet), applied on the next step.
@@ -465,6 +480,24 @@ pub struct RigInput<'a> {
     /// The game's menu is open: hands go idle.
     pub paused: bool,
     pub infinite_ammo: bool,
+    /// The player's arm, shoulder to grip (metres; 0: unknown): a bow's full draw fits it.
+    pub arm_length: f32,
+}
+
+/// An arrow loosed from a bow this frame ([`Rig::loosed`]): for the game to fire its own
+/// ([`CE_LOOSE`]). World space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Loose {
+    pub bow: u32,
+    /// The arrow's template (what it is).
+    pub arrow: u32,
+    /// The string hand.
+    pub hand: usize,
+    /// The arrow's tip, and its way along the bow.
+    pub point: Vec3,
+    pub dir: Vec3,
+    /// The draw, 0..1 of the full draw.
+    pub strength: f32,
 }
 
 const SPAWN_BASE: u32 = 0x8000_0000;
@@ -695,6 +728,10 @@ pub struct Rig {
     pushes: Vec<Push>,
     /// What each hand's fingers close on this frame (tracking space).
     grasps: [Option<rustvr_avatar::Grasp>; 2],
+    /// How the game's bows bend and their arrows fly ([`Bows`]).
+    bows: Box<Bows>,
+    /// The arrows loosed this frame, for the game.
+    pub loosed: Vec<Loose>,
 }
 
 impl Default for Rig {
@@ -723,6 +760,8 @@ impl Default for Rig {
             kicks: HashMap::new(),
             pushes: Vec::new(),
             grasps: [None, None],
+            bows: bytemuck::zeroed_box(),
+            loosed: Vec::new(),
         }
     }
 }
@@ -1012,16 +1051,26 @@ impl Rig {
             return;
         }
         self.table_seq = table.seq;
-        let mut seen = Vec::new();
         let descs = &table.descs[..(table.count as usize).min(MAX_OBJECTS)];
         // Templates first: a gun loads itself from its magazine template as it's added.
         self.templates = descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_TEMPLATE != 0).copied().collect();
+        // (A driven thing is only drawn: no body, nothing the hands meet.)
+        let seen: Vec<u32> = descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_TEMPLATE == 0 && d.kind != OBJ_DRIVEN).map(|d| d.id).collect();
+        // What's gone goes first (a holster it was in is free for what's new), and so does what
+        // came back as something else (a sword become a bow): it's made again.
+        let gone: Vec<u32> = self
+            .objects
+            .iter()
+            .filter(|(id, o)| !o.spawned && (!seen.contains(id) || descs.iter().any(|d| d.id == **id && d.kind != o.desc.kind)))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            self.remove(id);
+        }
         for d in descs {
-            // (A driven thing is only drawn: no body, nothing the hands meet.)
-            if d.id == 0 || d.flags & OBJF_TEMPLATE != 0 || d.kind == OBJ_DRIVEN {
+            if !seen.contains(&d.id) {
                 continue;
             }
-            seen.push(d.id);
             match self.objects.get_mut(&d.id) {
                 Some(o) => {
                     o.desc = *d;
@@ -1047,10 +1096,6 @@ impl Rig {
                     self.start_in_slot(d);
                 }
             }
-        }
-        let gone: Vec<u32> = self.objects.iter().filter(|(id, o)| !o.spawned && !seen.contains(id)).map(|(id, _)| *id).collect();
-        for id in gone {
-            self.remove(id);
         }
     }
 
@@ -1098,6 +1143,7 @@ impl Rig {
                 }),
                 valve_shape: Vec::new(),
                 embed: None,
+                bow: (d.kind == OBJ_BOW).then(bow::BowState::default),
             },
         );
         // A valve's wheel turns on its axle, never anywhere else.
@@ -1182,6 +1228,15 @@ impl Rig {
                     self.remove(m);
                 }
             }
+            // An arrow off its string; a bow's arrow falls.
+            if let Holder::Nocked { bow } = o.holder
+                && let Some(b) = self.objects.get_mut(&bow).and_then(|b| b.bow.as_mut())
+            {
+                (b.nocked, b.drawing) = (None, None);
+            }
+            if let Some(a) = o.bow.and_then(|b| b.nocked) {
+                self.free_body(a, groups_free());
+            }
         }
     }
 
@@ -1210,6 +1265,11 @@ impl Rig {
 
     fn template_for(&self, ammo_type: u32) -> Option<ObjectDesc> {
         self.templates.iter().find(|t| t.kind == OBJ_MAGAZINE && t.ammo_type == ammo_type).copied()
+    }
+
+    /// The arrows a bow of `ammo_type` shoots (their template).
+    fn arrow_template(&self, ammo_type: u32) -> Option<ObjectDesc> {
+        self.templates.iter().find(|t| t.kind == OBJ_ARROW && t.ammo_type == ammo_type).copied()
     }
 
     /// A copy of the magazine template `t` holding `rounds` (at most its capacity).
@@ -1357,15 +1417,18 @@ impl Rig {
         let head_t = (v3(inp.frame.hmd.pos), q4(inp.frame.hmd.rot));
         let zones = slot_zones(inp.eye_height, dom);
         let ammo = ammo_zones(inp.eye_height, dom);
+        // Each hand's quiver, while the other holds a bow.
+        let quivers = [0, 1].map(|i| self.other_bow(i).map(|_| zones::quiver_zones(inp.eye_height, i, s.archery.quiver)).unwrap_or_default());
         let near_zone = (0..2).any(|i| {
             let p = self.hands.as_ref().unwrap()[i].grip_t.0;
-            zones.iter().chain(ammo.iter()).any(|z| p.distance(self.anchor.zone_center(z)) < z.radius + 0.1)
+            zones.iter().chain(ammo.iter()).chain(quivers[i].iter()).any(|z| p.distance(self.anchor.zone_center(z)) < z.radius + 0.1)
         });
         self.anchor.update(head_t.0, head_t.1, dt, near_zone);
+        self.loosed.clear();
 
         if !inp.paused {
             for i in 0..2 {
-                self.update_hover(i, s, &zones, &ammo);
+                self.update_hover(i, s, &zones, &ammo, &quivers[i]);
             }
             self.rest_on();
             for i in 0..2 {
@@ -1375,6 +1438,7 @@ impl Rig {
                 self.gloves(i, inp);
             }
             self.weapons(inp, dom);
+            self.bows(inp);
             self.throwables();
         } else {
             // The game is paused: so are the fuses.
@@ -1703,8 +1767,15 @@ impl Rig {
         (self.objects.get(&id)?.desc.kind == OBJ_WEAPON).then_some(id)
     }
 
+    /// The bow the other hand holds by its grip, if any (held anywhere else it can't be drawn).
+    fn other_bow(&self, hand: usize) -> Option<u32> {
+        let h = &self.hands.as_ref()?[hand ^ 1];
+        let id = h.holding.filter(|_| h.on == On::Grip)?;
+        (self.objects.get(&id)?.desc.kind == OBJ_BOW).then_some(id)
+    }
+
     // ---- what an empty hand would grab ------------------------------------------------------------
-    fn update_hover(&mut self, i: usize, s: &Settings, zones: &[Zone; SLOT_COUNT_BODY], ammo: &[Zone; 2]) {
+    fn update_hover(&mut self, i: usize, s: &Settings, zones: &[Zone; SLOT_COUNT_BODY], ammo: &[Zone; 2], quiver: &[Zone]) {
         let hands = self.hands.as_ref().unwrap();
         let h = &hands[i];
         if h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.valve.is_some() {
@@ -1721,6 +1792,22 @@ impl Rig {
                 let (gp, gr) = self.physics.pose(o.body);
                 if palm.distance(gp + gr * v3(o.desc.handle)) < throwable::PIN_REACH {
                     hover = Hover::Pin(gid);
+                }
+            }
+        }
+        // The other hand's bow: the arrow resting on its string, by its nock (to draw it), or
+        // anywhere else on it (to take it off).
+        if let (Hover::None, Some(bid)) = (hover, self.other_bow(i)) {
+            let b = &self.objects[&bid];
+            if let Some(st) = b.bow.filter(|st| st.drawing.is_none())
+                && let Some(arrow) = st.nocked.and_then(|a| self.objects.get(&a))
+            {
+                let (bp, bq) = self.physics.pose(b.body);
+                let at = bp + bq * bow::nock(&b.desc, st.draw);
+                if self.pinch(i).distance(at) < bow::NOCK_REACH * self.map.world_per_meter {
+                    hover = Hover::String(bid);
+                } else if self.physics.distance_to(arrow.collider, palm) < ON_IT * self.map.world_per_meter {
+                    hover = Hover::Object(st.nocked.unwrap());
                 }
             }
         }
@@ -1779,6 +1866,13 @@ impl Rig {
                     break;
                 }
             }
+        }
+        // Arrows from the quiver whenever the other hand holds a bow by its grip.
+        if hover == Hover::None
+            && let Some(bid) = self.other_bow(i)
+            && quiver.iter().any(|z| self.anchor.contains(z, palm_t))
+        {
+            hover = Hover::Quiver(bid);
         }
         // Magazines (unlimited) from the chest and belt pouches, or any empty slot, whenever the
         // other hand holds a magazine-fed gun.
@@ -1842,7 +1936,7 @@ impl Rig {
         }
         // A tick as the hand enters a holster or pouch, so you can find them without looking.
         let before = self.hands.as_ref().unwrap()[i].hover;
-        if matches!(hover, Hover::Slot(_) | Hover::Ammo(_)) && before != hover {
+        if matches!(hover, Hover::Slot(_) | Hover::Ammo(_) | Hover::Quiver(_)) && before != hover {
             self.emit(Cue::ZoneTick, Some(i), None, palm, 1.0);
         }
         let hands = self.hands.as_mut().unwrap();
@@ -1870,7 +1964,8 @@ impl Rig {
         // Something to throw in a swinging hand (not a gun or a magazine, which you hold on to).
         let throwing = {
             let h = &self.hands.as_ref().unwrap()[i];
-            h.holding.and_then(|id| self.objects.get(&id)).is_some_and(|o| o.desc.kind != OBJ_WEAPON && o.desc.kind != OBJ_MAGAZINE) && h.history.recent().length() > THROW_EASE_SPEED
+            // (Nor an arrow: brought to the string fast, or drawing it, it's held on to.)
+            h.holding.and_then(|id| self.objects.get(&id)).is_some_and(|o| !matches!(o.desc.kind, OBJ_WEAPON | OBJ_MAGAZINE | OBJ_ARROW)) && h.history.recent().length() > THROW_EASE_SPEED
         };
         let (pressed, released) = {
             let h = &mut self.hands.as_mut().unwrap()[i];
@@ -2047,8 +2142,70 @@ impl Rig {
                 self.hands.as_mut().unwrap()[i].pin = Some((gid, palm));
                 self.emit(Cue::Grab, Some(i), Some(gid), palm, 0.4);
             }
+            Hover::Quiver(bid) => {
+                // An arrow for the bow, while the game has one to give (its count, less the arrows
+                // already out of the quiver: in a hand, on the string, dropped).
+                let b = &self.objects[&bid].desc;
+                let game = b.flags & OBJF_GAME_AMMO != 0;
+                match self.arrow_template(b.ammo_type) {
+                    Some(t) if !game || t.rounds > self.arrows_out(t.id) => {
+                        // (Out of the quiver already as it's held, so it doesn't swing into the
+                        // hand.)
+                        let (p, q) = compose((palm, grip_rot), bow::held_arrow(&t, self.aim_in_grip(i)));
+                        let id = self.spawn_mag(&t, 1, p, q);
+                        self.debug.quiver_draws += 1;
+                        self.take(id, i, true);
+                        self.emit(Cue::Quiver, Some(i), Some(bid), palm, 1.0);
+                    }
+                    _ => self.emit(Cue::Fail, Some(i), None, palm, 1.0),
+                }
+            }
+            Hover::String(bid) => self.take_string(i, bid),
         }
         let _ = inp;
+    }
+
+    /// Hand `i` takes the string of the bow the other hand holds, by the arrow resting on it: it
+    /// draws it from here.
+    fn take_string(&mut self, i: usize, bid: u32) {
+        let aim = self.aim_in_grip(i);
+        let Some(arrow) = self.objects.get(&bid).and_then(|b| b.bow?.nocked) else { return };
+        let Some(a) = self.objects.get_mut(&arrow) else { return };
+        // (Held as it comes out of the quiver once it's off the string.)
+        let (p, q) = bow::held_arrow(&a.desc, aim);
+        a.attach = Attach::Fixed(p, q);
+        a.handled = true;
+        let now = self.now;
+        if let Some(b) = self.objects.get_mut(&bid).and_then(|b| b.bow.as_mut()) {
+            b.drawing = Some(i);
+            b.drawn_at = now;
+        }
+        let at = self.pinch(i);
+        let h = &mut self.hands.as_mut().unwrap()[i];
+        h.holding = Some(arrow);
+        h.on = On::Free;
+        h.hold = None;
+        h.glove = Glove::Idle;
+        let c = h.collider;
+        self.physics.set_groups(c, groups_none());
+        self.emit(Cue::Grab, Some(i), Some(bid), at, 0.5);
+    }
+
+    /// Where hand `i`'s controller points (its aim pose), turned into its grip pose.
+    fn aim_in_grip(&self, i: usize) -> Quat {
+        let h = &self.hands.as_ref().unwrap()[i];
+        (h.target.1.inverse() * h.aim_rot).normalize()
+    }
+
+    /// Where hand `i`'s fingers pinch an arrow's nock and the string, from its controller (world).
+    fn pinch(&self, i: usize) -> Vec3 {
+        let (p, q) = self.hands.as_ref().unwrap()[i].target;
+        p + q * bow::PINCH * self.map.world_per_meter
+    }
+
+    /// The arrows of template `t` out of the quiver (in a hand, on a string, lying about).
+    fn arrows_out(&self, t: u32) -> u32 {
+        self.objects.values().filter(|o| o.spawned && o.draw_desc == t && o.desc.kind == OBJ_ARROW).count() as u32
     }
 
     /// Puts object `id` in hand `i`. `snap`: ease it into the hand's natural hold (guns always do).
@@ -2084,6 +2241,13 @@ impl Rig {
             self.physics.set_groups(c, groups_hand(other));
         }
         let Some(o) = self.objects.get(&id) else { return };
+        // Off the string it's on.
+        if let Holder::Nocked { bow } = o.holder
+            && let Some(b) = self.objects.get_mut(&bow).and_then(|b| b.bow.as_mut())
+        {
+            (b.nocked, b.drawing, b.draw) = (None, None, 0.0);
+        }
+        let Some(o) = self.objects.get(&id) else { return };
         let (pos, rot) = self.physics.pose(o.body);
         let d = o.desc;
         let gun = d.kind == OBJ_WEAPON;
@@ -2093,7 +2257,7 @@ impl Rig {
         // Its grip, if the hand took it there: a gun's pistol grip locks on, a handle takes the
         // hand anywhere along it. Drawn from a holster or caught (`snap`), a gun or a rigged
         // weapon goes into the hand by its grip whatever.
-        let rigged = gun || (authored(d.grip_rot).is_some() && matches!(d.kind, OBJ_THROWABLE | OBJ_MELEE));
+        let rigged = gun || (authored(d.grip_rot).is_some() && matches!(d.kind, OBJ_THROWABLE | OBJ_MELEE | OBJ_BOW));
         let hold = self.handle_of(&d, i, On::Grip).and_then(|h| match h.take(local.0, local.1) {
             Some(hold) => Some(hold),
             None if snap && rigged => Some((h.at, h.rot)),
@@ -2110,6 +2274,11 @@ impl Rig {
             // A round sits nose first along the fist's axis, its base in the fist.
             let rot = held_round_rot();
             (Attach::Fixed(HELD_ROUND_BASE - rot * v3(d.mag_well), rot), On::Free)
+        } else if snap && d.kind == OBJ_ARROW {
+            // An arrow from the quiver: its nock between the index and the thumb, pointing where
+            // the controller points.
+            let (p, q) = bow::held_arrow(&d, self.aim_in_grip(i));
+            (Attach::Fixed(p, q), On::Free)
         } else if snap && d.kind == OBJ_MAGAZINE {
             // A fresh magazine sits in the fist along the grip pose's +Z (the fist's axis, little
             // finger to thumb), its top 6 cm out past the thumb, ready to push into a well.
@@ -2163,6 +2332,7 @@ impl Rig {
         h.glove = Glove::Idle;
         self.physics.set_groups(h.collider, groups_none());
         self.debug.grabs += 1;
+        tracing::info!("rig: hand {i} takes {id:#x} (kind {}, {on:?})", d.kind);
         self.emit(Cue::Grab, Some(i), Some(id), palm, 1.0);
     }
 
@@ -2322,6 +2492,11 @@ impl Rig {
         }
         let Some(id) = self.hands.as_mut().unwrap()[i].holding.take() else { return };
         self.physics.set_groups(self.hands.as_ref().unwrap()[i].collider, groups_hand(i));
+        // The string let go: the arrow is loosed, or (short of a shot) stays on the string.
+        if let Holder::Nocked { bow } = self.objects[&id].holder {
+            self.let_string_go(bow, id, i);
+            return;
+        }
         // Let go of while it's stuck in something: it stays in.
         if self.objects[&id].embed.is_some() {
             let o = self.objects.get_mut(&id).unwrap();
@@ -2353,6 +2528,17 @@ impl Rig {
         }
         let o = &self.objects[&id];
         let (desc, body) = (o.desc, o.body);
+        // An arrow let go of gently at the quiver goes back in it.
+        if desc.kind == OBJ_ARROW
+            && o.spawned
+            && self.hands.as_ref().unwrap()[i].history.recent().length() < HOLSTER_MAX_SPEED
+            && zones::quiver_zones(inp.eye_height, i, inp.settings.archery.quiver).iter().any(|z| self.anchor.contains(z, palm_t))
+        {
+            tracing::info!("rig: an arrow {id:#x} back in the quiver");
+            self.remove(id);
+            self.emit(Cue::HolsterIn, Some(i), None, palm, 0.6);
+            return;
+        }
         let class = o.throw.as_ref().map(|t| t.class()).unwrap_or(ThrowClass::Generic);
         // Never stowed armed (or with the pin out).
         let stowable = o.throw.as_ref().is_none_or(|t| t.stowable());
@@ -3097,6 +3283,226 @@ impl Rig {
         }
     }
 
+    // ---- bows ------------------------------------------------------------------------------------
+    /// The game's bows ([`Bows`]): how each bends and how its arrows fly.
+    pub fn set_bows(&mut self, table: &Bows) {
+        *self.bows = *table;
+    }
+
+    /// The bows, once a frame: an arrow brought to the string of a bow held by its grip goes on it;
+    /// a bow that isn't so held lets its arrow go (back into the quiver when it's put away); a bow
+    /// just loosed rings in the hand as its limbs spring back.
+    fn bows(&mut self, inp: &RigInput) {
+        let ids: Vec<u32> = self.objects.iter().filter(|(_, o)| o.bow.is_some()).map(|(id, _)| *id).collect();
+        for bid in ids {
+            let (holder, st, d) = {
+                let o = &self.objects[&bid];
+                (o.holder, o.bow.unwrap(), o.desc)
+            };
+            let hands = self.hands.as_ref().unwrap();
+            let bow_hand = match holder {
+                Holder::Held(h) if hands[h].holding == Some(bid) && hands[h].on == On::Grip => Some(h),
+                _ => None,
+            };
+            let Some(bh) = bow_hand else {
+                if let Some(a) = st.nocked {
+                    self.unnock(a, matches!(holder, Holder::Holstered(_) | Holder::Returning { .. }));
+                }
+                continue;
+            };
+            let sh = bh ^ 1;
+            // An arrow for it in the other hand, its nock brought to the string (pointing anywhere
+            // but back at the archer): on it goes.
+            if st.nocked.is_none()
+                && let Some(aid) = hands[sh].holding
+                && let Some(a) = self.objects.get(&aid).filter(|a| a.desc.kind == OBJ_ARROW && a.desc.ammo_type == d.ammo_type && a.holder == Holder::Held(sh))
+            {
+                let (bp, bq) = self.physics.pose(self.objects[&bid].body);
+                let (ap, aq) = self.physics.pose(a.body);
+                let string = bp + bq * bow::nock(&d, 0.0);
+                let nock_at = ap + aq * v3(a.desc.mag_well);
+                if (self.now * 2.0).floor() != ((self.now - inp.dt as f64) * 2.0).floor() {
+                    tracing::debug!("rig: the arrow's nock {:.3} m from the string ({nock_at:.2?}, {string:.2?}), pointing {:.2} along the bow", nock_at.distance(string), (aq * Vec3::Z).dot(bq * Vec3::Z));
+                }
+                if nock_at.distance(string) < bow::NOCK_REACH * self.map.world_per_meter && (aq * Vec3::Z).dot(bq * Vec3::Z) > -0.3 {
+                    self.nock(bid, aid, sh);
+                }
+            }
+            // Just loosed: a pulse in the bow hand at each swing of its limbs, as strong as the swing.
+            if let (Some((at, from)), Some(b)) = (st.loosed, self.bows.get(bid).copied()) {
+                let t = (self.now - at) as f32;
+                let was = t - inp.dt;
+                for k in b.spring[..(b.spring_count as usize).min(BOW_SPRING_KEYS)].iter().skip(1) {
+                    if k[0] > was && k[0] <= t && (k[1] * from).abs() > 0.03 {
+                        let (bp, _) = self.physics.pose(self.objects[&bid].body);
+                        self.emit(Cue::BowSpring, Some(bh), Some(bid), bp, (k[1] * from).abs() * 2.5);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Arrow `aid` in hand `hand` goes onto bow `bid`'s string, eased on from where it is; the hand
+    /// holds the string now.
+    fn nock(&mut self, bid: u32, aid: u32, hand: usize) {
+        let (Some((bp, bq)), Some((ap, aq))) = (self.obj_pose(bid), self.obj_pose(aid)) else { return };
+        let from = (bq.inverse() * (ap - bp), (bq.inverse() * aq).normalize());
+        let now = self.now;
+        let Some(a) = self.objects.get_mut(&aid) else { return };
+        a.holder = Holder::Nocked { bow: bid };
+        let (body, collider) = (a.body, a.collider);
+        self.physics.set_kinematic(body, true);
+        self.physics.set_groups(collider, groups_none());
+        let d = self.objects[&bid].desc;
+        if let Some(b) = self.objects.get_mut(&bid).and_then(|b| b.bow.as_mut()) {
+            *b = bow::BowState { nocked: Some(aid), drawing: Some(hand), nocked_at: now, drawn_at: now, nocked_from: Some(from), shots: b.shots, loosed: b.loosed, full: b.full, ..Default::default() };
+        }
+        self.debug.nocks += 1;
+        tracing::info!("rig: an arrow {aid:#x} nocked on {bid:#x} by hand {hand}");
+        let at = bp + bq * bow::nock(&d, 0.0);
+        self.emit(Cue::BowNock, Some(hand), Some(bid), at, 1.0);
+        self.emit(Cue::BowNock, Some(hand ^ 1), Some(bid), at, 0.6);
+    }
+
+    /// The arrow on a string comes off it: into the hand drawing it if there is one, else (`stow`)
+    /// back into the quiver, or falling where it is.
+    fn unnock(&mut self, aid: u32, stow: bool) {
+        let Some(a) = self.objects.get(&aid) else { return };
+        let Holder::Nocked { bow } = a.holder else { return };
+        if let Some(b) = self.objects.get_mut(&bow).and_then(|b| b.bow.as_mut()) {
+            (b.nocked, b.drawing, b.draw) = (None, None, 0.0);
+        }
+        let hand = self.hands.as_ref().unwrap().iter().position(|h| h.holding == Some(aid));
+        match hand {
+            Some(i) => {
+                let now = self.now;
+                let a = self.objects.get_mut(&aid).unwrap();
+                let (p, q) = self.physics.pose(a.body);
+                a.holder = Holder::Held(i);
+                a.blend = Some((p, q, now, 0.1));
+                let (body, collider) = (a.body, a.collider);
+                self.physics.set_kinematic(body, false);
+                self.physics.set_groups(collider, groups_held(i));
+            }
+            None if stow => self.remove(aid),
+            None => self.free_body(aid, groups_free()),
+        }
+    }
+
+    /// The string hand lets go of the string drawn on bow `bid`: past the least draw the arrow is
+    /// loosed along the bow (the game fires its own, [`Rig::loosed`]) and the bow springs back;
+    /// short of it, the arrow stays on the string, which goes back to rest.
+    fn let_string_go(&mut self, bid: u32, aid: u32, i: usize) {
+        let Some((st, d, holder)) = self.objects.get(&bid).and_then(|b| Some((b.bow?, b.desc, b.holder))) else { return };
+        let bow_hand = if let Holder::Held(h) = holder { h } else { i ^ 1 };
+        let (Some((bp, bq)), Some((ap, aq))) = (self.obj_pose(bid), self.obj_pose(aid)) else { return };
+        let string = bp + bq * bow::nock(&d, st.draw);
+        let least = self.bows.get(bid).map(|b| b.min_draw).filter(|m| *m > 0.0).unwrap_or(bow::MIN_DRAW);
+        let strength = st.strength();
+        if strength < least {
+            if let Some(b) = self.objects.get_mut(&bid).and_then(|b| b.bow.as_mut()) {
+                (b.drawing, b.draw, b.ticked) = (None, 0.0, 0.0);
+            }
+            self.emit(Cue::Release, Some(i), Some(bid), string, 0.4);
+            return;
+        }
+        let a = &self.objects[&aid];
+        let point = ap + aq * v3(a.desc.muzzle);
+        let dir = (aq * Vec3::Z).normalize();
+        let arrow = a.draw_desc;
+        let bend = st.bend(&d, self.bows.get(bid), self.now);
+        self.loosed.push(Loose { bow: bid, arrow, hand: i, point, dir, strength });
+        let now = self.now;
+        if let Some(b) = self.objects.get_mut(&bid).and_then(|b| b.bow.as_mut()) {
+            (b.nocked, b.drawing, b.draw, b.ticked) = (None, None, 0.0, 0.0);
+            b.loosed = Some((now, bend));
+            b.shots += 1;
+        }
+        // The runtime's arrow is gone: the game flies its own from where it was.
+        self.remove(aid);
+        self.debug.looses += 1;
+        self.debug.last_loose = strength;
+        tracing::info!("rig: an arrow loosed from {bid:#x} at {:.0}% draw, from {point:.2?} along {dir:.3?}", strength * 100.0);
+        self.emit(Cue::BowRelease, Some(bow_hand), Some(bid), bp, strength.max(0.4));
+        self.emit(Cue::StringSnap, Some(i), Some(bid), string, strength.max(0.4));
+    }
+
+    /// Where bow `id`, held by hand `hand` at `pivot` (its hold, bow space) and put at `alone` by
+    /// that hand, goes: turned to the string hand while one draws it (eased in as the hand takes
+    /// the string), its string drawn back to that hand up to the full draw. The draw ticks in both
+    /// hands as it moves, and strains at full draw.
+    fn bow_target(&mut self, id: u32, hand: usize, pivot: Vec3, alone: (Vec3, Quat), inp: &RigInput) -> (Vec3, Quat) {
+        let Some((mut st, d)) = self.objects.get(&id).and_then(|o| Some((o.bow?, o.desc))) else { return alone };
+        st.full = bow::full_draw(&d, inp.arm_length, inp.settings.archery.fit_draw);
+        let Some(sh) = st.drawing else {
+            self.objects.get_mut(&id).unwrap().bow = Some(st);
+            return alone;
+        };
+        let pinch = self.pinch(sh);
+        let ((_, aimed), draw) = bow::aim(&d, hand, alone, pivot, pinch, st.full);
+        // Eased in as the hand takes the string, then exact.
+        let k = smooth((self.now - st.drawn_at) / bow::ALIGN_TIME);
+        let g = alone.0 + alone.1 * pivot;
+        let rot = alone.1.slerp(aimed, k).normalize();
+        st.draw = draw;
+        let strength = st.strength();
+        let ticks = ((st.draw - st.ticked).abs() / bow::TICK) as u32;
+        if ticks > 0 {
+            st.ticked = st.draw;
+        }
+        // At full draw a low strain now and then; drawn on past it, harder and more often the
+        // tighter it gets, until it's nearly a steady rumble.
+        let tight = bow::strain(st.draw, st.full);
+        let strain = strength >= bow::STRAIN_AT && self.now >= st.next_strain;
+        if strain {
+            st.next_strain = self.now + (0.1 + 0.4 * bow::noise(self.frame_index ^ id as u64) as f64) * (1.0 - 0.75 * tight as f64);
+        }
+        self.objects.get_mut(&id).unwrap().bow = Some(st);
+        let at = g + rot * (bow::nock(&d, draw) - pivot);
+        if ticks > 0 {
+            self.emit(Cue::BowCreak, Some(sh), Some(id), at, strength);
+            self.emit(Cue::BowCreak, Some(hand), Some(id), at, strength);
+        }
+        if strain {
+            self.emit(Cue::BowStrain, Some(sh), Some(id), at, tight);
+            self.emit(Cue::BowStrain, Some(hand), Some(id), at, 0.8 * tight);
+        }
+        (g - rot * pivot, rot)
+    }
+
+    /// Where arrow `id`, in hand `hand` at `alone` (where the hand alone puts it, world), goes as
+    /// its nock nears the string of a bow the other hand holds: turned about its nock, still in the
+    /// fingers, to lie along the bow as it will on the string, from none at [`bow::ALIGN_REACH`] to
+    /// all of it at [`bow::NOCK_REACH`], where it goes on. So it arrives at the string already lined
+    /// up, as the Longbow's does, and going on only slides it the last few centimetres. None: no
+    /// bow near.
+    fn arrow_target(&self, id: u32, hand: usize, alone: (Vec3, Quat)) -> Option<(Vec3, Quat)> {
+        let a = self.objects.get(&id).filter(|a| a.desc.kind == OBJ_ARROW)?;
+        let bh = hand ^ 1;
+        let h = &self.hands.as_ref()?[bh];
+        let bid = h.holding.filter(|_| h.on == On::Grip)?;
+        let b = self.objects.get(&bid)?;
+        if b.bow.is_none_or(|st| st.nocked.is_some()) || b.desc.ammo_type != a.desc.ammo_type {
+            return None;
+        }
+        let (bp, bq) = self.physics.pose(b.body);
+        let string = bp + bq * bow::nock(&b.desc, 0.0);
+        let well = v3(a.desc.mag_well);
+        let nock = alone.0 + alone.1 * well;
+        let wpm = self.map.world_per_meter;
+        let near = smooth(((bow::ALIGN_REACH * wpm - nock.distance(string)) / ((bow::ALIGN_REACH - bow::NOCK_REACH) * wpm)) as f64);
+        // (Only an arrow pointing the bow's way, as one must to go on: one pointing back at the
+        // archer isn't spun round.)
+        let along = (bq * (bow::rest(&b.desc, bh) - bow::nock(&b.desc, 0.0))).normalize_or(bq * Vec3::Z);
+        let k = near * smooth((((alone.1 * Vec3::Z).dot(bq * Vec3::Z) + 0.3) / 0.5) as f64);
+        if k <= 0.0 {
+            return None;
+        }
+        let lined = (Quat::from_rotation_arc(alone.1 * Vec3::Z, along) * alone.1).normalize();
+        let rot = alone.1.slerp(lined, k).normalize();
+        Some((nock - rot * well, rot))
+    }
+
     // ---- throwables -----------------------------------------------------------------------------------
     /// The buttons on a hand holding a grenade: `arm` (A or a trigger pull) arms it one-handed,
     /// where that's how it arms (the button scheme, no pin, or the other hand busy with a gun);
@@ -3517,6 +3923,17 @@ impl Rig {
         self.physics.world_hit(origin, dir, max)
     }
 
+    /// The arrow a hand is drawing on a held bow: the bow, the arrow's tip and its way (world),
+    /// and the draw's strength.
+    pub fn drawn_arrow(&self) -> Option<(u32, Vec3, Vec3, f32)> {
+        self.objects.iter().find_map(|(id, o)| {
+            let st = o.bow.filter(|st| st.drawing.is_some() && matches!(o.holder, Holder::Held(_)))?;
+            let a = self.objects.get(&st.nocked?)?;
+            let (p, q) = self.physics.pose(a.body);
+            Some((*id, p + q * v3(a.desc.muzzle), q * Vec3::Z, st.strength()))
+        })
+    }
+
     fn embed_parent(&self, into: embed::Into) -> Option<(Vec3, Quat)> {
         match into {
             embed::Into::World => Some((Vec3::ZERO, Quat::IDENTITY)),
@@ -3664,7 +4081,15 @@ impl Rig {
                         Attach::Gun => self.gun_target(*id, hand, s, dt),
                         Attach::Fixed(p, q) => {
                             let alone = compose(self.hands.as_ref().unwrap()[hand].target, (p, q));
-                            self.two_handed(*id, hand, inverse((p, q)).0, alone, dt)
+                            // A bow turns to the hand drawing its string, and an arrow nearing a
+                            // bow's string turns to lie along the bow.
+                            if self.objects[id].bow.is_some() {
+                                self.bow_target(*id, hand, inverse((p, q)).0, alone, inp)
+                            } else if let Some(t) = self.arrow_target(*id, hand, alone) {
+                                t
+                            } else {
+                                self.two_handed(*id, hand, inverse((p, q)).0, alone, dt)
+                            }
                         }
                     };
                     let o = &self.objects[id];
@@ -3724,6 +4149,7 @@ impl Rig {
                 }
                 Holder::Holstered(slot) => {
                     let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize], self.objects[id].desc.flags & OBJF_UPRIGHT != 0);
+                    let rt = self.slung(*id, rt);
                     let grip = v3(self.objects[id].desc.grip);
                     let (p, q) = (self.map.point(pt), self.map.rot(rt));
                     let o = &self.objects[id];
@@ -3731,6 +4157,7 @@ impl Rig {
                 }
                 Holder::Returning { slot, t0, from } => {
                     let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize], self.objects[id].desc.flags & OBJF_UPRIGHT != 0);
+                    let rt = self.slung(*id, rt);
                     let grip = v3(self.objects[id].desc.grip);
                     let q = self.map.rot(rt);
                     let p = self.map.point(pt) - q * grip;
@@ -3803,7 +4230,8 @@ impl Rig {
                     }
                     None => self.free_body(*id, groups_free()),
                 },
-                Holder::Stuck { .. } | Holder::Gone | Holder::Stowed(_) => {}
+                // (An arrow on a string goes with its bow after the step.)
+                Holder::Stuck { .. } | Holder::Gone | Holder::Stowed(_) | Holder::Nocked { .. } => {}
             }
         }
         self.valves(dt, s.interaction.grab_transition, s.interaction.mechanism_stiffness);
@@ -4055,6 +4483,15 @@ impl Rig {
         }
     }
 
+    /// How thing `id` hangs in a holster turned `rot` (tracking space): as it's made to, except a
+    /// bow, which is slung limbs along where a long gun's barrel goes (its length is its limbs').
+    fn slung(&self, id: u32, rot: Quat) -> Quat {
+        match self.objects.get(&id) {
+            Some(o) if o.desc.kind == OBJ_BOW => (rot * Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)).normalize(),
+            _ => rot,
+        }
+    }
+
     /// Where magazine (or round) `id` seated in weapon `wid` is, the weapon where it is now: on its
     /// mag well (in a swung-out cylinder, swung out with it).
     fn seated_pose(&self, id: u32, wid: u32) -> Option<(Vec3, Quat)> {
@@ -4070,6 +4507,27 @@ impl Rig {
     }
 
 
+    /// Where arrow `id` on bow `bid`'s string lies (world): on the string as drawn, eased on from
+    /// where it was as it went on.
+    fn nocked_pose(&self, id: u32, bid: u32) -> Option<(Vec3, Quat)> {
+        let (b, a) = (self.objects.get(&bid)?, self.objects.get(&id)?);
+        let st = b.bow?;
+        let hand = match b.holder {
+            Holder::Held(h) => h,
+            _ => 1,
+        };
+        let (bp, bq) = self.physics.pose(b.body);
+        let on = bow::nocked_pose(&b.desc, &a.desc, hand, st.draw);
+        let local = match st.nocked_from {
+            Some((fp, fq)) if self.now - st.nocked_at < bow::NOCK_TIME => {
+                let k = smooth((self.now - st.nocked_at) / bow::NOCK_TIME);
+                (fp.lerp(on.0, k), fq.slerp(on.1, k).normalize())
+            }
+            _ => on,
+        };
+        Some(compose((bp, bq), local))
+    }
+
     fn after_step(&mut self, inp: &RigInput) {
         // What's seated in a gun goes where the gun is after the step: put there before it, it
         // trails the gun by however far the step moved it (a walk's few centimetres: a magazine
@@ -4078,6 +4536,15 @@ impl Rig {
         for (id, wid) in seated {
             if let Some((p, q)) = self.seated_pose(id, wid) {
                 self.physics.set_pose(self.objects[&id].body, p, q);
+            }
+        }
+        // An arrow on a string lies where the bow (after the step) and the draw put it, eased on
+        // from where it was as it went on.
+        let nocked: Vec<(u32, u32)> = self.objects.iter().filter_map(|(id, o)| if let Holder::Nocked { bow } = o.holder { Some((*id, bow)) } else { None }).collect();
+        for (id, bid) in nocked {
+            if let Some((p, q)) = self.nocked_pose(id, bid) {
+                self.physics.set_pose(self.objects[&id].body, p, q);
+                self.physics.set_velocity(self.objects[&id].body, Vec3::ZERO, Vec3::ZERO);
             }
         }
         let ids: Vec<u32> = self.objects.keys().copied().collect();
@@ -4175,7 +4642,14 @@ impl Rig {
             if let Some(id) = h.holding {
                 if let Some(o) = self.objects.get(&id) {
                     let op = self.physics.pose(o.body);
+                    let nocked = matches!(o.holder, Holder::Nocked { .. });
                     let hold = match o.attach {
+                        // Drawing a string: the fingers on the arrow's nock, the hand turned as its
+                        // controller is (the string holds where it is, not how it's turned).
+                        _ if nocked => {
+                            let at = op.0 + op.1 * v3(o.desc.mag_well);
+                            (at - h.target.1 * bow::PINCH * self.map.world_per_meter, h.target.1)
+                        }
                         Attach::Gun => {
                             let grip = v3(o.desc.grip);
                             match authored(o.desc.grip_rot) {
@@ -4230,8 +4704,10 @@ impl Rig {
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if matches!(o.attach, Attach::Gun) => rustvr_ik::HoldShape::PistolGrip,
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::Foregrip,
-                // A melee weapon's handle in the fist.
-                Some(o) if o.desc.kind == OBJ_MELEE => rustvr_ik::HoldShape::Foregrip,
+                // A melee weapon's handle in the fist, and a bow's grip.
+                Some(o) if o.desc.kind == OBJ_MELEE || o.desc.kind == OBJ_BOW => rustvr_ik::HoldShape::Foregrip,
+                // An arrow pinched by its nock (drawing a string too).
+                Some(o) if o.desc.kind == OBJ_ARROW => rustvr_ik::HoldShape::Small,
                 Some(o) if is_round(&o.desc) => rustvr_ik::HoldShape::Small,
                 Some(o) if o.desc.kind == OBJ_MAGAZINE => rustvr_ik::HoldShape::Magazine,
                 // A knife's handle in the fist.
@@ -4381,7 +4857,7 @@ impl Rig {
             // A valve turns on its axle at its own speed (its body is only moved there).
             let (lv, av) = o.valve.map_or((lv, av), |v| (Vec3::ZERO, v.axis() * v.vel));
             let tracking = matches!(o.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. });
-            let tracking = tracking || matches!(o.holder, Holder::InWeapon(w) if self.objects.get(&w).is_some_and(|w| matches!(w.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. })));
+            let tracking = tracking || matches!(o.holder, Holder::InWeapon(w) | Holder::Nocked { bow: w } if self.objects.get(&w).is_some_and(|w| matches!(w.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. })));
             let pose_out = if tracking { pose(map.inv_point(p), map.inv_rot(q)) } else { pose(p, q) };
             let mut flags = OS_SIMULATED | if tracking { OS_TRACKING } else { 0 };
             match o.holder {
@@ -4392,6 +4868,7 @@ impl Rig {
                 Holder::Pulled { .. } => flags |= OS_PULLED,
                 Holder::Stuck { .. } => flags |= OS_STUCK,
                 Holder::Stowed(_) => flags |= OS_STOWED,
+                Holder::Nocked { .. } => flags |= OS_IN_WEAPON,
                 Holder::Free | Holder::Gone => {}
             }
             if let Some(t) = &o.throw {
@@ -4405,9 +4882,9 @@ impl Rig {
             if o.desc.kind == OBJ_PROP && o.desc.flags & OBJF_RUNTIME_DRAWS != 0 && !stowed && (o.handled || matches!(o.holder, Holder::Held(_) | Holder::Pulled { .. })) {
                 flags |= OS_RUNTIME_DRAWN;
             }
-            // The hands on a valve's rim have it.
+            // The hands on a valve's rim have it, and the hand drawing a string its arrow.
             for (i, h) in hands.into_iter().flatten().enumerate() {
-                if h.valve.is_some_and(|g| g.id == *id) {
+                if h.valve.is_some_and(|g| g.id == *id) || (h.holding == Some(*id) && matches!(o.holder, Holder::Nocked { .. })) {
                     flags |= if i == 0 { OS_HELD_LEFT } else { OS_HELD_RIGHT };
                 }
             }
@@ -4425,12 +4902,19 @@ impl Rig {
                     }
                     (rounds, w.shots, w.chamber_bits(), w.slide)
                 }
+                // A bow: an arrow on its string or not, its shots, how far it's bent.
+                None if o.bow.is_some() => {
+                    let b = o.bow.unwrap();
+                    (b.nocked.is_some() as u32, b.shots, 0, b.bend(&o.desc, self.bows.get(*id), self.now))
+                }
                 // A valve: how far it's turned (radians about its axis).
                 None => (o.rounds, o.throw.as_ref().map(|t| t.detonations).unwrap_or(0), 0, o.valve.map_or(0.0, |v| v.angle)),
             };
             // An air gun's pressure, a bolt's lift; a grenade's fuse.
             let fuse = match &o.weapon {
                 Some(w) => w.air.map(|a| a.pressure).or(w.cycle.map(|c| c.lift)).unwrap_or(0.0),
+                // A bow's draw (the strength a release would loose with).
+                None if o.bow.is_some() => o.bow.unwrap().strength(),
                 None => o.throw.as_ref().map(|t| t.fuse_left(self.now)).unwrap_or(0.0),
             };
             let slot = match o.holder {
@@ -4438,7 +4922,7 @@ impl Rig {
                 _ => 0,
             };
             let parent = match o.holder {
-                Holder::InWeapon(w) => w,
+                Holder::InWeapon(w) | Holder::Nocked { bow: w } => w,
                 Holder::Stuck { parent, .. } => parent,
                 _ => 0,
             };

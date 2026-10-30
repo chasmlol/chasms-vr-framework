@@ -247,6 +247,11 @@ pub const CE_BLOCK: u32 = 2;
 /// the held thing it was cast from ([`crate::OBJF_CASTS`], a staff: `what` is then what it casts,
 /// [`crate::ObjectDesc::casts`]), else 0.
 pub const CE_CAST: u32 = 3;
+/// An arrow loosed from the bow `object` (`hand`: the string hand): `what` the arrow (its template's
+/// id), from `point` (its tip) along `dir`; `strength` the draw (0..1 of the bow's full draw);
+/// `speed` how fast the bow's table says the game's arrow flies at that draw. The game fires its own
+/// arrow.
+pub const CE_LOOSE: u32 = 4;
 
 /// A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
 pub const CEF_GLANCING: u32 = 1 << 0;

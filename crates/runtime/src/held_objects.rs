@@ -11,6 +11,8 @@
 //! (`rustvr_guns::desc::object_part_matrices`): the bolt or handle back with `slide`, the trigger
 //! under the finger pulling it, the rounds a magazine holds, the magazine where its own object is.
 //! The game's effect shader on one ([`Overlays`]: an enchanted weapon's shimmer) is drawn over it.
+//! A bow bends with its string: between its model and the game's own bent shape ([`BowDesc::bent`])
+//! as far as its state's `slide` says.
 
 use std::collections::HashMap;
 
@@ -46,6 +48,8 @@ struct Placed {
     world: bool,
     /// The hand holding it.
     hand: Option<usize>,
+    /// How far it's bent (a bow).
+    bend: f32,
 }
 
 #[derive(Default)]
@@ -151,10 +155,29 @@ pub fn part_points(model: &rustvr_asset::Model, parts: &[HeldPart], part: usize,
 }
 
 /// Loads `name` (`<game>/<key>`) from the asset cache under `root`, for an object of `kind`
-/// (a valve's: `turn_bone`, the bone that turns, [`ObjectDesc::turn_bone`]).
-pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32, turn_bone: u32) -> anyhow::Result<Loaded> {
+/// (a valve's: `turn_bone`, the bone that turns, [`ObjectDesc::turn_bone`]; a bow's: `bent`, its
+/// model bent at full draw, `<game>/<key>`).
+pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32, turn_bone: u32, bent: Option<&str>) -> anyhow::Result<Loaded> {
     use anyhow::Context;
     let (game, key) = rustvr_guns::desc::parse_model_name(name).with_context(|| format!("{name:?} isn't <game>/<asset key>"))?;
+    if kind == OBJ_BOW || kind == OBJ_ARROW {
+        // A bow, in one piece that bends between its model and its bent one; an arrow, one piece.
+        let dir = root.join(game);
+        let model = rustvr_asset::load_model(&dir, key)?;
+        let bent = match bent.and_then(rustvr_guns::desc::parse_model_name) {
+            Some((g, k)) => match rustvr_asset::load_model(&root.join(g), k) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    tracing::warn!("runtime: {name} won't bend: {e:#}");
+                    None
+                }
+            },
+            None => None,
+        };
+        let parts: Vec<HeldPart> = model.meshes.iter().enumerate().map(|(mesh, m)| HeldPart { part: 0, mesh, vertices: (0..m.vertices.len() as u32).collect(), indices: m.indices.clone() }).collect();
+        let model = HeldModel::load_bent(gpu, &dir, &model, bent.as_ref(), &parts)?;
+        return Ok(Loaded { weapon: None, model, blocks: Vec::new(), turning: Vec::new() });
+    }
     if kind == OBJ_VALVE || kind == OBJ_DRIVEN {
         // A mechanism: what stays put, and what the hand turns (or the valve moves).
         let dir = root.join(game);
@@ -240,7 +263,7 @@ pub fn part_places(w: &Weapon, kind: u32, s: &ObjectState, trigger: f32, object:
 impl HeldObjects {
     /// Loads the models the adapter's table names for the runtime to draw (each once; a model that
     /// fails is said once and skipped). Call when the table changes.
-    pub fn sync(&mut self, gpu: &Gpu, objects: &ObjectTable) {
+    pub fn sync(&mut self, gpu: &Gpu, objects: &ObjectTable, bows: &Bows) {
         let root = rustvr_asset::default_root();
         let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
         for d in descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_RUNTIME_DRAWS != 0) {
@@ -248,7 +271,8 @@ impl HeldObjects {
             if self.models.contains_key(&name) {
                 continue;
             }
-            let loaded = match load(gpu, &root, &name, d.kind, d.turn_bone) {
+            let bent = bows.get(d.id).map(|b| name_str(&b.bent)).filter(|b| !b.is_empty());
+            let loaded = match load(gpu, &root, &name, d.kind, d.turn_bone, bent) {
                 Ok(l) => {
                     tracing::info!("runtime: drawing {name} ({} parts)", l.model.parts());
                     Some(l)
@@ -315,10 +339,11 @@ impl HeldObjects {
                 Some(w) => part_places(w, d.kind, s, trigger, object),
                 // A valve: its model where the game has it, the turning part turned as far as it is.
                 None if d.kind == OBJ_VALVE => valve_places(d, s.slide),
-                // A prop: its model where the game draws it on the object.
+                // A prop (a bow, an arrow): its model where the game draws it on the object.
                 None => vec![Some(object * model_place(d))],
             };
-            self.placed.push(Placed { id: s.id, name: name.to_string(), parts, world, hand });
+            let bend = if d.kind == OBJ_BOW && s.slide.is_finite() { s.slide } else { 0.0 };
+            self.placed.push(Placed { id: s.id, name: name.to_string(), parts, world, hand, bend });
         }
         // What the valves work (a gate), with them.
         for d in descs.iter().filter(|d| d.id != 0 && d.kind == OBJ_DRIVEN && d.flags & OBJF_RUNTIME_DRAWS != 0) {
@@ -337,7 +362,7 @@ impl HeldObjects {
                     driven_places(d, angle)
                 }
             };
-            self.placed.push(Placed { id: d.id, name: name.to_string(), parts, world: true, hand: None });
+            self.placed.push(Placed { id: d.id, name: name.to_string(), parts, world: true, hand: None, bend: 0.0 });
         }
         self.place(map);
     }
@@ -467,7 +492,7 @@ impl HeldObjects {
                     texture: self.overlay_textures.get(o.texture()).cloned().flatten(),
                     time: (self.now % 3600.0) as f32,
                 });
-                Some(HeldDraw { model: &l.model, parts, key: &p.name, overlay })
+                Some(HeldDraw { model: &l.model, parts, key: &p.name, overlay, bend: p.bend })
             })
             .collect()
     }
