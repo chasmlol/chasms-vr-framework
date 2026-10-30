@@ -27,7 +27,8 @@
 //!   (sideways as the eyes see it, a light flick, by the controller's own velocity), or the trigger
 //!   pinched at a page's edge and pulled across the middle, turns a page: leftwards onwards, back
 //!   the other way. The hand has to slow before it flicks again, and the way back is shut for a
-//!   moment after a turn, so the hand coming back after a flick doesn't turn it back.
+//!   moment after the flick's stroke ends, so the hand coming straight back after a flick doesn't
+//!   turn it back, but a flick back after a pause does.
 //! - **Pressing** (every held menu): the free hand's index fingertip pushed onto a piece presses the
 //!   game's button there (its cursor at the fingertip, its button down, until the finger comes back
 //!   off), and near it the cursor follows the fingertip, so the game lights what's under it. There's
@@ -118,10 +119,12 @@ const POKE_SIDEWAYS: f32 = 0.35;
 /// so the fingers holding it stay behind it.
 const SHEET_LIFT: f32 = 0.08;
 /// A pinch pulled across ends this far past the middle (a share of the half width), within this
-/// long (seconds); the way back is shut this long after a turn, the same way this long.
+/// long (seconds). The way back is shut this long after the hand that turned a page has slowed (the
+/// hand coming back straight after a flick is its return, not a flick: a pause and it's a flick
+/// back); the same way, this long after a turn.
 const PULL_TO: f32 = 0.08;
 const PULL_TIME: f64 = 1.2;
-const BACK_AFTER: f64 = 1.2;
+const BACK_AFTER: f64 = 0.45;
 const AGAIN_AFTER: f64 = 0.2;
 /// A hand this far behind a sheet (metres) can still take hold of it (it lies in front of the hand
 /// holding it).
@@ -173,8 +176,9 @@ struct Lie {
     sweep: Option<(f32, f64)>,
     /// The free hand has slowed since its last flick.
     armed: bool,
-    /// The last turn: which way and when.
-    turned: Option<(Action, f64)>,
+    /// The last turn: which way, when, and when the hand's stroke (the flick that turned it, or a
+    /// return after it that didn't) last went on.
+    turned: Option<(Action, f64, f64)>,
     /// The free hand's grip and trigger last frame.
     gripped: bool,
     pinched: bool,
@@ -500,6 +504,10 @@ impl HeldMenus {
                 let sideways = v.dot(eye_right);
                 if sideways.abs() < FLICK_SPEED * FLICK_REARM {
                     lie.armed = true;
+                } else if let (false, Some((a, t, _))) = (lie.armed, lie.turned) {
+                    // (Still the stroke that turned it, or its return: the way back is shut from
+                    // when it ends.)
+                    lie.turned = Some((a, t, now));
                 }
                 // (A hand holding something or taking hold isn't flicking; nor one away from the
                 // pages.)
@@ -546,14 +554,15 @@ impl HeldMenus {
                     }
                 };
                 if let Some(a) = flick.or(pulled) {
-                    let shut = lie.turned.is_some_and(|(b, t)| now - t < if a == b { AGAIN_AFTER } else { BACK_AFTER });
+                    let shut = lie.turned.is_some_and(|(b, t, end)| if a == b { now - t < AGAIN_AFTER } else { now - end < BACK_AFTER });
                     if shut {
-                        tracing::info!("held menus: a flick at {:.2} m/s didn't count: the way back is shut just after a turn", sideways.abs());
+                        let again = lie.turned.is_some_and(|(b, _, _)| b == a);
+                        tracing::info!("held menus: a flick at {:.2} m/s didn't count: {}", sideways.abs(), if again { "too soon after the last" } else { "the way back is shut just after a turn" });
                     } else {
                         tracing::info!("held menus: {:#x}'s page turned by the free hand: {}", g.id, if flick.is_some() { format!("a flick at {:.2} m/s", sideways.abs()) } else { "a pinch pulled across".into() });
                         out.presses.push(a);
                         out.haptics.push((free, 0.02, 120.0, 0.45));
-                        lie.turned = Some((a, now));
+                        lie.turned = Some((a, now, now));
                     }
                     lie.sweep = None;
                     lie.armed = false;
