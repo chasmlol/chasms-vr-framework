@@ -355,6 +355,9 @@ struct Hand {
     blocked: bool,
     /// Controller grip target in the world, and the aim rotation.
     target: (Vec3, Quat),
+    /// How fast the target moves in the world (the player's walking with it), from its last two
+    /// places; zero across a jump (a snap turn, a teleport).
+    target_vel: Vec3,
     aim_rot: Quat,
     /// Tracking-space controller grip pose.
     grip_t: (Vec3, Quat),
@@ -369,6 +372,9 @@ struct Hand {
     /// Laid slowly on something it could take: it rests on it without shoving it (see
     /// [`Rig::rest_on`]).
     yielding: bool,
+    /// Pressed on a part that swings through the room last frame (a door's leaf it's pushing):
+    /// gripping takes it, however fast it's swinging away from the palm.
+    pressing: Option<u32>,
 }
 
 impl Hand {
@@ -657,6 +663,12 @@ const PUSH_MOVING: f32 = 0.2;
 /// a fist).
 const OPEN_HAND: f32 = 0.3;
 const LEASH: f32 = 0.7;
+/// How near (metres) a hand must be to a part that swings through the room to be pressing on it.
+const PRESS_GAP: f32 = 0.01;
+/// How wide the player's body is to a door swinging at them, and how far down from the head it
+/// goes (the capsule's).
+const BODY_RADIUS: f32 = 0.2;
+const BODY_LENGTH: f32 = 1.25;
 /// A turn (radians) or a move (metres) of the player's mapping in one step past which it's a snap
 /// turn or a teleport, not a walk (as `crate::locomotion` tells them apart).
 const SNAP_TURN: f32 = 0.3;
@@ -683,6 +695,9 @@ const TWO_HANDS_APART: f32 = 0.06;
 const GRASP_TIME: f64 = 0.12;
 /// The support hand lets go of the foregrip when its controller is this far from the gun's line.
 const FOREGRIP_BREAK: f32 = 0.3;
+/// A controller that moves faster than this (m/s) in the world has jumped (the player snap-turned
+/// or was moved), not moved: no hand goes that fast.
+const TARGET_JUMP: f32 = 15.0;
 /// Letting go of something faster than this throws it rather than holstering it.
 const HOLSTER_MAX_SPEED: f32 = 1.2;
 /// A throw lets go when the grip eases this far off its hardest squeeze while the hand swings
@@ -872,6 +887,20 @@ pub const TRAVEL_REACH: f32 = 0.2;
 
 /// How long a hand's transition over `distance` metres takes: the grab transition setting, longer
 /// in proportion beyond [`TRAVEL_REACH`] (0: at once, whatever the distance).
+/// Valve `v` as its description `d` has it: its range and clicks, its top speed, how a hand turns
+/// it, whether it slides, its spring and damping.
+fn valve_of(d: &ObjectDesc, v: valve::Valve) -> valve::Valve {
+    let v = v.with_range(d.turn_min, d.turn_max, d.detent);
+    let v = valve::Valve {
+        max_speed: d.fire_rate.max(0.0),
+        twist: (v.radius <= valve::TWIST_RADIUS || d.joint_flags & JOINT_TWIST != 0) && d.joint_flags & JOINT_SLIDE == 0,
+        spring: d.joint_spring.max(0.0),
+        damping: d.joint_damping.max(0.0),
+        ..v
+    };
+    if d.joint_flags & JOINT_SLIDE != 0 { v.sliding(if v.slide { v.inertia } else { d.mass }) } else { valve::Valve { slide: false, ..v } }
+}
+
 pub fn travel_time(transition: f32, distance: f32) -> f32 {
     transition.max(0.0) * (distance / TRAVEL_REACH).max(1.0)
 }
@@ -1065,7 +1094,26 @@ impl Rig {
                 self.physics.set_hulls(c, &parts, mass);
             }
             self.game_hulls.insert(id, parts);
+            self.weigh_valve(id);
         }
+    }
+
+    /// A valve's inertia about its axle, its centre of mass and its weight from its collider: the
+    /// game's own shape of the part that moves (a door's leaf turned about its edge), at its mass.
+    /// A wheel without one keeps a ring's.
+    fn weigh_valve(&mut self, id: u32) {
+        let Some(o) = self.objects.get(&id) else { return };
+        let Some(mut v) = o.valve else { return };
+        let (d, collider) = (o.desc, o.collider);
+        if d.shape == SHAPE_HULL
+            && let Some((mass, com, inertia)) = self.physics.inertia_about(collider, v.origin(), v.axis())
+        {
+            // (Where it is now: the frame its centre of mass is kept in turns with it.)
+            v.com = v.local(com);
+            v.inertia = if v.slide { mass } else { inertia.max(1e-4) };
+        }
+        v.weight = if d.joint_flags & JOINT_GRAVITY != 0 { Vec3::new(0.0, -9.81 * d.mass.max(0.0), 0.0) } else { Vec3::ZERO };
+        self.objects.get_mut(&id).unwrap().valve = Some(v);
     }
 
     pub fn sync(&mut self, table: &ObjectTable) {
@@ -1098,6 +1146,17 @@ impl Rig {
                     o.desc = *d;
                     if let Some(t) = &mut o.throw {
                         t.flags = d.throw_flags;
+                    }
+                    // A valve the game changes as it goes (a door's latch, its lock): its range,
+                    // stiffness, clicks and spring now, where it's turned to kept.
+                    if let Some(v) = &mut o.valve {
+                        let (angle, vel, inertia, com, weight) = (v.angle, v.vel, v.inertia, v.com, v.weight);
+                        let mut n = valve_of(d, valve::Valve { friction: d.friction.max(0.0), ..*v });
+                        n.inertia = inertia;
+                        (n.com, n.weight) = (com, if d.joint_flags & JOINT_GRAVITY != 0 { weight } else { Vec3::ZERO });
+                        n.angle = if n.limited() { angle.clamp(n.min, n.max) } else { angle };
+                        n.vel = if n.angle != angle { 0.0 } else { vel };
+                        *v = n;
                     }
                     if o.spawn_seq != d.spawn_seq {
                         o.spawn_seq = d.spawn_seq;
@@ -1159,10 +1218,7 @@ impl Rig {
                 seat_armed: true,
                 throw: ThrowState::new(&d),
                 hang: None,
-                valve: (d.kind == OBJ_VALVE).then(|| {
-                    let v = valve::Valve::new(pos, rot, d.radius, d.mass, d.friction).with_range(d.turn_min, d.turn_max, d.detent);
-                    valve::Valve { max_speed: d.fire_rate.max(0.0), twist: v.twist || d.joint_flags & JOINT_TWIST != 0, ..v }
-                }),
+                valve: (d.kind == OBJ_VALVE).then(|| valve_of(&d, valve::Valve::new(pos, rot, d.radius, d.mass, d.friction))),
                 valve_shape: Vec::new(),
                 embed: None,
                 bow: (d.kind == OBJ_BOW).then(bow::BowState::default),
@@ -1171,6 +1227,11 @@ impl Rig {
         // A valve's wheel turns on its axle, never anywhere else.
         if d.kind == OBJ_VALVE {
             self.physics.set_kinematic(body, true);
+            // A part that swings through the room is a wall to the hands and what they hold.
+            if d.joint_flags & JOINT_PANEL != 0 {
+                self.physics.set_groups(collider, physics::groups_panel());
+            }
+            self.weigh_valve(id);
         }
         // Hung from its point, where it is now; damped like a cable or a chain settling.
         if d.flags & OBJF_HANGING != 0 {
@@ -1428,7 +1489,10 @@ impl Rig {
                 h.aim_t = (v3(c.aim.pos), q4(c.aim.rot));
                 h.vel_t = v3(c.vel);
                 h.ang_t = v3(c.ang_vel);
-                h.target = (map.point(h.grip_t.0), map.rot(h.grip_t.1));
+                let target = (map.point(h.grip_t.0), map.rot(h.grip_t.1));
+                let moved = (target.0 - h.target.0) / dt.max(1e-4);
+                h.target_vel = if moved.length() < TARGET_JUMP * map.world_per_meter { moved } else { Vec3::ZERO };
+                h.target = target;
                 h.aim_rot = map.rot(h.aim_t.1);
                 h.trigger = c.trigger;
                 h.squeeze = c.squeeze;
@@ -1519,20 +1583,35 @@ impl Rig {
         }
     }
 
-    /// Turns the valves: each by the hands on it (cranking its rim towards their controllers, or
-    /// twisting it as far as their wrists have turned) against its friction (`stiffness`: the
-    /// player's setting), and puts it and those hands where it's turned to (a hand that's just
-    /// taken hold on its way there over `transition` seconds).
-    fn valves(&mut self, dt: f32, transition: f32, stiffness: f32) {
+    /// Whether a hand takes valve `o` anywhere on its collider (the game draws it, and its
+    /// collider is the game's own shape of the part: a door's leaf), not on its rim or its model.
+    fn taken_anywhere(o: &Obj) -> bool {
+        o.valve_shape.is_empty() && (o.desc.shape == SHAPE_HULL || o.desc.joint_flags & JOINT_PANEL != 0)
+    }
+
+    /// Turns the valves: each by the hands on it (cranking it towards their controllers, or
+    /// twisting it as far as their wrists have turned) and the empty hands pressed on it (a door's
+    /// leaf) against its friction (`stiffness`: the player's setting), and puts it and those hands
+    /// where it's turned to (a hand that's just taken hold on its way there over `transition`
+    /// seconds). A hand whose controller is [`valve::BREAK`] from where it holds lets go. A part
+    /// that swings through the room stops on the player's body (`body`: the capsule from the head
+    /// down, world) and the game's creatures.
+    fn valves(&mut self, dt: f32, transition: f32, stiffness: f32, body: (Vec3, Vec3, f32)) {
         let ids: Vec<u32> = self.objects.iter().filter(|(_, o)| o.valve.is_some()).map(|(id, _)| *id).collect();
         for id in ids {
             let Some(v) = self.objects[&id].valve else { continue };
+            let (collider, panel) = (self.objects[&id].collider, self.objects[&id].desc.joint_flags & JOINT_PANEL != 0);
             // A wrist's turn about the axle since it took hold (unwrapped, so turning past half a
             // turn goes on rather than flipping round).
             let mut pulls = Vec::new();
             let mut grips: Vec<(usize, valve::ValveGrip)> = Vec::new();
+            let mut broke = Vec::new();
             for (i, h) in self.hands.iter_mut().flatten().enumerate() {
                 let Some(g) = h.valve.as_mut().filter(|g| g.id == id) else { continue };
+                if h.target.0.distance(v.point(g.at)) > valve::BREAK * self.map.world_per_meter {
+                    broke.push(i);
+                    continue;
+                }
                 if v.twisted_at(g.at) {
                     let w = v.wrist(h.target.1);
                     let d = (w - g.wrist + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
@@ -1540,22 +1619,61 @@ impl Rig {
                     g.wrist = w;
                     pulls.push(valve::Pull::Twist { to: g.turn0 + g.twisted });
                 } else {
-                    pulls.push(valve::Pull::Rim { at: g.at, toward: h.target.0 });
+                    // (The slack a hand that took it from further off had closes as it comes nearer.)
+                    g.slack = g.slack.min(v.lead(g.at, h.target.0).abs()).max(valve::ARM_STRETCH * self.map.world_per_meter);
+                    pulls.push(valve::Pull::Rim { at: g.at, toward: h.target.0, vel: h.target_vel, slack: g.slack });
                 }
                 grips.push((i, *g));
             }
-            // One the game moves itself (a valve on the gate it winds, which the game may let down):
-            // with no hand turning it, where the game has it.
-            let game = (pulls.is_empty() && self.objects[&id].desc.flags & OBJF_GAME_MOVED != 0).then(|| self.game_poses.get(&id).map(|&(_, q)| q)).flatten();
+            for i in broke {
+                self.let_go_valve(i, transition);
+                let at = self.physics.pose(self.hands.as_ref().unwrap()[i].body).0;
+                self.emit(Cue::Release, Some(i), Some(id), at, 0.6);
+            }
+            // The empty hands pressed on it (resting on its surface, their controllers past it):
+            // each pushes it there, as far as its controller is past the hand.
+            if panel && let Some(hands) = &mut self.hands {
+                for h in hands.iter_mut() {
+                    if h.pressing == Some(id) {
+                        h.pressing = None;
+                    }
+                    if h.holding.is_some() || h.support.is_some() || h.valve.is_some() || h.barrels.is_some() || h.pin.is_some() || h.returning.is_some() {
+                        continue;
+                    }
+                    let Some((at, normal, gap)) = self.physics.touch(h.collider, collider, PRESS_GAP * self.map.world_per_meter) else { continue };
+                    let depth = (h.target.0 - self.physics.pose(h.body).0).dot(normal) - gap.max(0.0);
+                    if depth > 0.0 {
+                        pulls.push(valve::Pull::Press { at: v.local(at), normal, depth: depth / self.map.world_per_meter, vel: h.target_vel.dot(normal) / self.map.world_per_meter });
+                        h.pressing = Some(id);
+                    }
+                }
+            }
+            // One the game moves itself (a valve on the gate it winds, which the game may let down;
+            // a door an NPC opens): with no hand turning it, where the game has it.
+            let game = (grips.is_empty() && self.objects[&id].desc.flags & OBJF_GAME_MOVED != 0).then(|| self.game_poses.get(&id).copied()).flatten();
             let o = self.objects.get_mut(&id).unwrap();
             let v = o.valve.as_mut().unwrap();
+            let before = *v;
             match game {
-                Some(q) => v.follow(q, dt),
+                Some((p, _)) if v.slide => v.follow_slide(p, dt),
+                Some((_, q)) => v.follow(q, dt),
                 None => v.step(&pulls, dt, stiffness),
             }
-            let (v, body) = (*v, o.body);
-            self.physics.move_kinematic(body, v.centre, v.rot());
-            for (i, g) in grips {
+            // A door doesn't push its way through the player or a creature: it stops on them (if
+            // it's in one already, it may move on out).
+            if panel && game.is_none() && v.angle != before.angle {
+                let parts: Vec<(Vec3, Vec3, f32)> = std::iter::once(body).chain(self.actor_parts.values().copied()).collect();
+                let hits = |at: &valve::Valve| parts.iter().any(|&(a, b, r)| self.physics.hits_capsule(collider, (at.origin(), at.rot()), a, b, r));
+                if hits(v) && !hits(&before) {
+                    v.angle = before.angle;
+                    v.vel = 0.0;
+                }
+            }
+            let (v, body_h) = (*v, o.body);
+            // Coming hard against a stop is felt in the hands on it.
+            let stopped = v.limited() && v.vel == 0.0 && before.vel.abs() > 0.2 && (v.angle <= v.min || v.angle >= v.max);
+            self.physics.move_kinematic(body_h, v.origin(), v.rot());
+            for &(i, g) in &grips {
                 let h = &self.hands.as_ref().unwrap()[i];
                 let b = h.body;
                 let (p, q) = (v.point(g.at), (v.rot() * g.rot).normalize());
@@ -1564,7 +1682,26 @@ impl Rig {
                 self.physics.set_pose(b, g.from.0.lerp(p, k), g.from.1.slerp(q, k).normalize());
                 self.physics.set_velocity(b, Vec3::ZERO, Vec3::ZERO);
             }
+            if stopped {
+                let speed = before.vel.abs() * if v.slide { 1.0 } else { v.radius.max(0.1) };
+                for &(i, g) in &grips {
+                    self.emit(Cue::Stop, Some(i), Some(id), v.point(g.at), (speed / 2.0).min(1.0));
+                }
+            }
         }
+    }
+
+    /// Hand `i` lets go of the valve it's on, and goes back to its controller from there, at a
+    /// hand's pace (over `transition` seconds for a short way), through whatever's between.
+    fn let_go_valve(&mut self, i: usize, transition: f32) {
+        let h = &mut self.hands.as_mut().unwrap()[i];
+        if h.valve.take().is_none() {
+            return;
+        }
+        let (b, target) = (h.body, h.target.0);
+        let from = self.physics.pose(b);
+        let time = travel_time(transition, from.0.distance(target));
+        self.hands.as_mut().unwrap()[i].returning = Some((from.0, from.1, self.now, time));
     }
 
     /// The palms and fingers in the game's own free props, as pushes for the game: at each prop,
@@ -1574,12 +1711,24 @@ impl Rig {
         let Some(hands) = &self.hands else { return Vec::new() };
         let mut out = self.actor_pushes();
         for (id, o) in &self.objects {
-            let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && self.now - o.free_since > GAME_HANDBACK as f64;
+            let constrained = o.desc.flags & OBJF_CONSTRAINED != 0;
+            let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && (constrained || self.now - o.free_since > GAME_HANDBACK as f64);
             if !game_free {
                 continue;
             }
             let mut best: Option<(f32, Vec3, Vec3, f32)> = None;
-            for h in hands {
+            // Solid to the hands (on the game's constraints): each empty hand resting on it pushes
+            // it as fast as its controller goes on into it, and more the deeper its controller is.
+            if constrained {
+                for h in hands.iter().filter(|h| h.holding.is_none() && h.support.is_none() && h.valve.is_none()) {
+                    let Some((point, normal, gap)) = self.physics.touch(h.collider, o.collider, PRESS_GAP * self.map.world_per_meter) else { continue };
+                    let depth = (h.target.0 - self.physics.pose(h.body).0).dot(normal) - gap.max(0.0);
+                    if depth > 0.0 && best.is_none_or(|b| depth > b.0) {
+                        best = Some((depth, point, normal, (h.target_vel.dot(normal).max(0.0) + depth * PUSH_OUT).min(PUSH_MAX)));
+                    }
+                }
+            }
+            for h in hands.iter().filter(|_| !constrained) {
                 let palm_vel = self.physics.velocity(h.body).0;
                 let fingers = h.fingers.iter().zip(h.finger_vel).filter(|_| h.fingers_on).map(|(f, v)| (self.physics.collider_of(*f), v));
                 let palm = (h.holding.is_none() && h.support.is_none()).then_some((Some(h.collider), palm_vel));
@@ -1738,6 +1887,7 @@ impl Rig {
                 euro: OneEuro::new(1.0, 8.0, 1.0),
                 blocked: false,
                 target: (Vec3::ZERO, Quat::IDENTITY),
+                target_vel: Vec3::ZERO,
                 aim_rot: Quat::IDENTITY,
                 grip_t: (Vec3::ZERO, Quat::IDENTITY),
                 aim_t: (Vec3::ZERO, Quat::IDENTITY),
@@ -1747,6 +1897,7 @@ impl Rig {
                 returning: None,
                 grasp: GraspState::default(),
                 yielding: false,
+                pressing: None,
             }
         };
         let l = mk(&mut self.physics, 0);
@@ -1927,9 +2078,20 @@ impl Rig {
         {
             hover = Hover::Object(id);
         }
-        // A valve's rim within reach.
+        // A valve's rim within reach; a part of one the game draws (a door's leaf, the game's own
+        // shape of it) anywhere the hand is on it, as a thing is taken.
         if hover == Hover::None {
-            let rim = self.objects.iter().filter_map(|(id, o)| Some((*id, o.valve.as_ref()?.nearest_on(&o.valve_shape, palm).1))).filter(|(_, d)| *d < valve::REACH).min_by(|a, b| a.1.total_cmp(&b.1));
+            let pressing = self.hands.as_ref().unwrap()[i].pressing;
+            let near = |(id, o): (&u32, &Obj)| -> Option<f32> {
+                let v = o.valve.as_ref()?;
+                if Self::taken_anywhere(o) {
+                    let d = self.physics.distance_between(hand_c, o.collider);
+                    return (d < TOUCH || pressing == Some(*id)).then_some(d);
+                }
+                let d = v.nearest_on(&o.valve_shape, palm).1;
+                (d < valve::REACH).then_some(d)
+            };
+            let rim = self.objects.iter().filter_map(|(id, o)| Some((*id, near((id, o))?))).min_by(|a, b| a.1.total_cmp(&b.1));
             if let Some((id, _)) = rim {
                 hover = Hover::Valve(id);
             }
@@ -2125,14 +2287,19 @@ impl Rig {
                 // there, as it sits.
                 let Some(o) = self.objects.get(&id) else { return };
                 let Some(v) = o.valve else { return };
-                let (at, _) = v.nearest_on(&o.valve_shape, palm);
                 let from = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
+                // (Taken anywhere: held where the hand is, as it's turned, so neither moves.)
+                let anywhere = Self::taken_anywhere(o);
+                let at = if anywhere { v.local(from.0) } else { v.nearest_on(&o.valve_shape, palm).0 };
+                let grip_rot = if anywhere { from.1 } else { grip_rot };
                 let now = self.now;
                 let h = &mut self.hands.as_mut().unwrap()[i];
                 let wrist = v.wrist(h.target.1);
-                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now, turn0: v.angle, twisted: 0.0, wrist });
+                let slack = v.lead(at, h.target.0).abs().max(valve::ARM_STRETCH * self.map.world_per_meter);
+                h.valve = Some(valve::ValveGrip { id, at, rot: v.rot().inverse() * grip_rot, from, since: now, turn0: v.angle, twisted: 0.0, wrist, slack });
                 let c = h.collider;
                 self.physics.set_groups(c, groups_none());
+                tracing::info!("rig: hand {i} takes valve {id:#x} at {at:.3?} (its frame), turned {:.3}", v.angle);
                 self.emit(Cue::Grab, Some(i), Some(id), v.point(at), 0.7);
             }
             Hover::Slot(slot) => {
@@ -2374,7 +2541,8 @@ impl Rig {
             t.flight = None;
             t.thrown_at = None;
         }
-        self.physics.set_kinematic(o.body, false);
+        // (One on the game's constraints stays where the game has it: the game pulls it to the hand.)
+        self.physics.set_kinematic(o.body, o.desc.flags & OBJF_CONSTRAINED != 0);
         self.physics.set_gravity(o.body, 1.0);
         self.physics.set_angular_damping(o.body, 0.2);
         self.physics.set_groups(o.collider, groups_held(i));
@@ -2528,12 +2696,9 @@ impl Rig {
                 self.let_go_creature(i, Some(throw));
                 return;
             }
-            if h.valve.take().is_some() {
+            if h.valve.is_some() {
                 // Back to the controller from the rim, at a hand's pace, through whatever's between.
-                let (b, target) = (h.body, h.target.0);
-                let from = self.physics.pose(b);
-                let time = travel_time(s.grab_transition, from.0.distance(target));
-                self.hands.as_mut().unwrap()[i].returning = Some((from.0, from.1, self.now, time));
+                self.let_go_valve(i, s.grab_transition);
                 return;
             }
             if let Glove::Locked(_) = h.glove {
@@ -2553,6 +2718,22 @@ impl Rig {
         // The string let go: the arrow is loosed, or (short of a shot) stays on the string.
         if let Holder::Nocked { bow } = self.objects[&id].holder {
             self.let_string_go(bow, id, i);
+            return;
+        }
+        // On the game's constraints: the game's again at once (it was never anywhere else), and
+        // the hand goes back to its controller from it, as off a valve.
+        if self.objects[&id].desc.flags & OBJF_CONSTRAINED != 0 {
+            let o = self.objects.get_mut(&id).unwrap();
+            o.holder = Holder::Free;
+            o.free_since = self.now;
+            o.aim = None;
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            h.hold = None;
+            let (b, target) = (h.body, h.target.0);
+            let from = self.physics.pose(b);
+            let time = travel_time(s.grab_transition, from.0.distance(target));
+            self.hands.as_mut().unwrap()[i].returning = Some((from.0, from.1, self.now, time));
+            self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
             return;
         }
         // Let go of while it's stuck in something: it stays in.
@@ -3836,8 +4017,9 @@ impl Rig {
     fn glove_target(&self, origin: Vec3, dir: Vec3, head: (Vec3, Quat), current: Option<u32>, range: f32) -> Option<u32> {
         let mut best: Option<(u32, f32)> = None;
         for (id, o) in &self.objects {
+            // (Not one on the game's constraints: it can't come away to the hand.)
             let pullable = o.desc.flags & OBJF_PULLABLE != 0 || (o.desc.flags & OBJF_GRABBABLE != 0 && o.desc.mass <= 8.0);
-            if !pullable || o.holder != Holder::Free {
+            if !pullable || o.holder != Holder::Free || o.desc.flags & OBJF_CONSTRAINED != 0 {
                 continue;
             }
             let (p, _) = self.physics.pose(o.body);
@@ -4291,6 +4473,7 @@ impl Rig {
         // controller only when the head could reach it there.
         let head = inp.map.point(v3(inp.frame.hmd.pos));
         let ids: Vec<u32> = self.objects.keys().copied().collect();
+        let mut pulled_off = Vec::new();
         for id in &ids {
             let holder = self.objects[id].holder;
             match holder {
@@ -4318,6 +4501,28 @@ impl Rig {
                         }
                         _ => target,
                     };
+                    // On the game's constraints (a chain's link): where the game has it, the hand on
+                    // it there; where the hand would have it goes to the game, which pulls it there.
+                    // Pulled where the game's physics won't let it go, the hand comes off it.
+                    if self.objects[id].desc.flags & OBJF_CONSTRAINED != 0 {
+                        let o = self.objects.get_mut(id).unwrap();
+                        let pivot = match o.attach {
+                            Attach::Gun => v3(o.desc.grip),
+                            Attach::Fixed(p, q) => inverse((p, q)).0,
+                        };
+                        let body = o.body;
+                        o.aim = Some(target);
+                        if let Some(&(p, q)) = self.game_poses.get(id) {
+                            self.physics.move_kinematic(body, p, q);
+                        }
+                        let (now_pos, now_rot) = self.physics.pose(body);
+                        let o = self.objects.get_mut(id).unwrap();
+                        o.lag = (target.0 + target.1 * pivot) - (now_pos + now_rot * pivot);
+                        if o.lag.length() > valve::BREAK * self.map.world_per_meter {
+                            pulled_off.push(hand);
+                        }
+                        continue;
+                    }
                     // Stuck in something: it stays, sliding along the way in as the hand pushes
                     // and pulls, until it's pulled out.
                     if self.objects[id].embed.is_some() && self.hold_embedded(*id, hand, target, dt) {
@@ -4428,15 +4633,19 @@ impl Rig {
                     if self.objects[id].throw.as_ref().is_some_and(|t| t.flight.is_some()) {
                         self.fly(*id, dt, s.interaction.knife_assist);
                     }
-                    // The game's own prop: where the game has it, once it's had it back.
+                    // The game's own prop: where the game has it, once it's had it back (one on the
+                    // game's constraints at once: it never flew off in the runtime). One on its
+                    // constraints is solid to the hands, as a door's leaf is: they rest on it and
+                    // push it, rather than going into it.
                     let o = &self.objects[id];
+                    let constrained = o.desc.flags & OBJF_CONSTRAINED != 0;
                     if o.desc.flags & OBJF_GAME_SIMULATED != 0
-                        && self.now - o.free_since > GAME_HANDBACK as f64
+                        && (constrained || self.now - o.free_since > GAME_HANDBACK as f64)
                         && let Some(&(p, q)) = self.game_poses.get(id)
                     {
                         let (body, collider) = (o.body, o.collider);
                         self.physics.set_kinematic(body, true);
-                        self.physics.set_groups(collider, groups_game_prop());
+                        self.physics.set_groups(collider, if constrained { physics::groups_panel() } else { groups_game_prop() });
                         self.physics.move_kinematic(body, p, q);
                     }
                 }
@@ -4452,7 +4661,15 @@ impl Rig {
                 Holder::Stuck { .. } | Holder::Gone | Holder::Stowed(_) | Holder::Nocked { .. } => {}
             }
         }
-        self.valves(dt, s.interaction.grab_transition, s.interaction.mechanism_stiffness);
+        for hand in pulled_off {
+            self.release(hand, inp, zones);
+        }
+        // The player's body, for the doors to stop on: from just under the head down past the hips.
+        let body = {
+            let head = v3(inp.frame.hmd.pos);
+            (self.map.point(head - Vec3::Y * 0.15), self.map.point(head - Vec3::Y * BODY_LENGTH), BODY_RADIUS * self.map.world_per_meter)
+        };
+        self.valves(dt, s.interaction.grab_transition, s.interaction.mechanism_stiffness, body);
         self.creature_holds(inp);
         // Empty hands follow their controllers; past the leash they snap back, unless the
         // controller is through the world (a wall, the floor): then the hand stays against it.
@@ -4778,7 +4995,7 @@ impl Rig {
             let change = (vel - o.prev_vel).length();
             // (Not one of the game's own props the runtime only follows: the game moves it, at the
             // game's pace, and sounds its own knocks.)
-            let following = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && self.now - o.free_since > GAME_HANDBACK as f64;
+            let following = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && (o.desc.flags & OBJF_CONSTRAINED != 0 || self.now - o.free_since > GAME_HANDBACK as f64);
             let hit = match o.holder {
                 Holder::Free | Holder::Pulled { .. } => !following && change > 1.2 && o.prev_vel.length() > 1.0,
                 Holder::Held(_) => contact && !o.in_contact && o.prev_vel.length() > 0.4,
@@ -4919,7 +5136,9 @@ impl Rig {
             if h.blocked && inp.settings.interaction.ghost_hands {
                 out.ghosts[i] = Some(pose(h.grip_t.0, h.grip_t.1));
             }
-            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.creature.is_some();
+            // (A hand on a door or a lever too: its trigger, squeezed with the grip, would use what
+            // the eyes are on, the game's Activate on the lever it's already pulling.)
+            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.creature.is_some() || h.valve.is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if matches!(o.attach, Attach::Gun) => rustvr_ik::HoldShape::PistolGrip,
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::Foregrip,
@@ -5093,10 +5312,13 @@ impl Rig {
             })
             .unwrap_or_default();
         for (id, o) in self.objects.iter().take(MAX_OBJECTS) {
-            let (p, q) = self.physics.pose(o.body);
+            // (One on the game's constraints a hand holds: where the hand would have it, for the
+            // game to pull it there.)
+            let held_constrained = matches!(o.holder, Holder::Held(_)) && o.desc.flags & OBJF_CONSTRAINED != 0;
+            let (p, q) = o.aim.filter(|_| held_constrained).unwrap_or_else(|| self.physics.pose(o.body));
             let (lv, av) = self.physics.velocity(o.body);
-            // A valve turns on its axle at its own speed (its body is only moved there).
-            let (lv, av) = o.valve.map_or((lv, av), |v| (Vec3::ZERO, v.axis() * v.vel));
+            // A valve turns on its axle at its own speed (its body is only moved there), or slides.
+            let (lv, av) = o.valve.map_or((lv, av), |v| if v.slide { (v.axis() * v.vel, Vec3::ZERO) } else { (Vec3::ZERO, v.axis() * v.vel) });
             let tracking = matches!(o.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. });
             let tracking = tracking || matches!(o.holder, Holder::InWeapon(w) | Holder::Nocked { bow: w } if self.objects.get(&w).is_some_and(|w| matches!(w.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. })));
             let pose_out = if tracking { pose(map.inv_point(p), map.inv_rot(q)) } else { pose(p, q) };

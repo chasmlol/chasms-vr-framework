@@ -2390,16 +2390,18 @@ fn a_turning_valve_tells_the_game_who_has_it_how_far_and_how_fast() {
 }
 
 #[test]
-fn a_stiff_valve_holds_the_hand_on_its_rim_and_doesnt_turn() {
+fn a_stiff_valve_holds_the_hand_on_its_rim_until_the_body_turns_it() {
+    // 60 N m on a 20 cm rim: more than an arm's 36. Past the arm's stretch the body brings it round
+    // with the controller, a stretch behind it.
     let centre = Vec3::new(0.3, 1.2, 0.6);
     let mut s = Sim::with(&[valve_desc(41, centre, 0.2, 60.0)]);
     s.step(5);
     turn_valve(&mut s, centre, 0.2);
     let v = s.rig.objects[&41].valve.unwrap();
-    assert!(v.angle.abs() < 1e-3, "one hand can't move it: {}", v.angle);
-    let hand = v3(s.out.hands[1].pose.pos);
-    assert!(hand.distance(centre + Vec3::new(0.0, 0.2, 0.0)) < 0.02, "the hand stays where it took hold: {hand:?}");
-    assert!(s.out.hands[1].flags & HAND_BLOCKED != 0, "the hand's held back from the controller gone on round");
+    let behind = (valve::ARM_STRETCH / 0.2).asin();
+    assert!((v.angle.abs() - (std::f32::consts::FRAC_PI_2 - behind)).abs() < 0.05, "the body turns it, a stretch behind: {}", v.angle);
+    let (hand, controller) = (v3(s.out.hands[1].pose.pos), centre + Vec3::new(0.2, 0.0, -0.02));
+    assert!(hand.distance(controller) < valve::ARM_STRETCH + 0.01, "the hand on its rim, a stretch from the controller: {hand:?}");
 }
 
 #[test]

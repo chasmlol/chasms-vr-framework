@@ -895,11 +895,18 @@
 #define RVR_OBJ_DRIVEN 7
 
 /**
- * Anything turned by hand on an axle fixed in the world: a valve's wheel, a switch's knob, a lever.
- * Centre and axis (+Z) its spawn pose, the rim `radius` out, `mass` its weight, `friction` what
- * it takes to turn, the range it turns in and the clicks it holds in (`turn_min`, `turn_max`,
- * `detent`) and how a hand turns it (`joint_flags`) (`rig::valve`). Its state's `slide` is how
- * far it's turned: the game reads that to work its own mechanism.
+ * Anything worked by hand on a hinge or a slide fixed in the world: a valve's wheel, a switch's
+ * knob, a lever, a door's leaf, a lid, a drawer, a button, a pull chain. Centre and axis (+Z) its
+ * spawn pose, the rim `radius` out, `mass` its weight, `friction` what it takes to turn (or slide:
+ * [`JOINT_SLIDE`]), the range it moves in and the clicks it holds in (`turn_min`, `turn_max`,
+ * `detent`), what pulls it back and slows it (`joint_spring`, `joint_damping`) and what kind of
+ * thing it is (`joint_flags`) (`rig::valve`). Its state's `slide` is how far it's turned (or slid):
+ * the game reads that to work its own mechanism. With [`SHAPE_HULL`] its collider is the game's
+ * own shape of the part that moves (in its frame where it arrives), which a hand takes anywhere,
+ * and its inertia about the axle is that shape's.
+ *
+ * The game may change its range, stiffness and spring as it goes (a door's latch, its lock): the
+ * runtime takes them whenever the table changes, keeping where it's turned to.
  */
 #define RVR_OBJ_VALVE 6
 
@@ -928,6 +935,27 @@
  * says the player has (0: the quiver is empty).
  */
 #define RVR_OBJ_ARROW 9
+
+/**
+ * Valves: it slides along its +Z instead of turning about it (a drawer, a button, a pull chain, a
+ * sliding door, a portcullis): its range, its state's `slide` and its spring in metres, its
+ * friction in N.
+ */
+#define RVR_JOINT_SLIDE (1 << 1)
+
+/**
+ * Valves: a part that swings or slides through the room (a door's leaf, a lid, a gate). It's solid
+ * to the empty hands (they rest on it as on a wall) and to what they hold, and a hand pressed on
+ * it pushes it (an arm's push where it presses, never a pull); the player's body and the game's
+ * creatures stop it, as a door stops on whoever is in its way.
+ */
+#define RVR_JOINT_PANEL (1 << 2)
+
+/**
+ * Valves: its own weight moves it (a lid falls shut, a trap door hangs down, a drawbridge drops),
+ * from the centre of mass of its collider.
+ */
+#define RVR_JOINT_GRAVITY (1 << 3)
 
 #define RVR_OBJF_GRABBABLE (1 << 0)
 
@@ -1013,6 +1041,18 @@
  * handle never taken the other way round).
  */
 #define RVR_OBJF_UPRIGHT (1 << 13)
+
+/**
+ * With [`OBJF_GAME_SIMULATED`]: the game's physics holds it on its own constraints (a link of a
+ * chain hanging from the ceiling, a rope's piece), so it can't simply go where a hand puts it.
+ * It's solid to the hands: they rest on it and push it ([`GamePushes`], with how far each hand's
+ * controller is pressed in past it), and gone through by nothing. A hand holding it stays on it
+ * where the game has it (held back as the game's physics holds it) and lets go once its
+ * controller is 30 cm from where it holds it; its state's pose (`OS_HELD_*`) is where the hand would
+ * have it, for the game to pull it there with its own physics. It follows the game as soon as
+ * it's let go.
+ */
+#define RVR_OBJF_CONSTRAINED (1 << 14)
 
 /**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.

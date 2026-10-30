@@ -90,6 +90,9 @@ pub enum Cue {
     /// A hand held back by the weight of a body it holds (a creature, `rig::creatures`): a low,
     /// steady rumble, harder the further the body holds it back (felt, not heard).
     Strain,
+    /// Something worked on a hinge or a slide (a door, a lever, a drawer) coming against its stop,
+    /// felt by how fast: the game's own part makes its own sound.
+    Stop,
 }
 
 impl Cue {
@@ -149,6 +152,7 @@ impl Cue {
             Cue::BowRelease => "bow_release",
             Cue::StringSnap => "string_snap",
             Cue::BowSpring => "bow_spring",
+            Cue::Stop => "stop",
         }
     }
 }
@@ -238,6 +242,12 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
             (0.015, 130.0, (0.25 + 0.6 * i).min(0.9))
         }
         Cue::Strain => (0.05, 55.0, (0.15 + 0.6 * i).min(0.8)),
+        Cue::Stop => {
+            if i < 0.05 {
+                return None;
+            }
+            (0.02 + 0.03 * i, 90.0, (0.25 + 0.65 * i).min(1.0))
+        }
     })
 }
 
