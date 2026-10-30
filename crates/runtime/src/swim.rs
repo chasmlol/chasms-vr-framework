@@ -14,9 +14,9 @@
 //!   speed, a gentle one about half, and nothing goes faster than the game's. So a slow swimmer in
 //!   the game (low skill, heavy armour) moves slower for the same stroke.
 //! * **Comfort**: the strokes only ever push; they never turn the player. At the surface the game
-//!   holds the player up (pushing up there does nothing, and a stroke that takes them a little under
-//!   is floated back up by the game); under water there's no buoyancy: a still swimmer hangs where
-//!   they are, as the game has them.
+//!   holds the player up (pushing up there does nothing), and a stroke's little drift down is held
+//!   there too: diving takes a push down. Under water there's no buoyancy: a still swimmer hangs
+//!   where they are, as the game has them.
 //! * **Feel**: a pushing hand buzzes with the water's resistance; a hand slapping into it, a pulse.
 //!   Holding the breath with little of it left, the heart beats in both hands, faster and harder as
 //!   it runs out (the game's own meter and gasp say so too): time to come up.
@@ -228,14 +228,12 @@ impl Swim {
             self.logged = inp.now;
             let depth = palms.map(|p| p.map(|p| surface - p.0.y));
             tracing::info!(
-                "swim: {:.2?} m/s ({:.0}% of the game's {full:.2}), effort {:.2}; the hands {:.2?} m under, at {:.2?} m/s, palms {:.2?}; the surface at {surface:.2} in tracking space, the head at {:.2}",
+                "swim: {:.2?} m/s ({:.0}% of the game's {full:.2}), effort {:.2}; the hands {:.2?} m under, at {:.2?} m/s",
                 self.velocity,
                 100.0 * self.velocity.length() / full,
                 self.effort,
                 depth,
                 self.hand_vel,
-                palms,
-                head.y,
             );
         }
         SwimOut { velocity, effort: self.effort, swimming, full_speed: full }
