@@ -63,6 +63,8 @@ pub mod avatar;
 pub mod combat;
 pub mod hud;
 pub mod items;
+pub mod stations;
+pub mod cards;
 pub mod sound;
 pub mod world;
 pub mod lighting;
@@ -72,14 +74,16 @@ pub use avatar::*;
 pub use combat::*;
 pub use hud::*;
 pub use items::*;
+pub use stations::*;
+pub use cards::*;
 pub use sound::*;
 pub use world::*;
 pub use lighting::*;
 pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 11;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v11";
+pub const VERSION: u32 = 12;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v12";
 pub const MAPPING_BYTES: usize = 0x0052_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------

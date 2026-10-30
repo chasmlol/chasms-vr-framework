@@ -15,6 +15,7 @@ pub mod obs_view;
 pub mod held_objects;
 pub mod hud;
 pub mod item_card;
+pub mod game_cards;
 pub mod panels;
 pub mod physics_view;
 pub mod rig;

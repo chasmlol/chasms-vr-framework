@@ -335,6 +335,20 @@ impl Link {
     pub fn read_item_infos_into(&self, out: &mut ItemInfos) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_ITEM_INFO), out) }
     }
+    /// Adapter: the bowls the hands make things in ([`Receptacles`]).
+    pub fn write_receptacles(&self, v: &Receptacles) {
+        unsafe { seq_write(self.base.add(OFF_STATIONS), v) }
+    }
+    pub fn read_receptacles_into(&self, out: &mut Receptacles) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_STATIONS), out) }
+    }
+    /// Adapter: cards of the game's own interface beside its objects ([`Cards`]).
+    pub fn write_cards(&self, v: &Cards) {
+        unsafe { seq_write(self.base.add(OFF_CARDS), v) }
+    }
+    pub fn read_cards_into(&self, out: &mut Cards) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_CARDS), out) }
+    }
     /// Runtime: a melee hit, block or cast for the game.
     pub fn push_combat_event(&self, ev: &CombatEvent) {
         let written = self.u64_at(OFF_COMBAT_EVENTS + offset_of!(CombatEvents, written));

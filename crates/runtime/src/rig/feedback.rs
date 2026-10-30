@@ -72,6 +72,10 @@ pub enum Cue {
     /// An air gun's pump stroke (pressure building), and its trigger without the pressure to fire.
     Pump,
     AirHiss,
+    /// A grinder worked in its bowl ([`super::receptacle`]): its texture while it grinds (felt, the
+    /// harder the faster), and each stroke's pulse. Felt only: the game sounds its own grinding.
+    Grind,
+    GrindStroke,
 }
 
 impl Cue {
@@ -123,6 +127,8 @@ impl Cue {
             Cue::PumpForward => "pump_forward",
             Cue::Pump => "pump",
             Cue::AirHiss => "air_hiss",
+            Cue::Grind => "grind",
+            Cue::GrindStroke => "grind_stroke",
         }
     }
 }
@@ -196,6 +202,9 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::BoltForward | Cue::PumpForward => (0.045, 140.0, 0.85),
         Cue::Pump => (0.04, 90.0, 0.6),
         Cue::AirHiss => (0.03, 320.0, 0.25),
+        // A low, rough buzz: stone on stone with something crunching between.
+        Cue::Grind => (0.05, 65.0, (0.12 + 0.35 * i).min(0.5)),
+        Cue::GrindStroke => (0.03, 90.0, 0.45),
     })
 }
 

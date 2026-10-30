@@ -8,7 +8,7 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 11
+#define RVR_VERSION 12
 
 #define RVR_MAPPING_BYTES 5373952
 
@@ -95,6 +95,11 @@
 #define RVR_CTRL_TOUCH_B (1 << 8)
 
 #define RVR_CTRL_TOUCH_STICK (1 << 9)
+
+/**
+ * The thumb rests on the thumbrest (Touch controllers).
+ */
+#define RVR_CTRL_TOUCH_REST (1 << 10)
 
 #define RVR_HAND_LEFT 0
 
@@ -593,6 +598,43 @@
  */
 #define RVR_ITEM_QUEST (1 << 2)
 
+#define RVR_MAX_RECEPTACLES 8
+
+/**
+ * The objects that may go into one bowl now, at most.
+ */
+#define RVR_MAX_ACCEPTS 40
+
+/**
+ * What's in it is ground by its grinder.
+ */
+#define RVR_REC_GRIND (1 << 0)
+
+#define RVR_MAX_CARDS 4
+
+#define RVR_MAX_CARD_PIECES 24
+
+/**
+ * A piece of the game's art: the part `uv` of the texture `asset`, stretched over `rect`.
+ */
+#define RVR_PIECE_IMAGE 1
+
+/**
+ * A line of the game's text: `text` in the font `asset`, `color`, from `rect`'s top left (its
+ * width the wrap width; 0: no wrap).
+ */
+#define RVR_PIECE_TEXT 2
+
+/**
+ * Text: centred across `rect` (else from its left).
+ */
+#define RVR_PIECEF_CENTRE (1 << 0)
+
+/**
+ * Text: to `rect`'s right edge.
+ */
+#define RVR_PIECEF_RIGHT (1 << 1)
+
 /**
  * The [`SoundPack`] region.
  */
@@ -780,6 +822,13 @@
 #define RVR_OBJF_LOOT (1 << 11)
 
 /**
+ * With [`OBJF_RUNTIME_DRAWS`], a prop the runtime draws always, not only once a hand has had it: a
+ * piece of a game's model the runtime split off (a pestle out of its mortar's model), or a thing
+ * whose game model the game hides while the runtime draws its pieces.
+ */
+#define RVR_OBJF_DRAWN_ALWAYS (1 << 12)
+
+/**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
  */
 #define RVR_GAME_HANDBACK 0.15
@@ -803,20 +852,22 @@
 #define RVR_SHAPE_SPHERE 2
 
 /**
- * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
- * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ * The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+ * collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+ * Until its points arrive, the box `half_extents` about `center`.
  */
 #define RVR_SHAPE_HULL 3
 
 /**
  * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
- * whenever the objects offered change (before they're published).
+ * whenever the objects offered change (before they're published). An object with several convex
+ * parts has an entry for each.
  */
 #define RVR_OFF_GAME_HULLS 5046272
 
-#define RVR_MAX_GAME_HULLS 48
+#define RVR_MAX_GAME_HULLS 240
 
-#define RVR_MAX_HULL_POINTS 128
+#define RVR_MAX_HULL_POINTS 32
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 
@@ -1038,6 +1089,11 @@
  * A thing to take ([`OBJF_LOOT`]) put in a body slot (`slot`): the game takes it.
  */
 #define RVR_OS_STOWED (1 << 17)
+
+/**
+ * In a bowl ([`crate::Receptacle`]): `parent` is the bowl, `fuse` how far it's ground (0 .. 1).
+ */
+#define RVR_OS_IN_RECEPTACLE (1 << 18)
 
 #define RVR_SLOT_HIP_RIGHT 0
 

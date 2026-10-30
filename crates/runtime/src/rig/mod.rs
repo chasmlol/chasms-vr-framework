@@ -26,6 +26,7 @@ pub mod grips;
 pub mod valve;
 pub mod kick;
 pub mod physics;
+pub mod receptacle;
 pub mod recoil;
 pub mod throwable;
 pub mod throwing;
@@ -43,6 +44,7 @@ use actions::{Chamber, Cycle, CycleEvent, HingeEvent};
 use feedback::{Cue, Feedback};
 use filters::OneEuro;
 use physics::{Physics, groups_free, groups_game_prop, groups_hand, groups_held, groups_none};
+use receptacle::{Bowl, Grind};
 use throwable::{Flight, Fuse, KnifeMode, ThrowState};
 use throwing::{ThrowClass, ThrowHistory};
 use weapon::{Fire, HandleGrab, WeaponState};
@@ -122,6 +124,9 @@ enum Holder {
     Gone,
     /// A thing to take ([`OBJF_LOOT`]) put in this body slot: the game's to take.
     Stowed(u32),
+    /// In a bowl ([`receptacle`]): lying at this pose in it (the bowl's object space). `grinder`:
+    /// the bowl's grinder resting in it, not one of the things in it.
+    InBowl { bowl: u32, at: Vec3, rot: Quat, grinder: bool },
 }
 
 /// How a held object sits in the hand.
@@ -181,6 +186,11 @@ struct Obj {
     valve_shape: Vec<Vec3>,
     /// Stuck in something it chopped or stabbed into ([`embed`]).
     embed: Option<embed::Embedded>,
+    /// In a bowl: how far it's ground (0..1), how much it's shrunk to fit, and where it fell into
+    /// its place from (world pose) and when.
+    ground: f32,
+    fit: f32,
+    glide: Option<(Vec3, Quat, f64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -427,6 +437,9 @@ pub struct RigDebug {
     pub embeds: u32,
     /// Things to take put in a body slot ([`OBJF_LOOT`]).
     pub stowed: u32,
+    /// Things gone into a bowl, and grinding strokes in one ([`receptacle`]).
+    pub into_bowls: u32,
+    pub grind_strokes: u32,
     /// Where the last grenade went off, and where the last knife's tip went in (tracking space).
     pub last_detonation: Option<Vec3>,
     pub last_stick: Option<Vec3>,
@@ -642,6 +655,12 @@ const GRASP_TIME: f64 = 0.12;
 const FOREGRIP_BREAK: f32 = 0.3;
 /// Letting go of something faster than this throws it rather than holstering it.
 const HOLSTER_MAX_SPEED: f32 = 1.2;
+/// Letting go over a bowl's mouth faster than this (m/s) flings it on, past the bowl.
+const BOWL_MAX_SPEED: f32 = 2.5;
+/// How long a thing let go into a bowl takes to fall into its place there (seconds).
+const BOWL_FALL: f64 = 0.18;
+/// How often the hand on a grinder feels its grinding (seconds between pulses).
+const GRIND_FEEL: f64 = 0.045;
 /// A throw lets go when the grip eases this far off its hardest squeeze while the hand swings
 /// faster than this (m/s).
 const THROW_EASE: f32 = 0.25;
@@ -695,6 +714,13 @@ pub struct Rig {
     pushes: Vec<Push>,
     /// What each hand's fingers close on this frame (tracking space).
     grasps: [Option<rustvr_avatar::Grasp>; 2],
+    /// The bowls the hands make things in ([`Receptacles`]), by the bowl's id, as last read; and
+    /// each one's grinding.
+    bowls: BTreeMap<u32, Receptacle>,
+    bowls_seq: u32,
+    grinds: HashMap<u32, Grind>,
+    /// When each hand last felt its grinding.
+    grind_felt: [f64; 2],
 }
 
 impl Default for Rig {
@@ -723,6 +749,10 @@ impl Default for Rig {
             kicks: HashMap::new(),
             pushes: Vec::new(),
             grasps: [None, None],
+            bowls: BTreeMap::new(),
+            bowls_seq: 0,
+            grinds: HashMap::new(),
+            grind_felt: [0.0; 2],
         }
     }
 }
@@ -999,6 +1029,7 @@ impl Rig {
             }
             if let Some(o) = self.objects.get(&id)
                 && o.desc.shape == SHAPE_HULL
+                && !self.bowls.contains_key(&id)
             {
                 let (c, mass) = (o.collider, o.desc.mass);
                 self.physics.set_hulls(c, &parts, mass);
@@ -1098,8 +1129,18 @@ impl Rig {
                 }),
                 valve_shape: Vec::new(),
                 embed: None,
+                ground: 0.0,
+                fit: 1.0,
+                glide: None,
             },
         );
+        // A bowl's collision is the bowl; its grinder starts resting in it.
+        if self.bowls.contains_key(&id) {
+            self.shape_bowl(id);
+        }
+        if let Some(bowl) = self.bowls.values().find(|r| r.grinder == id).map(|r| r.id) {
+            self.rest_grinder(id, bowl);
+        }
         // A valve's wheel turns on its axle, never anywhere else.
         if d.kind == OBJ_VALVE {
             self.physics.set_kinematic(body, true);
@@ -1148,6 +1189,12 @@ impl Rig {
     }
 
     fn remove(&mut self, id: u32) {
+        // What was in it falls out; what it was in lays out what's left.
+        let inside: Vec<u32> = self.objects.iter().filter(|(_, o)| matches!(o.holder, Holder::InBowl { bowl, .. } if bowl == id)).map(|(i, _)| *i).collect();
+        for i in inside {
+            self.free_body(i, groups_free());
+        }
+        let was_in = self.objects.get(&id).and_then(|o| if let Holder::InBowl { bowl, grinder: false, .. } = o.holder { Some(bowl) } else { None });
         if let Some(o) = self.objects.remove(&id) {
             self.physics.remove(o.body);
             if let Some(a) = o.hang {
@@ -1181,6 +1228,229 @@ impl Rig {
                 if let Some(m) = w.mag {
                     self.remove(m);
                 }
+            }
+        }
+        if let Some(bowl) = was_in {
+            self.arrange(bowl);
+        }
+    }
+
+    // ---- bowls -----------------------------------------------------------------------------------
+
+    /// The bowls the hands make things in ([`Receptacles`], the adapter's): their collision made
+    /// a bowl's, what's in one no longer a bowl loose again, a grinder no hand has had resting in
+    /// its bowl, and what may no longer go into one out of it.
+    pub fn set_receptacles(&mut self, table: &Receptacles) {
+        if table.seq == self.bowls_seq {
+            return;
+        }
+        self.bowls_seq = table.seq;
+        let new: BTreeMap<u32, Receptacle> = table.entries().iter().filter(|r| r.id != 0).map(|r| (r.id, *r)).collect();
+        let gone: Vec<u32> = self.bowls.keys().filter(|id| !new.contains_key(id)).copied().collect();
+        let changed: Vec<u32> = new.iter().filter(|(id, r)| self.bowls.get(id).is_none_or(|o| Bowl::of(o) != Bowl::of(r))).map(|(id, _)| *id).collect();
+        self.bowls = new;
+        for id in gone {
+            self.unbowl(id);
+        }
+        for id in changed {
+            self.shape_bowl(id);
+        }
+        let rests: Vec<(u32, u32)> = self.bowls.values().filter(|r| r.grinder != 0).map(|r| (r.grinder, r.id)).collect();
+        for (g, bowl) in rests {
+            if self.objects.get(&g).is_some_and(|o| o.holder == Holder::Free && !o.handled) {
+                self.rest_grinder(g, bowl);
+            }
+        }
+        let out: Vec<(u32, u32)> = self
+            .objects
+            .iter()
+            .filter_map(|(id, o)| match o.holder {
+                Holder::InBowl { bowl, grinder: false, .. } if self.bowls.get(&bowl).is_some_and(|r| !r.accepts().contains(id)) => Some((*id, bowl)),
+                _ => None,
+            })
+            .collect();
+        for (id, bowl) in out {
+            self.free_body(id, groups_free());
+            self.arrange(bowl);
+        }
+    }
+
+    /// A bowl's collision: its floor and its wall ([`Bowl::parts`]), from the bottom of its box.
+    fn shape_bowl(&mut self, id: u32) {
+        let (Some(r), Some(o)) = (self.bowls.get(&id), self.objects.get(&id)) else { return };
+        let bottom = o.desc.center[1] - o.desc.half_extents[1];
+        let parts = Bowl::of(r).parts(bottom);
+        let (c, mass) = (o.collider, o.desc.mass);
+        self.physics.set_boxes(c, &parts, mass);
+    }
+
+    /// `id` is no longer a bowl: what's in it is loose, and its collision is its own again.
+    fn unbowl(&mut self, id: u32) {
+        let inside: Vec<u32> = self.objects.iter().filter(|(_, o)| matches!(o.holder, Holder::InBowl { bowl, .. } if bowl == id)).map(|(i, _)| *i).collect();
+        for i in inside {
+            self.free_body(i, groups_free());
+        }
+        if let Some(o) = self.objects.get(&id) {
+            let (c, d) = (o.collider, o.desc);
+            let hulls = self.game_hulls.get(&id).cloned().unwrap_or_default();
+            self.physics.set_object_shape(c, &d, &hulls);
+        }
+        self.grinds.remove(&id);
+    }
+
+    /// A point in the world in a bowl's object space (metres).
+    fn in_bowl_space(&self, bowl: u32, at: Vec3) -> Option<Vec3> {
+        let (bp, bq) = self.obj_pose(bowl)?;
+        Some(bq.inverse() * (at - bp) / self.map.world_per_meter.max(1e-6))
+    }
+
+    /// The bowl `id` would go into if let go of at `at` (world; `above`: how far over the rim its
+    /// mouth still takes it): one that takes it and has room for it.
+    fn bowl_for(&self, id: u32, at: Vec3, above: f32) -> Option<u32> {
+        self.bowls.values().find_map(|r| {
+            if r.id == id || !r.accepts().contains(&id) || self.contents(r.id).len() >= r.capacity as usize {
+                return None;
+            }
+            let local = self.in_bowl_space(r.id, at)?;
+            Bowl::of(r).in_mouth(local, above).then_some(r.id)
+        })
+    }
+
+    /// What's in a bowl (not its grinder), in the order it went in.
+    fn contents(&self, bowl: u32) -> Vec<u32> {
+        let mut v: Vec<(f64, u32)> =
+            self.objects.iter().filter(|(_, o)| matches!(o.holder, Holder::InBowl { bowl: b, grinder: false, .. } if b == bowl)).map(|(id, o)| (o.free_since, *id)).collect();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0));
+        v.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// Into a bowl: out of the world's way (nothing meets it), laid on its floor with the rest.
+    fn into_bowl(&mut self, id: u32, bowl: u32) {
+        let Some(bq) = self.obj_pose(bowl).map(|p| p.1) else { return };
+        let now = self.now;
+        let Some(o) = self.objects.get_mut(&id) else { return };
+        let (p, q) = self.physics.pose(o.body);
+        o.holder = Holder::InBowl { bowl, at: Vec3::ZERO, rot: (bq.inverse() * q).normalize(), grinder: false };
+        // (When it went in: its place in the order.)
+        o.free_since = now;
+        o.glide = Some((p, q, now));
+        o.embed = None;
+        let (body, collider) = (o.body, o.collider);
+        self.physics.set_kinematic(body, true);
+        self.physics.set_groups(collider, groups_none());
+        self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
+        self.debug.into_bowls += 1;
+        self.arrange(bowl);
+    }
+
+    /// Lays what's in a bowl on its floor: alone in the middle, else round it, each with its
+    /// lowest point on the floor as it lies, shrunk to fit and as it's ground.
+    fn arrange(&mut self, bowl: u32) {
+        let Some(r) = self.bowls.get(&bowl) else { return };
+        let b = Bowl::of(r);
+        let inside = self.contents(bowl);
+        let n = inside.len();
+        for (k, id) in inside.into_iter().enumerate() {
+            let o = self.objects.get_mut(&id).unwrap();
+            let Holder::InBowl { rot, .. } = o.holder else { continue };
+            let (centre, half) = (v3(o.desc.center), v3(o.desc.half_extents));
+            o.fit = receptacle::fit(&b, half);
+            let scale = receptacle::drawn_scale(o.fit, o.ground);
+            // Its box as it lies: how far it reaches down from its middle.
+            let down: f32 = [Vec3::X, Vec3::Y, Vec3::Z].iter().zip(half.to_array()).map(|(a, h)| (rot * *a).y.abs() * h).sum();
+            let mid = rot * centre * scale;
+            let place = b.place(k, n);
+            let at = Vec3::new(place.x - mid.x, place.y + down * scale - mid.y, place.z - mid.z);
+            o.holder = Holder::InBowl { bowl, at, rot, grinder: false };
+        }
+    }
+
+    /// The bowl's grinder lies where it rests in it.
+    fn rest_grinder(&mut self, id: u32, bowl: u32) {
+        let Some(r) = self.bowls.get(&bowl) else { return };
+        let (at, rot) = (v3(r.rest_pos), q4(r.rest_rot));
+        let now = self.now;
+        let Some(o) = self.objects.get_mut(&id) else { return };
+        let (p, q) = self.physics.pose(o.body);
+        o.holder = Holder::InBowl { bowl, at, rot, grinder: true };
+        o.glide = o.handled.then_some((p, q, now));
+        let (body, collider) = (o.body, o.collider);
+        self.physics.set_kinematic(body, true);
+        self.physics.set_groups(collider, groups_none());
+        self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
+    }
+
+    /// Where a thing in a bowl is now: on the bowl where it lies, falling into its place at first.
+    fn in_bowl_pose(&self, id: u32) -> Option<(Vec3, Quat)> {
+        let o = self.objects.get(&id)?;
+        let Holder::InBowl { bowl, at, rot, .. } = o.holder else { return None };
+        let (bp, bq) = self.obj_pose(bowl)?;
+        let to = (bp + bq * at * self.map.world_per_meter, (bq * rot).normalize());
+        Some(match o.glide {
+            Some((p, q, t0)) if self.now - t0 < BOWL_FALL => {
+                let k = smooth((self.now - t0) / BOWL_FALL);
+                (p.lerp(to.0, k), q.slerp(to.1, k))
+            }
+            _ => to,
+        })
+    }
+
+    /// One step of the bowls, after the physics: what fell into one goes in, what's in one goes
+    /// where the bowl is now, and the grinders grind.
+    fn bowls(&mut self, dt: f32) {
+        if self.bowls.is_empty() {
+            return;
+        }
+        // Loose and falling into a bowl's mouth (let go over it from higher up, knocked in): in.
+        let falling: Vec<(u32, Vec3)> = self
+            .objects
+            .iter()
+            .filter(|(_, o)| o.holder == Holder::Free && (o.desc.flags & OBJF_GAME_SIMULATED == 0 || self.now - o.free_since <= GAME_HANDBACK as f64))
+            .map(|(id, o)| (*id, self.physics.pose(o.body).0))
+            .collect();
+        for (id, at) in falling {
+            if let Some(bowl) = self.bowl_for(id, at, 0.0) {
+                self.into_bowl(id, bowl);
+            }
+        }
+        let inside: Vec<u32> = self.objects.iter().filter(|(_, o)| matches!(o.holder, Holder::InBowl { .. })).map(|(id, _)| *id).collect();
+        for id in inside {
+            match self.in_bowl_pose(id) {
+                Some((p, q)) => {
+                    let body = self.objects[&id].body;
+                    self.physics.set_pose(body, p, q);
+                    self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
+                }
+                None => self.free_body(id, groups_free()),
+            }
+        }
+        // Grinding: the grinder's tip pressed low in its bowl and worked about.
+        let grinding: Vec<Receptacle> = self.bowls.values().filter(|r| r.flags & REC_GRIND != 0 && r.grinder != 0).copied().collect();
+        let wpm = self.map.world_per_meter;
+        for r in grinding {
+            let Some(g) = self.objects.get(&r.grinder) else { continue };
+            let hand = if let Holder::Held(h) = g.holder { Some(h) } else { None };
+            let (gp, gq) = self.physics.pose(g.body);
+            let tip_world = gp + gq * v3(r.tip) * wpm;
+            let tip = hand.and_then(|_| self.in_bowl_space(r.id, tip_world));
+            let (done, stroke) = self.grinds.entry(r.id).or_default().step(&Bowl::of(&r), tip, r.tip_radius, dt);
+            let Some(hand) = hand.filter(|_| done > 0.0) else { continue };
+            let inside = self.contents(r.id);
+            let work = (r.grind_work.max(0.01) * inside.len() as f32).max(0.01);
+            for id in &inside {
+                let o = self.objects.get_mut(id).unwrap();
+                o.ground = (o.ground + done / work).min(1.0);
+            }
+            if !inside.is_empty() {
+                self.arrange(r.id);
+            }
+            let speed = self.grinds[&r.id].speed;
+            if stroke {
+                self.debug.grind_strokes += 1;
+                self.emit(Cue::GrindStroke, Some(hand), Some(r.id), tip_world, 1.0);
+            } else if self.now - self.grind_felt[hand] > GRIND_FEEL {
+                self.grind_felt[hand] = self.now;
+                self.emit(Cue::Grind, Some(hand), Some(r.id), tip_world, (speed / receptacle::MAX_SPEED).clamp(0.0, 1.0));
             }
         }
     }
@@ -1390,6 +1660,7 @@ impl Rig {
         self.physics.set_dt(dt);
         self.physics.step();
         self.after_step(inp);
+        self.bowls(dt);
         self.game_pushes = self.pushes();
         self.output(inp, dom)
     }
@@ -1820,7 +2091,7 @@ impl Rig {
             };
             let mut best: Option<(u32, f32)> = None;
             for (id, o) in &self.objects {
-                if o.desc.flags & OBJF_GRABBABLE == 0 || !matches!(o.holder, Holder::Free | Holder::Pulled { .. } | Holder::Stuck { .. }) {
+                if o.desc.flags & OBJF_GRABBABLE == 0 || !matches!(o.holder, Holder::Free | Holder::Pulled { .. } | Holder::Stuck { .. } | Holder::InBowl { .. }) {
                     continue;
                 }
                 let pulled = matches!(o.holder, Holder::Pulled { hand, .. } if hand == i);
@@ -2366,6 +2637,25 @@ impl Rig {
             self.stow(id, slot as u32);
             self.emit(Cue::HolsterIn, Some(i), Some(id), palm, 1.0);
             return;
+        }
+        // Let go of over a bowl that takes it (not flung at it): in. A bowl's grinder let go with its
+        // tip over the mouth rests in it again.
+        if hand_speed < BOWL_MAX_SPEED {
+            let (p, q) = self.physics.pose(body);
+            if let Some(bowl) = self.bowl_for(id, p, receptacle::MOUTH_ABOVE) {
+                self.into_bowl(id, bowl);
+                self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
+                return;
+            }
+            let home = self.bowls.values().find(|r| r.grinder == id).copied();
+            if let Some(r) = home
+                && let Some(tip) = self.in_bowl_space(r.id, p + q * v3(r.tip) * self.map.world_per_meter)
+                && Bowl::of(&r).in_mouth(tip, receptacle::MOUTH_ABOVE * 0.5)
+            {
+                self.rest_grinder(id, r.id);
+                self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
+                return;
+            }
         }
         // Into a holster or pouch the hand is in, let go of gently (a swing past it throws instead).
         if holsterable && hand_speed < HOLSTER_MAX_SPEED {
@@ -3803,7 +4093,8 @@ impl Rig {
                     }
                     None => self.free_body(*id, groups_free()),
                 },
-                Holder::Stuck { .. } | Holder::Gone | Holder::Stowed(_) => {}
+                // (A thing in a bowl goes where the bowl is after the step: `bowls`.)
+                Holder::Stuck { .. } | Holder::Gone | Holder::Stowed(_) | Holder::InBowl { .. } => {}
             }
         }
         self.valves(dt, s.interaction.grab_transition, s.interaction.mechanism_stiffness);
@@ -4381,7 +4672,9 @@ impl Rig {
             // A valve turns on its axle at its own speed (its body is only moved there).
             let (lv, av) = o.valve.map_or((lv, av), |v| (Vec3::ZERO, v.axis() * v.vel));
             let tracking = matches!(o.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. });
-            let tracking = tracking || matches!(o.holder, Holder::InWeapon(w) if self.objects.get(&w).is_some_and(|w| matches!(w.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. })));
+            // (What's in a gun or a bowl goes with it.)
+            let tracking = tracking
+                || matches!(o.holder, Holder::InWeapon(w) | Holder::InBowl { bowl: w, .. } if self.objects.get(&w).is_some_and(|w| matches!(w.holder, Holder::Held(_) | Holder::Holstered(_) | Holder::Returning { .. })));
             let pose_out = if tracking { pose(map.inv_point(p), map.inv_rot(q)) } else { pose(p, q) };
             let mut flags = OS_SIMULATED | if tracking { OS_TRACKING } else { 0 };
             match o.holder {
@@ -4392,7 +4685,8 @@ impl Rig {
                 Holder::Pulled { .. } => flags |= OS_PULLED,
                 Holder::Stuck { .. } => flags |= OS_STUCK,
                 Holder::Stowed(_) => flags |= OS_STOWED,
-                Holder::Free | Holder::Gone => {}
+                Holder::InBowl { grinder: false, .. } => flags |= OS_IN_RECEPTACLE,
+                Holder::Free | Holder::Gone | Holder::InBowl { .. } => {}
             }
             if let Some(t) = &o.throw {
                 flags |= t.flags_out();
@@ -4401,8 +4695,10 @@ impl Rig {
                 flags |= OS_HOVERED;
             }
             // A game's prop a hand has had: drawn by the runtime from then on (the game hides its).
+            // One it always draws (a piece it split off the game's model), always.
             let stowed = matches!(o.holder, Holder::Stowed(_));
-            if o.desc.kind == OBJ_PROP && o.desc.flags & OBJF_RUNTIME_DRAWS != 0 && !stowed && (o.handled || matches!(o.holder, Holder::Held(_) | Holder::Pulled { .. })) {
+            let always = o.desc.flags & OBJF_DRAWN_ALWAYS != 0;
+            if o.desc.kind == OBJ_PROP && o.desc.flags & OBJF_RUNTIME_DRAWS != 0 && !stowed && (always || o.handled || matches!(o.holder, Holder::Held(_) | Holder::Pulled { .. })) {
                 flags |= OS_RUNTIME_DRAWN;
             }
             // The hands on a valve's rim have it.
@@ -4438,9 +4734,20 @@ impl Rig {
                 _ => 0,
             };
             let parent = match o.holder {
-                Holder::InWeapon(w) => w,
+                Holder::InWeapon(w) | Holder::InBowl { bowl: w, .. } => w,
                 Holder::Stuck { parent, .. } => parent,
                 _ => 0,
+            };
+            // A thing in a bowl: how far it's ground, and how big to draw it. A bowl: how much of what's
+            // in it is ground, and its grinding strokes.
+            let (fuse, slide, shots) = match o.holder {
+                Holder::InBowl { grinder: false, .. } => (o.ground, receptacle::drawn_scale(o.fit, o.ground), shots),
+                _ if self.bowls.contains_key(id) => {
+                    let inside = self.contents(*id);
+                    let share = if inside.is_empty() { 0.0 } else { inside.iter().map(|i| self.objects[i].ground).sum::<f32>() / inside.len() as f32 };
+                    (fuse, share, self.grinds.get(id).map_or(0, |g| g.strokes))
+                }
+                _ => (fuse, slide, shots),
             };
             out.states[out.count as usize] = ObjectState {
                 id: *id,

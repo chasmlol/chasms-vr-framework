@@ -227,6 +227,28 @@ impl Physics {
         true
     }
 
+    /// Gives an object's collider the shape of boxes (each its centre, rotation and half extents,
+    /// object space) and `mass`: a bowl's floor and wall ([`super::receptacle::Bowl::parts`]).
+    pub fn set_boxes(&mut self, c: ColliderHandle, boxes: &[(V3, Q, V3)], mass: f32) -> bool {
+        let shapes: Vec<_> = boxes.iter().map(|&(p, q, h)| (to_pose(p, q), SharedShape::cuboid(h.x.max(0.001), h.y.max(0.001), h.z.max(0.001)))).collect();
+        let Some(col) = self.world.colliders.get_mut(c).filter(|_| !shapes.is_empty()) else { return false };
+        col.set_shape(SharedShape::compound(shapes));
+        col.set_translation_wrt_parent(Vector::ZERO);
+        col.set_mass(mass.max(0.02));
+        true
+    }
+
+    /// Gives an object's collider back the shape its description gives it (`hulls`: its convex
+    /// parts, for [`SHAPE_HULL`]).
+    pub fn set_object_shape(&mut self, c: ColliderHandle, d: &ObjectDesc, hulls: &[Vec<V3>]) {
+        let built = object_collider(d, hulls).build();
+        if let Some(col) = self.world.colliders.get_mut(c) {
+            col.set_shape(built.shared_shape().clone());
+            col.set_position_wrt_parent(*built.position());
+            col.set_mass(d.mass.max(0.02));
+        }
+    }
+
     /// A hand: a light dynamic palm box with no gravity, driven by velocity. `palm`: the box in the
     /// hand's own space (centre, rotation, half sizes; [`super::fingers::palm`]).
     pub fn add_hand(&mut self, hand: usize, pos: V3, rot: Q, palm: (V3, Q, V3)) -> (RigidBodyHandle, ColliderHandle) {

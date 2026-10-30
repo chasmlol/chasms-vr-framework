@@ -119,6 +119,12 @@ pub struct Session {
     menu: RuntimeMenu,
     /// The card beside a thing in the hand, and this frame's place for it (and how strongly).
     item_card: crate::item_card::ItemCard,
+    /// The game's cards of its own interface beside its objects, and this frame's (panel, how
+    /// strongly, the object).
+    game_cards: crate::game_cards::GameCards,
+    game_card_panels: Vec<(panels::Panel, f32, u32)>,
+    /// The bowls the hands make things in (see `Rig::set_receptacles`).
+    receptacles: Box<Receptacles>,
     /// OBS's window in the headset (over the left wrist, or pinned with F9): only the headset.
     obs: crate::obs_view::ObsView,
     card: Option<(panels::Panel, f32)>,
@@ -262,6 +268,9 @@ impl Session {
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
             item_card: crate::item_card::ItemCard::new(&gpu)?,
+            game_cards: crate::game_cards::GameCards::new(&gpu)?,
+            game_card_panels: Vec::new(),
+            receptacles: bytemuck::zeroed_box(),
             obs: crate::obs_view::ObsView::default(),
             card: None,
             gpu,
@@ -617,6 +626,10 @@ impl Session {
             if self.link.read_game_hulls_into(&mut self.game_hulls) {
                 self.rig.set_game_hulls(&self.game_hulls);
             }
+            // The bowls the hands make things in.
+            if self.link.read_receptacles_into(&mut self.receptacles) {
+                self.rig.set_receptacles(&self.receptacles);
+            }
             if self.link.read_game_poses_into(&mut self.game_poses) {
                 self.rig.set_game_poses(&self.game_poses);
             }
@@ -696,6 +709,9 @@ impl Session {
             // What the thing in a hand is, on a card beside it.
             self.item_card.read(&self.link);
             self.card = self.item_card.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
+            // The game's own cards beside its objects.
+            self.game_cards.read(&self.link);
+            self.game_card_panels = self.game_cards.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
             // The body the game makes up, when it changes.
             self.body.read_game_body(&self.link);
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
@@ -1313,6 +1329,11 @@ impl Session {
         if let Some((p, opacity)) = self.card.filter(|_| !menu_mode && !game_card) {
             layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, self.item_card.srv()) });
         }
+        for &(p, opacity, id) in self.game_card_panels.iter().filter(|_| !menu_mode) {
+            if let Some(srv) = self.game_cards.srv(id) {
+                layers.panels.push(PanelLayer { opacity, ..PanelLayer::whole(p, srv) });
+            }
+        }
         if let Some(p) = layout.runtime_menu {
             layers.panels.push(PanelLayer::whole(p, self.menu.srv()));
         }
@@ -1740,6 +1761,8 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, rustvr_audio::Soun
         C::Explosion => (E::Explosion, S::ShotShotgun),
         C::KnifeStick => (E::KnifeStick, S::Impact),
         C::ExplosionRumble => return None,
+        // The game sounds its own grinding (the bowl's strokes).
+        C::Grind | C::GrindStroke => return None,
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

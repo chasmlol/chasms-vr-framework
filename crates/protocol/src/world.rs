@@ -441,6 +441,10 @@ pub const OBJF_GAME_MOVED: u32 = 1 << 10;
 /// (whatever's there, however big it is), it's stowed: [`OS_STOWED`], out of the hands and not
 /// drawn, for the game to take into the player's inventory (and drop from the table).
 pub const OBJF_LOOT: u32 = 1 << 11;
+/// With [`OBJF_RUNTIME_DRAWS`], a prop the runtime draws always, not only once a hand has had it: a
+/// piece of a game's model the runtime split off (a pestle out of its mortar's model), or a thing
+/// whose game model the game hides while the runtime draws its pieces.
+pub const OBJF_DRAWN_ALWAYS: u32 = 1 << 12;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 
@@ -690,6 +694,9 @@ pub const OS_RUNTIME_DRAWN: u32 = 1 << 16;
 pub const RUNTIME_DRAW_TAIL: f32 = 0.15;
 /// A thing to take ([`OBJF_LOOT`]) put in a body slot (`slot`): the game takes it.
 pub const OS_STOWED: u32 = 1 << 17;
+/// In a bowl ([`crate::Receptacle`]): `parent` is the bowl, `fuse` how far it's ground (0 .. 1),
+/// `slide` the size to draw it at (1: its own; shrunk to fit the bowl, and as it's ground).
+pub const OS_IN_RECEPTACLE: u32 = 1 << 18;
 
 pub const SLOT_HIP_RIGHT: u32 = 0;
 pub const SLOT_HIP_LEFT: u32 = 1;

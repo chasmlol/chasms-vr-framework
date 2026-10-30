@@ -13,6 +13,7 @@
 //! | `models/<key>.rvm` | [`Model`], postcard-encoded |
 //! | `textures/<key>.rvt` | [`Texture`], postcard-encoded |
 //! | `recoil/<key>.rvk` | [`Recoil`] of the gun `<key>`, postcard-encoded |
+//! | `fonts/<key>.rvf` | [`Font`]: a game's bitmap font (its atlas a texture here), postcard-encoded |
 //!
 //! Space: model positions are in the game's own model space, converted to left-handed metres with
 //! X right, Y up and Z forward (the same convention as the RustVR protocol). Viewmodels (first-person
@@ -28,6 +29,7 @@ pub mod rigs;
 pub const MODEL_EXT: &str = "rvm";
 pub const TEXTURE_EXT: &str = "rvt";
 pub const RECOIL_EXT: &str = "rvk";
+pub const FONT_EXT: &str = "rvf";
 /// Bump when [`Model`] or [`Texture`] change shape; loaders reject other versions.
 pub const FORMAT_VERSION: u32 = 3;
 
@@ -282,6 +284,57 @@ pub fn load_texture(dir: &Path, key: &str) -> Result<Texture> {
     let t: Texture = postcard::from_bytes(&read(&path)?).with_context(|| format!("decoding {}", path.display()))?;
     anyhow::ensure!(t.version == FORMAT_VERSION, "{}: format {} (want {FORMAT_VERSION})", path.display(), t.version);
     Ok(t)
+}
+
+// ---- fonts --------------------------------------------------------------------------------------
+
+/// A game's own bitmap font, for text drawn the way the game draws it: each character's glyph is a
+/// part of an atlas texture (a [`Texture`] in this cache), laid along a line as the game lays it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Font {
+    pub version: u32,
+    /// Where it came from inside the game.
+    pub source: String,
+    /// A line's height (the font's own units: the game's interface units).
+    pub height: f32,
+    /// The atlas's texture key.
+    pub atlas: String,
+    /// One for each byte value of the game's text (256; Latin-1 for most games of its era).
+    pub glyphs: Vec<Glyph>,
+}
+
+/// A character of a [`Font`].
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Glyph {
+    /// Its part of the atlas: u0, v0, u1, v1 (0..1, top left origin).
+    pub uv: [f32; 4],
+    /// Its size as drawn (the font's units).
+    pub width: f32,
+    pub height: f32,
+    /// The space along the line before it and after it (either may be negative), and how far its
+    /// top is above the line's baseline.
+    pub before: f32,
+    pub after: f32,
+    pub top: f32,
+}
+
+impl Font {
+    /// How far along the line a character takes the pen.
+    pub fn advance(&self, c: u8) -> f32 {
+        self.glyphs.get(c as usize).map_or(0.0, |g| g.before + g.width + g.after)
+    }
+}
+
+pub fn save_font(dir: &Path, key: &str, font: &Font) -> Result<()> {
+    let path = dir.join("fonts").join(format!("{key}.{FONT_EXT}"));
+    write(&path, &postcard::to_stdvec(font)?)
+}
+
+pub fn load_font(dir: &Path, key: &str) -> Result<Font> {
+    let path = dir.join("fonts").join(format!("{key}.{FONT_EXT}"));
+    let f: Font = postcard::from_bytes(&read(&path)?).with_context(|| format!("decoding {}", path.display()))?;
+    anyhow::ensure!(f.version == FORMAT_VERSION, "{}: format {} (want {FORMAT_VERSION})", path.display(), f.version);
+    Ok(f)
 }
 
 // ---- recoil -------------------------------------------------------------------------------------
