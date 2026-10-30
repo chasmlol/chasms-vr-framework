@@ -13,9 +13,10 @@
 //!   second: each stroke surges, then coasts. A steady, firm stroke reaches the game's full swim
 //!   speed, a gentle one about half, and nothing goes faster than the game's. So a slow swimmer in
 //!   the game (low skill, heavy armour) moves slower for the same stroke.
-//! * **Comfort**: the strokes only ever push; they never turn the player. With the head out of the
-//!   water nothing pushes up (the game holds the player at its surface), and there's no buoyancy: a
-//!   still swimmer hangs where they are, as the game has them.
+//! * **Comfort**: the strokes only ever push; they never turn the player. At the surface the game
+//!   holds the player up (pushing up there does nothing, and a stroke that takes them a little under
+//!   is floated back up by the game); under water there's no buoyancy: a still swimmer hangs where
+//!   they are, as the game has them.
 //! * **Feel**: a pushing hand buzzes with the water's resistance; a hand slapping into it, a pulse.
 
 use glam::{Quat, Vec3};
@@ -37,8 +38,9 @@ const PADDLE: [f32; 2] = [0.15, 0.6];
 const WET: [f32; 2] = [-0.02, 0.04];
 /// The palm's centre in the hand's canonical frame (`rustvr_ik`: +Y along the fingers).
 const PALM: Vec3 = Vec3::new(0.0, 0.05, 0.0);
-/// The water's drag: the swimming speed glides out by e over this long (seconds).
-const GLIDE: f32 = 0.9;
+/// The water's drag: the swimming speed glides out by e over this long (seconds). Long enough that
+/// a steady stroke's surges blend into a swim rather than lurching, short enough to stop soon.
+const GLIDE: f32 = 1.4;
 /// The strokes' push (both hands', m/s past the dead zone, averaged over the stroke) that holds the
 /// game's full swim speed against the drag.
 const FULL_PUSH: f32 = 0.9;
@@ -93,6 +95,8 @@ pub struct Swim {
     buzzed: [f64; 2],
     pub pulses: Vec<Pulse>,
     said: bool,
+    /// When the strokes were last logged.
+    logged: f64,
 }
 
 fn yaw_of(q: Quat) -> f32 {
@@ -113,7 +117,8 @@ impl Swim {
         let offsets = *self.offsets.get_or_insert_with(|| rustvr_ik::BodyParams::default().hand_offsets);
         let water = inp.water.filter(|w| w.flags & WATER_HERE != 0 && w.flags & WATER_WALKING == 0);
         let swimming = water.is_some_and(|w| w.flags & WATER_SWIMMING != 0);
-        let full = water.map_or(0.0, |w| w.swim_speed.max(0.0));
+        // (The game's speed is the world's; the strokes are tracking space's, a world scale apart.)
+        let full = water.map_or(0.0, |w| w.swim_speed.max(0.0)) / inp.map.map_or(1.0, |m| m.world_per_meter);
         // The surface in tracking space (the mapping turns about the vertical only).
         let surface = match (water, inp.map) {
             (Some(w), Some(m)) => Some(m.origin.y + (w.surface - m.anchor.y) / m.world_per_meter),
@@ -160,7 +165,6 @@ impl Swim {
             tracing::info!("swim: the arms swim (the game's full speed {full:.2} m/s)");
         }
         let surface = surface.unwrap_or(f32::MAX);
-        let head_under = water.is_some_and(|w| w.flags & WATER_HEAD_UNDER != 0);
         let mut push = Vec3::ZERO;
         for i in 0..2 {
             let Some((palm, normal)) = palms[i] else { continue };
@@ -194,16 +198,28 @@ impl Swim {
         let drag = 1.0 / GLIDE;
         let gain = drag * full / (FULL_PUSH / inp.ease.clamp(0.25, 4.0));
         self.velocity += (push * gain - self.velocity * drag) * dt;
-        // Out of the water the head can't be pushed up: the game holds the player at its surface.
-        if !head_under {
-            self.velocity.y = self.velocity.y.min(0.0);
-        }
+        // (Pushing up with the head out of the water does nothing: the game holds the player at its
+        // surface, and brings them back to it after a stroke takes them a little under.)
         self.velocity = self.velocity.clamp_length_max(full);
         if !self.velocity.is_finite() {
             self.velocity = Vec3::ZERO;
         }
         let effort = (push.length() / FULL_PUSH * inp.ease).min(1.0);
         self.effort += (effort - self.effort) * (1.0 - (-dt / 0.25).exp());
+        if inp.now - self.logged > 1.0 && (self.effort > 0.02 || self.velocity.length() > 0.05) {
+            self.logged = inp.now;
+            let depth = palms.map(|p| p.map(|p| surface - p.0.y));
+            tracing::info!(
+                "swim: {:.2?} m/s ({:.0}% of the game's {full:.2}), effort {:.2}; the hands {:.2?} m under, at {:.2?} m/s, palms {:.2?}; the surface at {surface:.2} in tracking space, the head at {:.2}",
+                self.velocity,
+                100.0 * self.velocity.length() / full,
+                self.effort,
+                depth,
+                self.hand_vel,
+                palms,
+                head.y,
+            );
+        }
         SwimOut { velocity: self.velocity, effort: self.effort, swimming, full_speed: full }
     }
 }
