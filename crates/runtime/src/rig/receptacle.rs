@@ -15,9 +15,11 @@
 //! let go over the mouth.
 //!
 //! **Grinding** ([`Grind`]): the grinder's tip pressed low in the bowl (within [`PRESS`] of its
-//! floor, beyond the tip's own size) and worked about grinds what's in it by the distance the tip
-//! goes: round, back and forth, or pounding (a vertical stroke counts half). Rough circling counts
-//! as well as neat circles, and thrashing no faster than [`MAX_SPEED`]. Every [`STROKE`] of
+//! floor, beyond the tip's own size) and worked about grinds what's in it by the distance the hand
+//! takes the tip: round, back and forth, or pounding (a vertical stroke counts half). Rough circling
+//! counts as well as neat circles, and thrashing no faster than [`MAX_SPEED`]. (The hand's, not the
+//! tip's own: pressed into the floor, the tip is held there and shivers on it, which would grind of
+//! itself.) Every [`STROKE`] of
 //! grinding is a stroke: the game's sound, a pulse in the hand. What's ground shrinks as it is
 //! ([`drawn_scale`]).
 
@@ -111,13 +113,15 @@ pub struct Grind {
 }
 
 impl Grind {
-    /// One step: the grinder's tip (the bowl's object space; None: no hand has it) and its size.
-    /// The grinding done (metres), and whether that finished a stroke.
-    pub fn step(&mut self, bowl: &Bowl, tip: Option<Vec3>, tip_radius: f32, dt: f32) -> (f32, bool) {
+    /// One step: the grinder's tip (the bowl's object space; None: no hand has it), where the hand
+    /// would have it (the same space), and its size. The grinding done (metres), and whether that
+    /// finished a stroke.
+    pub fn step(&mut self, bowl: &Bowl, tip: Option<Vec3>, aimed: Option<Vec3>, tip_radius: f32, dt: f32) -> (f32, bool) {
         let low = tip.filter(|t| {
             let d = *t - bowl.floor;
             Vec3::new(d.x, 0.0, d.z).length() <= bowl.radius + tip_radius && d.y <= tip_radius + PRESS && d.y >= -0.05
         });
+        let low = low.and(aimed.or(low));
         let done = match (self.last, low) {
             (Some(a), Some(b)) => {
                 let d = b - a;

@@ -87,6 +87,12 @@ pub fn groups_finger(hand: usize) -> InteractionGroups {
 /// One of the game's own props while the game moves it (`OBJF_GAME_SIMULATED`): it touches the
 /// world and loose objects, while the hands, fingers and what they hold go through it and push it
 /// instead (`Rig::game_pushes`).
+/// A game's bowl it moves itself ([`super::receptacle`]): as its other props, and what the hands
+/// hold meets it too (a pestle grinds against its floor and walls rather than passing through them).
+pub fn groups_game_bowl() -> InteractionGroups {
+    InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
+}
+
 pub fn groups_game_prop() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT, InteractionTestMode::And)
 }

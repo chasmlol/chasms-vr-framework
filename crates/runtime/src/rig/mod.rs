@@ -1467,7 +1467,8 @@ impl Rig {
             let (gp, gq) = self.physics.pose(g.body);
             let tip_world = gp + gq * v3(r.tip) * wpm;
             let tip = hand.and_then(|_| self.in_bowl_space(r.id, tip_world));
-            let (done, stroke) = self.grinds.entry(r.id).or_default().step(&Bowl::of(&r), tip, r.tip_radius, dt);
+            let aimed = hand.and(g.aim).and_then(|(ap, aq)| self.in_bowl_space(r.id, ap + aq * v3(r.tip) * wpm));
+            let (done, stroke) = self.grinds.entry(r.id).or_default().step(&Bowl::of(&r), tip, aimed, r.tip_radius, dt);
             let Some(hand) = hand.filter(|_| done > 0.0) else { continue };
             let inside = self.contents(r.id);
             let work = (r.grind_work.max(0.01) * inside.len() as f32).max(0.01);
@@ -4133,7 +4134,7 @@ impl Rig {
                     {
                         let (body, collider) = (o.body, o.collider);
                         self.physics.set_kinematic(body, true);
-                        self.physics.set_groups(collider, groups_game_prop());
+                        self.physics.set_groups(collider, if self.bowls.contains_key(id) { physics::groups_game_bowl() } else { groups_game_prop() });
                         self.physics.move_kinematic(body, p, q);
                     }
                 }
