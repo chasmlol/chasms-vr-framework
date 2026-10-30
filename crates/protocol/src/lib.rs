@@ -84,6 +84,7 @@ pub mod inventory;
 pub mod items;
 pub mod stations;
 pub mod cards;
+pub mod melee;
 pub mod sound;
 pub mod world;
 pub mod lighting;
@@ -102,6 +103,7 @@ pub use inventory::*;
 pub use items::*;
 pub use stations::*;
 pub use cards::*;
+pub use melee::*;
 pub use sound::*;
 pub use world::*;
 pub use lighting::*;
@@ -1064,6 +1066,10 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_POCKET_EVENTS, size_of::<PocketEvents>()),
     (OFF_STATIONS, size_of::<Receptacles>()),
     (OFF_CARDS, size_of::<Cards>()),
+    (OFF_MELEE_WEAPONS, size_of::<MeleeWeapons>()),
+    (OFF_ACTOR_ITEMS, size_of::<ActorItems>()),
+    (OFF_MELEE_RULES, size_of::<MeleeRules>()),
+    (OFF_RT_MELEE, size_of::<RtMelee>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

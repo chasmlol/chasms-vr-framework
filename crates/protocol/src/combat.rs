@@ -252,6 +252,18 @@ pub const CE_CAST: u32 = 3;
 /// `speed` how fast the bow's table says the game's arrow flies at that draw. The game fires its own
 /// arrow.
 pub const CE_LOOSE: u32 = 4;
+/// The player was struck by a creature's weapon ([`crate::ActorItems`]): `actor` swung `object`,
+/// whose damager of kind `what` met the player's body part `part` (`PART_*`) at `point`, moving
+/// `dir` at `speed`; `strength` and `damage` as a hit's. The game hurts the player.
+pub const CE_STRUCK: u32 = 5;
+/// A blade the player holds that went in comes back out of `actor`'s part `part` (`object` the
+/// weapon; `depth` how deep it had gone).
+pub const CE_PULLED_OUT: u32 = 6;
+/// A blade in `actor` cuts on as it's dragged (`DMGF_SLIDES`), or is pushed deeper: more damage
+/// (`damage`), `depth` how deep it is now.
+pub const CE_WOUND: u32 = 7;
+/// The player's weapon `object` broke against `actor`'s (0: the world): the game makes its pieces.
+pub const CE_BROKE: u32 = 8;
 
 /// A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
 pub const CEF_GLANCING: u32 = 1 << 0;
@@ -264,6 +276,17 @@ pub const CEF_POWER: u32 = 1 << 3;
 pub const CEF_PARRY: u32 = 1 << 4;
 /// From behind the creature.
 pub const CEF_BACK: u32 = 1 << 5;
+/// An edge that went in fast enough and square enough to cut through the part (a limb's
+/// dismemberment): the game cuts it off if it can be.
+pub const CEF_SEVER: u32 = 1 << 6;
+/// A stab made by pushing slowly (a pressure stab).
+pub const CEF_PRESSURE: u32 = 1 << 7;
+/// It went on through into another creature behind (a skewer).
+pub const CEF_SKEWER: u32 = 1 << 8;
+/// From a weapon filled with a spell ([`crate::RtMelee::imbue`]): `spell` is which.
+pub const CEF_IMBUED: u32 = 1 << 9;
+/// Two hands on the weapon.
+pub const CEF_TWO_HANDED: u32 = 1 << 10;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
@@ -279,11 +302,17 @@ pub struct CombatEvent {
     pub material: u32,
     pub strength: f32,
     pub speed: f32,
-    pub _p0: [f32; 2],
+    /// How deep the blade went in (metres): a penetration's.
+    pub depth: f32,
+    /// The hit's damage by the melee rules (the damager's curve and tier, the material's
+    /// multiplier), before the creature's own: a game may take it as it is, or use its own.
+    pub damage: f32,
     pub point: [f32; 3],
-    pub _p1: f32,
+    /// Which of the weapon's damagers it was (its index).
+    pub blade: u32,
     pub dir: [f32; 3],
-    pub _p2: f32,
+    /// The spell an imbued weapon carries ([`CEF_IMBUED`]), else 0.
+    pub spell: u32,
 }
 
 /// Runtime -> game: `written` events so far; event `n` is in slot `n % COMBAT_EVENT_SLOTS`. The

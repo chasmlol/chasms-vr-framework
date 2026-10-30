@@ -603,6 +603,30 @@
 #define RVR_CE_LOOSE 4
 
 /**
+ * The player was struck by a creature's weapon ([`crate::ActorItems`]): `actor` swung `object`,
+ * whose damager of kind `what` met the player's body part `part` (`PART_*`) at `point`, moving
+ * `dir` at `speed`; `strength` and `damage` as a hit's. The game hurts the player.
+ */
+#define RVR_CE_STRUCK 5
+
+/**
+ * A blade the player holds that went in comes back out of `actor`'s part `part` (`object` the
+ * weapon; `depth` how deep it had gone).
+ */
+#define RVR_CE_PULLED_OUT 6
+
+/**
+ * A blade in `actor` cuts on as it's dragged (`DMGF_SLIDES`), or is pushed deeper: more damage
+ * (`damage`), `depth` how deep it is now.
+ */
+#define RVR_CE_WOUND 7
+
+/**
+ * The player's weapon `object` broke against `actor`'s (0: the world): the game makes its pieces.
+ */
+#define RVR_CE_BROKE 8
+
+/**
  * A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
  */
 #define RVR_CEF_GLANCING (1 << 0)
@@ -628,6 +652,32 @@
  * From behind the creature.
  */
 #define RVR_CEF_BACK (1 << 5)
+
+/**
+ * An edge that went in fast enough and square enough to cut through the part (a limb's
+ * dismemberment): the game cuts it off if it can be.
+ */
+#define RVR_CEF_SEVER (1 << 6)
+
+/**
+ * A stab made by pushing slowly (a pressure stab).
+ */
+#define RVR_CEF_PRESSURE (1 << 7)
+
+/**
+ * It went on through into another creature behind (a skewer).
+ */
+#define RVR_CEF_SKEWER (1 << 8)
+
+/**
+ * From a weapon filled with a spell ([`crate::RtMelee::imbue`]): `spell` is which.
+ */
+#define RVR_CEF_IMBUED (1 << 9)
+
+/**
+ * Two hands on the weapon.
+ */
+#define RVR_CEF_TWO_HANDED (1 << 10)
 
 #define RVR_MAX_BLOODS 16
 
@@ -729,6 +779,13 @@
  * The grip slipped (the hand was pulled past its reach): let go without a throw.
  */
 #define RVR_GRAB_SLIPPED (1 << 3)
+
+/**
+ * Not the creature's body but a thing it holds ([`crate::ActorItems`]): `part` is that thing's
+ * object id, `point` is in its object space, and the hand wrestles the creature for it (the game
+ * lets go of it once the pull beats its grip, and the thing is then the player's).
+ */
+#define RVR_GRAB_ITEM (1 << 4)
 
 
 
@@ -1143,6 +1200,134 @@
  * Text: to `rect`'s right edge.
  */
 #define RVR_PIECEF_RIGHT (1 << 1)
+
+#define RVR_MAX_MELEE_WEAPONS 32
+
+#define RVR_MAX_HANDLES 4
+
+#define RVR_MAX_BLADES 6
+
+/**
+ * The weapon's own grip: where the first hand goes (a sword's handle, an axe's haft near its end).
+ */
+#define RVR_HANDLE_MAIN (1 << 0)
+
+/**
+ * A loosened grip slides along it (a spear's shaft, a staff, a long haft): the
+ * sliding handles.
+ */
+#define RVR_HANDLE_SLIDE (1 << 1)
+
+/**
+ * Held either way round (the fist's axis reversed along it: a reverse grip).
+ */
+#define RVR_HANDLE_REVERSIBLE (1 << 2)
+
+/**
+ * On the blade itself (half-swording): its edges never cut the hand that holds it there.
+ */
+#define RVR_HANDLE_BLADE (1 << 3)
+
+/**
+ * A pierce damager that also stabs by being pushed in slowly (a pressure stab).
+ */
+#define RVR_DMGF_PRESSURE (1 << 3)
+
+/**
+ * A slash that, gone in, slides along its edge: dragged, it cuts on.
+ */
+#define RVR_DMGF_SLIDES (1 << 4)
+
+/**
+ * Goes right through at its depth rather than stopping there: an
+ * arrow, a thin spear point.
+ */
+#define RVR_DMGF_THROUGH (1 << 5)
+
+/**
+ * At a bad angle it's still a hit, a blunt one:
+ * without it, a bad angle does nothing.
+ */
+#define RVR_DMGF_BLUNT_BAD (1 << 6)
+
+/**
+ * A shield: it blocks with its face, and its rim bludgeons.
+ */
+#define RVR_MW_SHIELD (1 << 0)
+
+/**
+ * Thrown it turns end over end (an axe, a dagger); without it, it flies point first (a spear, a
+ * javelin).
+ */
+#define RVR_MW_SPINS (1 << 1)
+
+/**
+ * It breaks under a hard enough blow ([`MeleeWeapon::break_impulse`]): the game makes the pieces.
+ */
+#define RVR_MW_BREAKABLE (1 << 2)
+
+/**
+ * Held, it's a staff that slides through the hands (both hands may slide).
+ */
+#define RVR_MW_STAFF (1 << 3)
+
+#define RVR_MAX_ACTOR_ITEMS 32
+
+/**
+ * Swinging or thrusting at the player now: its blades hurt what they meet of the player's body.
+ */
+#define RVR_AI_ATTACKING (1 << 0)
+
+/**
+ * Its holder is guarding with it.
+ */
+#define RVR_AI_BLOCKING (1 << 1)
+
+/**
+ * A shield.
+ */
+#define RVR_AI_SHIELD (1 << 2)
+
+/**
+ * The swing was a feint: it will turn into another before it lands (for the game's own look; the
+ * runtime judges what it does).
+ */
+#define RVR_AI_FEINT (1 << 3)
+
+/**
+ * The game keeps the player's stamina (`stamina`, `stamina_max`, its units): swings spend it, and a
+ * tired player's arms are weaker. Without it the runtime keeps none (unless its own setting says).
+ */
+#define RVR_RULES_STAMINA (1 << 0)
+
+/**
+ * Slowing time is the game's to allow: without [`RULES_SLOW_TIME`] while this is set, it's off.
+ */
+#define RVR_RULES_SAYS_SLOW (1 << 1)
+
+#define RVR_RULES_SLOW_TIME (1 << 2)
+
+/**
+ * Climbing by the hands is the game's to allow ([`RULES_CLIMB`]).
+ */
+#define RVR_RULES_SAYS_CLIMB (1 << 3)
+
+#define RVR_RULES_CLIMB (1 << 4)
+
+/**
+ * Time is slowed: run the game's world at `time_scale`.
+ */
+#define RVR_RTM_SLOW (1 << 0)
+
+/**
+ * The hands hold the world and climb: move the player by `climb`, without the game's gravity.
+ */
+#define RVR_RTM_CLIMBING (1 << 1)
+
+/**
+ * The player is out of stamina (the runtime's own meter, or the game's).
+ */
+#define RVR_RTM_SPENT (1 << 2)
 
 /**
  * The [`SoundPack`] region.
@@ -2428,6 +2613,8 @@ typedef uint32_t RVR_Joint;
 #endif // __cplusplus
 
 #define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, RVR_TexKind_BloomLeft, RVR_TexKind_BloomRight, RVR_TexKind_LensLeft, RVR_TexKind_LensRight, RVR_TexKind_AuxDepth, }
+
+
 
 
 

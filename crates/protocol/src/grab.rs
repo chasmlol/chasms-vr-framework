@@ -81,6 +81,10 @@ pub const GRAB_THROAT: u32 = 1 << 1;
 pub const GRAB_TWO_HANDS: u32 = 1 << 2;
 /// The grip slipped (the hand was pulled past its reach): let go without a throw.
 pub const GRAB_SLIPPED: u32 = 1 << 3;
+/// Not the creature's body but a thing it holds ([`crate::ActorItems`]): `part` is that thing's
+/// object id, `point` is in its object space, and the hand wrestles the creature for it (the game
+/// lets go of it once the pull beats its grip, and the thing is then the player's).
+pub const GRAB_ITEM: u32 = 1 << 4;
 
 /// One hand's grab of a creature's part.
 #[repr(C)]
