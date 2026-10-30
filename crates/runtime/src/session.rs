@@ -1158,7 +1158,8 @@ impl Session {
             w.objects = if rig_active { self.rig.snapshot(&self.states) } else { Vec::new() };
         }
 
-        self.update_comfort(&frame, &out, menu_mode || menu_pointer.is_some());
+        // (Walking under a book read in the hands has the comfort of walking without one.)
+        self.update_comfort(&frame, &out, (menu_mode && gflags & GS_MENU_WALKS == 0) || menu_pointer.is_some());
 
         // ---- compose
         let t_compose = std::time::Instant::now();

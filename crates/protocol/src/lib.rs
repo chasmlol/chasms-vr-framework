@@ -653,6 +653,9 @@ pub const GS_INFINITE_AMMO: u32 = 1 << 9;
 /// The game wants the runtime's player controller (hands, body) even with no objects registered:
 /// what the player sees of themself is the runtime's, drawn over the game's picture.
 pub const GS_PLAYER_RIG: u32 = 1 << 10;
+/// The open menu is one the game goes on under (a book read in the hands): the player walks with the
+/// stick as with no menu open (roomscale too); its buttons and the other stick stay the menu's.
+pub const GS_MENU_WALKS: u32 = 1 << 13;
 
 /// Linear-light colours.
 #[repr(C)]

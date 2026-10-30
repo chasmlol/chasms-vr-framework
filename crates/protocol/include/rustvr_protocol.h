@@ -233,6 +233,12 @@
  */
 #define RVR_GS_PLAYER_RIG (1 << 10)
 
+/**
+ * The open menu is one the game goes on under (a book read in the hands): the player walks with the
+ * stick as with no menu open (roomscale too); its buttons and the other stick stay the menu's.
+ */
+#define RVR_GS_MENU_WALKS (1 << 13)
+
 #define RVR_RIG_HAS_SIGHT (1 << 0)
 
 #define RVR_RIG_HAS_MUZZLE (1 << 1)
