@@ -81,6 +81,9 @@ enum Drive {
     /// Rigid with its parent plus `share` of the twist between the `segment` joint and the
     /// `driver` joint below it, about the segment's axis.
     Twist { segment: Joint, driver: Joint, share: f32 },
+    /// An eye: rigid with its parent (the head), turned to look at a point when the frame has one
+    /// ([`Rig::aim_eyes`]).
+    Eye,
 }
 
 struct Bone {
@@ -229,6 +232,12 @@ impl Rig {
                 for (segment, &b) in map.fingers[side][f].iter().enumerate() {
                     drive[b] = Drive::Finger { side, finger: f, segment };
                 }
+            }
+        }
+        // Eyes.
+        for (b, c) in classes.iter().enumerate() {
+            if matches!(c, Some(Class::Eye(_))) && matches!(drive[b], Drive::Follow) {
+                drive[b] = Drive::Eye;
             }
         }
         // Twist bones along the forearm (driven by the hand) and the shin (by the foot); the
@@ -387,6 +396,26 @@ impl Rig {
     }
 
     /// Poses every bone and fills the skinning matrices.
+    /// Turns the eyes (bones named as eyes: `LeftEye`, `Bip01 R Eye`...) of a body [`Rig::pose`]
+    /// posed to look at `target` (tracking space), as far as eyes turn from the head's forward
+    /// ([`EYE_TURN`]); their skin turns about each eye's centre. (A body drawn for the wearer's own
+    /// eyes, its head collapsed, has nothing to turn.)
+    pub fn aim_eyes(&self, out: &mut Posed, target: Vec3) {
+        let Some(head) = self.joint_bone[Joint::Head as usize] else { return };
+        let forward = out.rot[head] * self.bones[head].bind_rot.inverse() * self.canonical[Joint::Head as usize] * Vec3::Z;
+        for (b, bone) in self.bones.iter().enumerate() {
+            if !matches!(bone.drive, Drive::Eye) {
+                continue;
+            }
+            let at = out.pos[b];
+            let Some(to) = (target - at).try_normalize() else { continue };
+            let (axis, angle) = Quat::from_rotation_arc(forward.normalize(), to).to_axis_angle();
+            let turn = Quat::from_axis_angle(axis, angle.min(EYE_TURN));
+            out.rot[b] = turn * out.rot[b];
+            out.skin[b] = Mat4::from_translation(at) * Mat4::from_quat(turn) * Mat4::from_translation(-at) * out.skin[b];
+        }
+    }
+
     pub fn pose(&self, input: &PoseInput, out: &mut Posed) {
         let s = self.scale(input.joints);
         out.scale = s;
@@ -487,7 +516,7 @@ impl Rig {
                     Some((p, r)) => (r * self.inv_canonical[j as usize] * bone.bind_rot, p),
                     None => follow(out),
                 },
-                Drive::Follow => follow(out),
+                Drive::Follow | Drive::Eye => follow(out),
                 Drive::Finger { side, finger, segment } if posed_fingers[side] => {
                     (finger_rot[side][finger][segment] * bone.bind_rot, finger_pos[side][finger][segment])
                 }
@@ -595,6 +624,10 @@ impl Rig {
 
 /// How far apart the fingers spread while they close on something (as [`Fingers::splay`]).
 const WRAP_SPLAY: f32 = 0.1;
+
+/// How far eyes turn from the head's forward (radians): about as far as people look before they
+/// turn the head.
+pub const EYE_TURN: f32 = 0.5;
 /// A finger's half thickness as a share of the hand's size (wrist to the middle finger's base):
 /// 9 mm on a 9.5 cm hand.
 const FINGER_THICKNESS: f32 = 0.095;

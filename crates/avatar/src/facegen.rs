@@ -22,6 +22,9 @@ pub struct Face {
     /// over their colour (4× modulate) and the third drawn as their normal map (keys; an empty one
     /// is none).
     pub detail: Option<(String, String, String)>,
+    /// The parts that are the eyes (left, right; model keys): each gets a bone of its own at its
+    /// centre (`LeftEye`, `RightEye`), so it turns to look ([`crate::Avatar::set_gaze`]).
+    pub eyes: [Option<String>; 2],
 }
 
 /// Moves a mesh's vertices to the face: each morph times its coordinate.

@@ -20,6 +20,8 @@ pub enum Class {
     Finger(usize, usize, bool),
     /// A twist (roll) helper along a limb segment.
     Twist,
+    /// An eye (its side): turned to look where the eyes look.
+    Eye(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +93,10 @@ pub fn classify(name: &str) -> Option<Class> {
         };
         if let Some(f) = finger {
             return Some(Class::Finger(side, f, has("meta") || has("carpal")));
+        }
+        // (The eye itself: not its lid, brow or lashes.)
+        if joined == "eye" || joined == "eyeball" {
+            return Some(Class::Eye(side));
         }
         let limb = if has("forearm") || has("lowerarm") || has("elbow") {
             Limb::LowerArm

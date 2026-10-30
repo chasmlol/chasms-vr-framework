@@ -185,6 +185,9 @@ struct Curtains {
     together: Option<f64>,
 }
 
+/// A mirror farther than this from the head (metres) is put away.
+const FORGET_FARTHER: f32 = 25.0;
+
 /// How long the hands may take to go from together to apart (seconds), and how near and how far.
 const CURTAINS_TIME: f64 = 0.8;
 const CURTAINS_TOGETHER: f32 = 0.22;
@@ -257,6 +260,15 @@ impl Mirror {
         self.glass
     }
 
+    /// A point's reflection in the glass (where you see it in the mirror), when the mirror is up
+    /// and the point is in front of it.
+    pub fn reflected(&self, p: Vec3) -> Option<Vec3> {
+        let g = self.glass?;
+        let n = g.normal();
+        let d = (p - g.center).dot(n);
+        (d > 0.0).then(|| p - 2.0 * d * n)
+    }
+
     /// Calls the mirror up, or puts it away.
     pub fn toggle(&mut self) {
         self.called = !(self.called || self.game);
@@ -319,6 +331,13 @@ impl Mirror {
             (true, Some(m)) => (m.inv_point(place.center), place.yaw - m.body_yaw),
             _ => (place.center, place.yaw),
         };
+        // Left far behind (walked away from, or the player went through a door to another place,
+        // where its place means nothing): put away.
+        if center.distance(head) > FORGET_FARTHER {
+            tracing::info!("mirror: left {:.0} m behind: put away", center.distance(head));
+            (self.place, self.glass, self.called) = (None, None, false);
+            return;
+        }
         let normal = Vec3::new(yaw.sin(), 0.0, yaw.cos());
         let up = Vec3::Y * (s.height * 0.5);
         // Its right as seen from in front: the viewer's right, looking along -normal.

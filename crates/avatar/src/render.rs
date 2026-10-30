@@ -846,6 +846,8 @@ pub struct Character {
     /// The skin on the CPU (bind positions and weights) and the bones' names, for measuring.
     cpu: Vec<Vec<asset::Vertex>>,
     bone_names: Vec<String>,
+    /// Where the eyes look, when they look at something (tracking space; [`crate::Avatar::set_gaze`]).
+    pub(crate) gaze: Option<Vec3>,
 }
 
 const SHOWS: [Show; 5] = [Show::Full, Show::Arms, Show::Hands, Show::Hand(0), Show::Hand(1)];
@@ -913,12 +915,16 @@ impl Character {
             then_cb: ConstantBuffer::new(gpu)?,
             ghost_cbs: [ConstantBuffer::new(gpu)?, ConstantBuffer::new(gpu)?],
             drawn_hands: [None; 2],
+            gaze: None,
         })
     }
 
     /// Poses the rig for this frame.
     fn pose(&mut self, input: &PoseInput) {
         self.rig.pose(input, &mut self.posed);
+        if let Some(g) = self.gaze.filter(|_| !input.chop_head) {
+            self.rig.aim_eyes(&mut self.posed, g);
+        }
         for side in 0..2 {
             let joint = [Joint::LeftHand, Joint::RightHand][side];
             self.drawn_hands[side] = input.hands[side].or(Some(input.joints[joint as usize])).filter(|p| p.valid != 0);

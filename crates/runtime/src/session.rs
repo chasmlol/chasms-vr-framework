@@ -1614,9 +1614,11 @@ impl Session {
             held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
             let held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
             // The mirror's reflection for this eye: the game's world behind the player, then the player.
+            // (The eyes in it look back at your own eyes' reflection.)
+            let gaze = mirror.reflected((Vec3::from_array(poses[0].pos) + Vec3::from_array(poses[1].pos)) * 0.5);
             let reflected = mirror.shown() && !framework && {
                 let mut draw = |gpu: &Gpu, t: &crate::backend::EyeTarget, cam: &Pose, f: &Fov, d: Option<&windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView>| {
-                    body.draw_reflection(gpu, t, cam, f, light, d.map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: 1.0, bloom: None, lens: None }), &held);
+                    body.draw_reflection(gpu, t, cam, f, light, d.map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: 1.0, bloom: None, lens: None }), &held, gaze);
                 };
                 mirror.render_eye(&self.gpu, e, eye, warp, mirror_world, &mut draw).unwrap_or_else(|err| {
                     tracing::warn!("mirror: {err:#}");

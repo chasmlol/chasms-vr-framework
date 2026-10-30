@@ -94,6 +94,9 @@ pub struct FaceDesc {
     pub detail_on: [u8; 16],
     pub detail: [u8; 16],
     pub detail_normal: [u8; 16],
+    /// The parts that are the eyes (left, right; `<game>/<key>`, empty: none): each turns as one
+    /// about its centre, to look where the eyes look (a mirror's reflection looks back at you).
+    pub eyes: [[u8; 32]; 2],
 }
 
 /// [`FaceDesc`] holds a face (else the parts are drawn as modelled).
@@ -102,6 +105,10 @@ pub const FACE_GIVEN: u32 = 1 << 0;
 impl FaceDesc {
     pub fn detail(&self) -> (&str, &str, &str) {
         (crate::name_str(&self.detail_on), crate::name_str(&self.detail), crate::name_str(&self.detail_normal))
+    }
+
+    pub fn eye(&self, side: usize) -> &str {
+        crate::name_str(&self.eyes[side])
     }
 }
 

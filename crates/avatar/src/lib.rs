@@ -249,6 +249,16 @@ impl Avatar {
         }
     }
 
+    /// Where the eyes look from now on (tracking space; None: straight ahead, as the head looks):
+    /// a model's eye bones turn to it, as far as eyes turn. A mirror's reflection looks back at the
+    /// wearer's own reflected eyes.
+    pub fn set_gaze(&mut self, at: Option<glam::Vec3>) {
+        self.body.gaze = at;
+        if let Some(a) = &mut self.arms {
+            a.gaze = at;
+        }
+    }
+
     /// The model's hands' size (wrist to the middle finger's knuckle, metres, its bind pose).
     pub fn model_hand_length(&self) -> f32 {
         let [l, r] = self.body.rig.hand_size();
@@ -588,6 +598,10 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             lo[k] = lo[k].min(part.bounds_min[k]);
             hi[k] = hi[k].max(part.bounds_max[k]);
         }
+        // An eye: a bone of its own at its centre, on the bone it rides, so it turns as one.
+        if let Some(side) = face.and_then(|f| f.eyes.iter().position(|e| e.as_deref() == Some(key.as_str()))) {
+            eye_bone(&mut model.bones, &mut part, side);
+        }
         for (i, mut m) in part.meshes.into_iter().enumerate() {
             swap(&mut m.texture);
             swap(&mut m.material.bump);
@@ -675,6 +689,39 @@ mod cached {
     pub fn texture(dir: &Path, key: &str) -> Result<Arc<asset::Texture>> {
         get(&TEXTURES, dir, key, || asset::load_texture(dir, key))
     }
+}
+
+/// Gives an eye (a rigid part on one bone: the head) a bone of its own at its centre, named as
+/// rigs name eyes (`LeftEye`, `RightEye`: the rig turns them to look), its vertices moved onto it.
+fn eye_bone(bones: &mut Vec<asset::Bone>, part: &mut asset::Model, side: usize) {
+    use glam::{Mat4, Vec3};
+    let verts = || part.meshes.iter().flat_map(|m| m.vertices.iter());
+    let Some(first) = verts().next() else { return };
+    let parent = first.bones[(0..4).max_by_key(|&k| first.weights[k]).unwrap_or(0)] as usize;
+    let Some(p) = bones.get(parent) else { return };
+    let (lo, hi) = verts().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), v| (lo.min(Vec3::from_array(v.pos)), hi.max(Vec3::from_array(v.pos))));
+    let center = (lo + hi) * 0.5;
+    let parent_bind = Mat4::from_cols_array(&p.model_matrix);
+    let (_, rot, _) = parent_bind.to_scale_rotation_translation();
+    let bind = Mat4::from_rotation_translation(rot, center);
+    let local = parent_bind.inverse() * bind;
+    let index = bones.len();
+    if index > u8::MAX as usize {
+        return;
+    }
+    bones.push(asset::Bone {
+        name: ["LeftEye", "RightEye"][side].into(),
+        parent: parent as i32,
+        local_pos: local.w_axis.truncate().to_array(),
+        local_rot: glam::Quat::IDENTITY.to_array(),
+        model_matrix: bind.to_cols_array(),
+    });
+    for m in &mut part.meshes {
+        for v in &mut m.vertices {
+            (v.bones, v.weights) = ([index as u8, 0, 0, 0], [255, 0, 0, 0]);
+        }
+    }
+    part.bones = bones.clone();
 }
 
 /// Puts a part skinned to another skeleton (`part.bones`) on `bones` by the bones' names: each

@@ -398,6 +398,7 @@ impl PlayerBody {
                 },
                 hair: [f.hair_color[0], f.hair_color[1], f.hair_color[2]],
                 detail: Some(f.detail()).filter(|(on, _, _)| !on.is_empty()).map(|(a, b, c)| (a.to_owned(), b.to_owned(), c.to_owned())),
+                eyes: [0, 1].map(|s| f.eye(s).split_once('/').map(|(_, k)| k.to_owned())),
             });
             if face != self.game_face {
                 self.game_face = face;
@@ -557,8 +558,9 @@ impl PlayerBody {
     /// Draws the body as a mirror shows it (`crate::mirror`): from `eye` (a camera reflected in the
     /// glass) into `target`, the whole body whatever the body setting, with the head (the wearer
     /// isn't inside it), what the hands hold, no ghost hands; hidden behind the game's world as it
-    /// shows there (`depth`).
-    pub fn draw_reflection(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw]) {
+    /// shows there (`depth`). The eyes look at `gaze` (the wearer's own eyes' reflection: they meet
+    /// your eyes in the mirror).
+    pub fn draw_reflection(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw], gaze: Option<Vec3>) {
         let body = self.body;
         let held = self.held;
         self.avatar(gpu);
@@ -577,9 +579,11 @@ impl PlayerBody {
             first_person: false,
             plain: self.plain,
         };
+        avatar.set_gaze(gaze);
         if let Err(e) = avatar.draw_with(gpu, &target.rtv, target.width, target.height, eye, fov, &frame, depth, true, holding, None) {
             tracing::warn!("runtime: drawing the body in the mirror: {e:#}");
         }
+        avatar.set_gaze(None);
     }
 
     /// The body's depth (and what it holds), as [`Body::draw`] last drew it from `eye`, into the
