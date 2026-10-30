@@ -23,9 +23,12 @@
 //!   moving forward threw the swimmer backwards: playtest 7.)
 //! * Light strokes swim well: the pull's pace grows with the hands' speed less and less (to the 0.4th
 //!   power), so they needn't push hard (playtest 10).
-//! * A stroke never takes the glide's speed unless it's a stroke back against it, of 20 cm or more
-//!   (that's how to stop): the sweep out of the next breaststroke goes a little forward, and slowed
-//!   the swimmer at every stroke (playtest 9). Otherwise a pull speeds the glide up to its pace
+//! * A stroke never takes the glide's speed unless it's a push back against it (that's how to stop
+//!   and go back): more push than sweep, the hands going that way at least half as far as they move
+//!   apart or together. The sweep out of the next breaststroke goes a little forward, and slowed
+//!   the swimmer at every stroke (playtest 9), but its hands spread wide; a push back goes with
+//!   them together. (A stroke back had to be 20 cm long to count instead, and only slowed the
+//!   swimmer: too hard to go back, playtest 11.) Otherwise a pull speeds the glide up to its pace
 //!   along it and turns it its way, as a swimmer's streamlined body follows the stroke, so uneven
 //!   hands don't leave the swimmer drifting sideways.
 //! * The hands' velocity is measured against the head, so walking about the room pushes nothing.
@@ -64,9 +67,9 @@ const PULL_CURVE: f32 = 0.4;
 /// from: a grip squeezed while the reach is still ending moves them less than that.
 const STROKE_FROM: f32 = 0.1;
 /// A stroke back against the glide (more than 120 degrees from it, while gliding faster than
-/// `GLIDING` m/s) counts only from this far (m), and slows the swimmer: a breaststroke's sweep out,
-/// going a little forward, goes less far than that.
-const AGAINST_FROM: f32 = 0.2;
+/// `GLIDING` m/s) counts only while it's gone at least this share of how far the hands have moved
+/// apart or together: a breaststroke's sweep out goes a little forward, its hands spreading wide.
+const PUSH_NOT_SWEEP: f32 = 0.5;
 const GLIDING: f32 = 1.0;
 /// A stroke's points are kept this far apart (m), and no more of them than this.
 const STROKE_STEP: f32 = 0.01;
@@ -143,9 +146,10 @@ pub struct Swim {
     hand_vel: [Vec3; 2],
     last: Option<([Option<Vec3>; 2], Vec3)>,
     wet: [bool; 2],
-    /// The hands holding the water; how far their stroke (their mean) has gone since they caught it,
-    /// and its points on the way; how fast it pulls.
+    /// The hands holding the water, and how far each has gone since it caught it; how far their
+    /// stroke (their sum over two) has gone, and its points on the way; how fast it pulls.
     caught: [bool; 2],
+    reach: [Vec3; 2],
     drawn: Vec3,
     stroke: Vec<Vec3>,
     pulling: f32,
@@ -209,6 +213,7 @@ impl Swim {
             self.effort = 0.0;
             self.wet = [false; 2];
             self.caught = [false; 2];
+            self.reach = [Vec3::ZERO; 2];
             self.drawn = Vec3::ZERO;
             self.stroke.clear();
             self.pulling = 0.0;
@@ -226,6 +231,7 @@ impl Swim {
         for i in 0..2 {
             let Some(palm) = palms[i] else {
                 self.caught[i] = false;
+                self.reach[i] = Vec3::ZERO;
                 continue;
             };
             let wet = surface - palm.y > WET;
@@ -244,6 +250,9 @@ impl Swim {
             if caught {
                 pull += v;
                 holding += 1;
+                self.reach[i] += v * dt;
+            } else {
+                self.reach[i] = Vec3::ZERO;
             }
         }
         // The hands holding the water stroke together: their velocities' sum over two. It pulls the
@@ -274,7 +283,9 @@ impl Swim {
             let speed = self.velocity.length();
             let gliding = speed > GLIDING;
             let against = gliding && to.dot(self.velocity) < -0.5 * pace * speed;
-            if pace > 1e-3 && gone.length() >= if against { AGAINST_FROM } else { STROKE_FROM } && both.dot(gone) > 0.0 {
+            // (Against the glide, a push: a sweep's hands move apart or together more.)
+            let push = !against || holding < 2 || gone.length() >= PUSH_NOT_SWEEP * (self.reach[0] - self.reach[1]).length();
+            if pace > 1e-3 && gone.length() >= STROKE_FROM && push && both.dot(gone) > 0.0 {
                 self.pulling = both.length();
                 let way = to / pace;
                 let catch = 1.0 - (-dt / CATCH_TAU).exp();
