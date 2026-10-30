@@ -721,6 +721,9 @@ impl Session {
             let gore_events = self.gore.read(&self.link);
             let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, combat: &self.combat, now, dt: frame.dt, paused: rig_paused };
             self.gore.update(&mut self.rig, &gore_input, &gore_events);
+            for p in &self.gore.pulses {
+                self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
+            }
             // Blades that went in and stay in.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);

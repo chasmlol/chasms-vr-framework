@@ -264,7 +264,7 @@ struct DropOut {
     float3 world : TEXCOORD0;
     float2 uv : TEXCOORD1;
     float view_z : TEXCOORD2;
-    nointerpolation float2 info : TEXCOORD3;   // x: alpha, y: size
+    nointerpolation float3 info : TEXCOORD3;   // x: alpha, y: size, z: mist
     float3 n : TEXCOORD4;
 };
 
@@ -281,7 +281,7 @@ DropOut VSDrop(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     uint q = G_QUAD[vid % 6];
     float2 c = float2((q & 1) ? 1 : -1, (q & 2) ? 1 : -1);
     // (Drawn a little bigger than they are: a drop of blood catches the light.)
-    float r = d.size * (d.mist > 0 ? 5.0 : 2.2);
+    float r = d.size * (d.mist > 0 ? 5.0 : 3.0);
     float len = r + speed * g_tex.w;
     float3 w = p + side * c.x * r + along * c.y * len;
     DropOut o;
@@ -289,7 +289,7 @@ DropOut VSDrop(uint vid : SV_VertexID, uint inst : SV_InstanceID) {
     o.world = w;
     o.uv = c * 0.5 + 0.5;
     o.view_z = dot(view_z.xyz, w) + view_z.w;
-    o.info = float2(d.alpha, r);
+    o.info = float3(d.alpha, r, d.mist);
     o.n = normalize(-f + side * c.x * 0.6);
     return o;
 }
@@ -303,7 +303,8 @@ float4 PSDrop(DropOut i) : SV_Target {
         float2 q = i.uv * 2 - 1;
         t = float4(g_color.rgb, saturate((1 - dot(q, q)) * 3));
     }
-    float a = t.a * i.info.x;
+    // (The game's particles are faint, made to be drawn many over each other: a drop is fuller.)
+    float a = saturate(t.a * (i.info.z > 0 ? 1.6 : 3.0)) * i.info.x;
     // Soft where it meets the game's surfaces.
     float g = g_game_depth(i.pos);
     if (g > 0) a *= saturate((g - i.view_z) / max(i.info.y * 4, 0.003));

@@ -47,8 +47,10 @@ const MAX_BODY_SPLATS: usize = 20;
 const MAX_HELD_SPLATS: usize = 28;
 
 const GRAVITY: f32 = 9.81;
-/// A heartbeat (s): the stumps' pulses.
+/// A heartbeat (s): the stumps' pulses, and how long each spurt lasts (the pressure rises and falls
+/// through it, so its drops land in a line out from the stump).
 const BEAT: f64 = 0.78;
+const SPURT: f64 = 0.3;
 /// How long a stump pumps, flows and drips (s), and how fast its pulses weaken (e-folding, s).
 const STUMP_PUMPS: f64 = 14.0;
 const STUMP_FLOWS: f64 = 45.0;
@@ -169,6 +171,8 @@ struct StumpTime {
     born: f64,
     next_beat: f64,
     seen: f64,
+    /// The spurt under way: when it started, which way, how many drops a second at its height.
+    spurt: Option<(f64, Vec3, f32)>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -201,6 +205,11 @@ pub struct Gore {
     rng: u64,
     pub stats: GoreStats,
     logged: f64,
+    dt: f32,
+    /// The hand of the last hit on each creature, and when (for the feel of a limb coming off).
+    last_hit: HashMap<u32, (usize, f64)>,
+    /// Haptic pulses this frame.
+    pub pulses: Vec<crate::combat::Pulse>,
     // This frame's draw lists.
     out_drops: Vec<GoreDrop>,
     out_decals: Vec<GoreDecal>,
@@ -229,6 +238,9 @@ impl Default for Gore {
             rng: 0x9E37_79B9_7F4A_7C15,
             stats: GoreStats::default(),
             logged: 0.0,
+            dt: 1.0 / 90.0,
+            last_hit: HashMap::new(),
+            pulses: Vec::new(),
             out_drops: Vec::new(),
             out_decals: Vec::new(),
             out_caps: Vec::new(),
@@ -335,6 +347,8 @@ impl Gore {
     pub fn update(&mut self, rig: &mut Rig, inp: &GoreInput, events: &[GoreEvent]) {
         let now = inp.now;
         let dt = inp.dt.clamp(0.0, 0.05);
+        self.dt = dt;
+        self.pulses.clear();
         for ev in events {
             if ev.kind == GE_SEVER {
                 self.sever(ev, now);
@@ -377,7 +391,13 @@ impl Gore {
         let out = Vec3::from_array(ev.out).normalize_or(Vec3::Y);
         let amount = self.blood(ev.blood).map_or(1.0, |b| b.amount.max(0.1));
         tracing::info!("gore: {:#x} lost limb {:#x} at {at:.2?}, the piece {:#x} (blood {})", ev.actor, ev.limb, ev.object, ev.blood);
-        self.stumps.insert((ev.actor, ev.limb), StumpTime { born: now, next_beat: now + 0.15, seen: now });
+        self.stumps.insert((ev.actor, ev.limb), StumpTime { born: now, next_beat: now + 0.15, seen: now, spurt: None });
+        // The blow's hand feels it go through.
+        if let Some(&(hand, at)) = self.last_hit.get(&ev.actor)
+            && now - at < 0.5
+        {
+            self.pulses.push(crate::combat::Pulse { hand, seconds: 0.16, frequency: 55.0, amplitude: 1.0 });
+        }
         // The cut's gush: out of the stump, and from the piece's side back the other way.
         let vel = Vec3::from_array(ev.vel);
         let n = (90.0 * amount) as usize;
@@ -404,6 +424,8 @@ impl Gore {
 
     /// A hit: the spray from it, the wound it leaves bleeding, and the blood on the blade.
     fn wound(&mut self, rig: &Rig, inp: &GoreInput, ev: &CombatEvent) {
+        self.last_hit.retain(|_, (_, t)| inp.now - *t < 2.0);
+        self.last_hit.insert(ev.actor, ((ev.hand as usize).min(1), inp.now));
         let Some(body) = self.body(ev.actor).copied() else { return };
         let blood = body.blood;
         if blood == u32::MAX || self.blood(blood).is_none() {
@@ -548,20 +570,35 @@ impl Gore {
             let amount = self.blood(b.blood).map_or(1.0, |x| x.amount.max(0.1));
             for s in &b.stumps[..(b.count as usize).min(MAX_STUMPS)] {
                 let key = (b.id, s.limb);
-                let st = *self.stumps.entry(key).or_insert(StumpTime { born: now, next_beat: now, seen: now });
+                let st = *self.stumps.entry(key).or_insert(StumpTime { born: now, next_beat: now, seen: now, spurt: None });
                 let t = now - st.born;
                 let at = Vec3::from_array(s.at);
                 let out = Vec3::from_array(s.out).normalize_or(Vec3::Y);
                 let k = (-t / STUMP_FADE).exp() as f32;
                 let width = (s.radius / 0.05).clamp(0.5, 2.0);
                 let mut next = st.next_beat;
+                let mut spurt = st.spurt;
                 if t < STUMP_PUMPS && now >= next {
-                    // A pulse: the jet out of the stump, the arteries' spurt.
+                    // A pulse: the arteries' spurt, a jet out of the stump.
                     next = now + BEAT * self.range(0.92, 1.08) as f64;
-                    let n = ((20.0 + 40.0 * width) * k * amount) as usize + 4;
-                    let dir = cone(out, 8.0, self.rand(), self.rand());
-                    self.spray(at, dir, 10.0 + 6.0 * width, (0.8 + 2.6 * k, 1.4 + 3.6 * k), (0.0018, 0.0042 * width.sqrt()), n, n / 2, b.blood, Vec3::ZERO);
-                } else if t < STUMP_FLOWS {
+                    let n = ((50.0 + 90.0 * width) * k * amount) as f32 + 8.0;
+                    spurt = Some((now, cone(out, 8.0, self.rand(), self.rand()), n / SPURT as f32));
+                }
+                if let Some((from, dir, rate)) = spurt {
+                    // Through the spurt the pressure rises and falls: the drops leave faster then
+                    // slower, and land in a line.
+                    let f = ((now - from) / SPURT) as f32;
+                    if f >= 1.0 {
+                        spurt = None;
+                    } else {
+                        let pressure = (f * std::f32::consts::PI).sin();
+                        let n = self.count(rate * (0.4 + 0.6 * pressure));
+                        let speed = (0.7 + 3.4 * k) * (0.35 + 0.65 * pressure);
+                        let wobble = cone(dir, 4.0, self.rand(), self.rand());
+                        self.spray(at, wobble, 5.0 + 4.0 * width, (speed * 0.85, speed * 1.1), (0.0025, 0.006 * width.sqrt()), n, n / 2, b.blood, Vec3::ZERO);
+                    }
+                }
+                if spurt.is_none() && t < STUMP_FLOWS {
                     // The flow between and after: drops welling over the cut's edge.
                     let rate = if t < STUMP_PUMPS { 25.0 * k + 10.0 } else { 14.0 * (1.0 - (t - STUMP_PUMPS) / (STUMP_FLOWS - STUMP_PUMPS)) as f32 + 1.5 };
                     let n = self.count(rate * width);
@@ -578,6 +615,7 @@ impl Gore {
                 if let Some(e) = self.stumps.get_mut(&key) {
                     e.next_beat = next;
                     e.seen = now;
+                    e.spurt = spurt;
                 }
             }
         }
@@ -610,7 +648,7 @@ impl Gore {
 
     /// How many of something that comes `rate` a second this frame (at random, on average right).
     fn count(&mut self, rate: f32) -> usize {
-        let x = rate.max(0.0) / 90.0;
+        let x = rate.max(0.0) * self.dt;
         let whole = x.floor();
         whole as usize + (self.rand() < x - whole) as usize
     }
