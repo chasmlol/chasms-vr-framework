@@ -54,6 +54,11 @@ pub const INV_DRINK: u32 = 1 << 5;
 pub const INV_READ: u32 = 1 << 6;
 /// Put on a weapon: touched to the one the other hand holds (a poison on a blade).
 pub const INV_COAT: u32 = 1 << 7;
+/// An arrow the game's bows shoot: drawn from a slot it's one of the bow's own arrows
+/// ([`crate::OBJ_ARROW`], from the game's template of the kind on the bow), nocked and loosed as
+/// the game shoots. One of another kind comes out as itself until the game has put it on the bow
+/// (its template's [`crate::ObjectDesc::replaces`] then names it).
+pub const INV_ARROW: u32 = 1 << 8;
 
 // ---- the order a slot gives its things out in ([`SlotDesc::rule`]) ------------------------------
 /// What restores health most first, then what restores magicka or fatigue most; what restores none

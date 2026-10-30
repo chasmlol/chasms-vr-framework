@@ -1193,6 +1193,16 @@ impl Rig {
         let descs = &table.descs[..(table.count as usize).min(MAX_OBJECTS)];
         // Templates first: a gun loads itself from its magazine template as it's added.
         self.templates = descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_TEMPLATE != 0).copied().collect();
+        // Arrows of a kind just put on the bow from a slot (their copy in a hand as the game
+        // equipped them): one of the bow's own takes the copy's place there, as a weapon does.
+        let arrows: Vec<ObjectDesc> = self.templates.iter().filter(|t| t.kind == OBJ_ARROW && t.replaces != 0).copied().collect();
+        for t in arrows {
+            if let Some(i) = self.hands.as_ref().and_then(|h| h.iter().position(|h| h.holding == Some(t.replaces))) {
+                self.remove(t.replaces);
+                self.draw_arrow(i, &t, t.id);
+                tracing::info!("rig: one of the bow's arrows takes the place of its copy {:#x} in the {} hand", t.replaces, if i == 0 { "left" } else { "right" });
+            }
+        }
         // (A driven thing is only drawn: no body, nothing the hands meet.)
         let seen: Vec<u32> = descs.iter().filter(|d| d.id != 0 && d.flags & OBJF_TEMPLATE == 0 && d.kind != OBJ_DRIVEN).map(|d| d.id).collect();
         // What's gone goes first (a holster it was in is free for what's new), and so does what
@@ -1595,8 +1605,9 @@ impl Rig {
         let head_t = (v3(inp.frame.hmd.pos), q4(inp.frame.hmd.rot));
         let zones = slot_zones(inp.eye_height, dom);
         let ammo = ammo_zones(inp.eye_height, dom);
-        // Each hand's quiver, while the other holds a bow.
-        let quivers = [0, 1].map(|i| self.other_bow(i).map(|_| zones::quiver_zones(inp.eye_height, i, s.archery.quiver)).unwrap_or_default());
+        // Each hand's quiver, while the other holds a bow: for a game that hands out its own things
+        // from the body's slots, its arrows are in whichever slot they're kept in instead.
+        let quivers = [0, 1].map(|i| self.other_bow(i).filter(|_| self.pockets.is_empty()).map(|_| zones::quiver_zones(inp.eye_height, i, s.archery.quiver)).unwrap_or_default());
         self.pocket_zones = self.pockets.iter().map(|p| pockets::zones(p, inp.eye_height)).collect();
         let near_zone = (0..2).any(|i| {
             let p = self.hands.as_ref().unwrap()[i].grip_t.0;
@@ -2507,15 +2518,7 @@ impl Rig {
                 let b = &self.objects[&bid].desc;
                 let game = b.flags & OBJF_GAME_AMMO != 0;
                 match self.arrow_template(b.ammo_type) {
-                    Some(t) if !game || t.rounds > self.arrows_out(t.id) => {
-                        // (Out of the quiver already as it's held, so it doesn't swing into the
-                        // hand.)
-                        let (p, q) = compose((palm, grip_rot), bow::held_arrow(&t, self.aim_in_grip(i)));
-                        let id = self.spawn_mag(&t, 1, p, q);
-                        self.debug.quiver_draws += 1;
-                        self.take(id, i, true);
-                        self.emit(Cue::Quiver, Some(i), Some(bid), palm, 1.0);
-                    }
+                    Some(t) if !game || t.rounds > self.arrows_out(t.id) => self.draw_arrow(i, &t, bid),
                     _ => self.emit(Cue::Fail, Some(i), None, palm, 1.0),
                 }
             }
@@ -2955,12 +2958,15 @@ impl Rig {
         }
         let o = &self.objects[&id];
         let (desc, body) = (o.desc, o.body);
-        // An arrow let go of gently at the quiver goes back in it.
-        if desc.kind == OBJ_ARROW
-            && o.spawned
-            && self.hands.as_ref().unwrap()[i].history.recent().length() < HOLSTER_MAX_SPEED
-            && zones::quiver_zones(inp.eye_height, i, inp.settings.archery.quiver).iter().any(|z| self.anchor.contains(z, palm_t))
-        {
+        // An arrow let go of gently where arrows come from goes back in: the quiver, or any of the
+        // body's slots for a game that hands its arrows out from them, as a thing drawn from one
+        // goes back in any.
+        let arrows_back = if self.pockets.is_empty() {
+            zones::quiver_zones(inp.eye_height, i, inp.settings.archery.quiver).iter().any(|z| self.anchor.contains(z, palm_t))
+        } else {
+            self.pocket_zones.iter().any(|z| self.anchor.contains(&z.put, palm_t))
+        };
+        if desc.kind == OBJ_ARROW && o.spawned && self.hands.as_ref().unwrap()[i].history.recent().length() < HOLSTER_MAX_SPEED && arrows_back {
             tracing::info!("rig: an arrow {id:#x} back in the quiver");
             self.remove(id);
             self.emit(Cue::HolsterIn, Some(i), None, palm, 0.6);
@@ -3273,6 +3279,19 @@ impl Rig {
 
     /// Hand `i` reaches into slot `k`: its first thing into the fist (the runtime's copy of it), or,
     /// empty, what the slot does then.
+    /// One of the bow's arrows (`t`, its template) into hand `i`, held to be nocked: from the
+    /// quiver, or from a slot the player keeps arrows in. `of`: the object whose sound it makes
+    /// coming out.
+    fn draw_arrow(&mut self, i: usize, t: &ObjectDesc, of: u32) {
+        let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
+        // (Out of the quiver already as it's held, so it doesn't swing into the hand.)
+        let (p, q) = compose((palm, grip_rot), bow::held_arrow(t, self.aim_in_grip(i)));
+        let id = self.spawn_mag(t, 1, p, q);
+        self.debug.quiver_draws += 1;
+        self.take(id, i, true);
+        self.emit(Cue::Quiver, Some(i), Some(of), palm, 1.0);
+    }
+
     fn draw_pocket(&mut self, i: usize, k: usize) {
         let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
         let Some(slot) = self.pockets.get(k) else { return };
@@ -3290,6 +3309,20 @@ impl Rig {
             return;
         };
         let name = slot.name.clone();
+        // An arrow of the kind on the bow, from whichever slot it's kept in: one of the bow's own,
+        // as the quiver gives them, while the game has one to give. (Another kind comes out as
+        // itself, and the game puts it on the bow: its own then takes the copy's place, `sync`.)
+        if item.flags & (INV_ARROW | INV_EQUIPPED) == INV_ARROW | INV_EQUIPPED
+            && let Some(t) = self.templates.iter().find(|t| t.kind == OBJ_ARROW).copied()
+        {
+            if t.rounds > self.arrows_out(t.id) {
+                self.draw_arrow(i, &t, t.id);
+                tracing::info!("rig: one of the bow's {} drawn from slot {k} ({name}) into the {} hand", item.name(), if i == 0 { "left" } else { "right" });
+            } else {
+                self.emit(Cue::Fail, Some(i), None, palm, 0.6);
+            }
+            return;
+        }
         let id = self.next_spawn;
         self.next_spawn = self.next_spawn.wrapping_add(1).max(SPAWN_BASE);
         let desc = pockets::object_desc(&item, id);

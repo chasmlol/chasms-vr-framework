@@ -977,6 +977,14 @@
 #define RVR_INV_COAT (1 << 7)
 
 /**
+ * An arrow the game's bows shoot: drawn from a slot it's one of the bow's own arrows
+ * ([`crate::OBJ_ARROW`], from the game's template of the kind on the bow), nocked and loosed as
+ * the game shoots. One of another kind comes out as itself until the game has put it on the bow
+ * (its template's [`crate::ObjectDesc::replaces`] then names it).
+ */
+#define RVR_INV_ARROW (1 << 8)
+
+/**
  * What restores health most first, then what restores magicka or fatigue most; what restores none
  * of them isn't given out.
  */
