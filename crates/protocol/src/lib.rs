@@ -735,6 +735,9 @@ pub const GS_MENU_IN_WORLD: u32 = 1 << 11;
 /// The game wants the mirror up (its character creator is open): the runtime stands it in front of
 /// the player, and puts it away when this goes, unless the player had called it up.
 pub const GS_MIRROR: u32 = 1 << 12;
+/// The player has no body in the game yet (a title screen in the world, before a character is
+/// made or loaded): the runtime draws the hands alone.
+pub const GS_HANDS_ONLY: u32 = 1 << 13;
 
 /// Linear-light colours.
 #[repr(C)]
@@ -853,7 +856,11 @@ pub struct SlotInfo {
     /// [`crate::link::Link::hud_layout_seq`] gave it after it was written; 0: not said). The runtime cuts
     /// a picture's pieces by the layout it was drawn with, never one a frame older or newer.
     pub hud_layout: u32,
-    pub _pad: [u32; 2],
+    /// How much of the place the player was in still shows over this picture (0..1), as the game
+    /// brings a new place in after a load ([`SLOT_HELD`]): the runtime draws the picture it held
+    /// over this one that much (none held: this one under that much black, the game's own fade).
+    pub held_over: f32,
+    pub _pad: [u32; 1],
     /// Where each eye's picture was in the world when it was rendered: the tracking -> world
     /// mapping it was drawn with. With the depth, the runtime moves the picture to where the head
     /// and the walking player are when it's shown.
@@ -891,6 +898,11 @@ pub const SLOT_BLOOM: u32 = 1 << 5;
 /// The aux view is the mirror's world ([`MirrorView`], the camera of the frame `aux_frame`), with its
 /// depth in the aux depth (linear metres).
 pub const SLOT_MIRROR: u32 = 1 << 6;
+/// The eyes are the last picture the game drew of its world, given again while it can't draw one
+/// (it's loading another place): the runtime keeps it where it was in tracking space (the head
+/// moves through it, the player's walk and the game's teleport don't move it), holds a copy of it,
+/// and when the game draws again fades from it as [`SlotInfo::held_over`] says.
+pub const SLOT_HELD: u32 = 1 << 7;
 
 /// Depth holds linear view distance in metres.
 pub const DEPTH_LINEAR: u32 = 1 << 0;

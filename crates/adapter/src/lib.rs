@@ -184,6 +184,15 @@ impl Adapter {
         self.last_frame.as_ref()
     }
 
+    /// Says the adapter is alive while the game isn't calling it: a load blocking the game's main
+    /// thread between two of its frames. The runtime counts an adapter gone after
+    /// [`HEARTBEAT_TIMEOUT_MS`] without a beat, and lets go of the picture it was showing.
+    pub fn heartbeat(&self) {
+        if let Some(l) = &self.link {
+            l.heartbeat_adapter();
+        }
+    }
+
     fn maintain(&mut self) {
         let now = std::time::Instant::now();
         if self.link.is_none() {

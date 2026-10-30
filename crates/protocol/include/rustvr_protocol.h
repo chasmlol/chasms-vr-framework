@@ -262,6 +262,12 @@
  */
 #define RVR_GS_MIRROR (1 << 12)
 
+/**
+ * The player has no body in the game yet (a title screen in the world, before a character is
+ * made or loaded): the runtime draws the hands alone.
+ */
+#define RVR_GS_HANDS_ONLY (1 << 13)
+
 #define RVR_RIG_HAS_SIGHT (1 << 0)
 
 #define RVR_RIG_HAS_MUZZLE (1 << 1)
@@ -300,6 +306,14 @@
  * depth in the aux depth (linear metres).
  */
 #define RVR_SLOT_MIRROR (1 << 6)
+
+/**
+ * The eyes are the last picture the game drew of its world, given again while it can't draw one
+ * (it's loading another place): the runtime keeps it where it was in tracking space (the head
+ * moves through it, the player's walk and the game's teleport don't move it), holds a copy of it,
+ * and when the game draws again fades from it as [`SlotInfo::held_over`] says.
+ */
+#define RVR_SLOT_HELD (1 << 7)
 
 /**
  * Depth holds linear view distance in metres.
@@ -836,6 +850,14 @@
  * cursor and click). A game may hold one with no menu open (a book read as it plays on).
  */
 #define RVR_ANCHOR_HELD 4
+
+/**
+ * Over a view, as a title screen in the world: `HudGroup::at` is what the view is of (far off,
+ * in the world, metres). The group floats out over the view a few metres away, beside its subject
+ * on `side` (so it never covers it), a little under the horizon, and stays put in the world while
+ * the player looks round.
+ */
+#define RVR_ANCHOR_VISTA 5
 
 /**
  * On the thing's broad face, the one turned to the eyes as it appears (a book's cover): its middle
