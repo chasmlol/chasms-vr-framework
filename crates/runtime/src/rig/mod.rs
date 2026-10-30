@@ -1746,6 +1746,10 @@ impl Rig {
     /// them; `next`: the number the next pocket event will have in the ring (the session pushes this
     /// frame's [`Rig::pocket_events`] in order after the update).
     pub fn set_pockets(&mut self, table: &Pockets, next: u64) {
+        let creatures = |p: &[Pocket]| p.iter().map(|p| p.actor).collect::<std::collections::BTreeSet<u32>>();
+        if creatures(table.pockets()) != creatures(&self.pockets) {
+            tracing::info!("rig: {} pockets on {:x?}", table.pockets().len(), creatures(table.pockets()));
+        }
         self.pockets.clear();
         self.pockets.extend_from_slice(table.pockets());
         self.pocket_answers.clear();
