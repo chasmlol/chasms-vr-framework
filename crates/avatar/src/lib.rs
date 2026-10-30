@@ -42,6 +42,7 @@
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
 pub mod collimator;
+pub mod facegen;
 pub mod fit;
 pub mod gamebryo;
 pub mod grasp;
@@ -159,6 +160,20 @@ pub enum AvatarSource {
     Model { dir: PathBuf, body: String, hands: Option<String> },
     /// A model given directly, with the textures its meshes and materials name (by key).
     Built { model: asset::Model, textures: HashMap<String, asset::Texture> },
+    /// A body put together from a game's parts ([`compose`]): as [`AvatarSource::Built`], with what
+    /// each mesh draws beside its material (a face's textures, the hair's tint), by mesh.
+    Composed { model: asset::Model, textures: HashMap<String, asset::Texture>, extras: Vec<MeshExtras> },
+}
+
+/// What a mesh of a body put together from a game's parts draws beside its model's material.
+#[derive(Clone, Debug, Default)]
+pub struct MeshExtras {
+    /// A FaceGen face's texture morphs' texture ([`facegen::morph_texture`]), laid over the base
+    /// colour as the game's FaceGen blend does, with the face's detail map (a texture key) over it.
+    pub face: Option<asset::Texture>,
+    pub face_detail: Option<String>,
+    /// The hair's tint ([`asset::Shader::GamebryoHair`]).
+    pub hair_tint: Option<[f32; 3]>,
 }
 
 /// The game's lighting for this frame, to shade the body exactly as the game shades its own
@@ -188,6 +203,12 @@ impl Avatar {
             AvatarSource::Built { model, textures } => {
                 let textures: HashMap<String, Arc<asset::Texture>> = textures.into_iter().map(|(k, t)| (k, Arc::new(t))).collect();
                 let body = render::Character::new(gpu, from_model(model, |key| textures.get(key).cloned()));
+                (body.map_err(|e| tracing::warn!("avatar: {e:#}; drawing the mannequin instead")).ok(), None)
+            }
+            AvatarSource::Composed { model, textures, extras } => {
+                let textures: HashMap<String, Arc<asset::Texture>> = textures.into_iter().map(|(k, t)| (k, Arc::new(t))).collect();
+                let source = from_model_with(model, extras, |key| textures.get(key).cloned());
+                let body = render::Character::new(gpu, source);
                 (body.map_err(|e| tracing::warn!("avatar: {e:#}; drawing the mannequin instead")).ok(), None)
             }
             AvatarSource::Model { dir, body, hands } => {
@@ -488,6 +509,11 @@ pub(crate) struct SourceMaterial {
     pub bump: Option<Arc<asset::Texture>>,
     pub detail: Option<Arc<asset::Texture>>,
     pub env: Option<Arc<asset::Texture>>,
+    /// A FaceGen face's texture morphs' texture and detail map ([`MeshExtras`]).
+    pub face: Option<Arc<asset::Texture>>,
+    pub face_detail: Option<Arc<asset::Texture>>,
+    /// The hair's tint ([`asset::Shader::GamebryoHair`]).
+    pub hair_tint: Option<[f32; 3]>,
 }
 
 /// A body put together from a game's parts (see [`rustvr_protocol::AvatarDesc`]): the skeleton
@@ -497,7 +523,11 @@ pub(crate) struct SourceMaterial {
 /// (a body or an armour made for one race's skeleton, worn by another's) is put on this one by its
 /// bones' names, as the game itself does ([`rebind`]); a part with bones the skeleton hasn't is left
 /// out.
-pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &[(String, String)]) -> Result<AvatarSource> {
+///
+/// With a `face` ([`rustvr_protocol::FaceDesc`]), the parts with face morphs in the cache (a FaceGen
+/// head and the parts made to it: `morphs/<key>.rvf`) are moved to it first ([`facegen`]), the head
+/// gets its texture morphs and detail map, and the hair its tint.
+pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &[(String, String)], face: Option<&facegen::Face>) -> Result<AvatarSource> {
     let skel = asset::load_model(dir, skeleton).with_context(|| format!("the skeleton {skeleton}"))?;
     // (A swap to a texture the cache doesn't have keeps the part's own.)
     let have = |key: &str| dir.join("textures").join(format!("{key}.{}", asset::TEXTURE_EXT)).is_file();
@@ -507,6 +537,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         }
     };
     let mut model = asset::Model { version: asset::FORMAT_VERSION, source: format!("{skeleton} with {} parts", parts.len()), bones: skel.bones, ..Default::default() };
+    let mut extras: Vec<MeshExtras> = Vec::new();
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for key in parts {
         let part = match asset::load_model(dir, key) {
@@ -517,6 +548,22 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             }
         };
         let mut part = part;
+        // The face, on a part made to it (before the part is put on this skeleton: its morphs are
+        // in the part's own bind pose).
+        let mut face_tex = None;
+        if let Some(f) = face
+            && asset::has_morphs(dir, key)
+        {
+            match asset::load_morphs(dir, key) {
+                Ok(m) => {
+                    if let Some(mesh) = part.meshes.get_mut(m.mesh as usize) {
+                        facegen::morph_mesh(mesh, &m, &f.coords);
+                    }
+                    face_tex = m.texture.as_ref().map(|t| (m.mesh as usize, facegen::morph_texture(t, &f.coords.texture_symmetric)));
+                }
+                Err(e) => tracing::warn!("avatar: part {key}'s face morphs: {e:#}"),
+            }
+        }
         if part.bones.len() != model.bones.len() || part.bones.iter().zip(&model.bones).any(|(a, b)| a.name != b.name) {
             if let Err(e) = rebind(&mut part, &model.bones) {
                 tracing::warn!("avatar: part {key} isn't skinned to the skeleton {skeleton}: {e:#}: left out");
@@ -527,17 +574,38 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             lo[k] = lo[k].min(part.bounds_min[k]);
             hi[k] = hi[k].max(part.bounds_max[k]);
         }
-        for mut m in part.meshes {
+        for (i, mut m) in part.meshes.into_iter().enumerate() {
             swap(&mut m.texture);
             swap(&mut m.material.bump);
+            let mut x = MeshExtras::default();
+            if let Some(f) = face {
+                if face_tex.as_ref().is_some_and(|(mesh, _)| *mesh == i) {
+                    x.face = face_tex.take().map(|(_, t)| t);
+                }
+                // The face's detail map (the game's age map) over the head's skin, and its normal map.
+                if let Some((on, detail, normal)) = &f.detail
+                    && *on == m.texture
+                {
+                    if !detail.is_empty() && have(detail) {
+                        x.face_detail = Some(detail.clone());
+                    }
+                    if !normal.is_empty() && have(normal) {
+                        m.material.bump = normal.clone();
+                    }
+                }
+                if m.material.shader == asset::Shader::GamebryoHair {
+                    x.hair_tint = Some(f.hair);
+                }
+            }
             model.meshes.push(m);
+            extras.push(x);
         }
     }
     anyhow::ensure!(!model.meshes.is_empty(), "no part of the body could be loaded");
     (model.bounds_min, model.bounds_max) = (lo, hi);
     let mut textures = HashMap::new();
-    for m in &model.meshes {
-        for key in [&m.texture, &m.material.bump, &m.material.detail, &m.material.env] {
+    for (m, x) in model.meshes.iter().zip(&extras) {
+        for key in [&m.texture, &m.material.bump, &m.material.detail, &m.material.env].into_iter().chain(x.face_detail.as_ref()) {
             if key.is_empty() || textures.contains_key(key) {
                 continue;
             }
@@ -549,7 +617,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             }
         }
     }
-    Ok(AvatarSource::Built { model, textures })
+    Ok(AvatarSource::Composed { model, textures, extras })
 }
 
 /// Puts a part skinned to another skeleton (`part.bones`) on `bones` by the bones' names: each
@@ -625,13 +693,20 @@ fn load_model(dir: &std::path::Path, key: &str) -> Result<Source> {
 }
 
 /// A model with its textures looked up by key.
-fn from_model(model: asset::Model, mut texture: impl FnMut(&str) -> Option<Arc<asset::Texture>>) -> Source {
+fn from_model(model: asset::Model, texture: impl FnMut(&str) -> Option<Arc<asset::Texture>>) -> Source {
+    let n = model.meshes.len();
+    from_model_with(model, vec![MeshExtras::default(); n], texture)
+}
+
+/// [`from_model`], with what each mesh draws beside its material ([`MeshExtras`], by mesh).
+fn from_model_with(model: asset::Model, extras: Vec<MeshExtras>, mut texture: impl FnMut(&str) -> Option<Arc<asset::Texture>>) -> Source {
     let mut get = |key: &str| if key.is_empty() { None } else { texture(key) };
     let meshes = model
         .meshes
         .into_iter()
-        .filter(|m| !m.indices.is_empty() && !is_eye_overlay(&m.name))
-        .map(|m| {
+        .zip(extras.into_iter().chain(std::iter::repeat_with(MeshExtras::default)))
+        .filter(|(m, _)| !m.indices.is_empty() && !is_eye_overlay(&m.name))
+        .map(|(m, x)| {
             let texture = get(&m.texture);
             let material = metro::Class::of(m.material.shader).and_then(|class| {
                 let mat = &m.material;
@@ -643,7 +718,21 @@ fn from_model(model: asset::Model, mut texture: impl FnMut(&str) -> Option<Arc<a
                     return None;
                 }
                 let emissive = if mat.emissive > 0.0 { mat.emissive } else { 2.0 };
-                Some(SourceMaterial { class, params: mat.params, color: mat.color, alpha_test: mat.alpha_test, emissive, fresnel: mat.fresnel, bump, detail, env })
+                let face_detail = x.face_detail.as_deref().and_then(&mut get);
+                Some(SourceMaterial {
+                    class,
+                    params: mat.params,
+                    color: mat.color,
+                    alpha_test: mat.alpha_test,
+                    emissive,
+                    fresnel: mat.fresnel,
+                    bump,
+                    detail,
+                    env,
+                    face: x.face.clone().map(Arc::new),
+                    face_detail,
+                    hair_tint: x.hair_tint,
+                })
             });
             SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material }
         })

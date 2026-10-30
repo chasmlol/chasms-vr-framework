@@ -24,6 +24,32 @@ pub struct Settings {
     pub body: Body,
     pub sound: Sound,
     pub spectator: Spectator,
+    pub mirror: Mirror,
+}
+
+/// The mirror (`crate::mirror`): where it stands when called up, and how big it is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Mirror {
+    /// Metres from the head to the glass (nearer when a wall is closer): the reflection is twice as
+    /// far, the whole body in view and the face big enough to read.
+    pub distance: f32,
+    /// The glass, metres: wide enough for the shoulders and arms, tall enough for the whole body.
+    pub width: f32,
+    pub height: f32,
+    /// Its foot above the floor, metres.
+    pub lift: f32,
+    /// Pulling the gripped hands apart in front of the chest calls it up and puts it away.
+    pub gesture: bool,
+    /// The game's own world in it (one more render of the game's world a frame); off, the player
+    /// alone over dark glass.
+    pub game_world: bool,
+}
+
+impl Default for Mirror {
+    fn default() -> Self {
+        Mirror { distance: 1.2, width: 0.95, height: 2.0, lift: 0.02, gesture: true, game_world: true }
+    }
 }
 
 /// Which eye.

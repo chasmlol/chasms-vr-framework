@@ -121,6 +121,8 @@ pub struct Session {
     item_card: crate::item_card::ItemCard,
     /// OBS's window in the headset (over the left wrist, or pinned with F9): only the headset.
     obs: crate::obs_view::ObsView,
+    /// The mirror the player or the game's character creator has up (`crate::mirror`).
+    mirror: crate::mirror::Mirror,
     card: Option<(panels::Panel, f32)>,
     layout: panels::Layout,
     targets: Option<SharedTargets>,
@@ -263,6 +265,7 @@ impl Session {
             menu: RuntimeMenu::new(&gpu)?,
             item_card: crate::item_card::ItemCard::new(&gpu)?,
             obs: crate::obs_view::ObsView::default(),
+            mirror: crate::mirror::Mirror::default(),
             card: None,
             gpu,
             link,
@@ -499,7 +502,10 @@ impl Session {
         // ---- panels and pointing
         let gflags = self.game.as_ref().map(|g| g.flags).unwrap_or(0);
         let menu_mode = gflags & GS_MENU != 0;
-        let runtime_menu_open = menu_mode || !alive;
+        // (A menu shown in the world, a character creator beside its mirror, has the world round it,
+        // not the runtime's own menu.)
+        let menu_in_world = menu_mode && gflags & GS_MENU_IN_WORLD != 0;
+        let runtime_menu_open = (menu_mode && !menu_in_world) || !alive;
         let shown_info = self.shown.map(|(_, i)| i);
         let hud_aspect = shown_info
             .filter(|i| i.flags & SLOT_HUD != 0 && i.hud_aspect > 0.0)
@@ -509,7 +515,7 @@ impl Session {
         let hud_panel = if !menu_mode && shown_info.is_some_and(|i| i.flags & SLOT_HUD != 0) { hud_aspect } else { None };
         let head_pos = Vec3::from_array(frame.hmd.pos);
         let head_rot = quat(frame.hmd.rot);
-        let layout = self.layout.update(
+        let mut layout = self.layout.update(
             &self.settings.current,
             head_pos,
             head_rot,
@@ -518,6 +524,33 @@ impl Session {
             hud_panel,
             if runtime_menu_open { Some(self.menu.aspect()) } else { None },
         );
+        // The mirror: called up or put away (the gesture, the menu, the game's character creator),
+        // where it stands now. A menu shown in the world stands beside it, the part of the game's
+        // picture its menu is in (`GameState::menu_uv`).
+        {
+            let physics = &self.rig.physics;
+            let map = self.map_now;
+            let wall = move |from: Vec3, dir: Vec3, reach: f32| -> Option<f32> {
+                let m = map?;
+                physics.ray_world(m.point(from), m.rot(Quat::IDENTITY) * dir, reach * m.world_per_meter).map(|d| d / m.world_per_meter)
+            };
+            let empty = [0, 1].map(|i| self.rig_out.hands[i].flags & HAND_HOLDING == 0);
+            self.mirror.update(&crate::mirror::MirrorInput {
+                settings: &self.settings.current.mirror,
+                game_flags: gflags,
+                head: (head_pos, head_rot),
+                floor: self.floor,
+                map: self.map_now.as_ref(),
+                hands: &frame.hands,
+                empty,
+                now,
+                wall: &wall,
+            });
+        }
+        let menu_uv = self.game.as_ref().map(|g| g.menu_uv).filter(|uv| uv[2] > uv[0] && uv[3] > uv[1]).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        if let (true, Some(g), Some(aspect)) = (menu_in_world, self.mirror.glass(), menu_panel) {
+            layout.game_menu = Some(crate::mirror::beside(&g, head_pos, aspect * (menu_uv[2] - menu_uv[0]) / (menu_uv[3] - menu_uv[1])));
+        }
         let hand = &frame.hands[dom];
         let laser_origin = Vec3::from_array(hand.aim.pos);
         let laser_dir = quat(hand.aim.rot) * Vec3::Z;
@@ -528,6 +561,10 @@ impl Session {
         };
         let trigger_down = hand.trigger > 0.6;
         let cursor = match pick {
+            Some((PanelId::GameMenu, _, uv)) if menu_in_world => {
+                let uv = Vec2::new(menu_uv[0] + uv.x * (menu_uv[2] - menu_uv[0]), menu_uv[1] + uv.y * (menu_uv[3] - menu_uv[1]));
+                Some(Cursor { uv, down: trigger_down })
+            }
             Some((PanelId::GameMenu, _, uv)) => Some(Cursor { uv, down: trigger_down }),
             _ => None,
         };
@@ -917,6 +954,9 @@ impl Session {
                 let (w, h) = crate::targets::eye_size(self.backend.recommended_size(), crate::targets::render_scale(frame.fov, drawn), &self.settings.current);
                 [w, h]
             },
+            // The mirror's glass, and its world rendered from the head reflected (between the eyes the
+            // game is given).
+            mirror: self.mirror.view(frame.index, (Vec3::from_array(ahead.eyes[0].pos) + Vec3::from_array(ahead.eyes[1].pos)) * 0.5, self.settings.current.mirror.game_world),
         };
         if frame.hmd.valid == 0 {
             rt.flags &= !RT_ACTIVE;
@@ -965,6 +1005,7 @@ impl Session {
                 headset_size: self.backend.recommended_size(),
                 overscan_shown: self.overscan_shown,
                 game_size: self.targets.as_ref().map(|t| (t.spec.eye_w, t.spec.eye_h)),
+                mirror: self.mirror.shown(),
             };
             self.menu.update(&self.gpu, &mut self.settings.current, menu_pointer, &status)?;
             if std::mem::take(&mut self.menu.changed)
@@ -989,6 +1030,9 @@ impl Session {
             }
             if std::mem::take(&mut self.menu.recenter) {
                 self.mech.recenter();
+            }
+            if std::mem::take(&mut self.menu.mirror) {
+                self.mirror.toggle();
             }
         }
         {
@@ -1192,7 +1236,9 @@ impl Session {
         let locked = shown.filter(|(slot, _)| slot.acquire(50));
         self.pacing.wait(crate::pacing::Wait::Picture, t_wait.elapsed().as_secs_f32() * 1000.0);
         let s = &self.settings.current;
-        let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && !menu_mode && alive);
+        // (A menu shown in the world keeps the world and the body round it.)
+        let menu_in_world = menu_mode && self.game.as_ref().is_some_and(|g| g.flags & GS_MENU_IN_WORLD != 0);
+        let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && (!menu_mode || menu_in_world) && alive);
         let framework = self.mech.framework_view && self.rig_active_last;
         // The game's picture moved to this headset frame's eyes, by its depth (`crate::warp`), and
         // everything drawn and submitted with them: the world where it is at every headset frame,
@@ -1260,7 +1306,9 @@ impl Session {
             && let Some(hud) = &slot.hud {
                 if menu_mode {
                     if let Some(p) = layout.game_menu {
-                        layers.panels.push(PanelLayer::whole(p, hud.srv.as_ref().unwrap()));
+                        // (Shown in the world, the part of the picture its menu is in.)
+                        let uv = self.game.as_ref().map(|g| g.menu_uv).filter(|uv| menu_in_world && uv[2] > uv[0] && uv[3] > uv[1]);
+                        layers.panels.push(PanelLayer { uv: uv.unwrap_or([0.0, 0.0, 1.0, 1.0]), ..PanelLayer::whole(p, hud.srv.as_ref().unwrap()) });
                     }
                 } else if info.flags & SLOT_HUD != 0
                     && let Some(p) = layout.hud {
@@ -1357,7 +1405,7 @@ impl Session {
         // geometry where the game gave its depth.
         // (A game that draws the body in its own picture has none in the framework view: the runtime
         // draws it there.)
-        let draw_body = (self.draws_body || framework) && !menu_mode;
+        let draw_body = (self.draws_body || framework) && (!menu_mode || menu_in_world);
         let (wpm, light) = match (&self.game, self.map_now) {
             (Some(g), Some(map)) => {
                 let mut l = g.light;
@@ -1425,6 +1473,30 @@ impl Session {
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
         let warp = &mut self.warp;
+        let mirror = &mut self.mirror;
+        // The game's world in the mirror: its picture from the camera asked for (`MirrorView`), with
+        // its depth, carried from where it was drawn in the world to where the mirror is now.
+        let mirror_world = stereo.as_ref().filter(|_| !framework).and_then(|(slot, info)| {
+            let (pose, fov) = mirror.asked_for(info.aux_frame).filter(|_| info.flags & SLOT_MIRROR != 0)?;
+            let (aux, depth) = (slot.aux.as_ref()?, slot.aux_depth.as_ref()?);
+            let then = info.eye_map[0];
+            let to_target = match self.map_now {
+                Some(now) if then.world_per_meter > 0.0 => now.matrix().inverse() * WorldMap::from_slot(&then).matrix(),
+                _ => glam::Mat4::IDENTITY,
+            };
+            Some(crate::warp::WarpSource {
+                color: aux.srv.as_ref()?,
+                depth: depth.srv.as_ref(),
+                bloom: None,
+                lens: None,
+                width: aux.width,
+                height: aux.height,
+                pose,
+                fov,
+                to_target,
+                metres_per_unit: 1.0,
+            })
+        });
         let headset_post = &mut self.headset_post;
         let map_now = self.map_now;
         let same_fov = |a: &Fov, b: &Fov| (a.left - b.left).abs() + (a.right - b.right).abs() + (a.up - b.up).abs() + (a.down - b.down).abs() < 1e-4;
@@ -1530,11 +1602,25 @@ impl Session {
             });
             held_objects.place(eye_map.as_ref().or(map_now.as_ref()));
             let held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
+            // The mirror's reflection for this eye: the game's world behind the player, then the player.
+            let reflected = mirror.shown() && !framework && {
+                let mut draw = |gpu: &Gpu, t: &crate::backend::EyeTarget, cam: &Pose, f: &Fov, d: Option<&windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView>| {
+                    body.draw_reflection(gpu, t, cam, f, light, d.map(|srv| rustvr_avatar::DepthInput { srv, units_per_meter: 1.0, bloom: None, lens: None }), &held);
+                };
+                mirror.render_eye(&self.gpu, e, eye, warp, mirror_world, &mut draw).unwrap_or_else(|err| {
+                    tracing::warn!("mirror: {err:#}");
+                    false
+                })
+            };
+            let glass_depth = depth_srv.clone().map(|d| (d, 1.0 / depth_units.max(1e-6)));
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
                 if framework {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {
                         tracing::warn!("framework view: {e:#}");
                     }
+                }
+                if reflected && let Err(err) = mirror.draw_glass(gpu, target, e, eye, fov, glass_depth.as_ref().map(|(d, k)| (d, *k))) {
+                    tracing::warn!("mirror: {err:#}");
                 }
                 if draw_body {
                     body.draw(gpu, target, eye, fov, light, if framework { None } else { depth.take() }, &held);

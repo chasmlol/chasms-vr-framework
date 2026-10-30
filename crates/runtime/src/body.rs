@@ -57,6 +57,13 @@ pub struct PlayerBody {
     /// put together off the frame.
     game_body_seq: u32,
     game_body: Option<std::sync::mpsc::Receiver<anyhow::Result<AvatarSource>>>,
+    /// The body's parts as last asked for ((game, skeleton), parts, swaps), and its face
+    /// (`rustvr_protocol::FaceDesc`, by its seq): a new face puts the same parts together again.
+    game_parts: Option<((String, String), Vec<String>, Vec<(String, String)>)>,
+    game_face_seq: u32,
+    game_face: Option<rustvr_avatar::facegen::Face>,
+    /// A body is being put together while another change came in: put it together again after.
+    game_body_stale: bool,
     pub body: RtBody,
     /// Ghost hands (canonical hand frames), drawn translucent.
     pub ghosts: [Option<Pose>; 2],
@@ -133,6 +140,10 @@ impl Default for PlayerBody {
             avatar_tried: false,
             game_body_seq: 0,
             game_body: None,
+            game_parts: None,
+            game_face_seq: 0,
+            game_face: None,
+            game_body_stale: false,
             body: bytemuck::Zeroable::zeroed(),
             ghosts: [None; 2],
             held: [None; 2],
@@ -355,26 +366,57 @@ impl PlayerBody {
         &self.body
     }
 
-    /// The body the game makes up, when it has changed: put together from its parts off the frame
-    /// (`rustvr_avatar::compose`), then drawn instead of the avatar so far.
+    /// The body the game makes up, when it or its face has changed: put together from its parts off
+    /// the frame (`rustvr_avatar::compose`, the face's morphs on the parts made to it), then drawn
+    /// instead of the avatar so far. (While one is being put together a newer change waits for it,
+    /// so a character creator's slider dragged along makes one body at a time, the latest.)
     pub fn read_game_body(&mut self, link: &rustvr_protocol::link::Link) {
         let mut d: rustvr_protocol::AvatarDesc = bytemuck::Zeroable::zeroed();
-        if !link.read_avatar_into(&mut d) || d.seq == self.game_body_seq {
+        if link.read_avatar_into(&mut d) && d.seq != self.game_body_seq {
+            self.game_body_seq = d.seq;
+            let split = |name: &str| name.split_once('/').map(|(g, k)| (g.to_owned(), k.to_owned()));
+            match split(rustvr_protocol::name_str(&d.skeleton)) {
+                Some(skeleton) => {
+                    let parts: Vec<String> = (0..(d.count as usize).min(rustvr_protocol::MAX_AVATAR_PARTS)).filter_map(|i| split(d.part(i)).map(|(_, k)| k)).collect();
+                    let swaps: Vec<(String, String)> =
+                        (0..(d.swap_count as usize).min(rustvr_protocol::MAX_AVATAR_SWAPS)).map(|i| d.swap(i)).map(|(a, b)| (a.to_owned(), b.to_owned())).collect();
+                    tracing::info!("runtime: the game's body: {}/{} with {} parts ({}), {} texture swaps", skeleton.0, skeleton.1, parts.len(), parts.join(", "), swaps.len());
+                    self.game_parts = Some((skeleton, parts, swaps));
+                    self.game_body_stale = true;
+                }
+                None => tracing::warn!("runtime: the game's body names no skeleton"),
+            }
+        }
+        let mut f: rustvr_protocol::FaceDesc = bytemuck::Zeroable::zeroed();
+        if link.read_face_into(&mut f) && f.seq != self.game_face_seq {
+            self.game_face_seq = f.seq;
+            let face = (f.flags & rustvr_protocol::FACE_GIVEN != 0).then(|| rustvr_avatar::facegen::Face {
+                coords: rustvr_asset::FaceCoords {
+                    geometry_symmetric: f.geometry_symmetric.to_vec(),
+                    geometry_asymmetric: f.geometry_asymmetric.to_vec(),
+                    texture_symmetric: f.texture_symmetric.to_vec(),
+                },
+                hair: [f.hair_color[0], f.hair_color[1], f.hair_color[2]],
+                detail: Some(f.detail()).filter(|(on, _, _)| !on.is_empty()).map(|(a, b, c)| (a.to_owned(), b.to_owned(), c.to_owned())),
+            });
+            if face != self.game_face {
+                self.game_face = face;
+                self.game_body_stale = self.game_parts.is_some();
+            }
+        }
+        if !self.game_body_stale || self.game_body.is_some() {
             return;
         }
-        self.game_body_seq = d.seq;
-        let split = |name: &str| name.split_once('/').map(|(g, k)| (g.to_owned(), k.to_owned()));
-        let Some((game, skeleton)) = split(rustvr_protocol::name_str(&d.skeleton)) else {
-            tracing::warn!("runtime: the game's body names no skeleton");
-            return;
-        };
-        let parts: Vec<String> = (0..(d.count as usize).min(rustvr_protocol::MAX_AVATAR_PARTS)).filter_map(|i| split(d.part(i)).map(|(_, k)| k)).collect();
-        let swaps: Vec<(String, String)> = (0..(d.swap_count as usize).min(rustvr_protocol::MAX_AVATAR_SWAPS)).map(|i| d.swap(i)).map(|(a, b)| (a.to_owned(), b.to_owned())).collect();
-        tracing::info!("runtime: the game's body: {game}/{skeleton} with {} parts ({}), {} texture swaps", parts.len(), parts.join(", "), swaps.len());
+        let Some(((game, skeleton), parts, swaps)) = self.game_parts.clone() else { return };
+        self.game_body_stale = false;
+        let face = self.game_face.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let dir = rustvr_asset::default_root().join(&game);
         std::thread::spawn(move || {
-            let _ = tx.send(rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps));
+            let t = std::time::Instant::now();
+            let built = rustvr_avatar::compose(&dir, &skeleton, &parts, &swaps, face.as_ref());
+            tracing::debug!("runtime: the game's body put together in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
+            let _ = tx.send(built);
         });
         self.game_body = Some(rx);
     }
@@ -382,6 +424,10 @@ impl PlayerBody {
     /// Loads the avatar the first time it's needed: Metro's Miller when the extracted assets are
     /// there (local test content), else the built-in mannequin; later, the body the game makes up.
     fn avatar(&mut self, gpu: &Gpu) -> Option<&mut Avatar> {
+        if let Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) = self.game_body.as_ref().map(|rx| rx.try_recv()) {
+            tracing::error!("runtime: putting the game's body together stopped");
+            self.game_body = None;
+        }
         if let Some(Ok(built)) = self.game_body.as_ref().map(|rx| rx.try_recv()) {
             self.game_body = None;
             self.avatar_tried = true;
@@ -499,6 +545,34 @@ impl PlayerBody {
         let special = self.special.as_deref_mut().map(|f| f as &mut dyn FnMut(&rustvr_avatar::SpecialDraw));
         if let Err(e) = avatar.draw_with(gpu, &target.rtv, target.width, target.height, eye, fov, &frame, depth, true, holding, special) {
             tracing::warn!("runtime: drawing the avatar: {e:#}");
+        }
+    }
+
+    /// Draws the body as a mirror shows it (`crate::mirror`): from `eye` (a camera reflected in the
+    /// glass) into `target`, the whole body whatever the body setting, with the head (the wearer
+    /// isn't inside it), what the hands hold, no ghost hands; hidden behind the game's world as it
+    /// shows there (`depth`).
+    pub fn draw_reflection(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw]) {
+        let body = self.body;
+        let held = self.held;
+        self.avatar(gpu);
+        let hand = (self.hand_length > 0.02).then_some(self.hand_length);
+        let Some(avatar) = self.avatar.as_mut() else { return };
+        avatar.set_hand_length(hand);
+        let frame = AvatarFrame {
+            joints: &body.joints,
+            fingers: body.fingers,
+            hands: body.hands,
+            ghosts: [None; 2],
+            held,
+            grasp: [self.grasp[0].as_ref(), self.grasp[1].as_ref()],
+            visibility: BODYVIS_FULL,
+            light,
+            first_person: false,
+            plain: self.plain,
+        };
+        if let Err(e) = avatar.draw_with(gpu, &target.rtv, target.width, target.height, eye, fov, &frame, depth, true, holding, None) {
+            tracing::warn!("runtime: drawing the body in the mirror: {e:#}");
         }
     }
 

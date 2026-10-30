@@ -94,6 +94,9 @@ Texture3D grade_tex : register(t5);
 Texture2D atlas_tex : register(t6);
 Texture2D bloom_tex : register(t11);
 Texture2D lens_tex : register(t12);
+// A FaceGen head's texture morphs' texture and its detail map (Gamebryo's FaceGen blend).
+Texture2D face_tex : register(t13);
+Texture2D face_detail_tex : register(t14);
 SamplerState samp : register(s0);
 SamplerState clamp_samp : register(s1);
 
@@ -468,8 +471,18 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     if (plain.w > 1.5) return float4(plain.rgb, 1);
     float4 base = albedo.Sample(samp, i.uv);
     if (material.y > 0 && base.a < 0.5) discard;
-    // The base times the vertex colour (the game's are grey: the vertex's AO byte holds it).
-    float3 c = base.rgb * i.ao;
+    // A FaceGen head (the skin shader's FaceGen blend, gamebryo.rs `face`): its texture morphs move
+    // the base colour, under the detail map (a 4x modulate; without one, neutral).
+    if (options.z > 0) {
+        float3 morphs = face_tex.Sample(samp, i.uv).rgb;
+        float3 detail = options.z > 1.5 ? face_detail_tex.Sample(samp, i.uv).rgb : 0.25;
+        base.rgb = 4 * detail * (base.rgb + 2 * (morphs - 0.5));
+    }
+    bool hair = (uint)material.z == GB_HAIR;
+    // The base times the vertex colour (the game's are grey: the vertex's AO byte holds it); the
+    // hair's vertex colour is its tint's mask instead (gamebryo.rs `hair_tint`), its tint the
+    // wearer's hair colour.
+    float3 c = hair ? base.rgb * 2 * (0.5 + i.ao * (surf_color.rgb - 0.5)) : base.rgb * i.ao;
     // The inside of the shell, seen through a cut (the game culls it): the ambient, dark.
     if (!front) return float4(m_display_to_linear(c * amb.rgb * 0.3), 1);
     float3 nv = normalize(i.normal);
@@ -479,13 +492,14 @@ float4 PSGamebryo(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     float3 nt = normalize(nm.rgb * 2 - 1);
     float3 n = normalize(nt.x * t + nt.y * b + nt.z * nv);
     float3 v = normalize(eye_pos.xyz - i.world);
-    float3 glow = options.y > 0 ? detail_tex.Sample(samp, i.uv).rgb * surf_color.rgb : 0;
+    float3 glow = options.y > 0 && !hair ? detail_tex.Sample(samp, i.uv).rgb * surf_color.rgb : 0;
     bool skin = (uint)material.z == GB_SKIN;
     float gloss = surf_params.y > 0 ? surf_params.x : 0;
     float3 d = 0, s = 0;
     uint count = (uint)envc.w;
-    for (uint k = 0; k < count; k++) gb_light(lights[k], i.world, n, v, skin, gloss, nm.a, d, s);
-    float3 col = saturate(c * saturate(amb.rgb + glow + d) + s);
+    for (uint k = 0; k < count; k++) gb_light(lights[k], i.world, n, v, skin, hair, gloss, nm.a, d, s);
+    // (The hair's light isn't capped: its shader adds the ambient to its lights as they are.)
+    float3 col = saturate(c * (hair ? amb.rgb + d : saturate(amb.rgb + glow + d)) + s);
     if (fog_fade.y != 0) col = lerp(col, fog_color.rgb, saturate(length(eye_pos.xyz - i.world) * fog_fade.y + fog_fade.x));
     return float4(m_display_to_linear(col), 1);
 }
@@ -791,13 +805,16 @@ struct GpuMesh {
 }
 
 /// A mesh's game material on the GPU: its class and the views of t0 and t2..t4 (raw: the game's
-/// textures are UNORM, so their numbers are used as linear values).
+/// textures are UNORM, so their numbers are used as linear values), and a FaceGen head's two
+/// (t13, t14).
 struct MetroMesh {
     class: Class,
     base: ID3D11ShaderResourceView,
     bump: Option<ID3D11ShaderResourceView>,
     detail: Option<ID3D11ShaderResourceView>,
     env: Option<ID3D11ShaderResourceView>,
+    face: Option<ID3D11ShaderResourceView>,
+    face_detail: Option<ID3D11ShaderResourceView>,
 }
 
 /// A texture's two views: sRGB-decoded (the runtime's own look) and raw (the game's).
@@ -969,16 +986,23 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
         (Some(mat), Some(base)) => {
             let mut get = |t: &Option<Arc<asset::Texture>>| t.as_ref().and_then(|t| upload(t, &m.name)).map(|t| t.linear);
             let (bump, detail, env) = (get(&mat.bump), get(&mat.detail), get(&mat.env));
+            let (face, face_detail) = (get(&mat.face), get(&mat.face_detail));
             let (nb, nd, ne) = mat.class.needs();
-            ((!nb || bump.is_some()) && (!nd || detail.is_some()) && (!ne || env.is_some())).then(|| MetroMesh { class: mat.class, base: base.linear.clone(), bump, detail, env })
+            ((!nb || bump.is_some()) && (!nd || detail.is_some()) && (!ne || env.is_some())).then(|| MetroMesh { class: mat.class, base: base.linear.clone(), bump, detail, env, face, face_detail })
         }
         _ => None,
     };
-    let (surf_params, surf_color, emissive) = m.material.as_ref().map_or(([0.0; 4], [0.0; 4], 0.0), |mat| (mat.params, mat.color, mat.emissive));
+    let (surf_params, mut surf_color, emissive) = m.material.as_ref().map_or(([0.0; 4], [0.0; 4], 0.0), |mat| (mat.params, mat.color, mat.emissive));
+    // (The hair's colour is its wearer's.)
+    if let Some(t) = m.material.as_ref().and_then(|mat| mat.hair_tint) {
+        surf_color = [t[0], t[1], t[2], 1.0];
+    }
     let options = m.material.as_ref().map_or([0.0; 4], |mat| {
         if mat.class.gamebryo() {
-            // Gamebryo's: whether it has a normal map and a glow map.
-            [mat.bump.is_some() as u32 as f32, mat.detail.is_some() as u32 as f32, 0.0, 0.0]
+            // Gamebryo's: whether it has a normal map and a glow map, and a FaceGen head's
+            // textures (1: its texture morphs, 2: and its detail map).
+            let face = if mat.face.is_none() { 0 } else if mat.face_detail.is_none() { 1 } else { 2 };
+            [mat.bump.is_some() as u32 as f32, mat.detail.is_some() as u32 as f32, face as f32, 0.0]
         } else {
             [mat.env.is_some() as u32 as f32, mat.fresnel as u32 as f32, 0.0, 0.0]
         }
@@ -1994,6 +2018,9 @@ fn draw_mesh(ctx: &ID3D11DeviceContext, m: &GpuMesh, range: usize) {
             Some(mm) => {
                 ctx.PSSetShaderResources(0, Some(&[Some(mm.base.clone())]));
                 ctx.PSSetShaderResources(2, Some(&[mm.bump.clone(), mm.detail.clone(), mm.env.clone()]));
+                if mm.face.is_some() {
+                    ctx.PSSetShaderResources(13, Some(&[mm.face.clone(), mm.face_detail.clone()]));
+                }
             }
             None => ctx.PSSetShaderResources(0, Some(std::slice::from_ref(&m.srv))),
         }

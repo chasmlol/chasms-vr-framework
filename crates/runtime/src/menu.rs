@@ -44,6 +44,8 @@ pub struct Status {
     /// The overscan the game draws with now (less than the setting's while a game that can't
     /// change its size waits to be restarted).
     pub overscan_shown: f32,
+    /// The mirror is up (`crate::mirror`).
+    pub mirror: bool,
 }
 
 pub struct RuntimeMenu {
@@ -62,6 +64,8 @@ pub struct RuntimeMenu {
     pub measure_height: bool,
     /// "Measure arms" was pressed (T-pose in 3 seconds).
     pub measure_arms: bool,
+    /// The mirror's button was pressed: call it up, or put it away.
+    pub mirror: bool,
 }
 
 impl RuntimeMenu {
@@ -89,6 +93,7 @@ impl RuntimeMenu {
             recenter: false,
             measure_height: false,
             measure_arms: false,
+            mirror: false,
         })
     }
 
@@ -143,7 +148,7 @@ impl RuntimeMenu {
         let before = s.clone();
         let mut tab = self.tab;
         let mut recenter = false;
-        let mut measure = (false, false);
+        let mut measure = (false, false, false);
         let mut save = false;
         let message = self.message.clone();
         let mut rects: Vec<(String, egui::Rect)> = Vec::new();
@@ -202,6 +207,10 @@ impl RuntimeMenu {
         if measure.0 {
             self.measure_height = true;
         }
+        if measure.2 {
+            self.mirror = true;
+            self.message = if status.mirror { "The mirror goes when you resume".into() } else { "A mirror stands in front of you when you resume".into() };
+        }
         if measure.1 {
             self.measure_arms = true;
             self.message = "Stand straight and hold your arms straight out to the sides".into();
@@ -259,8 +268,8 @@ fn comfort(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::R
 }
 
 /// Your body: height, arms, seated play. Returns (measure height, measure arms) presses.
-fn body(ui: &mut egui::Ui, s: &mut Settings, status: &Status, rects: &mut Vec<(String, egui::Rect)>) -> (bool, bool) {
-    let mut out = (false, false);
+fn body(ui: &mut egui::Ui, s: &mut Settings, status: &Status, rects: &mut Vec<(String, egui::Rect)>) -> (bool, bool, bool) {
+    let mut out = (false, false, false);
     ui.heading("Height");
     let r = ui.checkbox(&mut s.comfort.seated, "Seated mode (you see from standing height; ducking doesn't crouch)");
     rects.push(("body:seated".into(), r.rect));
@@ -297,6 +306,16 @@ fn body(ui: &mut egui::Ui, s: &mut Settings, status: &Status, rects: &mut Vec<(S
     ui.checkbox(&mut s.body.game_lighting, "Light the body with the game's lighting");
     ui.checkbox(&mut s.body.tracked_elbows, "Elbows from the headset's body tracking (Quest 3 / Pro)");
     slider(ui, "Hand size (1 = a real hand for your height)", &mut s.body.hand_size, 0.8, 1.3, "x", 2);
+    ui.separator();
+    ui.heading("Mirror");
+    let r = ui.add_sized([260.0, 36.0], egui::Button::new(if status.mirror { "Put the mirror away" } else { "Stand a mirror in front of me" }));
+    rects.push(("body:mirror".into(), r.rect));
+    out.2 = r.clicked();
+    ui.checkbox(&mut s.mirror.gesture, "Pull your gripped hands apart in front of your chest to call it up or put it away");
+    ui.checkbox(&mut s.mirror.game_world, "The game's world in the mirror (off: you alone, on dark glass)");
+    slider(ui, "Distance", &mut s.mirror.distance, 0.6, 3.0, " m", 2);
+    slider(ui, "Width", &mut s.mirror.width, 0.4, 2.0, " m", 2);
+    slider(ui, "Height", &mut s.mirror.height, 1.0, 2.6, " m", 2);
     out
 }
 

@@ -328,6 +328,13 @@ impl Link {
     pub fn read_avatar_into(&self, out: &mut AvatarDesc) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_AVATAR), out) }
     }
+    /// Adapter: the player's face ([`FaceDesc`]).
+    pub fn write_face(&self, v: &FaceDesc) {
+        unsafe { seq_write(self.base.add(OFF_FACE), v) }
+    }
+    pub fn read_face_into(&self, out: &mut FaceDesc) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_FACE), out) }
+    }
     /// Adapter: what the things it offers are ([`ItemInfos`]).
     pub fn write_item_infos(&self, v: &ItemInfos) {
         unsafe { seq_write(self.base.add(OFF_ITEM_INFO), v) }

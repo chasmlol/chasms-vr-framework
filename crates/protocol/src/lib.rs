@@ -180,6 +180,10 @@ pub const TGT_LIGHTS: u32 = 1 << 3;
 /// (a visor's glass, heat haze): the game shows at `uv` what it drew at `uv + warp(uv)`.
 pub const TGT_BLOOM: u32 = 1 << 4;
 
+/// The aux view's depth ([`TexKind::AuxDepth`]: `R32_FLOAT`, linear metres along its view axis), as
+/// the mirror's world needs it ([`MirrorView`]).
+pub const TGT_AUX_DEPTH: u32 = 1 << 5;
+
 /// The bloom and lens textures' size for eyes `w` x `h`: half each way (bloom is blurry; the lens
 /// dirt it shows and the visor's warp less so).
 pub fn bloom_size(w: u32, h: u32) -> (u32, u32) {
@@ -206,10 +210,12 @@ pub enum TexKind {
     /// The lens's light (and its warp in y) for each eye (see [`TGT_BLOOM`]).
     LensLeft = 9,
     LensRight = 10,
+    /// The aux view's depth (see [`TGT_AUX_DEPTH`]).
+    AuxDepth = 11,
 }
 
 impl TexKind {
-    pub const ALL: [TexKind; 11] = [
+    pub const ALL: [TexKind; 12] = [
         TexKind::EyeLeft,
         TexKind::EyeRight,
         TexKind::DepthLeft,
@@ -221,6 +227,7 @@ impl TexKind {
         TexKind::BloomRight,
         TexKind::LensLeft,
         TexKind::LensRight,
+        TexKind::AuxDepth,
     ];
 
     pub fn tag(self) -> &'static str {
@@ -236,6 +243,7 @@ impl TexKind {
             TexKind::BloomRight => "bloomR",
             TexKind::LensLeft => "lensL",
             TexKind::LensRight => "lensR",
+            TexKind::AuxDepth => "auxDepth",
         }
     }
 }
@@ -329,7 +337,39 @@ pub struct RtFrame {
     /// The headset's per-eye resolution (its recommended size times the render-scale setting): a
     /// game that renders the eyes itself sizes its frame to match.
     pub eye_size: [u32; 2],
+    /// The mirror the player has up, and the camera the game's world in it is rendered from.
+    pub mirror: MirrorView,
 }
+
+/// A mirror standing in the world (the runtime's `mirror`): where its glass is, and the camera to
+/// render the game's world in it from. The camera is the head reflected in the glass's plane,
+/// looking straight through the glass at the player, its frustum through the glass's corners and
+/// its near plane on the glass (so what stands behind the mirror is clipped). Each eye's
+/// reflection is drawn by the runtime from that eye reflected, with this picture (and its depth)
+/// moved there.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
+pub struct MirrorView {
+    pub flags: u32, // MIR_*
+    /// The near plane's distance from the camera (metres): the glass.
+    pub near: f32,
+    /// [`RtFrame::frame_index`] the camera is for (low 32 bits), as the slot's `aux_frame` says.
+    pub frame: u32,
+    pub _pad: u32,
+    /// The camera, tracking space, and its frustum.
+    pub camera: Pose,
+    pub fov: Fov,
+    /// The glass: its centre, and its half extents to the right (as seen from in front) and up
+    /// (tracking space, metres; w unused).
+    pub center: [f32; 4],
+    pub right: [f32; 4],
+    pub up: [f32; 4],
+}
+/// The mirror is up.
+pub const MIR_SHOWN: u32 = 1 << 0;
+/// Render the game's world from [`MirrorView::camera`] into the aux texture, with its depth into
+/// the aux depth ([`TGT_AUX_DEPTH`]), for this frame.
+pub const MIR_RENDER: u32 = 1 << 1;
 /// Tracking is valid and the runtime wants the game in VR.
 pub const RT_ACTIVE: u32 = 1 << 0;
 pub const RT_USER_PRESENT: u32 = 1 << 1;
@@ -623,6 +663,9 @@ pub struct GameState {
     pub stats_f: [f32; 16],
     /// Adapter name, UTF-8, NUL-terminated. Also selects the runtime's settings profile.
     pub name: [u8; 32],
+    /// The part of the game's menu picture its menu is in (u0, v0, u1, v1, 0..1 from the top left;
+    /// all zero: the whole picture), for a menu shown in the world ([`GS_MENU_IN_WORLD`]).
+    pub menu_uv: [f32; 4],
 }
 pub const GS_IN_GAME: u32 = 1 << 0;
 /// A game menu is open: the runtime shows the HUD texture as a big panel and points a laser at it.
@@ -642,6 +685,12 @@ pub const GS_INFINITE_AMMO: u32 = 1 << 9;
 /// The game wants the runtime's player controller (hands, body) even with no objects registered:
 /// what the player sees of themself is the runtime's, drawn over the game's picture.
 pub const GS_PLAYER_RIG: u32 = 1 << 10;
+/// The open menu is one the player stays in the world for (a character creator): the runtime keeps
+/// the game's stereo picture and the body around its panel ([`GameState::menu_uv`]).
+pub const GS_MENU_IN_WORLD: u32 = 1 << 11;
+/// The game wants the mirror up (its character creator is open): the runtime stands it in front of
+/// the player, and puts it away when this goes, unless the player had called it up.
+pub const GS_MIRROR: u32 = 1 << 12;
 
 /// Linear-light colours.
 #[repr(C)]
@@ -791,6 +840,9 @@ pub const SLOT_AUX: u32 = 1 << 3;
 pub const SLOT_DEPTH: u32 = 1 << 4;
 /// Both eyes' bloom and lens textures hold the game's for their pictures.
 pub const SLOT_BLOOM: u32 = 1 << 5;
+/// The aux view is the mirror's world ([`MirrorView`], the camera of the frame `aux_frame`), with its
+/// depth in the aux depth (linear metres).
+pub const SLOT_MIRROR: u32 = 1 << 6;
 
 /// Depth holds linear view distance in metres.
 pub const DEPTH_LINEAR: u32 = 1 << 0;
@@ -838,11 +890,12 @@ const _: () = {
     assert!(size_of::<Controller>() == 112);
     assert!(size_of::<TrackingControl>() == 32);
     assert!(size_of::<Intents>() == 328);
-    assert!(size_of::<RtFrame>() == 752);
+    assert!(size_of::<RtFrame>() == 752 + 112);
+    assert!(size_of::<MirrorView>() == 112);
     assert!(size_of::<TrackingState>() == 64);
     assert!(size_of::<WeaponRig>() == 144);
     assert!(size_of::<TargetRequest>() == 32);
-    assert!(size_of::<GameState>() == 512);
+    assert!(size_of::<GameState>() == 528);
     assert!(size_of::<LightHint>() == 48);
     assert!(size_of::<SlotInfo>() == 256);
     assert!(size_of::<SlotMap>() == 32);

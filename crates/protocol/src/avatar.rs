@@ -12,7 +12,7 @@ use bytemuck::{Pod, Zeroable};
 
 pub const OFF_AVATAR: usize = crate::OFF_COMBAT_END.next_multiple_of(64);
 pub const MAX_AVATAR_PARTS: usize = 24;
-pub const MAX_AVATAR_SWAPS: usize = 16;
+pub const MAX_AVATAR_SWAPS: usize = 32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -64,9 +64,51 @@ impl AvatarDesc {
     }
 }
 
+/// The player's face, for the parts of the body that have face morphs (a FaceGen head and the
+/// parts made to its shape: ears, eyes, mouth, teeth, hair; the cache's `morphs/<key>.rvf`): where
+/// it is in FaceGen's face space, the detail map laid over its skin, and its hair's colour.
+///
+/// The adapter writes it whenever it changes (a slider in the game's character creator moved); the
+/// runtime moves the morphed parts' vertices and remakes the face's texture off the frame, without
+/// putting the body together again. Nothing written: the parts as modelled.
+pub const OFF_FACE: usize = (crate::OFF_ITEM_INFO + size_of::<crate::ItemInfos>()).next_multiple_of(64);
+pub const FACE_GEOMETRY_SYMMETRIC: usize = 50;
+pub const FACE_GEOMETRY_ASYMMETRIC: usize = 30;
+pub const FACE_TEXTURE_SYMMETRIC: usize = 50;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct FaceDesc {
+    /// Seqlock word (each write is a new face).
+    pub seq: u32,
+    pub flags: u32, // FACE_*
+    /// The face's coordinates: the symmetric and asymmetric geometry, the symmetric texture.
+    pub geometry_symmetric: [f32; FACE_GEOMETRY_SYMMETRIC],
+    pub geometry_asymmetric: [f32; FACE_GEOMETRY_ASYMMETRIC],
+    pub texture_symmetric: [f32; FACE_TEXTURE_SYMMETRIC],
+    /// The hair's tint as the game's hair shader takes it (display 0..1 rgb; a unused).
+    pub hair_color: [f32; 4],
+    /// The face's detail map (Oblivion's age map, `4 · detail · colour` over the skin's colour), on
+    /// the meshes whose base texture is `detail_on`, with the normal map it brings (drawn instead
+    /// of theirs). Texture keys; empty: none.
+    pub detail_on: [u8; 16],
+    pub detail: [u8; 16],
+    pub detail_normal: [u8; 16],
+}
+
+/// [`FaceDesc`] holds a face (else the parts are drawn as modelled).
+pub const FACE_GIVEN: u32 = 1 << 0;
+
+impl FaceDesc {
+    pub fn detail(&self) -> (&str, &str, &str) {
+        (crate::name_str(&self.detail_on), crate::name_str(&self.detail), crate::name_str(&self.detail_normal))
+    }
+}
+
 const _: () = {
     assert!(size_of::<AvatarDesc>() == 16 + 32 + 32 * MAX_AVATAR_PARTS + 32 * MAX_AVATAR_SWAPS);
     assert!(OFF_AVATAR + size_of::<AvatarDesc>() <= crate::OFF_HUD_LAYOUT);
+    assert!(OFF_FACE + size_of::<FaceDesc>() <= crate::OFF_HUD_LAYOUT);
 };
 
 #[cfg(test)]

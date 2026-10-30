@@ -15,6 +15,15 @@
 //!   where `soft` fades the highlight out past the terminator (`N·L + ½` below `N·L = 0.2`);
 //! * the fog: `lerp(colour, fog, amount)`.
 //!
+//! Two of the game's other shaders take the same lights:
+//!
+//! * the hair's (`HAIR2000`): each light's `colour · (max(N·L, 0) + (1 − max(N·V, 0))³)`, its rim
+//!   at full strength and nothing capped; its base tinted, `base · 2 · (0.5 + mask · (tint − 0.5))`
+//!   (the mask the vertex colour's green). Its height map's parallax, its layer map and its
+//!   anisotropic highlight are left out;
+//! * the head's FaceGen blend (`SKIN2001`): its colour `4 · detail · (base + 2 · (morphs − 0.5))`
+//!   before the skin's lighting ([`face`]).
+//!
 //! N is the normal map's (`2·rgb − 1` in the tangent frame: tangent along +u, binormal along +v of
 //! the texture coordinates, as the meshes' own tangent space data has them), its alpha the specular
 //! mask. Everything is in the display's 0..1 range, as the game's 8-bit back buffer holds it.
@@ -45,6 +54,8 @@ pub struct Fragment {
 #[derive(Clone, Copy, Debug)]
 pub struct Surface {
     pub skin: bool,
+    /// The hair's lighting (its own shader's).
+    pub hair: bool,
     /// The specular power (the material's glossiness); `None`: no specular.
     pub glossiness: Option<f32>,
 }
@@ -74,7 +85,9 @@ pub fn light(f: &Fragment, s: &Surface, l: &GameLight) -> (Vec3, Vec3) {
     let c = Vec3::new(l.color[0], l.color[1], l.color[2]);
     let nl = f.n.dot(to);
     let v = (f.eye - f.p).normalize_or_zero();
-    let diffuse = if s.skin {
+    let diffuse = if s.hair {
+        c * (nl.max(0.0) + (1.0 - f.n.dot(v).max(0.0)).powi(3))
+    } else if s.skin {
         let rim = (1.0 - f.n.dot(v).max(0.0)).powi(3);
         (c * nl.max(0.0) + 0.5 * rim * c).min(Vec3::ONE)
     } else {
@@ -103,6 +116,17 @@ pub fn shade(f: &Fragment, s: &Surface, ambient: Vec3, lights: &[GameLight]) -> 
     (f.base * lit + sp).clamp(Vec3::ZERO, Vec3::ONE)
 }
 
+/// The head's colour by the game's FaceGen blend: the base, moved by the texture morphs' texture
+/// (`morphs`, about 0.5), under the detail map (`detail`, about 0.25: a 4× modulate).
+pub fn face(base: Vec3, morphs: Vec3, detail: Vec3) -> Vec3 {
+    4.0 * detail * (base + 2.0 * (morphs - Vec3::splat(0.5)))
+}
+
+/// The hair's base colour: tinted by `tint` where `mask` (the vertex colour's green) says.
+pub fn hair_tint(base: Vec3, tint: Vec3, mask: f32) -> Vec3 {
+    base * 2.0 * (Vec3::splat(0.5) + mask * (tint - Vec3::splat(0.5)))
+}
+
 /// The fog over a colour at `distance` (`fog_fade`: amount = saturate(distance·y + x)).
 pub fn fogged(c: Vec3, distance: f32, fog: Vec4, fade: Vec4) -> Vec3 {
     if fade.y == 0.0 {
@@ -116,6 +140,7 @@ pub fn fogged(c: Vec3, distance: f32, fog: Vec4, fade: Vec4) -> Vec3 {
 pub const HLSL: &str = r#"
 #define GB_LIT 8
 #define GB_SKIN 9
+#define GB_HAIR 10
 #define GB_DIRECTIONAL 16
 #define GB_POINT 17
 
@@ -136,7 +161,7 @@ void gb_frame(float3 dpx, float3 dpy, float2 dux, float2 duy, float3 n, out floa
 float gb_soft(float nl) { return nl <= 0.2 ? max(nl + 0.5, 0) : 1; }
 
 // One light's diffuse (added to d) and specular (added to s) at p, normal n, towards the eye v.
-void gb_light(MLight l, float3 p, float3 n, float3 v, bool skin, float gloss, float mask, inout float3 d, inout float3 s) {
+void gb_light(MLight l, float3 p, float3 n, float3 v, bool skin, bool hair, float gloss, float mask, inout float3 d, inout float3 s) {
     float3 to;
     float att = 1;
     if (l.info.x == GB_DIRECTIONAL) {
@@ -152,7 +177,10 @@ void gb_light(MLight l, float3 p, float3 n, float3 v, bool skin, float gloss, fl
     float3 c = l.color.rgb;
     float nl = dot(n, to);
     float3 dif;
-    if (skin) {
+    if (hair) {
+        float k = 1 - max(dot(n, v), 0);
+        dif = c * (max(nl, 0) + k * k * k);
+    } else if (skin) {
         float k = 1 - max(dot(n, v), 0);
         dif = min(c * max(nl, 0) + 0.5 * k * k * k * c, 1);
     } else {
@@ -183,7 +211,7 @@ mod tests {
     fn the_base_pass() {
         // SLS2000: saturate(saturate(N·L · c) + ambient) · base.
         let f = frag(Vec3::Z);
-        let s = Surface { skin: false, glossiness: None };
+        let s = Surface { skin: false, hair: false, glossiness: None };
         let l = sun(Vec3::new(0.0, 0.6, 0.8), 0.5);
         let c = shade(&f, &s, Vec3::splat(0.2), &[l]);
         assert!((c.x - 0.8 * (0.5 * 0.8 + 0.2)).abs() < 1e-5);
@@ -197,8 +225,8 @@ mod tests {
         // Seen edge on, lit from behind: the rim alone, half the light's colour.
         let mut f = frag(Vec3::X);
         f.eye = Vec3::new(0.0, 0.0, 1.0);
-        let skin = Surface { skin: true, glossiness: None };
-        let plain = Surface { skin: false, glossiness: None };
+        let skin = Surface { skin: true, hair: false, glossiness: None };
+        let plain = Surface { skin: false, hair: false, glossiness: None };
         let l = sun(-Vec3::X, 1.0);
         assert_eq!(shade(&f, &plain, Vec3::ZERO, &[l]), Vec3::ZERO);
         assert!((shade(&f, &skin, Vec3::ZERO, &[l]).x - 0.8 * 0.5).abs() < 1e-5);
@@ -207,7 +235,7 @@ mod tests {
     #[test]
     fn a_point_light_fades_out_at_its_radius() {
         let f = frag(Vec3::Z);
-        let s = Surface { skin: false, glossiness: None };
+        let s = Surface { skin: false, hair: false, glossiness: None };
         let at = |d: f32| GameLight { pos: [0.0, 0.0, d, 1.0 / 4.0], color: [1.0; 4], kind: GL_GB_POINT, ..Default::default() };
         assert!(shade(&f, &s, Vec3::ZERO, &[at(1.0)]).x > 0.5);
         assert_eq!(shade(&f, &s, Vec3::ZERO, &[at(2.0)]), Vec3::ZERO);
@@ -220,7 +248,7 @@ mod tests {
         assert_eq!(soft(-0.6), 0.0);
         // Straight back to the eye: the mask times the light.
         let f = frag(Vec3::Z);
-        let s = Surface { skin: false, glossiness: Some(30.0) };
+        let s = Surface { skin: false, hair: false, glossiness: Some(30.0) };
         let (_, sp) = light(&f, &s, &sun(Vec3::Z, 0.5));
         assert!((sp.x - 0.5).abs() < 1e-5);
     }

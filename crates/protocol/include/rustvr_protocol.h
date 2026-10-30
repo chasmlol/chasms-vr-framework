@@ -76,6 +76,12 @@
  */
 #define RVR_TGT_BLOOM (1 << 4)
 
+/**
+ * The aux view's depth ([`TexKind::AuxDepth`]: `R32_FLOAT`, linear metres along its view axis), as
+ * the mirror's world needs it ([`MirrorView`]).
+ */
+#define RVR_TGT_AUX_DEPTH (1 << 5)
+
 #define RVR_CTRL_A (1 << 0)
 
 #define RVR_CTRL_B (1 << 1)
@@ -96,9 +102,25 @@
 
 #define RVR_CTRL_TOUCH_STICK (1 << 9)
 
+/**
+ * The thumb rests on the thumbrest (Touch controllers).
+ */
+#define RVR_CTRL_TOUCH_REST (1 << 10)
+
 #define RVR_HAND_LEFT 0
 
 #define RVR_HAND_RIGHT 1
+
+/**
+ * The mirror is up.
+ */
+#define RVR_MIR_SHOWN (1 << 0)
+
+/**
+ * Render the game's world from [`MirrorView::camera`] into the aux texture, with its depth into
+ * the aux depth ([`TGT_AUX_DEPTH`]), for this frame.
+ */
+#define RVR_MIR_RENDER (1 << 1)
 
 /**
  * Tracking is valid and the runtime wants the game in VR.
@@ -228,6 +250,18 @@
  */
 #define RVR_GS_PLAYER_RIG (1 << 10)
 
+/**
+ * The open menu is one the player stays in the world for (a character creator): the runtime keeps
+ * the game's stereo picture and the body around its panel ([`GameState::menu_uv`]).
+ */
+#define RVR_GS_MENU_IN_WORLD (1 << 11)
+
+/**
+ * The game wants the mirror up (its character creator is open): the runtime stands it in front of
+ * the player, and puts it away when this goes, unless the player had called it up.
+ */
+#define RVR_GS_MIRROR (1 << 12)
+
 #define RVR_RIG_HAS_SIGHT (1 << 0)
 
 #define RVR_RIG_HAS_MUZZLE (1 << 1)
@@ -260,6 +294,12 @@
  * Both eyes' bloom and lens textures hold the game's for their pictures.
  */
 #define RVR_SLOT_BLOOM (1 << 5)
+
+/**
+ * The aux view is the mirror's world ([`MirrorView`], the camera of the frame `aux_frame`), with its
+ * depth in the aux depth (linear metres).
+ */
+#define RVR_SLOT_MIRROR (1 << 6)
 
 /**
  * Depth holds linear view distance in metres.
@@ -316,7 +356,18 @@
 
 #define RVR_MAX_AVATAR_PARTS 24
 
-#define RVR_MAX_AVATAR_SWAPS 16
+#define RVR_MAX_AVATAR_SWAPS 32
+
+#define RVR_FACE_GEOMETRY_SYMMETRIC 50
+
+#define RVR_FACE_GEOMETRY_ASYMMETRIC 30
+
+#define RVR_FACE_TEXTURE_SYMMETRIC 50
+
+/**
+ * [`FaceDesc`] holds a face (else the parts are drawn as modelled).
+ */
+#define RVR_FACE_GIVEN (1 << 0)
 
 #define RVR_OFF_COMBAT 5177344
 
@@ -803,20 +854,22 @@
 #define RVR_SHAPE_SPHERE 2
 
 /**
- * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
- * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ * The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+ * collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+ * Until its points arrive, the box `half_extents` about `center`.
  */
 #define RVR_SHAPE_HULL 3
 
 /**
  * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
- * whenever the objects offered change (before they're published).
+ * whenever the objects offered change (before they're published). An object with several convex
+ * parts has an entry for each.
  */
 #define RVR_OFF_GAME_HULLS 5046272
 
-#define RVR_MAX_GAME_HULLS 48
+#define RVR_MAX_GAME_HULLS 240
 
-#define RVR_MAX_HULL_POINTS 128
+#define RVR_MAX_HULL_POINTS 32
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 
@@ -1442,6 +1495,10 @@ enum RVR_TexKind
    */
   RVR_TexKind_LensLeft = 9,
   RVR_TexKind_LensRight = 10,
+  /**
+   * The aux view's depth (see [`TGT_AUX_DEPTH`]).
+   */
+  RVR_TexKind_AuxDepth = 11,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -1487,7 +1544,7 @@ typedef uint32_t RVR_Joint;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
-#define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, RVR_TexKind_BloomLeft, RVR_TexKind_BloomRight, RVR_TexKind_LensLeft, RVR_TexKind_LensRight, }
+#define RVR_TexKind_ALL { RVR_TexKind_EyeLeft, RVR_TexKind_EyeRight, RVR_TexKind_DepthLeft, RVR_TexKind_DepthRight, RVR_TexKind_Hud, RVR_TexKind_Aux, RVR_TexKind_Lights, RVR_TexKind_BloomLeft, RVR_TexKind_BloomRight, RVR_TexKind_LensLeft, RVR_TexKind_LensRight, RVR_TexKind_AuxDepth, }
 
 
 

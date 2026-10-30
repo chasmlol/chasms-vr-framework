@@ -51,6 +51,8 @@ pub struct SlotTextures {
     pub depth: Option<[Texture; 2]>,
     pub hud: Option<Texture>,
     pub aux: Option<Texture>,
+    /// The aux view's depth (`R32_FLOAT`, linear metres: [`rustvr_protocol::TGT_AUX_DEPTH`]).
+    pub aux_depth: Option<Texture>,
     pub lights: Option<Texture>,
     /// The game's bloom and lens per eye (`R16G16B16A16_FLOAT`, [`rustvr_protocol::TGT_BLOOM`]).
     pub bloom: Option<[Texture; 2]>,
@@ -64,6 +66,7 @@ impl SlotTextures {
             .chain(self.depth.iter().flatten())
             .chain(self.hud.iter())
             .chain(self.aux.iter())
+            .chain(self.aux_depth.iter())
             .chain(self.lights.iter())
             .chain(self.bloom.iter().flatten())
             .chain(self.lens.iter().flatten())
@@ -529,6 +532,17 @@ impl Adapter {
         }
     }
 
+    /// The player's face (see [`FaceDesc`]): when it changes.
+    pub fn write_face(&self, face: &FaceDesc) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_face(face);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The player's spells and magicka (see [`Spells`]): when they change.
     pub fn write_spells(&self, spells: &Spells) -> bool {
         match &self.link {
@@ -620,6 +634,7 @@ fn open_targets(gpu: &Gpu, mapping: &str, t: &Targets) -> anyhow::Result<Vec<Slo
         };
         let hud = if t.flags & TGT_HUD != 0 { Some(open(TexKind::Hud, unorm)?) } else { None };
         let aux = if t.flags & TGT_AUX != 0 { Some(open(TexKind::Aux, unorm)?) } else { None };
+        let aux_depth = if t.flags & TGT_AUX_DEPTH != 0 { Some(open(TexKind::AuxDepth, DXGI_FORMAT_R32_FLOAT)?) } else { None };
         let lights = if t.flags & TGT_LIGHTS != 0 { Some(open(TexKind::Lights, DXGI_FORMAT_R8G8B8A8_UNORM)?) } else { None };
         let (bloom, lens) = if t.flags & TGT_BLOOM != 0 {
             let f = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -627,7 +642,7 @@ fn open_targets(gpu: &Gpu, mapping: &str, t: &Targets) -> anyhow::Result<Vec<Slo
         } else {
             (None, None)
         };
-        slots.push(SlotTextures { eyes, depth, hud, aux, lights, bloom, lens });
+        slots.push(SlotTextures { eyes, depth, hud, aux, aux_depth, lights, bloom, lens });
     }
     Ok(slots)
 }
