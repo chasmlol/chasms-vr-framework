@@ -404,6 +404,9 @@ pub struct Sheet {
     pub opacity: f32,
     /// Its edges fade out over this part of its half-width and half-height (0: a hard edge).
     pub soft: [f32; 2],
+    /// Its coverage is its colour's, whatever the texture's alpha says (a game that draws a page's
+    /// colour but not its coverage): solid where something was drawn, clear where it's black.
+    pub opaque: bool,
 }
 
 /// A gun's laser (tracking space): its beam from `from` to `to`, and its dot there when it hits

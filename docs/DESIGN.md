@@ -350,6 +350,20 @@ wheel). The runtime's own settings float beside a game menu only when the layout
 (`HUDL_SETTINGS`: a pause menu). A menu with no layout is one world-locked panel with the laser
 (§6).
 
+**Menus in the hands** (`ANCHOR_HELD`, `held_menus.rs`): a group can lie on a thing a hand holds
+(`HudHeld`): a book's pages on the book's face turned to the eyes when it opened (`HELD_FACE`), or
+a sheet held by its edge like paper and spread between both hands when the other takes its far side
+(`HELD_SHEET`: a map). It follows the hands every frame, sized so the game's text reads at
+`menu_text_deg` at `ui.held_distance` (0.45 m: nearer is bigger, as with a real book), and is drawn
+with the body in its depth (`rustvr_avatar::Sheet`): a hand in front of a page covers it, the
+fingers behind a sheet are hidden by it. The free hand turns pages by sweeping across them past the
+middle, or pinching an edge and pulling it across (`HELD_PAGES`: `Action::PageNext`, `PagePrev`, a
+tick in the hand), drags a sheet's content with its grip (`HELD_DRAG`: the game's cursor held down
+where the hand is), and points with the laser (it moves to the free hand). Things that open
+(`OBJF_OPENS`, a book) open and shut with the other hand's grip on them (their state's `shots`); a
+kept thing (`OBJF_KEPT`, a map) goes back to its slot when let go. The hands keep going under such a
+menu (the rig isn't paused, the game is).
+
 ## 7. Adapters
 
 An adapter is small because the SDK does the shared work. Per game it:

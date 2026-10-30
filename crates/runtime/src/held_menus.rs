@@ -8,10 +8,10 @@
 //!   side nearest the eyes' up then, a few millimetres out. It follows the thing exactly, as the rig
 //!   has it, every frame: the pages never swim on the book.
 //! - **A sheet** (`HELD_SHEET`): held by the middle of its outer side (the left hand its left side),
-//!   facing the eyes as it's taken, then turning with the hand (a little smoothed: a sheet amplifies
-//!   a hand's tremor, the shake Riven VR's players asked to be rid of). The other hand's grip near its
-//!   far side spreads it between the two: as wide as the hands are apart (a sheet pulled bigger
-//!   stays that big), facing the eyes about the line between them.
+//!   always turned to the eyes from its middle, upright, a little smoothed (a sheet held at its edge
+//!   swings far with a little turn of the wrist, the shake Riven VR's players asked to be rid of).
+//!   The other hand's grip near its far side spreads it between the two: as wide as the hands are
+//!   apart (a sheet pulled bigger stays that big), facing the eyes about the line between them.
 //! - **Its size**: a line of the game's text is `menu_text_deg` at `held_distance` (0.45 m), kept
 //!   as it moves: nearer is bigger, as with a real book.
 //! - **Pages** (`HELD_PAGES`): the free hand, near the pages, sweeping across the middle from well
@@ -79,7 +79,7 @@ const SWEEP_TO: f32 = 0.08;
 /// A sweep takes at most this long (seconds); the way back is shut this long after a turn, the same
 /// way this long.
 const SWEEP_TIME: f64 = 1.2;
-const BACK_AFTER: f64 = 0.7;
+const BACK_AFTER: f64 = 1.0;
 const AGAIN_AFTER: f64 = 0.2;
 /// A grip within this share of the half width of a sheet's far side spreads it between the hands.
 const FAR_SIDE: f32 = 0.3;
@@ -91,8 +91,8 @@ const SHEET_EASE: f32 = 0.06;
 /// A sheet's hold.
 #[derive(Clone, Copy, Debug)]
 enum Hold {
-    /// In one hand: its right and up in the hand's space.
-    One { right: Vec3, up: Vec3 },
+    /// In one hand.
+    One,
     /// Spread between both hands.
     Both,
 }
@@ -123,6 +123,8 @@ struct Lie {
 #[derive(Default)]
 pub struct HeldMenus {
     lies: Vec<Lie>,
+    /// When where they lie was last logged.
+    logged: f64,
 }
 
 /// The extent of group `group`'s pieces (x0, y0, x1, y1 in its units, y up).
@@ -198,7 +200,9 @@ impl HeldMenus {
                 None => {
                     let face = (held.flags & HELD_FACE != 0).then(|| thing.map(|t| {
                         let inv = t.rot.inverse();
-                        face_toward(t.centre, t.half, inv * (head_pos - t.pos), inv * head_up)
+                        let f = face_toward(t.centre, t.half, inv * (head_pos - t.pos), inv * head_up);
+                        tracing::info!("held menus: {:#x} lies on {:#x}'s face at {:.3?} (right {:.2?}, up {:.2?}; its box {:.3?} about {:.3?}; held at {:.3?})", g.id, t.id, f.0, f.1, f.2, t.half, t.centre, t.pos);
+                        f
                     })).flatten();
                     self.lies.push(Lie { id: g.id, face, hold: None, unit: natural, frame: None, sweep: None, turned: None, gripped: false, pinched: false, drag: None });
                     self.lies.len() - 1
@@ -212,6 +216,9 @@ impl HeldMenus {
             };
             let Some((origin, right, up)) = frame else { continue };
             lie.frame = Some((origin, right, up));
+            if now - self.logged > 2.0 {
+                tracing::info!("held menus: {:#x} at {origin:.3?} (right {right:.2?}, up {up:.2?}, {:.3} m a unit), held by hand {holder}{}", g.id, lie.unit, thing.map_or(String::new(), |t| format!(" with {:#x} at {:.3?}", t.id, t.pos)));
+            }
             out.holding[holder] = true;
             if matches!(lie.hold, Some(Hold::Both)) {
                 out.holding[free] = true;
@@ -252,11 +259,8 @@ impl HeldMenus {
                 }
             }
             if !grip && matches!(lie.hold, Some(Hold::Both)) {
-                // Let go with the other hand: held in the first again, as it is now.
-                if let Some((_, q)) = thing.map(|t| (t.pos, t.rot)).or(hands[holder].grip) {
-                    let inv = q.inverse();
-                    lie.hold = Some(Hold::One { right: inv * right, up: inv * up });
-                }
+                // Let go with the other hand: held in the first again, as big as it was spread.
+                lie.hold = Some(Hold::One);
             }
             // Dragging what's on it: the free hand's grip on its face.
             if held.flags & HELD_DRAG != 0 && !matches!(lie.hold, Some(Hold::Both)) {
@@ -286,9 +290,10 @@ impl HeldMenus {
                 match near {
                     Some((xy, _)) => {
                         let x = (xy.x - mid_x) / half_w.max(1e-4);
-                        let starts = lie.sweep.is_none() || (pinch && !lie.pinched);
-                        if starts {
-                            lie.sweep = (x.abs() > SWEEP_FROM).then_some((x, now));
+                        // A sweep starts from the last moment the hand was out on a page (its time
+                        // counts from when it left there), or from a pinch wherever it is.
+                        if (pinch && !lie.pinched) || x.abs() > SWEEP_FROM {
+                            lie.sweep = Some((x, now));
                         }
                         if let Some((x0, t0)) = lie.sweep {
                             let way = if x0 > 0.0 && x < -SWEEP_TO { Some(Action::PageNext) } else if x0 < 0.0 && x > SWEEP_TO { Some(Action::PagePrev) } else { None };
@@ -299,10 +304,7 @@ impl HeldMenus {
                                     out.haptics.push((free, 0.02, 120.0, 0.45));
                                     lie.turned = Some((a, now));
                                 }
-                                // (The next sweep starts from here: the hand is out on the other page.)
-                                lie.sweep = Some((x, now));
-                            } else if now - t0 >= SWEEP_TIME {
-                                lie.sweep = (x.abs() > SWEEP_FROM).then_some((x, now));
+                                lie.sweep = None;
                             }
                         }
                     }
@@ -312,6 +314,9 @@ impl HeldMenus {
             lie.gripped = grip;
             lie.pinched = pinch;
             out.pieces.extend(pieces);
+        }
+        if now - self.logged > 2.0 && !out.pieces.is_empty() {
+            self.logged = now;
         }
         out
     }
@@ -342,25 +347,25 @@ fn sheet_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], holder: usize, thing
         let origin = mid - right * (fp[0] + fp[2]) * 0.5 * lie.unit - up * mid_y * lie.unit;
         return Some((origin, right, up));
     }
-    if lie.hold.is_none() || matches!(lie.hold, Some(Hold::Both)) {
-        // Taken just now (or the other hand gone): facing the eyes from where it's held.
-        let (r, u) = facing(at.0, eye, head_up);
-        let inv = at.1.inverse();
-        lie.hold = Some(Hold::One { right: inv * r, up: inv * u });
-        if held.flags & HELD_SHEET == 0 {
-            lie.unit = natural;
-        }
+    // Held by the middle of its outer side: the left hand its left side.
+    let side_x = if holder == 0 { fp[0] } else { fp[2] };
+    if lie.hold.is_none() && held.flags & HELD_SHEET == 0 {
+        lie.unit = natural;
     }
-    let Some(Hold::One { right, up, .. }) = lie.hold else { return None };
-    let (mut r, mut u) = (at.1 * right, at.1 * up);
+    lie.hold = Some(Hold::One);
+    // Turned to the eyes from its middle (not from the hand at its side, which would leave it
+    // turned away), upright: wherever the hand takes it, it's read face on.
+    let (mut r, mut u) = facing(at.0, eye, head_up);
+    for _ in 0..2 {
+        let middle = at.0 + r * ((fp[0] + fp[2]) * 0.5 - side_x) * lie.unit;
+        (r, u) = facing(middle, eye, head_up);
+    }
     if let Some((_, pr, pu)) = lie.frame {
         let k = 1.0 - (-dt / SHEET_EASE).exp();
         r = ease(pr, r, k);
         u = ease(pu, u, k);
         u = (u - r * u.dot(r)).normalize_or(u);
     }
-    // Held by the middle of its outer side: the left hand its left side.
-    let side_x = if holder == 0 { fp[0] } else { fp[2] };
     let origin = at.0 - r * side_x * lie.unit - u * mid_y * lie.unit;
     Some((origin, r, u))
 }

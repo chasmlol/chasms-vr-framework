@@ -70,6 +70,10 @@ pub const HUDE_POINT: u32 = 1 << 0;
 /// Its edges fade out over a few texels, so a piece cut from a bigger picture (the game's parchment)
 /// doesn't end in a hard line.
 pub const HUDE_SOFT: u32 = 1 << 1;
+/// Its coverage is its colour's: the game draws its colour there but not its coverage (Oblivion's
+/// book and map pages, added as light over what's there), so what it drew is solid and what it left
+/// black (the HUD texture's clear) is clear.
+pub const HUDE_OPAQUE: u32 = 1 << 2;
 
 // ---- group anchors: where a group floats (see `crates/runtime/src/hud.rs`) ----------------------
 /// Beside a thing in the world (`HudGroup::at`, `radius`): a container, a merchant, a speaker. At the

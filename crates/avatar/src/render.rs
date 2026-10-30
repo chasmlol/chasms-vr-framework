@@ -239,6 +239,7 @@ cbuffer Sheet : register(b5) {
     float4 sheet_y;      // half its height, up it
     float4 sheet_uv;     // the part of the texture on it: u0, v0, u1, v1
     float4 sheet_params; // x: opacity; yz: its edges fade over this part of its half-width and half-height
+    float4 sheet_kind;   // x: 1 its coverage from its colour (the texture's alpha ignored); y: testing
 };
 Texture2D sheet_tex : register(t15);
 struct SheetOut {
@@ -263,6 +264,10 @@ SheetOut VSSheet(uint id : SV_VertexID) {
 }
 
 float4 PSSheet(SheetOut i) : SV_Target {
+    // (Testing: where it lies, in one colour: red facing the eye, blue away; green behind the game.)
+    if (sheet_kind.y == 1) return i.facing < 0 ? float4(0, 0, 0.5, 0.5) : behind_game(i.pos, i.view_z) ? float4(0, 0.5, 0, 0.5) : float4(0.5, 0, 0, 0.5);
+    if (sheet_kind.y == 2) return float4(sheet_tex.SampleLevel(clamp_samp, i.uv, 0).rgb, 1);
+    if (sheet_kind.y == 3) return float4(sheet_tex.SampleLevel(clamp_samp, i.uv, 0).aaa, 1);
     if (i.facing < 0) discard;
     if (behind_game(i.pos, i.view_z)) discard;
     uint w, h;
@@ -276,7 +281,11 @@ float4 PSSheet(SheetOut i) : SV_Target {
             t += sheet_tex.SampleLevel(clamp_samp, i.uv + dx * ((a + 0.5) / n - 0.5) + dy * ((b + 0.5) / n - 0.5), 0);
         }
     }
-    t *= sheet_params.x / (n * n);
+    t /= n * n;
+    // (Coverage from the colour: drawn is solid, the texture's black clear is clear, its very
+    // darkest a little see-through.)
+    if (sheet_kind.x > 0) t.a = saturate(max(t.r, max(t.g, t.b)) * 8);
+    t *= sheet_params.x;
     if (sheet_params.y > 0) t *= smoothstep(0, sheet_params.y, 1 - abs(i.local.x)) * smoothstep(0, sheet_params.z, 1 - abs(i.local.y));
     // (Where it's clear, nothing: what's behind it shows, and it keeps out of the depth.)
     if (t.a < 0.02) discard;
@@ -742,6 +751,7 @@ struct SheetCb {
     y: [f32; 4],
     uv: [f32; 4],
     params: [f32; 4],
+    kind: [f32; 4],
 }
 
 /// The laser's light (HDR): Metro's red (the beam mesh's vertex colours are pure red).
@@ -1968,6 +1978,13 @@ impl Renderer {
     /// The sheets ([`Renderer::set_sheets`]), premultiplied over what's there, each in the depth
     /// where it shows.
     fn draw_sheets(&self, ctx: &ID3D11DeviceContext) {
+        static SAID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        if SAID.swap(self.sheets.len(), std::sync::atomic::Ordering::Relaxed) != self.sheets.len() {
+            let s = &self.sheets[0];
+            tracing::info!("avatar: {} sheets drawn with the player, the first at {:.3?} ({:.3?} by {:.3?}) of {:.3?}", self.sheets.len(), s.center, s.half_x, s.half_y, s.uv);
+        }
+        static SOLID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        let solid = *SOLID.get_or_init(|| std::env::var("RUSTVR_SHEETS_SOLID").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
         self.sheet_program.bind(ctx);
         unsafe {
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -1984,6 +2001,7 @@ impl Renderer {
                 y: s.half_y.extend(0.0).to_array(),
                 uv: s.uv,
                 params: [s.opacity, s.soft[0], s.soft[1], 0.0],
+                kind: [s.opaque as u32 as f32, solid as f32, 0.0, 0.0],
             };
             self.sheet_cb.update(ctx, &cb);
             unsafe {

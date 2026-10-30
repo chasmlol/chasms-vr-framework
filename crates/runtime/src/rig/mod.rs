@@ -632,6 +632,9 @@ const PALM_REACH: f32 = 0.1;
 /// A hand this near what the other hand holds (metres, from its grip pose to the surface) has its
 /// palm on it.
 const ON_IT: f32 = 0.035;
+/// ... and this near a book the other hand holds ([`OBJF_OPENS`]): a hand reaching for its cover
+/// to open it may be stopped a little short of it by the pages over it.
+const ON_COVER: f32 = 0.08;
 /// A hand takes a thing it's on: its palm or a finger touching it, or all but (metres).
 const TOUCH: f32 = 0.03;
 /// A hand slower than this (m/s) near a thing it could take is reaching for it, not swatting it.
@@ -1770,7 +1773,8 @@ impl Rig {
             && o.desc.flags & OBJF_GRABBABLE != 0
         {
             let at_grip = self.hands.as_ref().unwrap()[i ^ 1].on != On::Grip && self.handle_hold(i, id, On::Grip).is_some();
-            if at_grip || self.physics.distance_to(o.collider, palm) < ON_IT * self.map.world_per_meter {
+            let reach = if o.desc.flags & OBJF_OPENS != 0 { ON_COVER } else { ON_IT };
+            if at_grip || self.physics.distance_to(o.collider, palm) < reach * self.map.world_per_meter {
                 hover = Hover::Object(id);
             }
         }
@@ -1975,6 +1979,7 @@ impl Rig {
             Hover::Object(id) if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1) && o.desc.flags & OBJF_OPENS != 0) => {
                 let o = self.objects.get_mut(&id).unwrap();
                 o.opens = o.opens.wrapping_add(1);
+                tracing::info!("rig: {id:#x} opened or shut by the other hand ({})", o.opens);
                 self.emit(Cue::Grab, Some(i), Some(id), palm, 0.4);
             }
             Hover::Object(id) if self.objects.get(&id).is_some_and(|o| o.holder == Holder::Held(i ^ 1)) => self.second_hand(i, id),
@@ -2076,6 +2081,15 @@ impl Rig {
             .map(|(&id, o)| (id, self.physics.pose(o.body).0.distance(palm)))
             .filter(|&(_, d)| d < 12.0 * self.map.world_per_meter)
             .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        self.take(id, i, true);
+        Some(id)
+    }
+
+    /// Testing (`RUSTVR_TEST_TAKE=<hand>:<id>`): object `id`, wherever it is, into hand `i` as the
+    /// gloves' catch would take it.
+    pub fn test_take(&mut self, i: usize, id: u32) -> Option<u32> {
+        let o = self.objects.get(&id).filter(|o| o.holder == Holder::Free)?;
+        tracing::info!("rig: test take: {id:#x} from {:.2?}", self.physics.pose(o.body).0);
         self.take(id, i, true);
         Some(id)
     }

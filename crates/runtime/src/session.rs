@@ -181,6 +181,8 @@ pub struct Session {
     held: crate::held_menus::HeldOut,
     /// The hand the laser comes from this frame.
     pointer: usize,
+    /// How many held pieces were drawn with the body last (for the log).
+    sheets_drawn: usize,
     /// The game's lighting of its first-person model (the last consistent copy), and whether
     /// there is one: the body is shaded with it.
     game_lighting: Box<GameLighting>,
@@ -319,6 +321,7 @@ impl Session {
             held_menus: Default::default(),
             held: Default::default(),
             pointer: 1,
+            sheets_drawn: 0,
             menu_pieces: Vec::new(),
             audio: if opts.audio {
                 Some(rustvr_audio::Audio::new())
@@ -703,9 +706,9 @@ impl Session {
             }
             let g = self.game.as_ref().unwrap();
             let stand = self.mech.debug.stand_h - floor;
-            // Testing (`RUSTVR_TEST_TAKE=left|right[:ours]`): the first time that hand's grip
-            // closes, the nearest of the game's loose props goes into it (no aiming the gloves;
-            // `ours`: one the runtime moves itself).
+            // Testing (`RUSTVR_TEST_TAKE=left|right[:ours|:<hex id>]`): the first time that hand's
+            // grip closes, the nearest of the game's loose props goes into it (no aiming the gloves;
+            // `ours`: one the runtime moves itself; an id: that one, wherever it is).
             let test_take = std::env::var("RUSTVR_TEST_TAKE").ok();
             let test_take = test_take.as_deref().map(|t| t.split_once(':').unwrap_or((t, "")));
             if let Some((hand, ours)) = test_take.and_then(|(h, rest)| match h {
@@ -716,7 +719,11 @@ impl Session {
                 && frame.hands[hand].squeeze > 0.9
             {
                 self.test_taken = true;
-                let got = self.rig.test_take_nearest(hand, ours);
+                let id = test_take.and_then(|(_, rest)| u32::from_str_radix(rest.trim_start_matches("0x"), 16).ok());
+                let got = match id {
+                    Some(id) => self.rig.test_take(hand, id),
+                    None => self.rig.test_take_nearest(hand, ours),
+                };
                 tracing::info!("runtime: test: the nearest prop into the {} hand: {got:?}", if hand == 0 { "left" } else { "right" });
             }
             let rig_map = self.map_now.unwrap_or_else(|| WorldMap::from_state(&g.tracking));
@@ -1385,7 +1392,11 @@ impl Session {
         // The game's menus held in the hands, drawn with the body in its depth (a hand in front of
         // a page covers it); where no body is drawn, in the world as the rest.
         let mut sheets = Vec::new();
-        let sheets_with_body = (self.draws_body || framework) && floating;
+        // (Testing, `RUSTVR_HELD_FLAT=1`: in the world as the rest, to tell where they lie from how
+        // they're drawn.)
+        static FLAT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let flat = *FLAT.get_or_init(|| std::env::var("RUSTVR_HELD_FLAT").is_ok_and(|v| v == "1"));
+        let sheets_with_body = (self.draws_body || framework) && floating && !flat;
         if let Some((slot, info)) = &locked
             && let Some(hud) = &slot.hud {
                 let srv = hud.srv.as_ref().unwrap();
@@ -1410,7 +1421,8 @@ impl Session {
                     };
                     if sheets_with_body {
                         let p = &piece.panel;
-                        sheets.push(rustvr_avatar::Sheet { srv: srv.clone(), center: p.center, half_x: p.right * p.width * 0.5, half_y: p.up * p.height * 0.5, uv: piece.uv, opacity: piece.opacity, soft });
+                        let opaque = piece.flags & HUDE_OPAQUE != 0;
+                        sheets.push(rustvr_avatar::Sheet { srv: srv.clone(), center: p.center, half_x: p.right * p.width * 0.5, half_y: p.up * p.height * 0.5, uv: piece.uv, opacity: piece.opacity, soft, opaque });
                     } else {
                         layers.world_panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive: false, soft });
                     }
@@ -1476,6 +1488,10 @@ impl Session {
                         hud_shown = true;
                     }
             }
+        if sheets.len() != self.sheets_drawn {
+            tracing::info!("runtime: {} pieces of the game's menus drawn with the body", sheets.len());
+            self.sheets_drawn = sheets.len();
+        }
         self.body.set_sheets(sheets);
         if !hud_shown {
             self.hud.reset();

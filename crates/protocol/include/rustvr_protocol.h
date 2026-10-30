@@ -608,6 +608,13 @@
 #define RVR_HUDE_SOFT (1 << 1)
 
 /**
+ * Its coverage is its colour's: the game draws its colour there but not its coverage (Oblivion's
+ * book and map pages, added as light over what's there), so what it drew is solid and what it left
+ * black (the HUD texture's clear) is clear.
+ */
+#define RVR_HUDE_OPAQUE (1 << 2)
+
+/**
  * Beside a thing in the world (`HudGroup::at`, `radius`): a container, a merchant, a speaker. At the
  * thing's distance (within the laser's comfortable range), on its `side`, under the eyes, facing
  * them; it stays put in the world while the menu is open.
