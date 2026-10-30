@@ -887,12 +887,19 @@ impl Session {
             } else {
                 [None; 2]
             };
+            // A hand on a rein closes round it as a rider's does, whatever the trigger is doing.
+            let mut holds = if rig_active { self.rig_out.holds } else { [rustvr_ik::HoldShape::None; 2] };
+            for (hold, rein) in holds.iter_mut().zip(self.riding.reins_held()) {
+                if rein.is_some() {
+                    *hold = rustvr_ik::HoldShape::Rein;
+                }
+            }
             let body = self.body.update(&crate::body::BodyInput {
                 frame: &frame,
                 hands,
                 hand_states: rig_active.then_some(self.rig_out.hands),
                 ghosts,
-                holds: if rig_active { self.rig_out.holds } else { [rustvr_ik::HoldShape::None; 2] },
+                holds,
                 held,
                 grasps: if rig_active { [self.rig.grasps()[0].as_ref(), self.rig.grasps()[1].as_ref()] } else { [None; 2] },
                 finger_give: if rig_active { self.rig_out.finger_give } else { [[0.0; 5]; 2] },
@@ -1323,7 +1330,7 @@ impl Session {
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
         // A mount's reins, from its bit to the hands holding them (the game's mount has none): of
         // the game's own leather, drawn with the body; without it, flat ribbons over the picture.
-        self.reins.update(&self.gpu, &self.ride.riding, self.riding.reins_held(), frame.hands.map(|h| Vec3::from_array(h.grip.pos)), self.game.as_ref().map(|g| &g.light), frame.dt);
+        self.reins.update(&self.gpu, &self.ride.riding, self.riding.reins_held(), frame.hands.map(|h| (Vec3::from_array(h.grip.pos), quat(h.grip.rot))), self.game.as_ref().map(|g| &g.light), frame.dt);
         layers.ribbons = self.reins.ribbons();
         if let (Some(p), Some(srv)) = (obs_panel, self.obs.srv()) {
             layers.private.push(PanelLayer::whole(p, srv));

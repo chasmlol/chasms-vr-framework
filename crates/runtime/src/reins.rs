@@ -5,7 +5,8 @@
 //! bit to the hand holding it (or, let go, back to where the rider holds it), hanging by its slack,
 //! and lies on the mount's neck and head wherever it would pass through them (`RIDE_NECK`); with
 //! both held, their bight hangs between the hands. One hand alone holds both, as on a western
-//! saddle.
+//! saddle. A rein runs through the fist as a rider's does: in at the little finger, out over the
+//! index under the thumb, where the bight hangs from ([`FIST`]).
 //!
 //! Each strap is a rope ([`Rope`]): a chain of points carried from frame to frame, swinging under
 //! gravity (and settling over [`SWING`]), each a fixed share of its length from the next, held at
@@ -37,6 +38,10 @@ use rustvr_protocol::*;
 
 use crate::compositor::Ribbon;
 
+/// Half a fist's width (metres): a rein goes into it this far down the grip's axis from the palm's
+/// middle (the little finger's side, -Z: the grip's fingers lie along -Y, its thumb along +Z), and
+/// the bight comes out of it this far up (over the index, under the thumb).
+const FIST: f32 = 0.035;
 /// Each rein's cross-sections (bit to hand), and the bight's; and the points of their ropes.
 const REIN_RINGS: usize = 24;
 const BIGHT_RINGS: usize = 14;
@@ -107,9 +112,10 @@ pub struct Reins {
 
 impl Reins {
     /// Where the reins are this frame (`dt` seconds after the last): `held`, which rein each hand
-    /// holds; `hands`, the hands' grips (tracking space); `light`, the game's (for the ribbons).
+    /// holds; `hands`, the hands' grips (tracking space: the palm's middle, turned); `light`, the
+    /// game's (for the ribbons).
     #[allow(clippy::too_many_arguments)]
-    pub fn update(&mut self, gpu: &Gpu, r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2], light: Option<&LightHint>, dt: f32) {
+    pub fn update(&mut self, gpu: &Gpu, r: &Riding, held: [Option<usize>; 2], hands: [(Vec3, Quat); 2], light: Option<&LightHint>, dt: f32) {
         self.parts.clear();
         self.ribbons.clear();
         self.laid = [None, None, None];
@@ -308,8 +314,11 @@ fn parts(curves: &[Curve; 3]) -> Vec<Option<Mat4>> {
 
 /// The left rein, the right, and their bight between two hands, as their ropes (`ropes`, made
 /// afresh when there's none or an end leapt) have them after a frame of `dt` seconds.
-fn straps(r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2], ropes: &mut [Option<Rope>; 3], dt: f32) -> [Curve; 3] {
+fn straps(r: &Riding, held: [Option<usize>; 2], hands: [(Vec3, Quat); 2], ropes: &mut [Option<Rope>; 3], dt: f32) -> [Curve; 3] {
     let v = |p: [f32; 4]| Vec3::new(p[0], p[1], p[2]);
+    // (Where a rein goes into a fist, and the bight comes out of it.)
+    let into = |h: usize| hands[h].0 + hands[h].1 * Vec3::new(0.0, 0.0, -FIST);
+    let out_of = |h: usize| hands[h].0 + hands[h].1 * Vec3::new(0.0, 0.0, FIST);
     let neck = r.neck();
     let bits = [v(r.bits[0]), v(r.bits[1])];
     // (The mount's right, across it.)
@@ -325,7 +334,7 @@ fn straps(r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2], ropes: &mut [O
             [h] => Some(*h),
             _ => (0..2).find(|&h| held[h] == Some(side)),
         };
-        let end = hand.map_or_else(|| off_neck(rest, neck, right, own), |h| hands[h]);
+        let end = hand.map_or_else(|| off_neck(rest, neck, right, own), into);
         let fresh = |rope: &Rope| rope.x[0].distance(bit) > TELEPORT || rope.x[rope.x.len() - 1].distance(end) > TELEPORT;
         if ropes[side].as_ref().is_none_or(fresh) {
             // Its length: its way from the bit along the neck to where it's held (or to the hand,
@@ -340,7 +349,7 @@ fn straps(r: &Riding, held: [Option<usize>; 2], hands: [Vec3; 2], ropes: &mut [O
     }
     match holding.as_slice() {
         [a, b] => {
-            let (a, b) = (hands[*a], hands[*b]);
+            let (a, b) = (out_of(*a), out_of(*b));
             let fresh = |rope: &Rope| rope.x[0].distance(a) > TELEPORT || rope.x[rope.x.len() - 1].distance(b) > TELEPORT;
             if ropes[2].as_ref().is_none_or(fresh) {
                 ropes[2] = Some(Rope::new(a, b, a.distance(b) + BIGHT, BIGHT_POINTS, 0.0));
