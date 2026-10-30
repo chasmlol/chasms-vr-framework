@@ -995,7 +995,8 @@ impl Session {
             }
             if std::mem::take(&mut self.menu.measure_height) {
                 let eye = frame.hmd.pos[1];
-                if (1.0..2.3).contains(&eye) {
+                // (Eyes under 1.35 m are a grown-up sitting: the slider sets a height that low.)
+                if (1.35..2.3).contains(&eye) {
                     let height = eye + 0.11;
                     self.settings.current.body.height = height;
                     self.save_settings();

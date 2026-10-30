@@ -167,6 +167,16 @@ struct Btn {
 const LONG_PRESS: f64 = 0.45;
 /// How long a lone stick click waits for the other stick (both together: the framework view).
 const STICK_CHORD: f64 = 0.12;
+/// The head's upright height (metres over the real floor): heights a worn headset's at, sat or
+/// stood (not on a desk); still within this for this long (s), it's worn; held more than this
+/// higher for this long (s), it's upright there now, reached at this speed (m/s).
+const UPRIGHT_LOW: f32 = 0.9;
+const UPRIGHT_HIGH: f32 = 2.3;
+const UPRIGHT_STILL: f32 = 0.05;
+const UPRIGHT_SETTLE: f32 = 1.5;
+const UPRIGHT_RISE: f32 = 0.03;
+const UPRIGHT_HOLD: f32 = 1.0;
+const UPRIGHT_SPEED: f32 = 0.1;
 
 impl Btn {
     fn update(&mut self, d: bool, now: f64) {
@@ -341,8 +351,16 @@ pub struct Mechanics {
     sprint_toggle: bool,
     last_stick_y_dir: i32,
     two_held: bool,
-    // physical crouch
+    // physical crouch, and the view's height
     stand_h: f32,
+    /// The head's been still at a likely height a while (worn): until then its upright height
+    /// follows it. How long it's been held higher than its upright height, and its lowest then. A
+    /// recentre takes the head's height as it is.
+    upright_settled: bool,
+    upright_still: f32,
+    upright_above: f32,
+    upright_min: f32,
+    recalibrate: bool,
     phys_crouch: bool,
     crouch_by_phys: bool,
     crouch_pending: i32,
@@ -391,6 +409,11 @@ impl Default for Mechanics {
             last_stick_y_dir: 0,
             two_held: false,
             stand_h: 0.0,
+            upright_settled: false,
+            upright_still: 0.0,
+            upright_above: 0.0,
+            upright_min: f32::MAX,
+            recalibrate: false,
             phys_crouch: false,
             crouch_by_phys: false,
             crouch_pending: -1,
@@ -433,8 +456,21 @@ impl Mechanics {
         (eye - self.stand_eye).clamp(-0.8, 0.6)
     }
 
+    /// The view's height is the head's over its upright height (standing, or sat up in a chair),
+    /// the game's eyes there. The adapter puts the head at the game's eyes as the head was when the
+    /// view was last recentred (its tracking origin); this takes that back off. Recentred with the
+    /// headset on the desk, or put on sitting after it started standing, the view would otherwise
+    /// float (or sink) for good, and the body hung from it with it.
+    fn upright_offset(&self, game: Option<&GameState>) -> f32 {
+        match game {
+            Some(g) if self.stand_h > 0.0 && g.tracking.world_per_meter > 0.0 => (g.tracking.origin[1] - self.stand_h) * g.tracking.world_per_meter,
+            _ => 0.0,
+        }
+    }
+
     pub fn recenter(&mut self) {
         self.recenter_seq = self.recenter_seq.wrapping_add(1);
+        self.recalibrate = true;
     }
 
     fn press(&mut self, a: Action) {
@@ -503,7 +539,7 @@ impl Mechanics {
                 | if c.comfort.camera_anims { TRK_CAMERA_ANIMS } else { 0 },
             turn_total: self.turn_total,
             world_scale: c.vr.world_scale,
-            height_offset: c.comfort.height_offset + self.real_height_offset(c),
+            height_offset: c.comfort.height_offset + self.real_height_offset(c) + self.upright_offset(inp.game),
             height_comp: 0.0,
             room_limit: c.comfort.roomscale_limit,
             _pad: 0,
@@ -884,15 +920,39 @@ impl Mechanics {
             if !game_crouched && eye_above_feet > 1.0 && eye_above_feet < 2.5 {
                 self.stand_eye += (eye_above_feet - self.stand_eye) * 0.05;
             }
+            // The head's upright height (over the real floor), standing or sat up in a chair: the
+            // view's height is the head's over it (`upright_offset`), and ducking a good way under
+            // it crouches. Until the headset's been still at a likely height a while (worn: not on
+            // the desk, nor being put on), it follows the head. Then, held higher a second or more
+            // (stood up), it rises to there over a moment; a moment higher (a stretch, on tiptoe, a
+            // tracking glitch) doesn't count. Lower, it settles: a slouch soon, a crouch hardly at
+            // all. A recentre takes the head's height as it is.
             let h = hmd_pos.y;
             let dt = inp.dt;
-            if self.stand_h == 0.0 || (h > self.stand_h && h < self.stand_h + 0.3) {
+            let likely = (UPRIGHT_LOW..UPRIGHT_HIGH).contains(&h);
+            if std::mem::take(&mut self.recalibrate) && likely {
                 self.stand_h = h;
-            } else if h > self.stand_h + 0.3 {
-                self.stand_h += 0.01 * dt; // a tracking jump: adapt slowly
+                self.upright_settled = true;
+                self.upright_above = 0.0;
+                self.upright_min = f32::MAX;
+            }
+            if !self.upright_settled {
+                self.upright_still = if likely && (h - self.stand_h).abs() < UPRIGHT_STILL { self.upright_still + dt } else { 0.0 };
+                self.stand_h = if self.stand_h == 0.0 { h } else { self.stand_h + (h - self.stand_h) * (dt / 0.25).min(1.0) };
+                self.upright_settled = self.upright_still >= UPRIGHT_SETTLE;
+            } else if h > self.stand_h + UPRIGHT_RISE {
+                self.upright_above += dt;
+                self.upright_min = self.upright_min.min(h);
+                if self.upright_above >= UPRIGHT_HOLD {
+                    self.stand_h = (self.stand_h + UPRIGHT_SPEED * dt).min(self.upright_min);
+                }
             } else {
-                // slouching or re-calibration
-                self.stand_h -= if h > self.stand_h - 0.12 { 0.02 } else { 0.004 } * dt;
+                self.upright_above = 0.0;
+                self.upright_min = f32::MAX;
+                if h < self.stand_h {
+                    // slouching or re-calibration
+                    self.stand_h -= if h > self.stand_h - 0.12 { 0.02 } else { 0.004 } * dt;
+                }
             }
             let was = self.phys_crouch;
             let thr = c.input.crouch_threshold.max(0.1);
