@@ -36,7 +36,7 @@ struct State {
     pitch: Follow,
     feet: Feet,
     arms: [ArmState; 2],
-    com: Vec3,
+    com: Option<Vec3>,
     com_vel: Vec3,
     eyes: Vec3,
     head_speed: f32,
@@ -211,7 +211,7 @@ impl BodySolver {
                 pitch: Follow::new(0.0),
                 feet: Feet::new(p, skel, head_joint, yaw),
                 arms: [ArmState::default(); 2],
-                com: eyes,
+                com: None,
                 com_vel: Vec3::ZERO,
                 eyes,
                 head_speed: 0.0,
@@ -302,10 +302,11 @@ impl BodySolver {
             // the mass, Winter's tables) hardly move it. (VRIK weights the head as the pelvis,
             // which has a body step whenever it looks down or reaches.)
             let com = chain.hips().lerp(head_joint, COM_UP_THE_SPINE);
-            if dt > 0.0 {
-                state.com_vel = state.com_vel.lerp((com - state.com) / dt, velocity_a);
+            // (The first frame has nothing to take a velocity from.)
+            if let (Some(last), true) = (state.com, dt > 0.0) {
+                state.com_vel = state.com_vel.lerp((com - last) / dt, velocity_a);
             }
-            state.com = com;
+            state.com = Some(com);
             let seated_hips = input.seated.then(|| {
                 let [l, r] = hip_joints(&chain);
                 (l + r) * 0.5

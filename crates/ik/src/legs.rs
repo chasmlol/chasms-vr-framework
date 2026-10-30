@@ -1,6 +1,7 @@
 //! Feet and legs. Feet are anchored to the world: while standing they step when balance needs it
-//! (VRIK's procedural footsteps), under stick locomotion a velocity-driven gait takes over (FRIK's
-//! phase generator), and seated they rest in front of the seat. Legs are two-bone IK to the
+//! (VRIK's procedural footsteps); going somewhere, by the stick or walking about the room, a
+//! velocity-driven gait takes over (FRIK's phase generator); and seated they rest in front of the
+//! seat. Legs are two-bone IK to the
 //! planted feet; a foot out of reach rises onto its toes before the hips come down (VRIK plants
 //! the toes, not the ankles).
 
@@ -129,16 +130,19 @@ impl Feet {
                 foot.pos -= v * dt;
             }
         }
-        let speed = v.length();
+        // The body goes somewhere by the stick or on its own feet (walking about the room): either
+        // way it walks, the gait setting the feet down a stride apart, ahead of it.
+        let walk = v + flat(input.com_vel);
+        let speed = walk.length();
         // A balance step in progress finishes before the gait starts.
         let stepping = self.feet.iter().any(|f| f.step.is_some());
         if self.gait.is_none() && !stepping && speed >= p.gait_start_speed {
             // Start with the foot furthest behind along the travel direction.
-            let behind = |f: &Foot| -(f.pos - flat(input.com)).dot(v);
+            let behind = |f: &Foot| -(f.pos - flat(input.com)).dot(walk);
             self.gait = Some(if behind(&self.feet[1]) > behind(&self.feet[0]) { 1 } else { 0 });
         }
         if self.gait.is_some() {
-            self.update_gait(p, skel, dt, input, speed);
+            self.update_gait(p, skel, dt, input, walk);
         } else {
             self.update_balance(p, skel, dt, input);
         }
@@ -146,9 +150,9 @@ impl Feet {
 
     /// FRIK's phase generator: feet swing alternately, each landing half a step ahead of the body
     /// so it slides back through the stance to half a step behind.
-    fn update_gait(&mut self, p: &BodyParams, skel: &Skeleton, dt: f32, input: &FeetInput, speed: f32) {
+    fn update_gait(&mut self, p: &BodyParams, skel: &Skeleton, dt: f32, input: &FeetInput, v: Vec3) {
         let Some(swing) = self.gait else { return };
-        let v = flat(input.locomotion);
+        let speed = v.length();
         // FRIK: step time = clamp(cos(speed / 140 units/s)), about 2 m/s at 70 units per metre.
         let duration = (speed / 2.0).cos().clamp(p.gait_step_time_min, p.gait_step_time_max);
         let other = self.feet[1 - swing].pos;
@@ -169,6 +173,11 @@ impl Feet {
         let target = cross_guard(p, skel, target, other, input.root_yaw, swing);
         if advance(foot, target, input.root_yaw) {
             self.gait = if speed >= p.gait_stop_speed { Some(1 - swing) } else { None };
+            // Stopping, the other foot closes up to a standing stance at once (a walk's last
+            // step), rather than standing a second at the walk's narrow width first.
+            if self.gait.is_none() {
+                self.still_time = self.still_time.max(p.settle_delay);
+            }
         }
     }
 
