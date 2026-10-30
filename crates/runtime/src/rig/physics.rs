@@ -484,6 +484,14 @@ impl Physics {
         }
     }
 
+    /// [`Physics::set_groups`], only if they're not those already (each change wakes the
+    /// collider's pairs up again).
+    pub fn keep_groups(&mut self, c: ColliderHandle, g: InteractionGroups) {
+        if self.world.colliders.get(c).is_some_and(|col| col.collision_groups() != g) {
+            self.set_groups(c, g);
+        }
+    }
+
     pub fn set_gravity(&mut self, b: RigidBodyHandle, scale: f32) {
         self.world.bodies[b].set_gravity_scale(scale, true);
     }

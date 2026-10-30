@@ -1106,7 +1106,8 @@ impl Combat {
         let chest = inp.map.point(Vec3::from_array(inp.frame.hmd.pos)) - Vec3::Y * CHEST_BELOW_EYES;
         for actor in &self.actors.actors[..n] {
             let Some(was) = self.blows_seen.insert(actor.id, actor.blows) else { continue };
-            if actor.blows == was || self.block_until.get(&actor.id).is_some_and(|&t| t > inp.now) {
+            // (Counted up; fewer is the game's count starting again, a save loaded.)
+            if actor.blows <= was || self.block_until.get(&actor.id).is_some_and(|&t| t > inp.now) {
                 continue;
             }
             let power = actor.flags & ACT_POWER_ATTACK != 0;

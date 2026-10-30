@@ -1601,7 +1601,7 @@ impl Rig {
         for (&(actor, _), &(_, c, ..)) in &self.proxies {
             let g = physics::groups_actor();
             let not = rapier3d::prelude::Group::from_bits_truncate(through.get(&actor).copied().unwrap_or(0));
-            self.physics.set_groups(c, rapier3d::prelude::InteractionGroups::new(g.memberships, g.filter - not, rapier3d::prelude::InteractionTestMode::And));
+            self.physics.keep_groups(c, rapier3d::prelude::InteractionGroups::new(g.memberships, g.filter - not, rapier3d::prelude::InteractionTestMode::And));
         }
         for (&k, &(a, b, radius)) in &self.actor_parts {
             let half = 0.5 * a.distance(b);
