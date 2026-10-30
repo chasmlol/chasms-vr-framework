@@ -92,6 +92,15 @@ const SIGHT_REACH: f32 = 0.75;
 /// in, 37 staying), as the runtime's own aiming down the sights has it (`mechanics`).
 const LOOK_IN: f32 = 0.9;
 const LOOK_OUT: f32 = 0.8;
+/// A gun stays aimed through a burst, as a flat game's aim does: firing, and for this long after
+/// while the gun comes back (s), while its sights are this near the eye (metres) and it points this
+/// near where the head looks (a cosine: 60 degrees). A burst kicks the gun back and its sights off
+/// the eye, and its muzzle up (the range's rifle in one hand, held still: 5.5 cm and 44 degrees in
+/// two seconds), and the zoom pumping out and in with it would be worse than its staying
+/// (`mechanics` keeps aiming down the sights through a burst too).
+const RECOVER: f32 = 0.5;
+const SIGHT_FIRING: f32 = 0.12;
+const LOOK_FIRING: f32 = 0.5;
 /// A bow: drawn past this share of its full draw, ...
 const DRAW_IN: f32 = 0.5;
 const DRAW_OUT: f32 = 0.4;
@@ -113,8 +122,9 @@ const HOLD_OUT: f32 = 0.12;
 #[derive(Clone, Copy, Debug)]
 pub enum Aim {
     /// A gun: a point on its line of sight (through its rear sight, or its bore when it has no
-    /// sights) and the line's way.
-    Gun { sight: Vec3, dir: Vec3 },
+    /// sights) and the line's way, and whether it's firing (its trigger held; [`AimZoom`] has it
+    /// firing a moment longer, while it comes back from the kick).
+    Gun { sight: Vec3, dir: Vec3, firing: bool },
     /// A bow drawn with an arrow on its string: the draw's share of its full draw, where the string
     /// hand pinches the string, and where the bow hand grips the bow.
     Bow { draw: f32, string: Vec3, grip: Vec3 },
@@ -126,12 +136,13 @@ pub fn aimed(aim: &Aim, eye: Vec3, head: Quat, strict: bool) -> bool {
     let pick = |going_in: f32, staying: f32| if strict { going_in } else { staying };
     let look = head * Vec3::Z;
     match *aim {
-        Aim::Gun { sight, dir } => {
+        Aim::Gun { sight, dir, firing } => {
             let dir = dir.normalize_or_zero();
             let to = sight - eye;
             let ahead = to.dot(dir);
             let off = (to - dir * ahead).length();
-            off < pick(SIGHT_IN, SIGHT_OUT) && (-0.05..SIGHT_REACH).contains(&ahead) && dir.dot(look) > pick(LOOK_IN, LOOK_OUT)
+            let (sight_out, look_out) = if firing { (SIGHT_FIRING, LOOK_FIRING) } else { (SIGHT_OUT, LOOK_OUT) };
+            off < pick(SIGHT_IN, sight_out) && (-0.05..SIGHT_REACH).contains(&ahead) && dir.dot(look) > pick(LOOK_IN, look_out)
         }
         Aim::Bow { draw, string, grip } => {
             let anchor = eye - head * Vec3::Y * ANCHOR_DROP;
@@ -153,12 +164,19 @@ pub struct AimZoom {
     changing: f32,
     /// How far in the zoom is, before it's eased (0 out, 1 all the way in).
     t: f32,
+    /// Seconds since the gun last fired.
+    since_fired: f32,
 }
 
 impl AimZoom {
     /// This frame's zoom, 0 (none) to 1 (all the way in), eased: `aim` what the player holds up to
     /// aim with, if anything; `eye` the aiming eye; `head` the head's turn.
     pub fn update(&mut self, aim: Option<Aim>, eye: Vec3, head: Quat, dt: f32, s: &Settings) -> f32 {
+        self.since_fired = if matches!(aim, Some(Aim::Gun { firing: true, .. })) { 0.0 } else { self.since_fired + dt };
+        let aim = aim.map(|a| match a {
+            Aim::Gun { sight, dir, .. } => Aim::Gun { sight, dir, firing: self.since_fired < RECOVER },
+            bow => bow,
+        });
         let now = s.aim_zoom && aim.is_some_and(|a| aimed(&a, eye, head.normalize(), !self.aiming));
         if now == self.aiming {
             self.changing = 0.0;

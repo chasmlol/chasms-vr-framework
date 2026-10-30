@@ -2311,7 +2311,9 @@ impl Session {
                 let connected = bow_hand.connected != 0 && string_hand.connected != 0;
                 connected.then(|| crate::spectator::Aim::Bow { draw, string: pinch, grip: Vec3::from_array(bow_hand.grip.pos) })
             });
-            let aim = bow.or(out.weapon.map(|w| crate::spectator::Aim::Gun { sight: w.sight_origin, dir: w.aim_dir }));
+            // (Firing as `mechanics` has it: the dominant hand's trigger.)
+            let firing = frame.hands[s.dominant()].trigger > 0.5;
+            let aim = bow.or(out.weapon.map(|w| crate::spectator::Aim::Gun { sight: w.sight_origin, dir: w.aim_dir, firing }));
             let zoom = self.spectator_zoom.update(aim, Vec3::from_array(frame.eyes[first].pos), head, frame.dt, sp);
             let sp = &crate::spectator::zoomed(sp, zoom);
             let cam = self.spectator_cam.update(head, at, frame.dt, sp);
