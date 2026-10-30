@@ -1091,7 +1091,8 @@
 #define RVR_OS_STOWED (1 << 17)
 
 /**
- * In a bowl ([`crate::Receptacle`]): `parent` is the bowl, `fuse` how far it's ground (0 .. 1).
+ * In a bowl ([`crate::Receptacle`]): `parent` is the bowl, `fuse` how far it's ground (0 .. 1),
+ * `slide` the size to draw it at (1: its own; shrunk to fit the bowl, and as it's ground).
  */
 #define RVR_OS_IN_RECEPTACLE (1 << 18)
 
