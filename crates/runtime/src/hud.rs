@@ -169,7 +169,8 @@ impl HudPlacer {
                     panel.height = panel.width * dv / du / aspect;
                     Some((panel, 1.0))
                 }
-                HUD_HELD if at.held.is_some() => at.held.map(|(c, opacity)| {
+                // (Not while the game's card is still of something else.)
+                HUD_HELD if at.held.is_some() => at.held.filter(|_| layout.flags & HUDL_HELD_PENDING == 0).map(|(c, opacity)| {
                     // Standing on the point: just over the thing, however tall the game's card is.
                     let (w, h) = sized(HELD_SCALE, f32::MAX);
                     (facing_eye(c + Vec3::Y * h * 0.5, head_pos, w, h), opacity)

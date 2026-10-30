@@ -46,6 +46,10 @@ pub const HUDL_REST_HIDDEN: u32 = 1 << 0;
 /// The HUD texture's colour is added to the view (it has no usable alpha): every element is
 /// blended additively.
 pub const HUDL_ADDITIVE: u32 = 1 << 1;
+/// The game's card ([`HUD_HELD`]) isn't of the thing in a hand yet: a game takes a moment to show a
+/// new thing on it, and meanwhile it's of whatever it was (what was looked at). It isn't drawn over
+/// the hand till it is.
+pub const HUDL_HELD_PENDING: u32 = 1 << 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
