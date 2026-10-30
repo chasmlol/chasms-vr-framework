@@ -95,6 +95,8 @@ pub struct Adapter {
     pub presses: actions::Presses,
     /// How many combat events have been read ([`Adapter::combat_events`]).
     combat_read: u64,
+    /// How many pocket events have been read ([`Adapter::pocket_events`]).
+    pocket_read: u64,
 }
 
 impl Adapter {
@@ -117,6 +119,7 @@ impl Adapter {
             tracking: TrackingMapper::default(),
             presses: actions::Presses::default(),
             combat_read: 0,
+            pocket_read: 0,
         }
     }
 
@@ -544,6 +547,27 @@ impl Adapter {
     pub fn combat_events(&mut self) -> Vec<CombatEvent> {
         match &self.link {
             Some(l) if self.connected => l.read_combat_events(&mut self.combat_read),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The creatures' pockets and the game's answers to what the hands did with them (see
+    /// [`Pockets`]): every frame while there are any (and once more when they're gone).
+    pub fn write_pockets(&self, pockets: &Pockets) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_pockets(pockets);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What the hands did with the pockets since the last call (see [`PocketEvent`]), each with
+    /// its number (a [`PocketOutcome`] answers it by that number plus one).
+    pub fn pocket_events(&mut self) -> Vec<(u64, PocketEvent)> {
+        match &self.link {
+            Some(l) if self.connected => l.read_pocket_events(&mut self.pocket_read),
             _ => Vec::new(),
         }
     }

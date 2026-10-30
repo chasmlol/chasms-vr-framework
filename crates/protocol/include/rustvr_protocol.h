@@ -8,7 +8,7 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 11
+#define RVR_VERSION 12
 
 #define RVR_MAPPING_BYTES 5373952
 
@@ -95,6 +95,11 @@
 #define RVR_CTRL_TOUCH_B (1 << 8)
 
 #define RVR_CTRL_TOUCH_STICK (1 << 9)
+
+/**
+ * The thumb rests on the thumbrest (Touch controllers).
+ */
+#define RVR_CTRL_TOUCH_REST (1 << 10)
 
 #define RVR_HAND_LEFT 0
 
@@ -803,20 +808,22 @@
 #define RVR_SHAPE_SPHERE 2
 
 /**
- * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
- * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ * The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+ * collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+ * Until its points arrive, the box `half_extents` about `center`.
  */
 #define RVR_SHAPE_HULL 3
 
 /**
  * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
- * whenever the objects offered change (before they're published).
+ * whenever the objects offered change (before they're published). An object with several convex
+ * parts has an entry for each.
  */
 #define RVR_OFF_GAME_HULLS 5046272
 
-#define RVR_MAX_GAME_HULLS 48
+#define RVR_MAX_GAME_HULLS 240
 
-#define RVR_MAX_HULL_POINTS 128
+#define RVR_MAX_HULL_POINTS 32
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 
@@ -1302,6 +1309,114 @@
  */
 #define RVR_DH_INDEX_REACH_PULLED (1 << 2)
 
+/**
+ * After the creatures' bodies for grabbing (`OFF_ACTOR_BODIES`, 0x51_0000, on another branch) and
+ * before the HUD layout.
+ */
+#define RVR_OFF_POCKETS 5341184
+
+#define RVR_MAX_POCKETS 32
+
+#define RVR_MAX_POCKET_ITEMS 12
+
+#define RVR_MAX_POCKET_OUTCOMES 16
+
+/**
+ * Cloth, leather, food, herbs.
+ */
+#define RVR_FEEL_SOFT 0
+
+/**
+ * Coins: a purse.
+ */
+#define RVR_FEEL_COINS 1
+
+/**
+ * Small metal: a key, a lockpick, a ring.
+ */
+#define RVR_FEEL_KEY 2
+
+/**
+ * A bottle, a gem, a soul gem.
+ */
+#define RVR_FEEL_GLASS 3
+
+/**
+ * A book, a note, a scroll.
+ */
+#define RVR_FEEL_PAPER 4
+
+/**
+ * Anything hard and bigger: a weapon, armour, a tool.
+ */
+#define RVR_FEEL_HARD 5
+
+/**
+ * The game won't have this creature robbed now (it caught the player before): a hand finds it shut.
+ */
+#define RVR_POCKET_SHUT (1 << 0)
+
+/**
+ * The take worked: the thing in the hand is the player's now.
+ */
+#define RVR_PO_TAKEN 1
+
+/**
+ * It didn't: the thing stays where it was (the hand's copy goes) and the game reacts.
+ */
+#define RVR_PO_CAUGHT 2
+
+/**
+ * The thing let go in the pocket went into it.
+ */
+#define RVR_PO_PLANTED 3
+
+/**
+ * The game won't have it planted: it stays out (it falls from the pocket).
+ */
+#define RVR_PO_REFUSED 4
+
+/**
+ * The taken thing let go in the world is the game's own thing there now (the runtime's copy goes).
+ */
+#define RVR_PO_DROPPED 5
+
+#define RVR_POCKET_EVENT_SLOTS 64
+
+/**
+ * A hand went into one of `actor`'s pockets (`pocket`) when none had been in any of them: the
+ * game's pickpocketing of it opens.
+ */
+#define RVR_PE_OPEN 1
+
+/**
+ * The hands have been away from all of `actor`'s pockets a moment (or its pockets went), nothing
+ * waiting on the game: its pickpocketing closes.
+ */
+#define RVR_PE_CLOSE 2
+
+/**
+ * Thing `item` pulled out of `pocket` by `hand`, as `object` (the copy in the hand): the attempt.
+ * `speed`: how fast the hand came out (m/s).
+ */
+#define RVR_PE_TAKE 3
+
+/**
+ * `object` let go in `pocket` (a thing to take, or one taken): planting it.
+ */
+#define RVR_PE_PLANT 4
+
+/**
+ * A taken thing (`object`, the player's now) let go in the world at `pos` / `rot`, moving at
+ * `vel`: the game puts its own thing there.
+ */
+#define RVR_PE_DROP 5
+
+/**
+ * A taken thing (`object`) put in a body slot: the player keeps it (it's theirs already).
+ */
+#define RVR_PE_STOW 6
+
 #define RVR_SHOTS 0
 
 #define RVR_HITS 1
@@ -1498,5 +1613,7 @@ typedef uint32_t RVR_Joint;
 
 
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
+
+
 
 #endif  /* RUSTVR_PROTOCOL_H */

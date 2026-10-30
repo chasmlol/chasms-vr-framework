@@ -38,6 +38,7 @@
 //! | [`OFF_EVENTS`] | [`Event`] ring | adapter -> runtime | SPSC ring |
 //! | [`OFF_BODY`] .. [`OFF_KICKS`] | the player rig's regions: see [`world`] | both | seqlock, SPSC ring |
 //! | [`OFF_SOUNDS`] | [`SoundPack`]: the game's own sounds (see [`sound`]) | adapter -> runtime | seqlock |
+//! | [`OFF_POCKETS`] .. [`OFF_POCKETS_END`] | the creatures' pockets and what the hands do in them: see [`pockets`] | both | seqlock, ring |
 //!
 //! # Frames
 //!
@@ -67,6 +68,7 @@ pub mod sound;
 pub mod world;
 pub mod lighting;
 pub mod player;
+pub mod pockets;
 
 pub use avatar::*;
 pub use combat::*;
@@ -76,10 +78,11 @@ pub use sound::*;
 pub use world::*;
 pub use lighting::*;
 pub use player::*;
+pub use pockets::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 11;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v11";
+pub const VERSION: u32 = 12;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v12";
 pub const MAPPING_BYTES: usize = 0x0052_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
