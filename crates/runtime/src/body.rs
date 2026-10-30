@@ -282,14 +282,15 @@ impl PlayerBody {
             })
         });
         // Seated players still play a standing character: the body is drawn standing.
-        // The elbows where the headset tracks them (when the player lets it).
-        let elbows = f.elbows.map(|e| e.filter(|_| inp.settings.body.tracked_elbows).map(|e| Vec3::from_array(e) - down));
+        // The elbows and the shoulders where the headset tracks them (when the player lets it).
+        let tracked = |joints: [Option<[f32; 3]>; 2]| joints.map(|e| e.filter(|_| inp.settings.body.tracked_elbows).map(|e| Vec3::from_array(e) - down));
+        let (elbows, shoulders) = (tracked(f.elbows), tracked(f.shoulders));
         // In a saddle the body sits where the game seats its rider.
         self.solver.ride(inp.saddle.map(|s| rustvr_ik::Saddle {
             seat: rustvr_ik::Pose { pos: s.seat.pos - down, rot: s.seat.rot },
             legs: s.legs.map(|l| l.map(|leg| leg.map(|p| p - down))),
         }));
-        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows, swim: inp.swim });
+        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows, shoulders, swim: inp.swim });
         for j in out.joints.iter_mut().chain(out.hand_targets.iter_mut()) {
             j.pos += down;
         }
@@ -809,7 +810,7 @@ mod tests {
         let grips = [Some(grip_for(Side::Left, -0.78)), Some(grip_for(Side::Right, 0.78))];
         let mut out = None;
         for _ in 0..120 {
-            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], swim: None }));
+            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], shoulders: [None; 2], swim: None }));
         }
         let out = out.unwrap();
         for j in [Joint::LeftUpperArm, Joint::LeftLowerArm, Joint::RightUpperArm, Joint::RightLowerArm, Joint::LeftHand, Joint::RightHand, Joint::Hips, Joint::Chest] {

@@ -100,6 +100,9 @@ pub struct TrackedInput {
     /// Each elbow where the headset tracks it [left, right] (a Quest's body tracking), tracking
     /// space; `None` = not tracked: the arm's own model places it.
     pub elbows: [Option<Vec3>; 2],
+    /// Each shoulder joint where the headset tracks it [left, right], tracking space: with both,
+    /// the chest faces square to the line between them rather than as the hands and head suggest.
+    pub shoulders: [Option<Vec3>; 2],
     /// The player is swimming: the body floats.
     pub swim: Option<Swimming>,
 }

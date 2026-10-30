@@ -521,8 +521,9 @@ pub struct Body {
     /// Shade the body with the game's own lighting model when the game publishes its lighting
     /// (otherwise, and when off, the runtime's own look).
     pub game_lighting: bool,
-    /// The elbows where the headset's body tracking has them (a Quest 3 or Pro's, when its
-    /// runtime gives it), not only where the arm's model puts them.
+    /// The elbows, and the chest's facing from the shoulders, where the headset's body tracking
+    /// has them (a Quest 3 or Pro's, when its runtime gives it), not only where the body's model
+    /// puts them.
     pub tracked_elbows: bool,
     /// The hands' size against a real hand for your height (1: as yours are).
     pub hand_size: f32,

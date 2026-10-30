@@ -35,6 +35,8 @@ pub struct HmdFrame {
     /// Each elbow where the headset tracks it (a Quest's body tracking: its cameras and its own
     /// body model), tracking space.
     pub elbows: [Option<[f32; 3]>; 2],
+    /// Each shoulder joint where the headset tracks it, likewise.
+    pub shoulders: [Option<[f32; 3]>; 2],
 }
 
 /// Where the head, the eyes and the controllers are at some moment, as the headset predicts it.

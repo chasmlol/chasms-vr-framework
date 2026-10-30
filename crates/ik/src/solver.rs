@@ -117,6 +117,7 @@ impl BodySolver {
                     locomotion: Vec3::ZERO,
                     seated: false,
                     elbows: [None; 2],
+                    shoulders: [None; 2],
                     swim: None,
                 };
                 let mut out = s.solve(&input);
@@ -167,6 +168,7 @@ impl BodySolver {
             locomotion: Vec3::ZERO,
             seated: false,
             elbows: [None, None],
+            shoulders: [None, None],
             swim: None,
         };
         let out = self.solve_frame(&neutral);
@@ -250,7 +252,16 @@ impl BodySolver {
             None => {
             // ---- torso ----
             let palms = grips.map(|g| g.map(|g| g.pos));
-            let torso_yaw = state.torso.update(p, dt, s, eyes, head_joint, head_yaw, palms);
+            // The headset's own tracking of the shoulders: the chest square to the line between
+            // them (a line too short or too steep to say is no tracking).
+            let tracked = match input.shoulders {
+                [Some(l), Some(r)] if l.is_finite() && r.is_finite() => {
+                    let across = flat(r - l);
+                    (across.length() > 0.15 * s).then(|| yaw_of(across.cross(UP)))
+                }
+                _ => None,
+            };
+            let torso_yaw = state.torso.update(p, dt, s, eyes, head_joint, head_yaw, palms, tracked);
             let root_yaw = state.root.update(p, dt, torso_yaw, moving);
             // In water the body floats, leaning into the way it swims (`swim`).
             state.swim.update(dt, input.swim.as_ref(), torso_yaw);

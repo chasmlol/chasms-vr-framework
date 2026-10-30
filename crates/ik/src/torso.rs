@@ -28,7 +28,8 @@ impl TorsoYaw {
     }
 
     /// `eyes` and `head_joint` are the HMD and neck-pivot positions, `head_yaw` the head's facing,
-    /// `hands` the tracked palm positions [left, right].
+    /// `hands` the tracked palm positions [left, right], `tracked` the chest's yaw where the
+    /// headset's body tracking has it (it then wins over the hands').
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -39,8 +40,13 @@ impl TorsoYaw {
         head_joint: Vec3,
         head_yaw: f32,
         hands: [Option<Vec3>; 2],
+        tracked: Option<f32>,
     ) -> f32 {
         let (target, tau) = match hands {
+            _ if tracked.is_some() => {
+                self.prev_raw = None;
+                (tracked.unwrap_or(head_yaw), p.torso_yaw_tau)
+            }
             [Some(l), Some(r)] => {
                 let offset = self.hand_offset(p, scale, eyes, head_joint, head_yaw, l, r);
                 (head_yaw + offset, p.torso_yaw_tau)
@@ -170,7 +176,7 @@ mod tests {
         let eyes = Vec3::new(0.0, 1.7, 0.0);
         let head_joint = eyes + crate::math::yaw_rot(head_yaw) * Vec3::new(0.0, -0.09, -0.095);
         for _ in 0..360 {
-            t.update(&p, 1.0 / 90.0, 1.0, eyes, head_joint, head_yaw, hands);
+            t.update(&p, 1.0 / 90.0, 1.0, eyes, head_joint, head_yaw, hands, None);
         }
         t.yaw
     }

@@ -7,7 +7,7 @@
 //! (`XR_KHR_composition_layer_depth`, for the headset's own reprojection), the controllers' touch
 //! sensors (a finger off the trigger points, a thumb off the thumbrest lifts), and hands tracked by
 //! the headset's cameras (`XR_EXT_hand_tracking`: the fingers as they are, a fist grabs), and the
-//! elbows where the headset's body tracking has them (`XR_FB_body_tracking`).
+//! elbows and shoulders where the headset's body tracking has them (`XR_FB_body_tracking`).
 //!
 //! OpenXR is right-handed with -Z forward; tracking space here is left-handed with +Z forward, so
 //! every pose crossing this boundary has Z mirrored: positions (x, y, -z), quaternions
@@ -322,9 +322,10 @@ impl OpenXrBackend {
         now + (period.as_nanos() as i128 * freq as i128 / 1_000_000_000) as i64
     }
 
-    /// The elbows where the headset's body tracking has them at `time`, when it's tracking.
-    fn elbows(&mut self, time: xr::Time) -> [Option<[f32; 3]>; 2] {
-        let (Some(tracker), Some(fp)) = (self.body, self._instance.exts().fb_body_tracking.as_ref()) else { return [None; 2] };
+    /// The elbows and the shoulder joints where the headset's body tracking has them at `time`,
+    /// when it's tracking.
+    fn arms(&mut self, time: xr::Time) -> [[Option<[f32; 3]>; 2]; 2] {
+        let (Some(tracker), Some(fp)) = (self.body, self._instance.exts().fb_body_tracking.as_ref()) else { return [[None; 2]; 2] };
         let info = xr::sys::BodyJointsLocateInfoFB { ty: xr::sys::BodyJointsLocateInfoFB::TYPE, next: std::ptr::null(), base_space: self.stage.as_raw(), time };
         let mut joints = [xr::sys::BodyJointLocationFB::default(); BODY_JOINTS];
         let mut out = xr::sys::BodyJointLocationsFB {
@@ -338,16 +339,20 @@ impl OpenXrBackend {
             time,
         };
         if unsafe { (fp.locate_body_joints)(tracker, &info, &mut out) } != xr::sys::Result::SUCCESS || !bool::from(out.is_active) || out.confidence < 0.3 {
-            return [None; 2];
+            return [[None; 2]; 2];
         }
         if !self.body_seen {
             self.body_seen = true;
-            tracing::info!("openxr: the headset is tracking the body (confidence {:.2}): the elbows follow it", out.confidence);
+            tracing::info!("openxr: the headset is tracking the body (confidence {:.2}): the elbows and the chest follow it", out.confidence);
         }
-        [xr::sys::BodyJointFB::LEFT_ARM_LOWER, xr::sys::BodyJointFB::RIGHT_ARM_LOWER].map(|j| {
+        let at = |j: xr::sys::BodyJointFB| {
             let l = joints[j.into_raw() as usize];
             l.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID).then(|| from_xr(&l.pose, true).pos)
-        })
+        };
+        [
+            [xr::sys::BodyJointFB::LEFT_ARM_LOWER, xr::sys::BodyJointFB::RIGHT_ARM_LOWER].map(at),
+            [xr::sys::BodyJointFB::LEFT_ARM_UPPER, xr::sys::BodyJointFB::RIGHT_ARM_UPPER].map(at),
+        ]
     }
 
     /// Handles session state changes. Err when the session is over.
@@ -495,7 +500,7 @@ impl Backend for OpenXrBackend {
         for h in 0..2 {
             f.hands[h] = self.controller(h, time).unwrap_or_default();
         }
-        f.elbows = self.elbows(time);
+        [f.elbows, f.shoulders] = self.arms(time);
         // Hands the cameras track: the fingers as they are, and a fist grabs (the runtime makes
         // a pinch the trigger itself).
         if let Some(trackers) = &self.trackers {

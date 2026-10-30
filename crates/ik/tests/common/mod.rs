@@ -129,7 +129,7 @@ pub const POSES: [&str; 11] = [
 ];
 
 pub fn input(head: Pose, left: Option<Pose>, right: Option<Pose>) -> TrackedInput {
-    TrackedInput { dt: DT, head, grips: [left, right], locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], swim: None }
+    TrackedInput { dt: DT, head, grips: [left, right], locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], shoulders: [None; 2], swim: None }
 }
 
 pub fn solver() -> BodySolver {
