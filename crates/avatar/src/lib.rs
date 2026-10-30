@@ -296,6 +296,12 @@ impl Avatar {
         self.renderer.set_laser(gpu, laser);
     }
 
+    /// The game's effect shaders over the body and hands from now on (a spell's shader on the
+    /// player), each drawn over them as it draws over what's held.
+    pub fn set_body_overlays(&mut self, overlays: Vec<OverlayDraw>) {
+        self.renderer.set_body_overlays(overlays);
+    }
+
     /// Draws the body into `target` (an sRGB view of one eye's image, `width` x `height`) as seen
     /// from `eye` with `fov`. With `depth`, the body is hidden behind the game's geometry;
     /// without, it's drawn on top.
@@ -446,6 +452,25 @@ pub struct HeldDraw<'a> {
     pub parts: &'a [Option<Mat4>],
     /// What it is, for the special draws (e.g. `metro2033/wpn_2012`).
     pub key: &'a str,
+    /// The game's effect shader over it (an enchanted weapon's shimmer).
+    pub overlay: Option<OverlayDraw>,
+}
+
+/// The game's effect shader over a held model ([`rustvr_protocol::Overlay`]): its fill and edge,
+/// its texture when it has one (raw, as the game samples it) and how long it has run (seconds:
+/// its pulses and its texture's scroll).
+#[derive(Clone)]
+pub struct OverlayDraw {
+    pub overlay: rustvr_protocol::Overlay,
+    pub texture: Option<ID3D11ShaderResourceView>,
+    pub time: f32,
+}
+
+/// A texture from an asset cache folder (`dir`, by key) as the game samples it (raw), for an
+/// [`OverlayDraw`].
+pub fn overlay_texture(gpu: &Gpu, dir: &std::path::Path, key: &str) -> Result<ID3D11ShaderResourceView> {
+    let t = asset::load_texture(dir, key)?;
+    Ok(render::upload_texture(gpu, &t)?.linear)
 }
 
 /// A held mesh a caller draws itself (see [`HeldMeshInfo::special`]), between the opaque meshes

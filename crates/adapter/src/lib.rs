@@ -554,6 +554,26 @@ impl Adapter {
         }
     }
 
+    /// Each hand's casting now (see [`Casters`]), for the game to draw its casting art where it is.
+    /// False when there's none.
+    pub fn read_casters(&self, out: &mut Casters) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_casters_into(out),
+            _ => false,
+        }
+    }
+
+    /// The game's effect shaders on what the runtime draws (see [`Overlays`]): when they change.
+    pub fn write_overlays(&self, overlays: &Overlays) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_overlays(overlays);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The melee hits, blocks and casts since the last call (see [`CombatEvent`]).
     pub fn combat_events(&mut self) -> Vec<CombatEvent> {
         match &self.link {

@@ -222,9 +222,14 @@ pub struct Spells {
     /// How long the game takes to cast (seconds): the hand charges this long before the spell is
     /// ready (the game's cast animation's time to its release).
     pub cast_time: f32,
-    pub _pad: [u32; 11],
+    pub flags: u32, // SPELLS_*
+    pub _pad: [u32; 10],
     pub spells: [Spell; MAX_SPELLS],
 }
+
+/// The game draws its own casting art where the runtime's casting is ([`crate::Casters`]): the
+/// runtime draws none of its own (no glow in the palm).
+pub const SPELLS_GAME_ART: u32 = 1 << 0;
 
 // ---- combat events ------------------------------------------------------------------------------
 pub const OFF_COMBAT_EVENTS: usize = OFF_SPELLS + size_of::<Spells>();
@@ -238,7 +243,9 @@ pub const CE_HIT: u32 = 1;
 /// with `CEF_PARRY` a parry (the player's weapon moving into it).
 pub const CE_BLOCK: u32 = 2;
 /// A spell cast: `spell` from `hand` (0 left, 1 right), from `point` along `dir`; `actor` the one a
-/// touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1).
+/// touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1). `object`:
+/// the held thing it was cast from ([`crate::OBJF_CASTS`], a staff: `what` is then what it casts,
+/// [`crate::ObjectDesc::casts`]), else 0.
 pub const CE_CAST: u32 = 3;
 
 /// A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.

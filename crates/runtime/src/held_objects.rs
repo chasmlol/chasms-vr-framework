@@ -10,11 +10,12 @@
 //! parts go where the object's state puts them, as the test range draws its own guns
 //! (`rustvr_guns::desc::object_part_matrices`): the bolt or handle back with `slide`, the trigger
 //! under the finger pulling it, the rounds a magazine holds, the magazine where its own object is.
+//! The game's effect shader on one ([`Overlays`]: an enchanted weapon's shimmer) is drawn over it.
 
 use std::collections::HashMap;
 
 use glam::{Mat4, Quat, Vec3};
-use rustvr_avatar::{HeldDraw, HeldModel, HeldPart};
+use rustvr_avatar::{HeldDraw, HeldModel, HeldPart, OverlayDraw};
 use rustvr_gpu::Gpu;
 use rustvr_guns::{PartsState, Weapon};
 use rustvr_protocol::*;
@@ -39,6 +40,7 @@ pub struct Loaded {
 /// ([`HeldObjects::place`]): where the game was when it drew the picture the object is drawn over,
 /// so it stays put on the game's floor however the player moves.
 struct Placed {
+    id: u32,
     name: String,
     parts: Vec<Option<Mat4>>,
     world: bool,
@@ -56,6 +58,12 @@ pub struct HeldObjects {
     /// Props a hand had lately: drawn until then ([`RUNTIME_DRAW_TAIL`] after the hand lets go,
     /// while the game shows its own again).
     props_until: HashMap<u32, f64>,
+    /// The game's effect shaders over what it draws, their textures by name (None: failed, said
+    /// once), and the time they run on (seconds).
+    overlays: Vec<Overlay>,
+    overlay_textures: HashMap<String, Option<windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView>>,
+    overlays_said: Vec<(u32, u32)>,
+    now: f64,
 }
 
 fn quat(a: [f32; 4]) -> Quat {
@@ -276,6 +284,7 @@ impl HeldObjects {
     /// them ([`OS_RUNTIME_DRAWN`], and a moment after); `now` in seconds.
     pub fn update(&mut self, objects: &ObjectTable, states: &ObjectStates, game: &GamePoses, map: Option<&WorldMap>, triggers: [f32; 2], now: f64) {
         self.placed.clear();
+        self.now = now;
         self.props_until.retain(|_, until| *until > now);
         let descs = &objects.descs[..(objects.count as usize).min(MAX_OBJECTS)];
         for s in &states.states[..(states.count as usize).min(MAX_OBJECTS)] {
@@ -309,7 +318,7 @@ impl HeldObjects {
                 // A prop: its model where the game draws it on the object.
                 None => vec![Some(object * model_place(d))],
             };
-            self.placed.push(Placed { name: name.to_string(), parts, world, hand });
+            self.placed.push(Placed { id: s.id, name: name.to_string(), parts, world, hand });
         }
         // What the valves work (a gate), with them.
         for d in descs.iter().filter(|d| d.id != 0 && d.kind == OBJ_DRIVEN && d.flags & OBJF_RUNTIME_DRAWS != 0) {
@@ -328,9 +337,34 @@ impl HeldObjects {
                     driven_places(d, angle)
                 }
             };
-            self.placed.push(Placed { name: name.to_string(), parts, world: true, hand: None });
+            self.placed.push(Placed { id: d.id, name: name.to_string(), parts, world: true, hand: None });
         }
         self.place(map);
+    }
+
+    /// The game's effect shaders over what it draws, as the adapter last said (their textures loaded
+    /// once from the asset cache).
+    pub fn set_overlays(&mut self, gpu: &Gpu, overlays: &Overlays) {
+        let root = rustvr_asset::default_root();
+        self.overlays = overlays.entries().to_vec();
+        for o in &self.overlays {
+            let name = o.texture().to_string();
+            if name.is_empty() || self.overlay_textures.contains_key(&name) {
+                continue;
+            }
+            let loaded = rustvr_guns::desc::parse_model_name(&name)
+                .ok_or_else(|| anyhow::anyhow!("{name:?} isn't <game>/<asset key>"))
+                .and_then(|(game, key)| rustvr_avatar::overlay_texture(gpu, &root.join(game), key))
+                .map_err(|e| tracing::warn!("runtime: an overlay's texture {name}: {e:#}"))
+                .ok();
+            self.overlay_textures.insert(name, loaded);
+        }
+        // (Said as what's overlaid changes: a body's overlay fades every frame.)
+        let what: Vec<(u32, u32)> = self.overlays.iter().map(|o| (o.object, o.flags)).collect();
+        if what != self.overlays_said {
+            tracing::info!("runtime: {} overlays: {:?}", self.overlays.len(), self.overlays.iter().map(|o| (o.object, o.flags, o.fill, o.edge, o.edge_falloff)).collect::<Vec<_>>());
+            self.overlays_said = what;
+        }
     }
 
     /// Places the objects lying in the game's world into tracking space by `map`: the mapping of the
@@ -412,6 +446,15 @@ impl HeldObjects {
         self.placed.iter().take(DRAWN_OBJECTS_MAX).map(|p| p.hand).collect()
     }
 
+    /// The game's effect shaders over the player's own body ([`OVERLAY_BODY`]) now.
+    pub fn body_overlays(&self) -> Vec<OverlayDraw> {
+        self.overlays
+            .iter()
+            .filter(|o| o.object == OVERLAY_BODY)
+            .map(|o| OverlayDraw { overlay: *o, texture: self.overlay_textures.get(o.texture()).cloned().flatten(), time: (self.now % 3600.0) as f32 })
+            .collect()
+    }
+
     /// This frame's draws, as last placed ([`HeldObjects::update`], [`HeldObjects::place`]).
     pub fn draws(&self) -> Vec<HeldDraw<'_>> {
         self.placed
@@ -419,7 +462,12 @@ impl HeldObjects {
             .zip(&self.parts_now)
             .filter_map(|(p, parts)| {
                 let l = self.models.get(&p.name)?.as_ref()?;
-                Some(HeldDraw { model: &l.model, parts, key: &p.name })
+                let overlay = self.overlays.iter().find(|o| o.object == p.id).map(|o| OverlayDraw {
+                    overlay: *o,
+                    texture: self.overlay_textures.get(o.texture()).cloned().flatten(),
+                    time: (self.now % 3600.0) as f32,
+                });
+                Some(HeldDraw { model: &l.model, parts, key: &p.name, overlay })
             })
             .collect()
     }

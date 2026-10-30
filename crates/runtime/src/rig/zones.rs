@@ -123,11 +123,15 @@ impl BodyAnchor {
 
     /// How a holstered object sits in a slot (tracking space): on the hips barrel down, on the
     /// back diagonally behind the shoulder, barrel up; upright in a chest pouch; point down on the
-    /// belt.
-    pub fn slot_pose(&self, slot: u32, zone: &Zone) -> (Vec3, Quat) {
+    /// belt. One that hangs `upright` (a torch) sits at the hip with its +Z up, leaning forward and
+    /// out.
+    pub fn slot_pose(&self, slot: u32, zone: &Zone, upright: bool) -> (Vec3, Quat) {
         let c = self.zone_center(zone);
         let r = self.rot();
         let local = match slot {
+            // (Upright, its top leans forward and out, clear of the body and the face.)
+            SLOT_HIP_RIGHT if upright => Quat::from_rotation_z(-0.45) * Quat::from_rotation_x(-1.1),
+            SLOT_HIP_LEFT if upright => Quat::from_rotation_z(0.45) * Quat::from_rotation_x(-1.1),
             SLOT_BACK_RIGHT => Quat::from_rotation_z(0.5) * Quat::from_rotation_x(-1.25),
             SLOT_BACK_LEFT => Quat::from_rotation_z(-0.5) * Quat::from_rotation_x(-1.25),
             SLOT_CHEST_LEFT | SLOT_CHEST_RIGHT => Quat::IDENTITY,

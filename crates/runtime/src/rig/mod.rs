@@ -3723,14 +3723,14 @@ impl Rig {
                     self.physics.set_gravity(body, 0.0);
                 }
                 Holder::Holstered(slot) => {
-                    let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize]);
+                    let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize], self.objects[id].desc.flags & OBJF_UPRIGHT != 0);
                     let grip = v3(self.objects[id].desc.grip);
                     let (p, q) = (self.map.point(pt), self.map.rot(rt));
                     let o = &self.objects[id];
                     self.physics.move_kinematic(o.body, p - q * grip, q);
                 }
                 Holder::Returning { slot, t0, from } => {
-                    let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize]);
+                    let (pt, rt) = self.anchor.slot_pose(slot, &zones[slot as usize], self.objects[id].desc.flags & OBJF_UPRIGHT != 0);
                     let grip = v3(self.objects[id].desc.grip);
                     let q = self.map.rot(rt);
                     let p = self.map.point(pt) - q * grip;

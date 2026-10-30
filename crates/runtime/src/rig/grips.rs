@@ -107,14 +107,16 @@ pub fn grip(d: &ObjectDesc, rot: Option<Quat>) -> Option<Handle> {
     }
     let knife = d.kind == OBJ_THROWABLE && d.throw_flags & THROW_KNIFE != 0;
     let handled = d.kind == OBJ_MELEE || knife;
+    // (One that's upright, a torch, is only ever held its one way up.)
+    let reversible = d.flags & OBJF_UPRIGHT == 0;
     if let Some(axis) = line(d.grip_line) {
         let rot = rot.unwrap_or_else(|| fist_along(axis.1 - axis.0));
-        return Some(along(at, rot, axis, radius, true));
+        return Some(along(at, rot, axis, radius, reversible));
     }
     let rot = rot?;
     if handled {
         let z = rot * Vec3::Z * HANDLE_HALF;
-        return Some(along(at, rot, (at - z, at + z), radius, true));
+        return Some(along(at, rot, (at - z, at + z), radius, reversible));
     }
     // A grenade (or anything else rigged): always held that way, wherever it was taken.
     Some(Handle { at, rot, dir: Vec3::Z, min: 0.0, max: 0.0, axis: (at, at), radius, reversible: false, grasped: false, reach: f32::INFINITY })

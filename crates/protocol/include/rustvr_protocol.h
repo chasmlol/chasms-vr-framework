@@ -8,7 +8,7 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 11
+#define RVR_VERSION 12
 
 #define RVR_MAPPING_BYTES 5373952
 
@@ -346,6 +346,19 @@
  */
 #define RVR_EV_GAME_SHOTS 6
 
+/**
+ * The game's mirror spell was cast. A mirror the player is looking at is sent away; otherwise a
+ * mirror is summoned in front of them (where the gesture would stand it). Either way the runtime
+ * counts a summons ([`MirrorView::summons`]) and waits for the game's effect ([`EV_MIRROR_HIT`]).
+ */
+#define RVR_EV_MIRROR_CAST 7
+
+/**
+ * The game's effect for the mirror's summons `a` ([`MirrorView::summons`]) reached its moment:
+ * the glass appears (or goes) now, as a summoned creature appears at its effect's "Hit".
+ */
+#define RVR_EV_MIRROR_HIT 8
+
 #define RVR_HAPTIC_LEFT 0
 
 #define RVR_HAPTIC_RIGHT 1
@@ -517,6 +530,12 @@
  */
 #define RVR_SPELL_FAVOURITE (1 << 3)
 
+/**
+ * The game draws its own casting art where the runtime's casting is ([`crate::Casters`]): the
+ * runtime draws none of its own (no glow in the palm).
+ */
+#define RVR_SPELLS_GAME_ART (1 << 0)
+
 #define RVR_COMBAT_EVENT_SLOTS 128
 
 /**
@@ -534,7 +553,9 @@
 
 /**
  * A spell cast: `spell` from `hand` (0 left, 1 right), from `point` along `dir`; `actor` the one a
- * touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1).
+ * touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1). `object`:
+ * the held thing it was cast from ([`crate::OBJF_CASTS`], a staff: `what` is then what it casts,
+ * [`crate::ObjectDesc::casts`]), else 0.
  */
 #define RVR_CE_CAST 3
 
@@ -829,6 +850,20 @@
  * drawn, for the game to take into the player's inventory (and drop from the table).
  */
 #define RVR_OBJF_LOOT (1 << 11)
+
+/**
+ * It casts its own magic (a staff): the hand holding it charges it with the trigger over its
+ * `cast_time` and casts `casts` from its `muzzle` along its +Z when it's let go
+ * ([`crate::CE_CAST`] with `object` set; see [`crate::Casters`]).
+ */
+#define RVR_OBJF_CASTS (1 << 12)
+
+/**
+ * It's upright: it hangs so in a body slot (a torch's flame up, a lantern by its handle), not the
+ * slot's usual way (a gun's barrel down at the hip), and a hand holds it only that way up (its
+ * handle never taken the other way round).
+ */
+#define RVR_OBJF_UPRIGHT (1 << 13)
 
 /**
  * Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
@@ -1323,6 +1358,71 @@
  */
 #define RVR_GLF_TILE (1 << 1)
 
+/**
+ * Nothing in the hand.
+ */
+#define RVR_CAST_NONE 0
+
+/**
+ * The spell is readied (the finger rests on the trigger, or pulls it a little): its art in the palm,
+ * small.
+ */
+#define RVR_CAST_READIED 1
+
+/**
+ * The trigger is pulled: the spell is charging (`charge` grows to 1 over the game's casting time).
+ */
+#define RVR_CAST_CHARGING 2
+
+/**
+ * Charged: let go (or touch, for a touch spell) and it's cast.
+ */
+#define RVR_CAST_READY 3
+
+/**
+ * It casts from the thing the hand holds (`object`), not from the palm.
+ */
+#define RVR_CASTF_OBJECT (1 << 0)
+
+/**
+ * It was just cast (this frame's event): the art goes, the game's own cast takes over.
+ */
+#define RVR_CASTF_CAST (1 << 1)
+
+#define RVR_MAX_OVERLAYS 16
+
+/**
+ * The edge (where the surface turns away from the eye) shows: `edge` coloured, `edge_falloff`
+ * sharp.
+ */
+#define RVR_OVL_EDGE (1 << 0)
+
+/**
+ * The fill shows (a colour, times `texture` when it has one).
+ */
+#define RVR_OVL_FILL (1 << 1)
+
+/**
+ * The edge is where the surface faces the eye, not where it turns away.
+ */
+#define RVR_OVL_EDGE_INVERSE (1 << 2)
+
+/**
+ * Added to what's there (else blended over it by its alpha).
+ */
+#define RVR_OVL_ADDITIVE (1 << 3)
+
+/**
+ * The game's effect shader on something the runtime draws: over its model's surface, each point
+ * `fill · texture(uv + scroll · t)` and `edge · (1 − |n·v|)^edge_falloff` (`|n·v|` with
+ * [`OVL_EDGE_INVERSE`]), each by its alpha (pulsing `alpha · (1 + pulse[0] · sin(2π · pulse[1] ·
+ * t))`, at most 1), blended over it or added ([`OVL_ADDITIVE`]). Colours in the display's range,
+ * as the game blends them. Without a texture the fill is its colour.
+ * [`Overlay::object`]: the player's own body and hands (a spell's shader on the player: healing's
+ * glow, a shield's flames, being burned).
+ */
+#define RVR_OVERLAY_BODY UINT32_MAX
+
 #define RVR_OFF_PLAYER_DRAW 4980736
 
 /**
@@ -1555,5 +1655,7 @@ typedef uint32_t RVR_Joint;
 
 
 #define RVR_Joint_ALL { RVR_Joint_Hips, RVR_Joint_Spine, RVR_Joint_Chest, RVR_Joint_UpperChest, RVR_Joint_Neck, RVR_Joint_Head, RVR_Joint_LeftShoulder, RVR_Joint_LeftUpperArm, RVR_Joint_LeftLowerArm, RVR_Joint_LeftHand, RVR_Joint_RightShoulder, RVR_Joint_RightUpperArm, RVR_Joint_RightLowerArm, RVR_Joint_RightHand, RVR_Joint_LeftUpperLeg, RVR_Joint_LeftLowerLeg, RVR_Joint_LeftFoot, RVR_Joint_LeftToes, RVR_Joint_RightUpperLeg, RVR_Joint_RightLowerLeg, RVR_Joint_RightFoot, RVR_Joint_RightToes, }
+
+
 
 #endif  /* RUSTVR_PROTOCOL_H */
