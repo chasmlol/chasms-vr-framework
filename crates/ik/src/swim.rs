@@ -37,6 +37,9 @@ const TREAD_SWING: f32 = 0.22;
 const SWIM_SWING: f32 = 0.3;
 const TREAD_KNEE: [f32; 2] = [0.75, 0.45];
 const SWIM_KNEE: [f32; 2] = [0.15, 0.4];
+/// Treading water the thighs come forward (sitting in the water, the knees in front), swimming
+/// they stream in line with the body (radians).
+const TREAD_HIP: f32 = 0.45;
 /// The thighs a little apart, and how far the feet are pointed past standing (radians).
 const SPLAY: f32 = 4.0 * PI / 180.0;
 const TREAD_POINT: f32 = 0.6;
@@ -95,11 +98,12 @@ impl SwimState {
         let swing = (TREAD_SWING + (SWIM_SWING - TREAD_SWING) * s) * (REST_KICK + (1.0 - REST_KICK) * self.activity);
         let knee = [TREAD_KNEE[0] + (SWIM_KNEE[0] - TREAD_KNEE[0]) * s, TREAD_KNEE[1] + (SWIM_KNEE[1] - TREAD_KNEE[1]) * s];
         let point = TREAD_POINT + (SWIM_POINT - TREAD_POINT) * s;
+        let hip = TREAD_HIP * (1.0 - s);
         std::array::from_fn(|i| {
             // The legs kick in turn: half a cycle apart.
             let phase = self.phase + PI * i as f32;
             let side = if i == 0 { -1.0 } else { 1.0 };
-            let theta = swing * phase.sin();
+            let theta = hip + swing * phase.sin();
             // The thigh swings fore and aft of hanging, a little out to its side.
             let out = Quat::from_axis_angle(fwd, side * SPLAY);
             let thigh = out * (down * theta.cos() + fwd * theta.sin());
@@ -108,8 +112,7 @@ impl SwimState {
             let kappa = knee[0] + knee[1] * (0.5 + 0.5 * (phase + 0.5 * PI).sin());
             let shin = thigh * kappa.cos() - knee_fwd * kappa.sin();
             let shin_fwd = knee_fwd * kappa.cos() + thigh * kappa.sin();
-            let hip = hip_joints[i];
-            let k = hip + thigh * skel.thigh;
+            let k = hip_joints[i] + thigh * skel.thigh;
             let ankle = k + shin * skel.shin;
             // The foot pointed: turned from standing (toes ahead, its top up the shin) down the shin.
             let toes_dir = shin_fwd * point.cos() + shin * point.sin();
@@ -121,7 +124,7 @@ impl SwimState {
                 frame_yz(toes_dir, top, -right.cross(toes_dir)),
                 frame_yz(toes_dir, top, -right.cross(toes_dir)),
             ];
-            LegPose { hip, knee: k, ankle, toes, rot }
+            LegPose { hip: hip_joints[i], knee: k, ankle, toes, rot }
         })
     }
 }
