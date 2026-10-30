@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::backend::{Backend, HmdFrame};
-use crate::compositor::{Comfort, Compositor, Glow, Laser, Layers, LensLayer, PanelLayer};
+use crate::compositor::{Bubble, Comfort, Compositor, Glow, Laser, Layers, LensLayer, PanelLayer};
 use crate::mechanics::{Cursor, MechInput, MechOutput, Mechanics};
 use crate::menu::{RuntimeMenu, Status};
 use crate::panels::{self, PanelId};
@@ -1460,6 +1460,12 @@ impl Session {
             let flicker = 1.0 + 0.12 * (t * 23.0).sin() + 0.08 * (t * 37.0 + 1.3).sin();
             let color = Vec3::from_array(c.color).max(Vec3::splat(0.05));
             layers.glows.push(Glow { at: c.palm, radius: (0.03 + 0.06 * c.charge) * flicker, color: color * (0.6 + 1.6 * c.charge) });
+        }
+        // While the slots' editor is open, each slot of the player's things shows where it is and
+        // how far out it takes from, the one picked in the editor bright, the rest faint (in the
+        // laser's blue, the runtime's own marks' colour).
+        for (at, radius, picked) in self.rig.pocket_marks() {
+            layers.bubbles.push(Bubble { at, radius, color: Vec3::new(0.25, 0.75, 1.0) * if picked { 0.9 } else { 0.22 } });
         }
 
         // The player's body goes between the game's picture and the overlays, behind the game's

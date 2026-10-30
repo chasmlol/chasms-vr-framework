@@ -725,6 +725,8 @@ pub struct Rig {
     pocket_zones: Vec<pockets::SlotZones>,
     /// A slot being placed by hand: the next squeeze puts it there.
     placing: Option<usize>,
+    /// The slot picked in the slots' editor, while it's open.
+    editing: Option<usize>,
     /// What the player did with the slots this frame, for the runtime to keep.
     pub pocket_events: Vec<PocketEvent>,
 }
@@ -773,6 +775,7 @@ impl Default for Rig {
             pockets: Vec::new(),
             pocket_zones: Vec::new(),
             placing: None,
+            editing: None,
             pocket_events: Vec::new(),
         }
     }
@@ -2673,6 +2676,15 @@ impl Rig {
             .collect()
     }
 
+    /// While the slots' editor is open, where each slot of the player's things is and how far it
+    /// reaches out (tracking space: its middle, its taking radius), and whether it's the one picked
+    /// in the editor; nothing once it closes. The picked slot's first thing shows there too
+    /// ([`Rig::show_pockets`]), but it can be inside the drawn body (a hip's) or out of sight.
+    pub fn pocket_marks(&self) -> Vec<(Vec3, f32, bool)> {
+        let Some(picked) = self.editing else { return Vec::new() };
+        self.pocket_zones.iter().enumerate().map(|(k, z)| (self.anchor.zone_center(&z.take), z.take.radius, k == picked)).collect()
+    }
+
     /// The things drawn from the slots, as the runtime describes them (for drawing: they're in no
     /// adapter's table).
     pub fn drawn_descs(&self) -> Vec<ObjectDesc> {
@@ -2684,6 +2696,7 @@ impl Rig {
     /// what it gives); none once it closes. One at a time: the chest's slots are close under the
     /// eyes, and a scroll there is big. Not a thing the hands can take.
     pub fn show_pockets(&mut self, picked: Option<usize>) {
+        self.editing = picked;
         let out = self.drawn_out();
         let want: Vec<Option<InvItem>> =
             self.pockets.iter().enumerate().map(|(k, p)| if Some(k) == picked { pockets::contents(p, &self.inventory, &out).first().map(|i| **i) } else { None }).collect();
