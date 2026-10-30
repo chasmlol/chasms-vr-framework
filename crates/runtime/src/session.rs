@@ -297,8 +297,8 @@ impl Session {
             }
         }
         // The desktop view: off in tests on the emulated headset (RUSTVR_DESKTOP_VIEW=0, or
-        // `capture:<dir>`: off screen, a frame saved there every few seconds) and with the
-        // built-in simulator.
+        // `capture:<dir>`: off screen, a frame saved there every few seconds, or every
+        // RUSTVR_DESKTOP_EVERY seconds) and with the built-in simulator.
         let sp = &settings.current.spectator;
         let env = std::env::var("RUSTVR_DESKTOP_VIEW").unwrap_or_default();
         let capture = env.strip_prefix("capture:").map(PathBuf::from);
@@ -2398,8 +2398,12 @@ impl Session {
         self.pacing.wait(crate::pacing::Wait::Submit, t_wait.elapsed().as_secs_f32() * 1000.0);
         if let Some(w) = &self.spectator {
             let now = frame.display_time_ns as f64 * 1e-9;
+            // (Every five seconds, or as often as `RUSTVR_DESKTOP_EVERY` says: a walk's steps one
+            // after another.)
+            static EVERY: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+            let every = *EVERY.get_or_init(|| std::env::var("RUSTVR_DESKTOP_EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(5.0));
             if let Some((dir, last)) = &mut self.spectator_capture
-                && now - *last > 5.0
+                && now - *last > every
             {
                 *last = now;
                 let path = dir.join(format!("desktop_{:06}.png", frame.index));
