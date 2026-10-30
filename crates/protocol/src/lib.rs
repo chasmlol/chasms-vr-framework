@@ -78,8 +78,8 @@ pub use lighting::*;
 pub use player::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 11;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v11";
+pub const VERSION: u32 = 12;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v12";
 pub const MAPPING_BYTES: usize = 0x0052_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
@@ -414,6 +414,13 @@ pub struct Intents {
     /// Laser pointer on the game's menu panel, 0..1 (top-left origin), while [`INT_CURSOR`].
     pub cursor_uv: [f32; 2],
     pub _pad2: [f32; 2],
+    /// Swimming by the arms, while [`INT_SWIM`]: the velocity the strokes give the player
+    /// (tracking space, metres a second; never faster than [`WaterState::swim_speed`]). The adapter
+    /// has the game's own swimming move the player at it, with the stick's swimming added.
+    pub swim: [f32; 3],
+    /// How hard the arms are stroking, 0..1 (0: they aren't): the game's swimming shows a swimmer
+    /// while it's above 0 (its strokes, its skill).
+    pub swim_effort: f32,
 }
 pub const INT_WEAPON: u32 = 1 << 0;
 pub const INT_TWO_HANDED: u32 = 1 << 1;
@@ -428,6 +435,8 @@ pub const INT_CURSOR_DOWN: u32 = 1 << 6;
 pub const INT_MAG_OUT: u32 = 1 << 7;
 /// Manual reload: the off hand holds a fresh magazine (draw one there).
 pub const INT_HOLDING_MAG: u32 = 1 << 8;
+/// The player is in the game's water and the runtime swims them by the arms ([`Intents::swim`]).
+pub const INT_SWIM: u32 = 1 << 9;
 
 /// Game actions the runtime can ask for. The adapter maps each to the game's own input.
 #[repr(u32)]
@@ -618,6 +627,8 @@ pub struct GameState {
     pub request: TargetRequest,
     /// The game's lighting near the player, so what the runtime draws (hands, body) matches it.
     pub light: LightHint,
+    /// The water the player is in (all zero: none).
+    pub water: WaterState,
     /// Adapter-defined counters (diagnostics and tests): see the adapter's docs.
     pub stats: [u32; 24],
     pub stats_f: [f32; 16],
@@ -655,6 +666,31 @@ pub struct LightHint {
     pub ambient: [f32; 3],
     pub _p2: f32,
 }
+
+/// The water where the player is, as the game has it. The game decides when the player swims (its
+/// own depth for it) and how fast; the runtime swims them by the arms while [`WATER_SWIMMING`]
+/// ([`Intents::swim`]) and floats the body.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct WaterState {
+    pub flags: u32, // WATER_*
+    /// The surface's height in the world (metres, the world's Y), where the player is.
+    pub surface: f32,
+    /// How fast the game lets the player swim now (metres a second): its own swim speed, for the
+    /// player's skills, attributes and load. The strokes never take the player faster.
+    pub swim_speed: f32,
+    /// Breath left, 0..1 (1: full, or the player can breathe here).
+    pub breath: f32,
+    pub _pad: [f32; 4],
+}
+/// The player's cell has water: `surface` is given.
+pub const WATER_HERE: u32 = 1 << 0;
+/// The game has the player swimming.
+pub const WATER_SWIMMING: u32 = 1 << 1;
+/// The player's head is under the surface (the game counts their breath).
+pub const WATER_HEAD_UNDER: u32 = 1 << 2;
+/// The player walks on water (the game's water walking): no swimming.
+pub const WATER_WALKING: u32 = 1 << 3;
 
 /// The adapter's tracking -> world mapping as it was last applied (written by the adapter SDK).
 #[repr(C)]
@@ -837,12 +873,13 @@ const _: () = {
     assert!(size_of::<Fov>() == 16);
     assert!(size_of::<Controller>() == 112);
     assert!(size_of::<TrackingControl>() == 32);
-    assert!(size_of::<Intents>() == 328);
-    assert!(size_of::<RtFrame>() == 752);
+    assert!(size_of::<Intents>() == 344);
+    assert!(size_of::<RtFrame>() == 768);
     assert!(size_of::<TrackingState>() == 64);
     assert!(size_of::<WeaponRig>() == 144);
     assert!(size_of::<TargetRequest>() == 32);
-    assert!(size_of::<GameState>() == 512);
+    assert!(size_of::<GameState>() == 544);
+    assert!(size_of::<WaterState>() == 32);
     assert!(size_of::<LightHint>() == 48);
     assert!(size_of::<SlotInfo>() == 256);
     assert!(size_of::<SlotMap>() == 32);

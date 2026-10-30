@@ -8,7 +8,7 @@
 
 #define RVR_MAGIC 1381389650
 
-#define RVR_VERSION 11
+#define RVR_VERSION 12
 
 #define RVR_MAPPING_BYTES 5373952
 
@@ -95,6 +95,11 @@
 #define RVR_CTRL_TOUCH_B (1 << 8)
 
 #define RVR_CTRL_TOUCH_STICK (1 << 9)
+
+/**
+ * The thumb rests on the thumbrest (Touch controllers).
+ */
+#define RVR_CTRL_TOUCH_REST (1 << 10)
 
 #define RVR_HAND_LEFT 0
 
@@ -185,6 +190,11 @@
 #define RVR_INT_HOLDING_MAG (1 << 8)
 
 /**
+ * The player is in the game's water and the runtime swims them by the arms ([`Intents::swim`]).
+ */
+#define RVR_INT_SWIM (1 << 9)
+
+/**
  * One past the highest [Action] value (some values in between are unused).
  */
 #define RVR_ACTION_COUNT 48
@@ -227,6 +237,26 @@
  * what the player sees of themself is the runtime's, drawn over the game's picture.
  */
 #define RVR_GS_PLAYER_RIG (1 << 10)
+
+/**
+ * The player's cell has water: `surface` is given.
+ */
+#define RVR_WATER_HERE (1 << 0)
+
+/**
+ * The game has the player swimming.
+ */
+#define RVR_WATER_SWIMMING (1 << 1)
+
+/**
+ * The player's head is under the surface (the game counts their breath).
+ */
+#define RVR_WATER_HEAD_UNDER (1 << 2)
+
+/**
+ * The player walks on water (the game's water walking): no swimming.
+ */
+#define RVR_WATER_WALKING (1 << 3)
 
 #define RVR_RIG_HAS_SIGHT (1 << 0)
 
@@ -803,20 +833,22 @@
 #define RVR_SHAPE_SPHERE 2
 
 /**
- * The convex hull of the object's points in [`GameHulls`] (object space): one of the game's own
- * convex collision meshes, exactly. Until its points arrive, the box `half_extents` about `center`.
+ * The convex hulls of the object's points in [`GameHulls`] (object space): the game's own convex
+ * collision, exactly, one hull or several (its convex parts: a gun's receiver, barrel and stock).
+ * Until its points arrive, the box `half_extents` about `center`.
  */
 #define RVR_SHAPE_HULL 3
 
 /**
  * The points of game objects' convex collision ([`SHAPE_HULL`]), game -> runtime, written
- * whenever the objects offered change (before they're published).
+ * whenever the objects offered change (before they're published). An object with several convex
+ * parts has an entry for each.
  */
 #define RVR_OFF_GAME_HULLS 5046272
 
-#define RVR_MAX_GAME_HULLS 48
+#define RVR_MAX_GAME_HULLS 240
 
-#define RVR_MAX_HULL_POINTS 128
+#define RVR_MAX_HULL_POINTS 32
 
 #define RVR_WPN_AUTOMATIC (1 << 0)
 

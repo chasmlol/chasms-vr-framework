@@ -44,6 +44,9 @@
 //!    (VRArmIK/Parger), smoothed (only the swivel), and an analytic two-bone solve with FRIK's
 //!    10°–145° flexion clamps. The wrist lands exactly on the hand target.
 //!
+//! In water ([`TrackedInput::swim`]) the body floats instead (`swim`): the legs hang from the hips
+//! and kick, and the body leans into the way it swims.
+//!
 //! Every constant is in [`BodyParams`], with its source. All filters are α = 1 − e^(−dt/τ) with
 //! dt clamped to three nominal frames.
 
@@ -55,6 +58,7 @@ mod params;
 mod skeleton;
 mod solver;
 mod spine;
+mod swim;
 mod torso;
 
 pub use fingers::{FingerInput, FingerSolver, HoldShape};
@@ -96,6 +100,19 @@ pub struct TrackedInput {
     /// Each elbow where the headset tracks it [left, right] (a Quest's body tracking), tracking
     /// space; `None` = not tracked: the arm's own model places it.
     pub elbows: [Option<Vec3>; 2],
+    /// The player is swimming: the body floats.
+    pub swim: Option<Swimming>,
+}
+
+/// A swimming body: how it moves through the water.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Swimming {
+    /// Its velocity through the water (tracking space, m/s).
+    pub velocity: Vec3,
+    /// The game's full swimming speed (m/s): how fast it swims is the velocity against this.
+    pub full_speed: f32,
+    /// How hard the arms are stroking, 0..1.
+    pub effort: f32,
 }
 
 /// The two measurements the body is scaled from.
