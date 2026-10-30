@@ -654,9 +654,9 @@
 #define RVR_HELD_SHEET (1 << 1)
 
 /**
- * Its pages turn by hand: the free hand sweeping across them past the middle (or the trigger
- * pinched at a page's edge and pulled across) presses [`crate::Action::PageNext`] (sweeping
- * leftwards) or [`crate::Action::PagePrev`].
+ * Its pages turn by hand: the free hand flicked across them (or the trigger pinched at a page's
+ * edge and pulled across the middle) presses [`crate::Action::PageNext`] (leftwards) or
+ * [`crate::Action::PagePrev`].
  */
 #define RVR_HELD_PAGES (1 << 2)
 
@@ -676,6 +676,13 @@
  * [`HudHeld::centre`] says where the thing's faces are centred.
  */
 #define RVR_HELD_CENTRE (1 << 5)
+
+/**
+ * On the thing but turned to the eyes from its middle, upright, just in front of it as the eyes
+ * see it (instead of [`HELD_FACE`]): however the hand turns it, it's read face on (a book's pages
+ * over the book).
+ */
+#define RVR_HELD_FACING (1 << 6)
 
 /**
  * [`HudHeld::hand`]: whichever hand the laser doesn't come from (the player's off hand).

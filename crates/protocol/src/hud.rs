@@ -99,9 +99,9 @@ pub const HELD_FACE: u32 = 1 << 0;
 /// turned to the eyes. The other hand's grip near its far side spreads it between the two (as wide
 /// as they're apart, within reason): pulling them apart makes it bigger.
 pub const HELD_SHEET: u32 = 1 << 1;
-/// Its pages turn by hand: the free hand sweeping across them past the middle (or the trigger
-/// pinched at a page's edge and pulled across) presses [`crate::Action::PageNext`] (sweeping
-/// leftwards) or [`crate::Action::PagePrev`].
+/// Its pages turn by hand: the free hand flicked across them (or the trigger pinched at a page's
+/// edge and pulled across the middle) presses [`crate::Action::PageNext`] (leftwards) or
+/// [`crate::Action::PagePrev`].
 pub const HELD_PAGES: u32 = 1 << 2;
 /// The free hand's grip on its face drags what's on it: the game's cursor goes where the hand is on
 /// it, its button down, as the hand moves (a map's pan), until the grip opens.
@@ -111,6 +111,10 @@ pub const HELD_DRAG: u32 = 1 << 3;
 pub const HELD_BRING: u32 = 1 << 4;
 /// [`HudHeld::centre`] says where the thing's faces are centred.
 pub const HELD_CENTRE: u32 = 1 << 5;
+/// On the thing but turned to the eyes from its middle, upright, just in front of it as the eyes
+/// see it (instead of [`HELD_FACE`]): however the hand turns it, it's read face on (a book's pages
+/// over the book).
+pub const HELD_FACING: u32 = 1 << 6;
 /// [`HudHeld::hand`]: whichever hand the laser doesn't come from (the player's off hand).
 pub const HELD_OFF_HAND: u32 = 2;
 

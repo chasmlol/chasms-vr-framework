@@ -7,6 +7,10 @@
 //!   eyes when it appeared (a book's cover), its middle on the face's middle, upright along the face
 //!   side nearest the eyes' up then, a few millimetres out. It follows the thing exactly, as the rig
 //!   has it, every frame: the pages never swim on the book.
+//! - **Facing the eyes on a thing** (`HELD_FACING`): centred on the thing, turned to the eyes from
+//!   there, upright, a little smoothed, and just in front of it as the eyes see it (so the book under
+//!   the pages, and the fingers round it, stay behind them): however the hand turns the book, its
+//!   pages are read face on.
 //! - **A sheet** (`HELD_SHEET`): held by the middle of its outer side (the left hand its left side),
 //!   always turned to the eyes from its middle, upright, a little smoothed (a sheet held at its edge
 //!   swings far with a little turn of the wrist, the shake Riven VR's players asked to be rid of).
@@ -14,11 +18,12 @@
 //!   apart (a sheet pulled bigger stays that big), facing the eyes about the line between them.
 //! - **Its size**: a line of the game's text is `menu_text_deg` at `held_distance` (0.45 m), kept
 //!   as it moves: nearer is bigger, as with a real book.
-//! - **Pages** (`HELD_PAGES`): the free hand, near the pages, sweeping across the middle from well
-//!   out on one page to the other (or pinching the trigger at a page's edge and pulling it across)
-//!   turns a page: from the right page leftwards onwards, back the other way. The way back is free a
-//!   moment after a turn (an overshoot is undone at once), but the hand's own return after a turn
-//!   doesn't count against it until then.
+//! - **Pages** (`HELD_PAGES`): the free hand flicked across the pages, anywhere over them or a
+//!   hand's breadth in front (or the trigger pinched at a page's edge and pulled across the middle),
+//!   turns a page: leftwards onwards, back the other way. A flick is the hand's speed across them,
+//!   not where it starts or ends, so it needn't be aimed; the hand has to slow before it flicks
+//!   again, and the way back is shut for a moment after a turn, so the hand coming back after a
+//!   flick doesn't turn it back.
 //! - **Dragging** (`HELD_DRAG`): the free hand's grip on the sheet's face holds the game's cursor
 //!   there, its button down, and moves it with the hand: the game drags what's on it (its map).
 //!
@@ -73,12 +78,23 @@ pub struct HeldOut {
 const FACE_LIFT: f32 = 0.004;
 /// The free hand is on the pages within this far in front of them (and a little behind).
 const NEAR_PAGE: f32 = 0.12;
-/// A sweep starts this far out on a page (a share of the half width) and ends this far across.
-const SWEEP_FROM: f32 = 0.35;
-const SWEEP_TO: f32 = 0.08;
-/// A sweep takes at most this long (seconds); the way back is shut this long after a turn, the same
-/// way this long.
-const SWEEP_TIME: f64 = 1.2;
+/// Pages facing the eyes lie this far out in front of their thing (metres): clear of the fingers
+/// round its cover.
+const FACING_LIFT: f32 = 0.03;
+/// A flick turns a page within this far in front of the pages (metres; a hand's breadth) and this
+/// far behind them (a hand that goes through them).
+const FLICK_NEAR: f32 = 0.2;
+const FLICK_BEHIND: f32 = 0.08;
+/// A flick is the free hand this fast across the pages (metres a second; a hand reading, or coming
+/// to the pages, moves across them at a fraction of it), as its speed eases at this rate (seconds),
+/// and it flicks again once it's below this share of it.
+const FLICK_SPEED: f32 = 0.6;
+const FLICK_EASE: f32 = 0.03;
+const FLICK_REARM: f32 = 0.4;
+/// A pinch pulled across ends this far past the middle (a share of the half width), within this
+/// long (seconds); the way back is shut this long after a turn, the same way this long.
+const PULL_TO: f32 = 0.08;
+const PULL_TIME: f64 = 1.2;
 const BACK_AFTER: f64 = 1.0;
 const AGAIN_AFTER: f64 = 0.2;
 /// A hand this far behind a sheet (metres) can still take hold of it.
@@ -113,8 +129,14 @@ struct Lie {
     unit: f32,
     /// The frame it's at now: its origin (the group's (0, 0)), right and up.
     frame: Option<(Vec3, Vec3, Vec3)>,
-    /// A sweep under way: where on the pages it started (group units across) and when.
+    /// A pinch pulled across, under way: where on the pages it started (a share of the half width
+    /// from the middle) and when.
     sweep: Option<(f32, f64)>,
+    /// The free hand across the pages last frame (metres rightwards from its origin) and when; its
+    /// speed across them (metres a second, eased); and whether it's slowed since its last flick.
+    across: Option<(f32, f64)>,
+    speed: f32,
+    armed: bool,
     /// The last turn: which way and when.
     turned: Option<(Action, f64)>,
     /// The free hand's grip and trigger last frame.
@@ -226,13 +248,29 @@ impl HeldMenus {
             let k = match self.lies.iter().position(|l| l.id == g.id) {
                 Some(k) => k,
                 None => {
-                    self.lies.push(Lie { id: g.id, object: held.object, holder, face: None, hold: None, unit: natural, frame: None, sweep: None, turned: None, gripped: false, pinched: false, drag: None });
+                    self.lies.push(Lie {
+                        id: g.id,
+                        object: held.object,
+                        holder,
+                        face: None,
+                        hold: None,
+                        unit: natural,
+                        frame: None,
+                        sweep: None,
+                        across: None,
+                        speed: 0.0,
+                        armed: true,
+                        turned: None,
+                        gripped: false,
+                        pinched: false,
+                        drag: None,
+                    });
                     self.lies.len() - 1
                 }
             };
             let lie = &mut self.lies[k];
             // On the thing's face turned to the eyes when it's first in the hand.
-            if let (None, true, Some(t)) = (lie.face, held.flags & HELD_FACE != 0, thing) {
+            if let (None, true, false, Some(t)) = (lie.face, held.flags & HELD_FACE != 0, held.flags & HELD_FACING != 0, thing) {
                 let centre = if held.flags & HELD_CENTRE != 0 { Vec3::from_array(held.centre) } else { t.centre };
                 let f = Face::of(centre, t.half, t.rot.inverse() * head_up);
                 tracing::info!("held menus: {:#x} lies on {:#x}'s faces along {:.2?} about {centre:.3?} (up {:.2?}; its box {:.3?} about {:.3?}; held at {:.3?})", g.id, t.id, f.axis, f.up, t.half, t.centre, t.pos);
@@ -241,6 +279,7 @@ impl HeldMenus {
             (lie.object, lie.holder) = (held.object, holder);
             // Where it is now: its origin, right and up.
             let frame = match (lie.face, thing) {
+                (_, Some(t)) if held.flags & HELD_FACING != 0 => Some(facing_frame(lie, &held, fp, t, head_pos, head_up, dt)),
                 (Some(f), Some(t)) => {
                     let (c, r, u) = f.toward(t.rot.inverse() * (head_pos - t.pos));
                     Some((t.pos + t.rot * c, t.rot * r, t.rot * u))
@@ -279,7 +318,7 @@ impl HeldMenus {
                 (Vec2::new(d.dot(right), d.dot(up)) / unit, d.dot(normal))
             });
             let over = |xy: Vec2| xy.x > fp[0] - half_w * 0.15 && xy.x < fp[2] + half_w * 0.15 && xy.y > fp[1] - (fp[3] - fp[1]) * 0.2 && xy.y < fp[3] + (fp[3] - fp[1]) * 0.2;
-            let near = on.filter(|&(xy, z)| z > -0.03 && z < NEAR_PAGE && over(xy));
+            let near = on.filter(|&(xy, z)| z > -FLICK_BEHIND && z < FLICK_NEAR && over(xy));
             // (A hand taking hold of a sheet may be a little behind it: paper is taken from both sides.)
             let on_it = on.filter(|&(xy, z)| z > -GRIP_BEHIND && z < NEAR_PAGE && over(xy));
             let grip = hands[free].squeeze > 0.6;
@@ -321,27 +360,42 @@ impl HeldMenus {
                     }
                 }
             }
-            // Turning pages: a sweep across the middle, or a pinch at an edge pulled across.
+            // Turning pages: a flick across them, or a pinch at an edge pulled across the middle.
             if held.flags & HELD_PAGES != 0 && lie.drag.is_none() {
+                // The free hand's speed across the pages (as they move too: a flick is the hand's
+                // across the book, wherever the other hand takes it).
+                let across = hands[free].grip.map(|(p, _)| (p - origin).dot(right));
+                match (across, lie.across) {
+                    (Some(a), Some((a0, t0))) if now > t0 => {
+                        let step = (now - t0) as f32;
+                        lie.speed += ((a - a0) / step - lie.speed) * (1.0 - (-step / FLICK_EASE).exp());
+                    }
+                    _ => lie.speed = 0.0,
+                }
+                lie.across = across.map(|a| (a, now));
+                if lie.speed.abs() < FLICK_SPEED * FLICK_REARM {
+                    lie.armed = true;
+                }
                 match near {
                     Some((xy, _)) => {
                         let x = (xy.x - mid_x) / half_w.max(1e-4);
-                        // A sweep starts from the last moment the hand was out on a page (its time
-                        // counts from when it left there), or from a pinch wherever it is.
-                        if (pinch && !lie.pinched) || x.abs() > SWEEP_FROM {
+                        if pinch && !lie.pinched {
                             lie.sweep = Some((x, now));
                         }
-                        if let Some((x0, t0)) = lie.sweep {
-                            let way = if x0 > 0.0 && x < -SWEEP_TO { Some(Action::PageNext) } else if x0 < 0.0 && x > SWEEP_TO { Some(Action::PagePrev) } else { None };
-                            if let Some(a) = way.filter(|_| now - t0 < SWEEP_TIME) {
-                                let shut = lie.turned.is_some_and(|(b, t)| now - t < if a == b { AGAIN_AFTER } else { BACK_AFTER });
-                                if !shut {
-                                    out.presses.push(a);
-                                    out.haptics.push((free, 0.02, 120.0, 0.45));
-                                    lie.turned = Some((a, now));
-                                }
-                                lie.sweep = None;
+                        let flick = if lie.speed < -FLICK_SPEED { Some(Action::PageNext) } else if lie.speed > FLICK_SPEED { Some(Action::PagePrev) } else { None };
+                        let pulled = lie.sweep.filter(|&(_, t0)| now - t0 < PULL_TIME).and_then(|(x0, _)| {
+                            if x0 > 0.0 && x < -PULL_TO { Some(Action::PageNext) } else if x0 < 0.0 && x > PULL_TO { Some(Action::PagePrev) } else { None }
+                        });
+                        if let Some(a) = flick.filter(|_| lie.armed).or(pulled) {
+                            let shut = lie.turned.is_some_and(|(b, t)| now - t < if a == b { AGAIN_AFTER } else { BACK_AFTER });
+                            if !shut {
+                                tracing::info!("held menus: {:#x}'s page turned by the free hand: {}", g.id, if flick.is_some() { "a flick" } else { "a pinch pulled across" });
+                                out.presses.push(a);
+                                out.haptics.push((free, 0.02, 120.0, 0.45));
+                                lie.turned = Some((a, now));
                             }
+                            lie.sweep = None;
+                            lie.armed = false;
                         }
                     }
                     None => lie.sweep = None,
@@ -404,6 +458,28 @@ fn sheet_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], holder: usize, thing
     }
     let origin = at.0 - r * side_x * lie.unit - u * mid_y * lie.unit;
     Some((origin, r, u))
+}
+
+/// Where pages facing the eyes on a thing are now (`HELD_FACING`): their middle on the thing's
+/// (its model's, with `HELD_CENTRE`), turned to the eyes from there, upright, a little smoothed, and
+/// out towards the eyes past the thing's box as they see it, so nothing of it is in front of them.
+#[allow(clippy::too_many_arguments)]
+fn facing_frame(lie: &mut Lie, held: &HudHeld, fp: [f32; 4], t: &Thing, eye: Vec3, head_up: Vec3, dt: f32) -> (Vec3, Vec3, Vec3) {
+    let centre = if held.flags & HELD_CENTRE != 0 { Vec3::from_array(held.centre) } else { t.centre };
+    let mid = t.pos + t.rot * centre;
+    let (mut r, mut u) = facing(mid, eye, head_up);
+    if let Some((_, pr, pu)) = lie.frame {
+        let k = 1.0 - (-dt / SHEET_EASE).exp();
+        r = ease(pr, r, k);
+        u = ease(pu, u, k);
+        u = (u - r * u.dot(r)).normalize_or(u);
+    }
+    // (How far the box reaches towards the eyes from that middle, in its own space.)
+    let n = t.rot.inverse() * u.cross(r);
+    let reach = (t.centre - centre).dot(n) + n.abs().dot(t.half);
+    let at = mid + t.rot * n * (reach.max(0.0) + FACING_LIFT);
+    let origin = at - r * (fp[0] + fp[2]) * 0.5 * lie.unit - u * (fp[1] + fp[3]) * 0.5 * lie.unit;
+    (origin, r, u)
 }
 
 /// The eyes' right at a point (across the line from the eye to it).
