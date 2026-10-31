@@ -4,9 +4,10 @@
 //! deep at most, how hard it slides), and the speeds of its five push levels. A pairing with no row
 //! does nothing (a blunt hit on wood or stone).
 //!
-//! The table's materials are the protocol's: flesh (and ethereal), leather, chainmail, plate (and the
-//! world's metal and stone, which the tables list with plate), wood (and bone: hard, but cut and stabbed
-//! like wood here), and earth (sand and dirt).
+//! The table's materials are the protocol's: flesh (and ethereal), leather, chainmail, plate (and
+//! the world's metal and stone, which the edge and point tables list with plate and the blunt ones
+//! don't: a mace does nothing to a wall), wood (and bone: hard, but cut and stabbed like wood and
+//! struck like plate here), and earth (sand and dirt).
 
 use rustvr_protocol::*;
 
@@ -23,8 +24,10 @@ pub const MOD_BLUNT_VERY_LIGHT: u32 = 9;
 pub const MOD_PUNCH: u32 = 10;
 pub const MOD_KICK: u32 = 11;
 pub const MOD_ENERGY: u32 = 12;
-/// A body slamming into something (flesh: what a fall or a throw does to it).
+/// A body slamming into something (what a fall or a throw does to it, by its own armour there),
+/// and its head.
 pub const MOD_RAGDOLL: u32 = 13;
+pub const MOD_RAGDOLL_HEAD: u32 = 14;
 
 const INF: f32 = f32::INFINITY;
 
@@ -84,6 +87,8 @@ const fn p2(a: f32, b: f32) -> [f32; 5] {
     [a, b, INF, INF, INF]
 }
 const NONE: [f32; 5] = [INF; 5];
+/// A slamming body's push levels.
+const SLAM: [f32; 5] = [3.0, 4.5, 6.0, 12.0, 24.0];
 
 /// The material's class in the tables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,21 +101,25 @@ enum Mat {
     Earth,
 }
 
-fn class(material: u32) -> Mat {
-    match material {
+fn class(material: u32, modifier: u32) -> Option<Mat> {
+    let blunt = matches!(modifier, MOD_BLUNT | MOD_BLUNT_LIGHT | MOD_BLUNT_VERY_LIGHT | MOD_PUNCH | MOD_KICK);
+    Some(match material {
         MAT_LEATHER => Mat::Leather,
         MAT_CHAINMAIL => Mat::Chainmail,
-        MAT_PLATE | MAT_STONE => Mat::Plate,
+        MAT_PLATE => Mat::Plate,
+        MAT_STONE if blunt => return None,
+        MAT_STONE => Mat::Plate,
+        MAT_BONE if blunt => Mat::Plate,
         MAT_WOOD | MAT_BONE => Mat::Wood,
         MAT_EARTH => Mat::Earth,
         _ => Mat::Flesh,
-    }
+    })
 }
 
 /// The row of table `modifier` for a hit on `material` by a weapon of `tier` (0..5), filled with
 /// fire or not; None: there's none (the hit does nothing).
 pub fn row(modifier: u32, material: u32, tier: u32, fire: bool) -> Option<Row> {
-    let m = class(material);
+    let m = class(material, modifier)?;
     let t = tier.min(6);
     if fire && let Some(r) = fire_row(modifier, m) {
         return Some(r);
@@ -216,30 +225,56 @@ pub fn row(modifier: u32, material: u32, tier: u32, fire: bool) -> Option<Row> {
         (MOD_KICK, Chainmail) => Row::hit(2.0, 0.75, [1.0, 2.0, 4.0, 6.0, 18.0]).thrown(NONE).knocks_out(12.0, 12.0, 0.8),
         (MOD_KICK, Plate) => Row::hit(6.0, 1.5, [1.0, 2.0, 5.0, 7.0, 18.0]).thrown(NONE).knocks_out(14.0, 14.0, 1.2),
         (MOD_ENERGY, _) => Row::hit(1.0, 1.0, [1.0, 2.0, 4.0, 6.0, 24.0]).knocks_out(6.0, 6.0, 1.0),
-        // A body slamming into the world or another (falls, throws): from 5 m/s.
-        (MOD_RAGDOLL, _) => Row::hit(5.0, 1.0, [3.0, 4.5, 6.0, 12.0, 24.0]).knocks_out(3.0, INF, 1.0),
+        // A body slamming into the world or another (falls, throws), by what it wears there: bare,
+        // from 5 m/s; leather takes most of it, plate more.
+        (MOD_RAGDOLL, Flesh | Wood | Earth) => Row::hit(5.0, 1.0, SLAM).knocks_out(3.0, INF, 1.0),
+        (MOD_RAGDOLL, Leather) => Row::hit(8.0, 0.1, SLAM).knocks_out(4.0, INF, 1.0),
+        (MOD_RAGDOLL, Chainmail) => Row::hit(6.0, 0.75, SLAM).knocks_out(4.0, INF, 1.0),
+        (MOD_RAGDOLL, Plate) => Row::hit(7.0, 0.2, SLAM).knocks_out(5.0, INF, 1.0),
+        // The head slams harder for less.
+        (MOD_RAGDOLL_HEAD, Flesh | Wood | Earth) => Row::hit(3.0, 1.0, SLAM).knocks_out(2.0, INF, 1.0),
+        (MOD_RAGDOLL_HEAD, Leather) => Row::hit(4.0, 0.1, SLAM).knocks_out(5.0, INF, 1.0),
+        (MOD_RAGDOLL_HEAD, Chainmail) => Row::hit(4.0, 0.75, SLAM).knocks_out(4.0, INF, 1.0),
+        (MOD_RAGDOLL_HEAD, Plate) => Row::hit(5.0, 0.2, SLAM).knocks_out(6.0, INF, 1.0),
         _ => return None,
     })
 }
 
 /// The fire-imbued rows, checked first for a weapon filled with fire: a burning blade bites at half
-/// the speed and sinks easier.
+/// the speed and sinks easier. (Any tier; plate takes no draw cut.)
 fn fire_row(modifier: u32, m: Mat) -> Option<Row> {
     use Mat::*;
     Some(match (modifier, m) {
         (MOD_SLASH, Flesh) => Row::hit(1.5, 1.0, p2(3.0, 8.0)).goes_in(1.5, 0.5, 0.003, 1.0),
-        (MOD_SLASH, Leather) => Row::hit(1.5, 0.5, p2(3.0, 9.0)).goes_in(3.0, 1.0, 0.003, 1.0),
+        (MOD_SLASH, Leather) => Row::hit(1.5, 0.5, p2(3.0, 8.0)).goes_in(3.0, 1.0, 0.003, 1.0),
         (MOD_SLASH, Chainmail | Wood) => Row::hit(3.0, 0.5, p2(12.0, 15.0)).goes_in(3.0, 1.0, 0.003, 1.0),
-        (MOD_SLASH, Plate) => Row::hit(4.0, 0.5, p2(8.0, 12.0)).goes_in(4.0, 1.0, 0.003, 1.0),
+        (MOD_SLASH, Plate) => Row::hit(4.0, 0.5, p2(8.0, 12.0)).goes_in(4.0, 1.0, 0.003, 0.0),
+        (MOD_SLASH_WEAK, Flesh) => Row::hit(1.5, 1.0, p1(6.0)).goes_in(3.0, 0.5, 0.003, 1.0),
+        (MOD_SLASH_WEAK, Leather) => Row::hit(3.0, 0.5, p1(6.0)).goes_in(3.0, 0.5, 0.003, 1.0),
+        (MOD_SLASH_WEAK, Chainmail | Wood) => Row::hit(6.0, 0.15, p1(12.0)).goes_in(6.0, 0.5, 0.003, 1.0),
+        (MOD_SLASH_WEAK, Plate) => Row::hit(6.0, 0.25, p1(12.0)).goes_in(6.0, 0.5, 0.003, 0.0),
         (MOD_SLASH_HEAVY, Flesh) => Row::hit(1.5, 1.0, [3.0, 6.0, 9.0, 20.0, 24.0]).goes_in(1.5, 0.5, 0.003, 1.0),
+        (MOD_SLASH_HEAVY, Leather) => Row::hit(1.5, 0.5, [3.0, 6.0, 10.0, 20.0, 24.0]).goes_in(1.5, 1.0, 0.003, 1.0),
+        (MOD_SLASH_HEAVY, Chainmail | Wood) => Row::hit(4.0, 0.5, [12.0, 15.0, 18.0, 20.0, 24.0]).thrown([12.0, 15.0, 18.0, 20.0, 14.0]).goes_in(4.0, 0.5, 0.003, 1.0),
+        (MOD_SLASH_HEAVY, Plate) => Row::hit(3.0, 0.5, [7.0, 12.0, 15.0, 20.0, 24.0]).goes_in(4.5, 0.5, 0.003, 1.0),
         (MOD_SLASH_AXE, Flesh) => Row::hit(3.0, 1.0, [3.0, 6.0, 9.0, 14.0, 24.0]).goes_in(3.0, 0.9, INF, 1.0),
-        (MOD_SLASH_AXE, Plate) => Row::hit(3.0, 0.8, [9.0, 12.0, 15.0, 20.0, 24.0]).goes_in(4.5, 3.0, INF, 1.0),
-        (MOD_PIERCE | MOD_PIERCE_FINE, Flesh) => Row::hit(1.0, 1.0, p2(6.0, 15.0)).goes_in(1.0, 1.0, INF, 1.0),
-        (MOD_PIERCE | MOD_PIERCE_FINE, Chainmail) => Row::hit(1.0, 1.0, p2(9.0, 18.0)).goes_in(1.0, 4.0, INF, 1.0),
-        (MOD_PIERCE | MOD_PIERCE_FINE, Plate) => Row::hit(1.0, 1.0, NONE).goes_in(1.0, 8.0, INF, 1.0),
+        (MOD_SLASH_AXE, Leather) => Row::hit(3.0, 1.0, [4.0, 7.0, 10.0, 16.0, 24.0]).goes_in(3.0, 1.4, INF, 1.0),
+        (MOD_SLASH_AXE, Chainmail) => Row::hit(3.0, 0.8, [4.0, 8.0, 12.0, 20.0, 24.0]).goes_in(3.0, 1.8, INF, 1.0),
+        (MOD_SLASH_AXE, Plate) => Row::hit(3.0, 0.8, [9.0, 12.0, 15.0, 20.0, 24.0]).goes_in(4.5, 3.0, INF, 0.0),
+        (MOD_SLASH_AXE, Wood | Earth) => Row::hit(3.0, 0.8, NONE).goes_in(2.0, 1.0, INF, 1.0),
+        (MOD_PIERCE, Flesh) => Row::hit(1.0, 1.0, p2(6.0, 15.0)).thrown(p2(3.0, 6.0)).goes_in(1.0, 1.0, INF, 1.0),
+        (MOD_PIERCE, Leather) => Row::hit(1.0, 1.0, p2(6.0, 18.0)).thrown(p2(3.0, 6.0)).goes_in(1.0, 1.5, INF, 1.0),
+        (MOD_PIERCE, Chainmail) => Row::hit(1.0, 1.0, p2(9.0, 18.0)).thrown(p2(3.0, 6.0)).goes_in(1.0, 4.0, INF, 1.0),
+        (MOD_PIERCE, Wood) => Row::hit(1.0, 1.0, p1(9.0)).goes_in(1.0, 2.0, INF, 1.0),
+        (MOD_PIERCE, Plate) => Row::hit(1.0, 1.0, p2(12.0, 16.0)).goes_in(1.0, 8.0, INF, 1.0),
+        (MOD_PIERCE_FINE, Flesh) => Row::hit(1.0, 1.0, p2(6.0, 15.0)).thrown(p2(3.0, 6.0)).goes_in(1.0, 0.75, INF, 1.0),
+        (MOD_PIERCE_FINE, Leather) => Row::hit(1.0, 1.0, p2(6.0, 18.0)).thrown(p2(3.0, 6.0)).goes_in(1.0, 1.25, INF, 1.0),
+        (MOD_PIERCE_FINE, Chainmail) => Row::hit(1.0, 1.0, p2(9.0, 18.0)).thrown(p2(3.0, 6.0)).goes_in(1.0, 2.0, INF, 1.0),
+        (MOD_PIERCE_FINE, Wood) => Row::hit(1.0, 1.0, p1(9.0)).goes_in(1.0, 2.0, INF, 1.0),
+        (MOD_PIERCE_FINE, Plate) => Row::hit(1.0, 1.0, p2(12.0, 16.0)).goes_in(1.0, 6.0, INF, 1.0),
         (MOD_BLUNT, Flesh) => Row::hit(1.0, 1.2, [4.0, 7.5, 9.0, 12.0, 24.0]).knocks_out(4.0, 4.0, 1.5),
-        (MOD_BLUNT, Leather | Chainmail) => Row::hit(4.0, 0.6, [8.0, 10.0, 12.0, 16.0, 24.0]),
-        (MOD_BLUNT, Plate) => Row::hit(4.0, 0.75, [9.0, 11.0, 13.0, 16.0, 24.0]),
+        (MOD_BLUNT, Leather | Chainmail) => Row::hit(4.0, 0.6, [8.0, 10.0, 12.0, 16.0, 24.0]).knocks_out(14.0, 16.0, 0.5),
+        (MOD_BLUNT, Plate) => Row::hit(4.0, 0.75, [9.0, 11.0, 13.0, 16.0, 24.0]).knocks_out(13.0, 13.0, 0.6),
         _ => return None,
     })
 }

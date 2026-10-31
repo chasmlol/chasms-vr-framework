@@ -701,6 +701,7 @@ impl Game {
                     CE_WOUND => "wound",
                     CE_PULLED_OUT => "pulled out",
                     CE_BROKE => "broke",
+                    CE_TOUCH => "touch",
                     _ => "?",
                 },
                 ev.actor,
@@ -730,9 +731,11 @@ impl Game {
                     for b in bled {
                         self.effects.blood(b.point, b.dir, b.strength);
                     }
-                    // Sparks off metal (only above an intensity of 0.5, about 7.6 m/s).
-                    if matches!(ev.material, MAT_CHAINMAIL | MAT_PLATE) && rustvr_melee::intensity(ev.speed) > rustvr_melee::SPARKS_FROM {
-                        self.effects.sparks(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), rustvr_melee::intensity(ev.speed));
+                    // Sparks off metal, only above an intensity of 0.5 (about 7.6 m/s, a mace's
+                    // 11).
+                    let k = combat::blow_intensity(&ev, &self.melee_weapons);
+                    if matches!(ev.material, MAT_CHAINMAIL | MAT_PLATE) && k > rustvr_melee::SPARKS_FROM {
+                        self.effects.sparks(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), k);
                     }
                 }
                 CE_WOUND => {
@@ -750,6 +753,7 @@ impl Game {
                     }
                     self.broken.insert(ev.object, self.time + BROKEN_FOR);
                 }
+                CE_TOUCH => combat::touch(&mut self.people, &ev),
                 CE_PULLED_OUT => {
                     self.effects.blood(Vec3::from_array(ev.point), -Vec3::from_array(ev.dir), 0.5);
                     self.stuck.remove(&ev.object);
@@ -773,8 +777,10 @@ impl Game {
                     }
                 }
                 CE_STRUCK => {
-                    // A fighter's blow on the player: clamped to 5..15 of the player's 100.
-                    let damage = rustvr_melee::body::player_damage(ev.damage, 2);
+                    // A fighter's blow on the player: by the part it met (the player's head x1.5,
+                    // hands x0.5) and its weapon's tier, clamped to 5..15 of the player's 100.
+                    let tier = self.melee_weapons.get(ev.object).map_or(2, |w| w.tier);
+                    let damage = rustvr_melee::body::player_damage(ev.damage * rustvr_melee::body::player_part(ev.part), tier);
                     self.player_health = (self.player_health - damage).max(0.0);
                     self.struck_at = self.time;
                     self.adapter.rumble((0.4 + damage / 30.0).min(1.0));

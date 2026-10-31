@@ -2586,7 +2586,7 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audi
         // The game sounds its own grinding (the bowl's strokes).
         C::Grind | C::GrindStroke => return None,
         // And what a touch on its page does.
-        C::Touch | C::Slide => return None,
+        C::Touch | C::Slide | C::Penetrate => return None,
         C::HitCut => (E::HitCut, S::Cut),
         C::HitStab => (E::HitStab, S::Stab),
         C::HitBlunt => (E::Melee, S::Melee),

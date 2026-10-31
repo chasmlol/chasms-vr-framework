@@ -652,6 +652,14 @@
 #define RVR_CE_BROKE 8
 
 /**
+ * One of the player's damagers (`object`, `blade`; 0 a hand) met `actor`'s part `part` (the
+ * game's) of `material` without doing anything: too slow for what it met, or at a bad angle with
+ * no blunt blow to fall back on. It's heard, and on armour
+ * it scratches or scuffs (`what` the damager's kind, `speed`, `point`, `dir` as a hit's).
+ */
+#define RVR_CE_TOUCH 9
+
+/**
  * A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
  */
 #define RVR_CEF_GLANCING (1 << 0)
@@ -679,8 +687,11 @@
 #define RVR_CEF_BACK (1 << 5)
 
 /**
- * An edge that went in fast enough and square enough to cut through the part (a limb's
- * dismemberment): the game cuts it off if it can be.
+ * A blow that went in fast enough, and square enough at a joint, to cut through it (a limb's
+ * dismemberment): the event's `part` is the one it takes off (the part hit, or the one
+ * beside it whose joint it crossed: a forearm cut at the wrist takes the hand), and the game cuts
+ * it off, and what hangs from it, at its joint. The cut kills. The blade doesn't stay in: it
+ * carries on through.
  */
 #define RVR_CEF_SEVER (1 << 6)
 
@@ -1267,6 +1278,12 @@
  * without it, a bad angle does nothing.
  */
 #define RVR_DMGF_BLUNT_BAD (1 << 6)
+
+/**
+ * Its shove on a body that isn't standing ([`MeleeBlade::push`]) is an impulse each frame
+ * and not an acceleration.
+ */
+#define RVR_DMGF_PUSH_IMPULSE (1 << 7)
 
 /**
  * A shield: it blocks with its face, and its rim bludgeons.

@@ -818,6 +818,13 @@ impl Physics {
         self.world.cast_ray_and_get_normal(&ray, max, true, filter).map(|(c, hit)| (hit.time_of_impact, c, from_v(hit.normal)))
     }
 
+    /// Whether a ray from `origin` along `dir` meets collider `c` within `max`.
+    pub fn ray_meets(&self, c: ColliderHandle, origin: V3, dir: V3, max: f32) -> bool {
+        let Some(col) = self.world.colliders.get(c) else { return false };
+        let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
+        col.shape().cast_ray(&self.collider_pose(col), &ray, max, true).is_some()
+    }
+
     /// First static-world hit along a ray: how far, its surface, and what it's made of.
     pub fn world_hit(&self, origin: V3, dir: V3, max: f32) -> Option<WorldHit> {
         let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));

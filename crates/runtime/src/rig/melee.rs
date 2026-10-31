@@ -28,9 +28,12 @@ use rustvr_protocol::*;
 use super::physics::{self, Joint};
 use super::{Attach, Holder, On, Rig, compose, inverse, v3};
 
-/// A held weapon this far (metres) behind where its hand would have it, and stopped by something:
-/// the hand lets it go (the stuck rule: the grip point an arm's length off).
-pub const STUCK_DROP: f32 = 0.7;
+/// How far the player reaches from the middle of their shoulders, of their height (half the
+/// height, times 1.2): a held weapon stopped by something or stuck in it with its grip further off
+/// than that is let go (the stuck rule).
+pub const REACH_OF_HEIGHT: f32 = 0.5 * 1.2;
+/// A grip this far from the shoulders lets go whatever holds it.
+pub const STRETCH_SNAP: f32 = 6.0;
 /// The trigger slides a hand along its handle past this, with the friction going from
 /// [`SLIDE_DAMPER_MAX`] here to [`SLIDE_DAMPER_MIN`] at a full pull (over the trigger's 0.2..1).
 pub const SLIDE_FROM: f32 = 0.2;
@@ -185,10 +188,11 @@ impl Rig {
             o.aim = Some(target);
             o.lag = lag;
         }
-        // Stopped by something an arm's length behind the hand: it's let go (the stuck rule),
-        // rather than dragged through or snapped back.
-        if lag.length() > STUCK_DROP * w && self.physics.in_contact(collider) {
-            tracing::info!("rig: {id:#x} stuck {:.2} m behind hand {hand}: let go", lag.length() / w);
+        // Stopped by something with its grip further than an arm's length from the shoulder: it's
+        // let go (the stuck rule), rather than dragged through or snapped back.
+        let grip = now_pos + now_rot * pivot;
+        if self.stuck_off(grip, self.physics.in_contact(collider)) {
+            tracing::info!("rig: {id:#x} stuck {:.2} m from the shoulders: hand {hand} lets go", grip.distance(self.shoulders()) / w);
             return false;
         }
         // How the controller moves and turns, from where it had the weapon last frame (in tracking
@@ -379,6 +383,11 @@ impl Rig {
     pub fn embedded(&self, id: u32) -> bool {
         self.objects.get(&id).is_some_and(|o| o.embed.is_some())
     }
+
+    /// Whether object `id` is stuck in creature `actor` (in it first, or run on into it).
+    pub fn embedded_in(&self, id: u32, actor: u32) -> bool {
+        self.objects.get(&id).is_some_and(|o| o.embed.iter().chain(o.through.iter()).any(|e| matches!(e.into, super::embed::Into::Actor { id, .. } if id == actor)))
+    }
 }
 
 impl Rig {
@@ -509,6 +518,25 @@ impl Rig {
             t.sweep = Some(((p, q), to));
             t.vel = (v, ang);
         }
+    }
+
+    /// Whether a held thing with its grip at `grip` (world) is let go of (the stuck rule): stopped
+    /// by something or stuck in it (`stopped`) with the grip further than the player's reach from
+    /// the middle of their shoulders, or whatever it is, stretched past `STRETCH_SNAP`.
+    pub(super) fn stuck_off(&self, grip: Vec3, stopped: bool) -> bool {
+        let w = self.map.world_per_meter;
+        let off = grip.distance(self.shoulders()) / w;
+        // (The player is as tall as their eyes are high and a sixteenth more.)
+        let reach = self.eye_height / (1.0 - 1.0 / 16.0) * REACH_OF_HEIGHT;
+        (stopped && off > reach) || off > STRETCH_SNAP
+    }
+
+    /// The middle of the player's shoulders (world): below the eyes by their height over 7.5 and
+    /// back by half that.
+    pub(super) fn shoulders(&self) -> Vec3 {
+        let down = self.eye_height / 7.5;
+        let local = Vec3::new(0.0, -down, -down * 0.5);
+        self.map.point(self.anchor.head + self.anchor.rot() * local)
     }
 
     /// Thrown weapon `id`'s sweep this step (see [`Thrown`]).

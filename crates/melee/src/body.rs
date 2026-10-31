@@ -194,11 +194,21 @@ pub fn player_damage(damage: f32, tier: u32) -> f32 {
     (damage * mult).clamp(5.0, 15.0)
 }
 
-/// What a body slamming into the world does to itself (its
-/// slam curve: nothing at 4 m/s, 12.5 at 12, straight between), before its part's
-/// multiplier: creatures take no fall damage but this.
+/// What a body slamming into the world does to itself (nothing at 4 m/s, 12.5 at 12, straight
+/// between, and flat past its last key), before its part's multiplier: creatures take no fall
+/// damage but this.
 pub fn slam_damage(speed: f32) -> f32 {
-    ((speed - 4.0) / 8.0 * 12.5).max(0.0)
+    ((speed - 4.0) / 8.0 * 12.5).clamp(0.0, 12.5)
+}
+
+/// What a blow does to the player's part of kind `kind` (`PART_*`) before it's clamped: the
+/// player's head and neck x1.5, hands and feet x0.5, the rest x1.
+pub fn player_part(kind: u32) -> f32 {
+    match kind {
+        PART_HEAD => 1.5,
+        PART_HAND | PART_FOOT => 0.5,
+        _ => 1.0,
+    }
 }
 
 /// The player's fall (nothing at 12 m/s down, 200 at 20).

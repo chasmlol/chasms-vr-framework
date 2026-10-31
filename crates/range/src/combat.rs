@@ -36,7 +36,8 @@ pub fn hit(people: &mut crate::arena::People, ev: &CombatEvent, weapons: &MeleeW
     let blade = weapon.and_then(|w| w.blades().get(ev.blade as usize)).copied();
     let tier = weapon.map_or(2, |w| w.tier);
     let modifier = match (blade, ev.flags & CEF_GLANCING != 0) {
-        (_, true) => rustvr_melee::MOD_BLUNT_LIGHT,
+        (Some(b), true) => rustvr_melee::bad_angle(&b).0,
+        (None, true) => rustvr_melee::MOD_BLUNT_LIGHT,
         (Some(b), _) => rustvr_melee::modifier_of(&b),
         (None, _) if ev.object == 0 => rustvr_melee::MOD_PUNCH,
         _ => rustvr_melee::MOD_BLUNT,
@@ -86,7 +87,7 @@ pub fn hit(people: &mut crate::arena::People, ev: &CombatEvent, weapons: &MeleeW
             d.happened.push(crate::ragdoll::Happened::Disarmed { id: ev.actor, item });
         }
     }
-    let intensity = rustvr_melee::intensity(ev.speed);
+    let intensity = blow_intensity(ev, weapons);
     d.wound(k, part, point, ev.what, intensity, ev.damage > 0.0, ev.flags & CEF_PENETRATED != 0, fire);
     if ev.damage > 0.0 {
         out.push(Bled { point, dir, strength: intensity });
@@ -135,6 +136,23 @@ pub fn wound(people: &mut crate::arena::People, ev: &CombatEvent) {
         brain.hurt(damage / rustvr_melee::body::HEALTH, now);
     }
     tracing::info!("range: {:#x} part {part} ({body:?}) {}: {damage:.1}, {:.0} left", ev.actor, if ev.flags & CEF_SKEWER != 0 { "run through" } else { "wounded deep" }, people.dummies.people[k].health.max(0.0));
+}
+
+/// One of the player's damagers met a person without doing anything (the runtime's `CE_TOUCH`):
+/// on armour it leaves a scratch (an edge or a point) or a scuff (a blunt one); on flesh nothing.
+pub fn touch(people: &mut crate::arena::People, ev: &CombatEvent) {
+    let d = &mut people.dummies;
+    let Some(k) = d.find(ev.actor) else { return };
+    d.wound(k, ev.part as usize, Vec3::from_array(ev.point), ev.what, ev.strength, false, false, false);
+}
+
+/// How loud and bright a hit's effects are, 0..1 (its intensity: the damager's own speeds after a
+/// blow that did damage, else the contact's).
+pub fn blow_intensity(ev: &CombatEvent, weapons: &MeleeWeapons) -> f32 {
+    match weapons.get(ev.object).and_then(|w| w.blades().get(ev.blade as usize)) {
+        Some(b) => rustvr_melee::blow_intensity(b, ev.speed, ev.damage > 0.0),
+        None => rustvr_melee::intensity(ev.speed),
+    }
 }
 
 /// Where blood comes from a hit (for the range's own effects).

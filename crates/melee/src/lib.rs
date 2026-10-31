@@ -142,10 +142,12 @@ pub fn judge(b: &MeleeBlade, c: &Contact) -> Option<Judged> {
     }
     let dir = c.vel / speed;
     let (h, v, n) = angles(b);
-    let within = |a: Vec3, b: Vec3, deg: f32| deg >= 180.0 || a.dot(b) >= deg.to_radians().cos() - 1e-6;
-    // The normal: the way in against the damager's own way (either way round counts).
+    // (The limits are strict: under the angle.)
+    let within = |a: Vec3, b: Vec3, deg: f32| deg >= 180.0 || a.dot(b) > deg.to_radians().cos();
+    // The normal: the way in against the damager's own way, either way round (against its forward
+    // or its backward).
     let way = if b.kind == DMG_PIERCE { c.along } else { c.edge };
-    let normal_ok = within(-c.normal, way, n) || (b.kind == DMG_SLASH && b.flags & DMGF_BOTH_WAYS != 0 && within(-c.normal, -way, n)) || b.kind != DMG_SLASH && b.kind != DMG_PIERCE;
+    let normal_ok = within(-c.normal, way, n) || within(-c.normal, -way, n);
     let clean = match b.kind {
         DMG_SLASH => {
             // Across the blade (the velocity off its length) against the edge; along it, in the
@@ -156,7 +158,7 @@ pub fn judge(b: &MeleeBlade, c: &Contact) -> Option<Judged> {
             let ways: &[f32] = if b.flags & DMGF_BOTH_WAYS != 0 { &[1.0, -1.0] } else { &[1.0] };
             ways.iter().any(|&s| {
                 let e = c.edge * s;
-                within(across, e, h) && within(in_plane, e, v) && (within(-c.normal, e, n))
+                within(across, e, h) && within(in_plane, e, v) && normal_ok
             })
         }
         DMG_PIERCE => {
@@ -164,18 +166,19 @@ pub fn judge(b: &MeleeBlade, c: &Contact) -> Option<Judged> {
             let up = side.cross(c.along).normalize_or_zero();
             let h_plane = (dir - up * dir.dot(up)).normalize_or_zero();
             let v_plane = (dir - side * dir.dot(side)).normalize_or_zero();
-            within(h_plane, c.along, h) && within(v_plane, c.along, v) && within(-c.normal, c.along, n)
+            within(h_plane, c.along, h) && within(v_plane, c.along, v) && normal_ok
         }
-        // A hand (a punch) hits square enough: its way within the normal's angle of the face.
-        DMG_PUNCH => within(-c.normal, dir, n),
-        _ => normal_ok,
+        // A blunt damager (a mace's head, a pommel, a fist) hits from any way at all.
+        _ => true,
     };
     let (modifier, kind, mut flags, base) = if clean {
         let (cv, slopes) = curve_of(b);
         (modifier_of(b), b.kind, 0, curve(cv, slopes, speed))
     } else if b.flags & DMGF_BLUNT_BAD != 0 && matches!(b.kind, DMG_SLASH | DMG_PIERCE) {
-        // The fallback: a light blunt with a fixed damage (a sword's 0.5, a two-hander's 1).
-        (MOD_BLUNT_LIGHT, DMG_BLUNT, CEF_GLANCING, BAD_ANGLE_DAMAGE)
+        // The fallback: a blunt blow of a fixed damage by the damager's own table (a sword's
+        // light blunt 0.5, a dagger's very light 0.5, a two-hander's blunt 1, an axe's blunt 2).
+        let (modifier, damage) = bad_angle(b);
+        (modifier, DMG_BLUNT, CEF_GLANCING, damage)
     } else {
         return None;
     };
@@ -203,8 +206,21 @@ pub fn judge(b: &MeleeBlade, c: &Contact) -> Option<Judged> {
     Some(Judged { damage, kind, flags, push, speed, depth, damper })
 }
 
-/// A bad angle's blunt damage (a sword's, 0.5).
+/// A bad angle's blunt damage where the blade gives none (a sword's, 0.5).
 pub const BAD_ANGLE_DAMAGE: f32 = 0.5;
+
+/// The table a blade's bad-angle blow is judged by and its damage: its own, or a sword's light
+/// blunt 0.5.
+pub fn bad_angle(b: &MeleeBlade) -> (u32, f32) {
+    if b.bad_modifier != 0 { (b.bad_modifier, if b.bad_damage > 0.0 { b.bad_damage } else { BAD_ANGLE_DAMAGE }) } else { (MOD_BLUNT_LIGHT, BAD_ANGLE_DAMAGE) }
+}
+
+/// How loud and bright a blow's effects are, 0..1: by the damager's own speeds after a blow that
+/// did damage ([`MeleeBlade::intensity`]), else the contact's (0.25 to 15).
+pub fn blow_intensity(b: &MeleeBlade, speed: f32, damaging: bool) -> f32 {
+    let [lo, hi] = b.intensity;
+    if damaging && hi > lo { ((speed - lo) / (hi - lo)).clamp(0.0, 1.0) } else { intensity(speed) }
+}
 
 /// Where a part of a human comes off: its cut lies `height` metres along its way from its joint,
 /// and that way takes `adjust` of its parent's (0 its own, 1 its parent's). `None`: it never comes
@@ -315,6 +331,9 @@ pub const SLICE_PUSH: f32 = 3.0;
 pub const SLICE_PUSH_HEAD: f32 = 3.5;
 /// A damager that just cut through something can't go in again for this long (s).
 pub const SLICE_NO_PENETRATION: f64 = 1.0;
+/// A point is through the far side once it's more than this deep (metres: the skewer test, with
+/// its entry carried out past the part).
+pub const SKEWER_DEPTH: f32 = 0.05;
 /// The same collider isn't hit again by a damager within this (s).
 pub const HIT_DELAY: f64 = 0.1;
 /// A contact's effects are as loud and bright as its speed between these (m/s): its intensity,
@@ -326,16 +345,46 @@ pub fn intensity(speed: f32) -> f32 {
     ((speed - INTENSITY_FROM) / (INTENSITY_FULL - INTENSITY_FROM)).clamp(0.0, 1.0)
 }
 
+/// How loud a contact that does nothing sounds, by its intensity: the "soft" layer, the only one
+/// such a contact plays (its volume curve 0 -> 0, 0.2 -> 1, 1 -> 0: a light touch is heard, a hard
+/// one is the hit's own clip).
+pub fn soft_volume(intensity: f32) -> f32 {
+    let k = intensity.clamp(0.0, 1.0);
+    if k < 0.2 { k / 0.2 } else { (1.0 - k) / 0.8 }
+}
+
 /// Metal sparks show only above this intensity (about 7.6 m/s).
 pub const SPARKS_FROM: f32 = 0.5;
 
-/// The push a point pressed slowly into flesh needs to go in (the pressure curve
-/// for swords and daggers: 5 at a standstill, 1.5 drawn at 0.5 m/s, 0.25 at 1 m/s; a velocity change
-/// a step, m/s), before the material's pressure multiplier: the faster it's drawn, the less it takes.
-pub fn pressure_needed(sliding: f32) -> f32 {
-    if sliding <= 0.5 {
-        curve([0.0, 5.0, 0.5, 1.5], [0.0, -7.124_971], sliding)
+/// The push a damager pressed on a body needs to go in (a velocity change a step, m/s), by how fast
+/// it moves against it (m/s), before the material's pressure multiplier: the faster it's drawn the
+/// less it takes. A sword's or a dagger's
+/// point: 5 at a standstill, 1.5 at 0.5 m/s, 0.25 at 1; their edges' the same to 0.35; an axe's 5 to
+/// 0.5 at 2 m/s.
+pub fn pressure_needed(b: &MeleeBlade, speed: f32) -> f32 {
+    let end = match b.kind {
+        DMG_SLASH if b.flags & DMGF_AXE != 0 => return curve([0.0, 5.0, 2.0, 0.5], [0.0; 2], speed),
+        DMG_SLASH => 0.35,
+        _ => 0.25,
+    };
+    if speed <= 0.5 {
+        curve([0.0, 5.0, 0.5, 1.5], [0.0, -7.124_971], speed)
     } else {
-        curve([0.5, 1.5, 1.0, 0.25], [-7.124_971, 0.0], sliding)
+        curve([0.5, 1.5, 1.0, end], [-7.124_971, 0.0], speed)
     }
+}
+
+/// A draw cut: an edge pressed on goes in only while it's drawn along its length, the way it's
+/// drawn within this of its length (|cos| at least 1 - 0.2).
+pub const PRESSURE_MAX_DOT: f32 = 0.2;
+
+/// Whether `dir` lies within a damager's angles of its `forward`: in the plane across its `up`
+/// (horizontal) and in its own plane (vertical), each under its limit (degrees; 180 or more: any).
+pub fn within_angles(dir: Vec3, forward: Vec3, up: Vec3, horizontal: f32, vertical: f32) -> bool {
+    let d = dir.normalize_or_zero();
+    let plane = forward.cross(up).normalize_or_zero();
+    let in_plane = (d - plane * d.dot(plane)).normalize_or_zero();
+    let across = (d - up * d.dot(up)).normalize_or_zero();
+    let angle = |a: Vec3| a.dot(forward).clamp(-1.0, 1.0).acos().to_degrees();
+    (horizontal >= 180.0 || angle(across) < horizontal) && (vertical >= 180.0 || angle(in_plane) < vertical)
 }

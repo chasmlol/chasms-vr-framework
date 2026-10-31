@@ -273,6 +273,11 @@ pub const CE_WOUND: u32 = 7;
 /// speed, at `point`: the runtime has taken it out of its world until the game puts it back (a new
 /// `spawn_seq`), and the game makes its pieces.
 pub const CE_BROKE: u32 = 8;
+/// One of the player's damagers (`object`, `blade`; 0 a hand) met `actor`'s part `part` (the
+/// game's) of `material` without doing anything: too slow for what it met, or at a bad angle with
+/// no blunt blow to fall back on. It's heard, and on armour
+/// it scratches or scuffs (`what` the damager's kind, `speed`, `point`, `dir` as a hit's).
+pub const CE_TOUCH: u32 = 9;
 
 /// A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
 pub const CEF_GLANCING: u32 = 1 << 0;
