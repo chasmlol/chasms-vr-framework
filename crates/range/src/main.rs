@@ -57,10 +57,15 @@ use hits::{HitWhat, ObjBox, Surface};
 use render::{Draw, Mesh, Renderer};
 use std::collections::HashMap;
 
+/// How strong the player is on creatures with the melee buttons: a 3000 N grip, over the runtime's
+/// own 1500 N for an average person.
+const MELEE_GRIP: f32 = 2.0;
 /// The jump with the melee buttons (a force of 0.3, a velocity change each 90th
-/// of a second, eased to none over 0.6 s).
+/// of a second, eased to none over 0.6 s), and the body's drag in the
+/// air.
 const B_JUMP_FORCE: f32 = 0.3;
 const B_JUMP_TIME: f32 = 0.6;
+const B_AIR_DRAG: f32 = 0.3;
 const STAND_EYE: f32 = 1.7;
 /// A shield push's shove on the player dies away at this rate (a second).
 const SHOVE_FADE: f32 = 6.0;
@@ -443,7 +448,7 @@ impl Game {
         let world_dt = dt * if self.rt_melee.flags & RTM_SLOW != 0 || self.rt_melee.time_scale > 0.0 { self.rt_melee.time_scale.clamp(0.05, 1.0) } else { 1.0 };
         let dt_real = dt;
         let dt = world_dt;
-        let _ = dt_real;
+        self.people.dummies.time_scale = if dt_real > 0.0 { (world_dt / dt_real).clamp(0.05, 1.0) } else { 1.0 };
         self.time += dt as f64;
         let now = self.time;
         let it = f.intents;
@@ -595,6 +600,12 @@ impl Game {
         self.jump_was_held = jump;
         if !climbing {
             self.vel_y -= 9.81 * dt;
+        }
+        // (In the air, the body has its drag.)
+        if self.melee && self.feet.y > floor {
+            let keep = 1.0 / (1.0 + B_AIR_DRAG * dt);
+            self.vel_y *= keep;
+            self.jump_h *= keep;
         }
         self.feet.y = (self.feet.y + self.vel_y * dt).max(floor);
         self.feet += self.jump_h * dt;
@@ -864,8 +875,9 @@ impl Game {
         }
         let happened = self.people.happened();
         // The voices all speak at 0.7.
-        for (voice, at) in std::mem::take(&mut self.people.said) {
-            self.adapter.push_event(Event { kind: EV_VOICE, a: voice, f: [at.x, at.y, at.z, VOICE_LOUD, 0.0, 0.0] });
+        // (Each speaks with its own voice: its id.)
+        for (id, voice, at) in std::mem::take(&mut self.people.said) {
+            self.adapter.push_event(Event { kind: EV_VOICE, a: voice | id << 8, f: [at.x, at.y, at.z, VOICE_LOUD, 0.0, 0.0] });
         }
         for h in happened {
             if let ragdoll::Happened::Severed { id, part, at, out, radius } = h {
@@ -875,7 +887,13 @@ impl Game {
             }
         }
         self.adapter.write_actors(&self.people.dummies.actors());
-        self.adapter.write_actor_bodies(&self.people.dummies.bodies());
+        // (With the melee buttons the player grips a creature with 3000 N, its hand's joint: twice
+        // the runtime's own 1500.)
+        let mut bodies = self.people.dummies.bodies();
+        if self.melee {
+            bodies.strength = MELEE_GRIP;
+        }
+        self.adapter.write_actor_bodies(&bodies);
         let (mut items, poses) = self.people.items_for_runtime();
         items.frame = f.frame_index;
         self.adapter.write_actor_items(&items);

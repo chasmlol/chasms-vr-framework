@@ -38,7 +38,14 @@ const SPACING: f32 = 0.9;
 const GRUNT: f64 = 0.4;
 const SHOUT: f64 = 0.7;
 const LAST_BREATH: f64 = 1.5;
+const SCREAM: f64 = 1.5;
+const STRUGGLE: f64 = 0.5;
 const SHOUT_CHANCE: f64 = 0.7;
+/// A body falls screaming once its root drops faster than this (m/s), hushed as it lands: its root
+/// this near the floor (m) and nearly still (m/s). Held, it cries out every 5 to 10 s.
+const FALL_SCREAM: f32 = 5.0;
+const LANDED: (f32, f32) = (0.5, 1.0);
+const GRAPPLED_EVERY: (f64, f64) = (5.0, 10.0);
 
 /// What the pool holds: (the arsenal's key, how many).
 const POOL: [(&str, usize); 4] = [("builtin_sword", 6), ("kit_shield", 2), ("kit_mace", 1), ("kit_axe", 1)];
@@ -63,10 +70,12 @@ pub struct People {
     wave: u32,
     next_wave: Option<f64>,
     next_id: u32,
-    /// What the people cried out this frame (`VOICE_*`, where), for the runtime's voices; and until
-    /// when each one's line lasts.
-    pub said: Vec<(u32, Vec3)>,
+    /// What the people cried out this frame (who, `VOICE_*`, where), for the runtime's voices; until
+    /// when each one's line lasts; who's screaming as they fall; and when the held cry out next.
+    pub said: Vec<(u32, u32, Vec3)>,
     speaking: std::collections::HashMap<u32, f64>,
+    screaming: std::collections::HashSet<u32>,
+    grappled: std::collections::HashMap<u32, f64>,
     /// `RUSTVR_DEBUG_BRAIN`: each fighter's state logged once a second, next then.
     debug: Option<f64>,
 }
@@ -111,9 +120,7 @@ impl People {
         }
         let made = vec![None; pool.len()];
         let debug = std::env::var_os("RUSTVR_DEBUG_BRAIN").is_some().then_some(0.0);
-        let mut people = People { dummies, fighters: Vec::new(), pool, made, wave: 0, next_wave: Some(0.0), next_id: FIGHTER_ID, said: Vec::new(), speaking: Default::default(), debug };
-        people.next_wave();
-        people
+        People { dummies, fighters: Vec::new(), pool, made, wave: 0, next_wave: Some(0.0), next_id: FIGHTER_ID, said: Vec::new(), speaking: Default::default(), screaming: Default::default(), grappled: Default::default(), debug }
     }
 
     /// The fighters' weapons as the game's objects, for the armory to register: (id, the arsenal
@@ -304,14 +311,17 @@ impl People {
                 tracing::info!("brain {:#x}: {:.2} m from the player, {:?}, health {:.0}{}, {}", p.id, (p.at.0 - sight.feet).with_y(0.0).length(), p.balance, p.health, if p.stun.is_some() { ", out cold" } else { "" }, f.brain.describe(now));
             }
         }
-        // The wave's over when none of it can fight: dead, out cold, or gone.
+        // The wave's over when none of it can fight: dead, out cold, or gone. The next comes once the
+        // player's in the arena (the room's other areas stay quiet).
         let done = self.fighters.iter().all(|f| {
             let p = &self.dummies.people[f.person];
             !p.alive || p.stun.is_some()
         });
+        let (lo, hi) = arenas::ARENA;
+        let in_arena = (lo.x..=hi.x).contains(&sight.feet.x) && (lo.z..=hi.z).contains(&sight.feet.z);
         match self.next_wave {
             None if done => self.next_wave = Some(now + 5.0),
-            Some(t) if now >= t => {
+            Some(t) if now >= t && in_arena => {
                 // The fallen go (their bodies stay a while: they're cleared with the next wave).
                 self.clear_fallen();
                 self.next_wave();
@@ -373,15 +383,57 @@ impl People {
             return;
         }
         self.speaking.insert(id, now + long);
-        self.said.push((voice, at));
+        self.said.push((id, voice, at));
+    }
+
+    /// Person `id` stops what it's saying (its scream as it lands).
+    fn hush(&mut self, id: u32, at: Vec3) {
+        self.speaking.remove(&id);
+        self.said.push((id, VOICE_HUSH, at));
+    }
+
+    /// The other lines: a scream while a body falls faster than 5 m/s, hushed as it lands; and,
+    /// held by the hands, a struggling cry every 5 to 10 s (not from a wave's fighters).
+    fn cries(&mut self) {
+        let now = self.dummies.time;
+        for k in 0..self.dummies.people.len() {
+            let p = &self.dummies.people[k];
+            let (id, awake, standing, floor) = (p.id, p.alive && p.stun.is_none(), p.balance == Balance::Standing, p.at.0.y);
+            let held = awake && self.dummies.handled(k) && !self.fighters.iter().any(|f| f.person == k);
+            let head = self.dummies.part_pose(k, anim::HEAD).0;
+            let root = (self.dummies.part_pose(k, anim::PELVIS).0, self.dummies.part_velocity(k, anim::PELVIS));
+            if awake && !standing && root.1.y.abs() > FALL_SCREAM && !self.screaming.contains(&id) {
+                self.screaming.insert(id);
+                self.speaking.remove(&id);
+                tracing::info!("range: {id:#x} falls screaming ({:.1} m/s)", root.1.y);
+                self.say(id, VOICE_FALLING, head, SCREAM);
+            } else if self.screaming.contains(&id) && (!awake || (root.0.y - floor < LANDED.0 && root.1.length() < LANDED.1)) {
+                self.screaming.remove(&id);
+                if awake {
+                    tracing::info!("range: {id:#x} lands");
+                    self.hush(id, head);
+                }
+            }
+            if !held {
+                self.grappled.remove(&id);
+                continue;
+            }
+            let wait = |n: f64| GRAPPLED_EVERY.0 + (GRAPPLED_EVERY.1 - GRAPPLED_EVERY.0) * (n * 7919.0 + id as f64 * 0.37).fract();
+            let next = *self.grappled.entry(id).or_insert_with(|| now + wait(now));
+            if now >= next {
+                self.grappled.insert(id, now + wait(now));
+                self.say(id, VOICE_GRAPPLED, head, STRUGGLE);
+            }
+        }
     }
 
     /// What happened, for the game's side (sounds, blood); drained. The people cry out at it: a
     /// grunt at every hurt but a choke's, and dying their last line by what
     /// killed them: none after a stab through the throat (its voice cut), only a grunt from a stab to
-    /// the head, else its death (the longer one for a stab, and the breathless one for the throat,
-    /// have no words of their own yet: `VOICE_DEATH`).
+    /// the head, breathless for a cut throat or a choke, the long one for a stab anywhere else, else
+    /// its death. And their screams as they fall and cries as they're held.
     pub fn happened(&mut self) -> Vec<Happened> {
+        self.cries();
         let out = std::mem::take(&mut self.dummies.happened);
         for h in &out {
             match *h {
@@ -396,8 +448,11 @@ impl People {
                     let at = self.dummies.part_pose(k, anim::HEAD).0;
                     let line = match self.dummies.people[k].last_hit {
                         (DMG_PIERCE, BodyPart::Head) => VOICE_HURT,
+                        (DMG_SLASH | 0, BodyPart::Neck) => VOICE_BREATHLESS,
+                        (DMG_PIERCE, _) => VOICE_DEATH_LONG,
                         _ => VOICE_DEATH,
                     };
+                    self.screaming.remove(&id);
                     // A last breath cuts off whatever it was saying.
                     self.speaking.remove(&id);
                     self.say(id, line, at, LAST_BREATH);

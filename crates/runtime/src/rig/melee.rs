@@ -706,14 +706,15 @@ impl Rig {
     /// Thrown weapons, once a step before the physics: one flying point first is turned along its
     /// flight by its rate times its speed times the step, of what's left (its pitch and yaw turned,
     /// a rotation, not a torque), until it first touches something. A thrown weapon stops
-    /// being thrown once it's stuck in something, taken, or at rest.
+    /// being thrown once it's stuck in something, taken (by a hand, or by a creature: its swings
+    /// are then its own), or at rest.
     pub(super) fn fly_melee(&mut self, dt: f32) {
         let w = self.map.world_per_meter;
         let now = self.now;
         let ids: Vec<u32> = self.melee.thrown.keys().copied().collect();
         for id in ids {
             let t = self.melee.thrown[&id];
-            let Some(o) = self.objects.get(&id).filter(|o| o.holder == Holder::Free && o.embed.is_none()) else {
+            let Some(o) = self.objects.get(&id).filter(|o| o.holder == Holder::Free && o.embed.is_none() && !self.creature_item(id)) else {
                 self.melee.thrown.remove(&id);
                 continue;
             };

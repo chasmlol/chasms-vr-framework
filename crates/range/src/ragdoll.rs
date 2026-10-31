@@ -84,6 +84,23 @@ const STEP: f32 = 1.0 / 120.0;
 /// pulled to where the hand would have it at 5000 N/m, damped at 50 N s/m against the hand's own
 /// motion, at most the hand's pull (3000 N); the part turned to the hand's turn at
 /// 1000 N m a radian, damped at 50, at most 250 N m.
+/// Telekinesis on a body (its drive x20 and x10 an item's): its spring and damper (its most force
+/// is the runtime's 2500 N); its turning, an item's 10, 1 and 1000 N m, x5 on the neck and x4 the
+/// spring on a wrist; and a body it throws: every other part of it given this along the throw (m/s),
+/// the part held the runtime's 30.
+const TK_SPRING: f32 = 2000.0;
+const TK_DAMPER: f32 = 100.0;
+const TK_TURN: (f32, f32, f32) = (10.0, 1.0, 1000.0);
+const TK_TURN_NECK: (f32, f32, f32) = (50.0, 5.0, 1500.0);
+const TK_TURN_WRIST: (f32, f32, f32) = (40.0, 1.0, 1000.0);
+const TK_THROW_OTHERS: f32 = 8.0;
+/// The joints that tear (the shoulders, the knees, the neck), at this force (N) over the time scale,
+/// x1.15 for two hands pulling it apart.
+const RIPS: [usize; 5] = [anim::UPPER_ARM[0], anim::UPPER_ARM[1], anim::SHIN[0], anim::SHIN[1], anim::HEAD];
+const RIP_FORCE: f32 = 3000.0;
+const RIP_BRUTE: f32 = 1.15;
+/// Burning this long, dead, it's charred through (s).
+const FULL_CHAR: f64 = 10.0;
 const GRAB_SPRING: f32 = 5000.0;
 const GRAB_DAMPER: f32 = 50.0;
 const GRAB_TURN_SPRING: f32 = 1000.0;
@@ -319,6 +336,8 @@ pub struct Person {
     escape: Option<(f64, u32)>,
     /// Its head is held tight on its neck (a neck or torso hold).
     tight: bool,
+    /// Burned through: stiff, and its tearing joints break.
+    charred: bool,
 }
 
 /// Knocked out until then; extended once by a push since.
@@ -376,6 +395,8 @@ struct Held {
     hand_spin: V3,
     force: f32,
     handle: Handle,
+    /// By telekinesis, not a hand.
+    tk: bool,
 }
 
 /// A shove on a body that isn't standing, a moment long: the blow at a point on a part (its own
@@ -438,6 +459,9 @@ pub struct Dummies {
     /// Time not yet stepped.
     owed: f32,
     pub time: f64,
+    /// How fast the game's time runs (the player's slowed time): the tearing joints hold the more the
+    /// slower it runs, the hands being that much quicker in it.
+    pub time_scale: f32,
     pub happened: Vec<Happened>,
 }
 
@@ -483,6 +507,7 @@ impl Dummies {
             rng: 0x9e37_79b9,
             owed: 0.0,
             time: 0.0,
+            time_scale: 1.0,
             happened: Vec::new(),
         }
     }
@@ -549,6 +574,7 @@ impl Dummies {
             struggles: 0,
             struggled: -10.0,
             escape: None,
+            charred: false,
             tight: false,
         });
         k
@@ -686,6 +712,7 @@ impl Dummies {
             self.world.integration_parameters.dt = STEP;
             self.world.step();
             self.slams();
+            self.rip();
         }
     }
 
@@ -958,23 +985,34 @@ impl Dummies {
                 let turn = Quat::from_array(g.target_rot);
                 let target_rot = if turn.length_squared() > 0.5 && turn.is_finite() { turn.normalize() } else { rot };
                 let first = !self.held.iter().any(|h| h.id == g.actor);
-                self.held.push(Held { id: g.actor, serial: g.serial, part: g.part as usize, local, target: V3::from_array(g.target), target_rot, hand_vel: V3::from_array(g.vel), hand_spin: V3::from_array(g.ang_vel), force: g.force, handle });
+                let tk = g.flags & GRAB_TK != 0;
+                self.held.push(Held { id: g.actor, serial: g.serial, part: g.part as usize, local, target: V3::from_array(g.target), target_rot, hand_vel: V3::from_array(g.vel), hand_spin: V3::from_array(g.ang_vel), force: g.force, handle, tk });
                 let p = &mut self.people[k];
                 if new {
-                    tracing::info!("range: {:#x} held by its {handle:?}", p.id);
-                    // An escape is tried at once when a first hand takes hold.
-                    if first && !p.handled {
+                    tracing::info!("range: {:#x} held by its {handle:?}{}", p.id, if tk { ", by telekinesis" } else { "" });
+                    // An escape is tried at once when a first hand takes hold (a hand: telekinesis
+                    // isn't struggled out of).
+                    if first && !p.handled && !tk {
                         p.next_struggle = now;
                     }
                 }
                 p.handled = true;
-                p.muffled |= handle == Handle::Mouth;
+                p.muffled |= handle == Handle::Mouth && !tk;
                 continue;
             }
             self.holding[hand] = 0;
             if g.serial != 0 && self.released[hand] != g.serial {
                 self.released[hand] = g.serial;
                 let other = grabs.grabs[hand ^ 1];
+                // Let go of by telekinesis with the hand moving (the last of its telekinesis): thrown.
+                if g.flags & GRAB_TK != 0 {
+                    let thrown = V3::from_array(g.vel);
+                    let last = other.flags & GRAB_HELD == 0 || other.flags & GRAB_TK == 0 || other.actor != g.actor;
+                    if last && thrown.length_squared() > 0.0 {
+                        self.tk_throw(k, g.part as usize, thrown);
+                    }
+                    continue;
+                }
                 if other.flags & GRAB_HELD == 0 || other.actor != g.actor {
                     let speed = from_v(self.world.bodies[body].linvel()).length();
                     self.people[k].struggles = 0;
@@ -994,7 +1032,7 @@ impl Dummies {
             if tight != self.people[k].tight {
                 self.neck_limits(k, tight);
             }
-            self.choke(k, holds.iter().any(|h| h.handle == Handle::Neck), &mut rng);
+            self.choke(k, holds.iter().any(|h| h.handle == Handle::Neck && !h.tk), &mut rng);
             let p = &self.people[k];
             if holds.is_empty() || !p.alive || p.balance != Balance::Standing {
                 continue;
@@ -1038,11 +1076,14 @@ impl Dummies {
                 if matches!(h.handle, Handle::Neck | Handle::Legs) {
                     tracing::info!("range: {id:#x} lifted by its {:?}: down", h.handle);
                     self.floor(k, at);
-                } else {
-                    tracing::info!("range: {id:#x} lifted by its {:?}: the hand comes off", h.handle);
-                    self.freed.push(holds[0].serial);
+                    continue;
                 }
-                continue;
+                // (Its first hand is forced off: telekinesis alone lifts it on.)
+                if let Some(hand) = holds.iter().find(|h| !h.tk) {
+                    tracing::info!("range: {id:#x} lifted by its {:?}: the hand comes off", h.handle);
+                    self.freed.push(hand.serial);
+                    continue;
+                }
             }
             // Its head pressed below its hips' standing height, it falls.
             let head = self.part_pose(k, anim::HEAD).0;
@@ -1061,11 +1102,13 @@ impl Dummies {
                 self.freed.push(serial);
                 continue;
             }
-            if p.stun.is_some() || reeling.is_some() || p.escape.is_some() || now < p.next_struggle {
+            // (It struggles against hands: telekinesis isn't struggled out of.)
+            let hands: Vec<Held> = holds.iter().filter(|h| !h.tk).copied().collect();
+            if hands.is_empty() || p.stun.is_some() || reeling.is_some() || p.escape.is_some() || now < p.next_struggle {
                 continue;
             }
-            let chance = (ESCAPE_FIRST + ESCAPE_STEP * p.struggles as f32 - if holds.len() > 1 { ESCAPE_TWO } else { 0.0 }).min(ESCAPE_MAX);
-            let pick = holds[((next(&mut rng) * holds.len() as f32) as usize).min(holds.len() - 1)];
+            let chance = (ESCAPE_FIRST + ESCAPE_STEP * p.struggles as f32 - if hands.len() > 1 { ESCAPE_TWO } else { 0.0 }).min(ESCAPE_MAX);
+            let pick = hands[((next(&mut rng) * hands.len() as f32) as usize).min(hands.len() - 1)];
             p.struggled = now;
             p.next_struggle = now + ESCAPE_ANIM + ESCAPE_EVERY.0 + (ESCAPE_EVERY.1 - ESCAPE_EVERY.0) * next(&mut rng) as f64;
             if next(&mut rng) < chance {
@@ -1127,11 +1170,18 @@ impl Dummies {
             let at = pos + rot * h.local;
             let vel = from_v(rb.velocity_at_point(to_v(at)));
             let m = rb.mass().max(0.05);
-            let f = implicit(m, GRAB_SPRING, GRAB_DAMPER, h.target - at, vel - h.hand_vel, STEP).clamp_length_max(h.force);
+            let (spring, damper) = if h.tk { (TK_SPRING, TK_DAMPER) } else { (GRAB_SPRING, GRAB_DAMPER) };
+            let f = implicit(m, spring, damper, h.target - at, vel - h.hand_vel, STEP).clamp_length_max(h.force);
             rb.add_force_at_point(to_v(f), to_v(at), true);
             let i = from_v(rb.mass_properties().local_mprops.principal_inertia());
             let inertia = ((i.x + i.y + i.z) / 3.0).max(1e-4);
-            let t = implicit(inertia, GRAB_TURN_SPRING, GRAB_TURN_DAMPER, shortest(h.target_rot * rot.inverse()), from_v(rb.angvel()) - h.hand_spin, STEP).clamp_length_max(GRAB_TURN_MAX);
+            let (spring, damper, most) = match (h.tk, h.handle) {
+                (false, _) => (GRAB_TURN_SPRING, GRAB_TURN_DAMPER, GRAB_TURN_MAX),
+                (true, Handle::Neck) => TK_TURN_NECK,
+                (true, Handle::Wrist) => TK_TURN_WRIST,
+                (true, _) => TK_TURN,
+            };
+            let t = implicit(inertia, spring, damper, shortest(h.target_rot * rot.inverse()), from_v(rb.angvel()) - h.hand_spin, STEP).clamp_length_max(most);
             rb.add_torque(to_v(t), true);
         }
     }
@@ -1333,9 +1383,90 @@ impl Dummies {
                         self.kill(k, at);
                     } else if p.alive {
                         self.hurt(k, BURN_DPS * STEP, at);
+                    } else if !p.charred && now - since >= FULL_CHAR {
+                        self.char_through(k);
                     }
                 }
                 None => p.heat = (p.heat - if p.alive { 4.0 } else { 8.0 } * STEP).max(0.0),
+            }
+        }
+    }
+
+    /// Person `k` thrown by telekinesis (let go with the hand moving): the part held given the
+    /// throw `v`, every other part still on its body 8 m/s the same way (velocity changes); a part
+    /// cut off flies alone.
+    fn tk_throw(&mut self, k: usize, part: usize, v: V3) {
+        let p = &self.people[k];
+        let cut = |i: usize| p.severed & (1 << i) != 0;
+        let others = v.normalize_or_zero() * TK_THROW_OTHERS;
+        let bodies: Vec<(RigidBodyHandle, V3)> = p
+            .parts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, q)| match (i == part, cut(part), cut(i)) {
+                (true, ..) => Some((q.body, v)),
+                (false, false, false) => Some((q.body, others)),
+                _ => None,
+            })
+            .collect();
+        tracing::info!("range: {:#x} thrown by telekinesis at {:.1} m/s", p.id, v.length());
+        for (body, dv) in bodies {
+            let rb = &mut self.world.bodies[body];
+            let vel = rb.linvel() + to_v(dv);
+            rb.set_linvel(vel, true);
+        }
+    }
+
+    /// Ripping: a joint that tears breaks past 3000 N over the time scale, and its part comes off
+    /// (and kills): every one of a body two telekinesis hands hold, x1.15 the parts both hands hold
+    /// and their parents but the torso, and every one of a body charred through.
+    fn rip(&mut self) {
+        let scale = self.time_scale.clamp(0.05, 1.0);
+        for k in 0..self.people.len() {
+            let (id, cut) = (self.people[k].id, self.people[k].severed);
+            // (Holds on what's still on its body: a part torn off is held on its own.)
+            let holds: Vec<Held> = self.held.iter().filter(|h| h.id == id && !self.freed.contains(&h.serial) && cut & (1 << h.part) == 0).copied().collect();
+            let hands: Vec<usize> = holds.iter().filter(|h| !h.tk).map(|h| h.part).collect();
+            let mut tearing: Vec<(usize, f32)> = Vec::new();
+            if holds.iter().filter(|h| h.tk).count() >= 2 || self.people[k].charred {
+                tearing.extend(RIPS.map(|i| (i, 1.0)));
+            }
+            if hands.len() >= 2 {
+                for &part in &hands {
+                    tearing.extend([Some(part), anim::PARENT[part]].into_iter().flatten().filter(|i| RIPS.contains(i)).map(|i| (i, RIP_BRUTE)));
+                }
+            }
+            for (part, x) in tearing {
+                let Some(j) = self.people[k].parts[part].joint else { continue };
+                let Some(joint) = self.world.impulse_joints.get(j) else { continue };
+                // (Its last substep's impulse, over that substep: the force on it.)
+                let i = joint.impulses;
+                let substep = STEP / self.world.integration_parameters.num_solver_iterations.max(1) as f32;
+                let force = V3::new(i[0], i[1], i[2]).length() / substep;
+                if force > RIP_FORCE * x / scale {
+                    let rot = self.part_pose(k, part).1;
+                    let q = &self.people[k].parts[part];
+                    let out = (rot * (q.b - q.a)).normalize_or(V3::Y);
+                    tracing::info!("range: {id:#x}'s part {part} torn off ({force:.0} N)");
+                    self.sever(k, part, out);
+                }
+            }
+        }
+    }
+
+    /// Person `k` charred through: it stiffens as it lies (each joint locked as it is now), and its
+    /// tearing joints break at 3000 N.
+    fn char_through(&mut self, k: usize) {
+        self.people[k].charred = true;
+        tracing::info!("range: {:#x} charred through", self.people[k].id);
+        for i in 0..PARTS {
+            let (Some(j), Some(parent)) = (self.people[k].parts[i].joint, anim::PARENT[i]) else { continue };
+            let q1 = self.part_pose(k, parent).1;
+            let q2 = self.part_pose(k, i).1;
+            if let Some(joint) = self.world.impulse_joints.get_mut(j, true) {
+                let (f1, f2) = (from_pose(&joint.data.local_frame1), from_pose(&joint.data.local_frame2));
+                joint.data.set_local_frame2(to_pose(f2.0, (q2.inverse() * q1 * f1.1).normalize()));
+                joint.data.lock_axes(JointAxesMask::ANG_AXES);
             }
         }
     }
@@ -1557,6 +1688,8 @@ impl Dummies {
             let conscious = p.alive && !matches!(p.balance, Balance::Limp(_)) && p.stun.is_none();
             b.flags = BODY_GRABBABLE | if conscious { BODY_CONSCIOUS } else { 0 } | if down { BODY_RAGDOLL } else { 0 };
             b.mass = if p.handled { MASS_HANDLED } else if down { MASS_RAGDOLLED } else { MASS_STANDING };
+            // A hold it broke free of, or that came off as it was lifted: the runtime's hand lets go.
+            b.let_go = self.held.iter().find(|h| h.id == p.id && self.freed.contains(&h.serial)).map_or(0, |h| h.serial);
             for (i, part) in p.parts.iter().take(MAX_ACTOR_PARTS).enumerate() {
                 let rb = &self.world.bodies[part.body];
                 let (_, rot) = from_pose(rb.position());
@@ -1628,6 +1761,16 @@ impl Dummies {
     /// Where person `k`'s part `part` is (world).
     pub fn part_pose(&self, k: usize, part: usize) -> (V3, Q) {
         from_pose(self.world.bodies[self.people[k].parts[part].body].position())
+    }
+
+    /// How fast person `k`'s part `part` moves (world, m/s).
+    pub fn part_velocity(&self, k: usize, part: usize) -> V3 {
+        from_v(self.world.bodies[self.people[k].parts[part].body].linvel())
+    }
+
+    /// Person `k` is held by the runtime's hands now.
+    pub fn handled(&self, k: usize) -> bool {
+        self.people[k].handled
     }
 
     /// Person `k`'s part `part`'s capsule (world ends, radius).

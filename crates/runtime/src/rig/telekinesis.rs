@@ -390,6 +390,8 @@ impl Rig {
                 let dead = self.bodies.get(&actor).is_some_and(|b| b.flags & BODY_CONSCIOUS == 0);
                 let ramp = if dead { 1.0 } else { ((self.now - tk.since) as f32 / TK_BODY_FOLLOW_RAMP).clamp(0.0, 1.0) };
                 let point = tk.point + (goal - tk.point).clamp_length_max(TK_BODY_FOLLOW * ramp * w * dt);
+                // (The grip's own speed: the game's damper works against it, a kinematic grip.)
+                let moving = (point - tk.point) / dt.max(1e-4);
                 self.melee.tk[i].as_mut().unwrap().point = point;
                 let both = self.melee.tk[i ^ 1].is_some_and(|o| o.body.is_some_and(|b| b.0 == actor));
                 let held_at = self.part_frame(actor, part).map_or(point, |f| f.0 + f.1 * held);
@@ -403,7 +405,7 @@ impl Rig {
                     target: point.to_array(),
                     squeeze: 0.0,
                     target_rot: (hq * tk.turn).normalize().to_array(),
-                    vel: Vec3::ZERO.to_array(),
+                    vel: moving.to_array(),
                     stretch: held_at.distance(point),
                     ang_vel: Vec3::ZERO.to_array(),
                     _p0: 0.0,
