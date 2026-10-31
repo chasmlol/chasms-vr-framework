@@ -205,10 +205,13 @@ pub struct Studio {
     /// The look last picked; `Custom` once anything's changed by hand.
     pub look: Look,
     /// Snap turns, a snap crouch or a recentre jump the headset's view at once; the desktop view
-    /// turns (and moves) through the jump over `snap_seconds` instead, as a flat game's camera
-    /// would, so a viewer never sees a cut.
+    /// turns through the jump instead, as a head would (gathering speed, carrying it, landing),
+    /// so a viewer never sees a cut. `snap_seconds`: how long a 45 degree snap takes to settle.
     pub smooth_snaps: bool,
     pub snap_seconds: f32,
+    /// Where the desktop view sees past the game's picture (a fast turn it lags behind, a wide
+    /// lens), the picture's edge is stretched out over the gap instead of leaving it black.
+    pub fill_edges: bool,
     /// The game's own HUD over the desktop view where a flat player has it (its bars, compass and
     /// subtitles at the screen's edges, from the game's own picture of them), instead of where the
     /// headset floats it; `flat_hud_size` scales it (1: the size the game's text has on a flat
@@ -315,11 +318,13 @@ pub enum Grade {
 impl Default for Studio {
     fn default() -> Self {
         // The clean look, with snap turns smoothed for viewers (a cut every snap is the desktop
-        // view's worst habit, and smoothing them costs a copy of the picture a frame).
+        // view's worst habit, and smoothing them costs a copy of the picture a frame), and no black
+        // at its edges.
         Studio {
             look: Look::Clean,
             smooth_snaps: true,
-            snap_seconds: 0.25,
+            snap_seconds: 0.3,
+            fill_edges: true,
             flat_hud: false,
             flat_hud_size: 1.0,
             motion_blur: false,

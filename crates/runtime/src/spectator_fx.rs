@@ -69,10 +69,18 @@ const HITCH: f32 = 0.3;
 /// The picture from before a jump fills in for this long at most (seconds).
 const HISTORY_KEEP: f32 = 1.5;
 
-/// The studio's looks: what each sets, and why. The viewers' own options (smoothed jumps, the flat
-/// HUD) are kept as they are.
+/// The studio's looks: what each sets, and why. The viewers' own options (smoothed jumps, the
+/// stretched edges, the flat HUD) are kept as they are.
 pub fn look(l: Look, keep: &Studio) -> Studio {
-    let clean = Studio { look: l, smooth_snaps: keep.smooth_snaps, snap_seconds: keep.snap_seconds, flat_hud: keep.flat_hud, flat_hud_size: keep.flat_hud_size, ..Studio::default() };
+    let clean = Studio {
+        look: l,
+        smooth_snaps: keep.smooth_snaps,
+        snap_seconds: keep.snap_seconds,
+        fill_edges: keep.fill_edges,
+        flat_hud: keep.flat_hud,
+        flat_hud_size: keep.flat_hud_size,
+        ..Studio::default()
+    };
     match l {
         Look::Clean | Look::Custom => Studio { look: l, ..clean },
         // A film's: 24 frames at a 180 degree shutter (the blur of motion a cinema audience
@@ -225,22 +233,79 @@ fn draws_effects(s: &Studio, lut: bool) -> bool {
 
 // ---- the camera ---------------------------------------------------------------------------------
 
-/// A jump of the world being eased out of the desktop view: the turn still to come about `pivot`
-/// (radians, about the vertical) as it started, and whether the picture from before dissolves
-/// (a move a turn can't show).
+/// A jump of the world being turned out of the desktop view as a head turns through it.
+///
+/// - `yaw`: how far the world's camera is turned back (radians, about the vertical, round `pivot`).
+/// - `speed`: how fast it's turning.
+/// - `intent`: the turn the head still means to make. It lets go of the jump over the turn's first
+///   moment, and a damped spring pulls the camera after it. So the turn gathers speed rather than
+///   starting at full tilt, carries its momentum (a second snap mid-turn adds to it), and lands with
+///   a degree or so of overshoot, as a head does.
+/// - `dissolve`: seconds into the dissolve from the picture before a move a turn can't show.
 #[derive(Clone, Copy, Debug)]
 struct Ease {
     yaw: f32,
+    speed: f32,
+    intent: f32,
+    /// The spring's natural frequency (radians a second), from the turn's size.
+    omega: f32,
     pivot: Vec3,
-    dissolve: bool,
-    t: f32,
+    dissolve: Option<f32>,
 }
 
+/// The head's damping: under critical, so a 45 degree turn overshoots by about a degree and settles
+/// back, and never wobbles.
+const HEAD_DAMPING: f32 = 0.7;
+/// How far the camera leans into the turn (radians of roll per radian a second): about a degree and
+/// a half at a snap's fastest, as a head whipped round dips its ear a little.
+const HEAD_LEAN: f32 = 0.0045;
+
 impl Ease {
-    /// How much of it is left (1 at the jump, 0 when it's done), eased at both ends.
-    fn left(&self, seconds: f32) -> f32 {
-        let x = (self.t / seconds.max(0.01)).clamp(0.0, 1.0);
-        1.0 - x * x * (3.0 - 2.0 * x)
+    /// A jump of `yaw` (radians) on top of `was` (none: from rest), settled in about `seconds` for a
+    /// 45 degree turn. A head turns further faster and for longer, so a bigger turn takes a little
+    /// longer and a smaller one a little less.
+    fn jump(was: Option<Ease>, yaw: f32, pivot: Vec3, seconds: f32, dissolve: bool) -> Ease {
+        let mut e = was.unwrap_or(Ease { yaw: 0.0, speed: 0.0, intent: 0.0, omega: 1.0, pivot, dissolve: None });
+        e.yaw += yaw;
+        e.intent += yaw;
+        let size = e.yaw.abs().max(e.intent.abs()) / 45f32.to_radians();
+        let settle = seconds.max(0.05) * (0.65 + 0.35 * size).clamp(0.5, 1.6);
+        e.omega = 4.0 / (HEAD_DAMPING * settle);
+        e.pivot = pivot;
+        if dissolve {
+            e.dissolve = Some(0.0);
+        }
+        e
+    }
+
+    /// On by `dt` (in small steps: the spring is stiff); false once it's done.
+    fn step(&mut self, dt: f32, seconds: f32) -> bool {
+        let n = (dt * 480.0).ceil().clamp(1.0, 64.0) as usize;
+        let h = dt / n as f32;
+        // (The intent lets go over an eighth of the settling time.)
+        let let_go = (-h * 2.0 * HEAD_DAMPING * self.omega).exp();
+        for _ in 0..n {
+            self.intent *= let_go;
+            let acc = self.omega * self.omega * (self.intent - self.yaw) - 2.0 * HEAD_DAMPING * self.omega * self.speed;
+            self.speed += acc * h;
+            self.yaw += self.speed * h;
+        }
+        if let Some(t) = &mut self.dissolve {
+            *t += dt;
+            if *t >= seconds {
+                self.dissolve = None;
+            }
+        }
+        // (Done within a tenth of a degree and a degree a second: the last of it can't be seen.)
+        self.yaw.abs() > 2e-3 || self.speed.abs() > 2e-2 || self.intent.abs() > 2e-3 || self.dissolve.is_some()
+    }
+
+    /// How much of the dissolve is left (1 at the move, 0 when it's done), eased at both ends.
+    fn dissolving(&self, seconds: f32) -> f32 {
+        self.dissolve.map_or(0.0, |t| {
+            let x = (t / seconds.max(0.01)).clamp(0.0, 1.0);
+            1.0 - x * x * (3.0 - 2.0 * x)
+        })
     }
 }
 
@@ -544,7 +609,8 @@ cbuffer Fx : register(b0) {
     float4 film;            // x grain, y seconds, z glow, w 1: glow
     float4 colour;          // x exposure, y contrast, z saturation, w the LUT's share
     float4 white;           // xyz white balance, w the grade's share
-    float4 grade;           // x which grade, y the LUT's size, z the dissolve's share
+    float4 grade;           // x which grade, y the LUT's size
+    float4 fill;            // x 1: the picture from before a jump, y the dissolve's share, z 1: stretch the edges, w 1: a second eye
 };
 cbuffer Piece : register(b1) {
     float4 piece_rect;      // clip x0 y0 x1 y1
@@ -900,19 +966,39 @@ float4 PSFinal(VOut i) : SV_Target {
     return float4(from_srgb(saturate(e)), 1);
 }
 
-// ---- the jump
+// ---- the jump, and the edges
 
-// The picture from before a jump where the eyes' don't reach (each pixel's direction, the world's
-// turn since undone), and over the rest fading out (a move a turn can't show).
-float4 PSHistory(VOut i) : SV_Target {
+// Where the eyes' pictures don't reach (each pixel's direction from the world's camera): mid-jump,
+// the picture from before it (the world's turn since undone), and over the rest fading out for a
+// move a turn can't show; past that, the edge of the nearer eye's picture drawn out over the gap,
+// softened along the edge the further out it goes: a smear, never black.
+float4 PSFill(VOut i) : SV_Target {
     float3 d = ray(world_inv_vp, i.uv);
     float4 a = mul(eye_a, float4(d, 0));
     float4 b = mul(eye_b, float4(d, 0));
-    bool seen = (a.w > 0 && all(abs(a.xy / a.w) <= 1)) || (b.w > 0 && all(abs(b.xy / b.w) <= 1));
-    float alpha = seen ? grade.z : 1;
-    float4 h = mul(hist_vp, float4(d, 0));
-    if (alpha <= 0 || h.w <= 0 || any(abs(h.xy / h.w) > 1)) discard;
-    return float4(t0.SampleLevel(lin, uv_of(h.xy / h.w), 0).rgb, alpha);
+    float2 na = a.xy / max(a.w, 1e-6), nb = b.xy / max(b.w, 1e-6);
+    // How far outside each picture (0: inside it); a picture behind doesn't count.
+    float oa = a.w > 0 ? max(max(abs(na.x), abs(na.y)) - 1, 0) : 1e6;
+    float ob = b.w > 0 && fill.w > 0 ? max(max(abs(nb.x), abs(nb.y)) - 1, 0) : 1e6;
+    bool seen = oa == 0 || ob == 0;
+    if (fill.x > 0) {
+        float alpha = seen ? fill.y : 1;
+        float4 h = mul(hist_vp, float4(d, 0));
+        if (alpha > 0 && h.w > 0 && all(abs(h.xy / h.w) <= 1)) return float4(t0.SampleLevel(lin, uv_of(h.xy / h.w), 0).rgb, alpha);
+    }
+    if (seen || fill.z <= 0 || min(oa, ob) > 1e5) discard;
+    bool use_a = oa <= ob;
+    float2 n = use_a ? na : nb;
+    float past = use_a ? oa : ob;
+    float2 edge = clamp(n, -0.998, 0.998);
+    float2 along = abs(n.x) > abs(n.y) ? float2(0, 1) : float2(1, 0);
+    float spread = min(past * 0.6, 0.2);
+    float3 c = 0;
+    [unroll] for (int k = -3; k <= 3; k++) {
+        float2 m = uv_of(clamp(edge + along * spread * k / 3.0, -0.998, 0.998));
+        c += use_a ? t1.SampleLevel(lin, m, 0).rgb : t2.SampleLevel(lin, m, 0).rgb;
+    }
+    return float4(c / 7, 1);
 }
 
 // ---- the flat HUD
@@ -956,7 +1042,7 @@ const PASSES: [&str; 12] = [
     "PSGlowAcross",
     "PSGlowDownwards",
     "PSFinal",
-    "PSHistory",
+    "PSFill",
 ];
 
 #[repr(C)]
@@ -985,6 +1071,7 @@ struct FxCb {
     colour: [f32; 4],
     white: [f32; 4],
     grade: [f32; 4],
+    fill: [f32; 4],
 }
 
 #[repr(C)]
@@ -1486,11 +1573,10 @@ impl Stage {
                         let d = map.matrix().inverse() * was.matrix();
                         let yaw = crate::wrap_angle(was.body_yaw - map.body_yaw);
                         let moved = d.transform_point3(pos) - pos;
-                        // On top of what's still to come of one before it.
-                        let (left, dissolving) = self.ground.ease.map_or((0.0, false), |e| (e.yaw * e.left(s.snap_seconds), e.dissolve && e.left(s.snap_seconds) > 0.0));
-                        let dissolve = dissolving || moved.length() > JUMP_RISE;
-                        self.ground.ease = Some(Ease { yaw: yaw + left, pivot: pos, dissolve, t: 0.0 });
-                        tracing::info!("desktop view: the world jumped {:.0} degrees and {:.2} m; easing it over {:.2} s", yaw.to_degrees(), moved.length(), s.snap_seconds);
+                        // On top of what's still to come of one before it, and its momentum.
+                        let dissolve = moved.length() > JUMP_RISE;
+                        self.ground.ease = Some(Ease::jump(self.ground.ease, yaw, pos, s.snap_seconds, dissolve));
+                        tracing::info!("desktop view: the world jumped {:.0} degrees and {:.2} m; turning through it as a head would", yaw.to_degrees(), moved.length());
                         // (No blur across the jump itself: the eased turn blurs instead.)
                         cut = cut || dissolve;
                         jump_step = Some(d);
@@ -1555,6 +1641,15 @@ impl Stage {
         }
         (self.rumble, self.game_shots) = (0.0, 0);
         self.blasts.clear();
+        // The jump being turned out: on a step, and the camera leaning into its turn.
+        if let Some(e) = &mut self.ground.ease
+            && (!s.smooth_snaps || !e.step(dt, s.snap_seconds))
+        {
+            self.ground.ease = None;
+        }
+        if let Some(e) = &self.ground.ease {
+            rot *= Quat::from_rotation_z((-e.speed * HEAD_LEAN).clamp(-0.04, 0.04));
+        }
         if s.shake || s.handheld > 0.0 {
             let turn = self.shake.update(dt, if s.shake { s.shake_strength } else { 0.0 }, s.handheld);
             rot *= Quat::from_euler(EulerRot::YXZ, turn.y.to_radians(), turn.x.to_radians(), turn.z.to_radians());
@@ -1562,20 +1657,14 @@ impl Stage {
             self.shake = Shake::default();
         }
         let cam = Pose { pos: i.cam.pos, valid: 1, rot: rot.normalize().to_array() };
-        // The world's camera: turned back through the jump being eased out.
+        // The world's camera: turned back by as much of the jump as the head hasn't turned yet.
         let mut world = cam;
         f.dissolve = 0.0;
-        if let Some(e) = &mut self.ground.ease {
-            e.t += dt;
-            let left = e.left(s.snap_seconds);
-            if left <= 0.0 || !s.smooth_snaps {
-                self.ground.ease = None;
-            } else {
-                let r = Quat::from_rotation_y(e.yaw * left);
-                world.pos = (e.pivot + r * (pos - e.pivot)).to_array();
-                world.rot = (r * rot).normalize().to_array();
-                f.dissolve = if e.dissolve { left } else { 0.0 };
-            }
+        if let Some(e) = &self.ground.ease {
+            let r = Quat::from_rotation_y(e.yaw);
+            world.pos = (e.pivot + r * (pos - e.pivot)).to_array();
+            world.rot = (r * rot).normalize().to_array();
+            f.dissolve = e.dissolving(s.snap_seconds);
         }
         // The field of view: the lens's (the zoom the desktop view has now kept), wider with speed.
         let aspect = i.fov.right / i.fov.up.max(1e-4);
@@ -1643,10 +1732,12 @@ impl Stage {
         Shot { cam, world, fov }
     }
 
-    /// The game's world drawn now from the world's camera when jumps are smoothed (the picture from
-    /// before a jump filling in where the new one doesn't reach yet, and kept for the next jump),
-    /// returning what `draw_view` draws then (nothing more of the background). And with the flat
-    /// HUD on, the HUD's pieces taken out of the desktop view's layers: it draws them flat instead.
+    /// The game's world drawn now, from the world's camera, when jumps are smoothed or the edges
+    /// filled, returning what `draw_view` draws then (nothing more of the background). Where the
+    /// eyes' pictures don't reach: mid-jump, the picture from before the jump; past that, the
+    /// nearest picture's edge stretched out over the gap. A steady frame's picture is kept for the
+    /// next jump. And with the flat HUD on, the HUD's pieces taken out of the desktop view's
+    /// layers: it draws them flat instead.
     #[allow(clippy::too_many_arguments)]
     pub fn background<'a>(&mut self, gpu: &Gpu, comp: &Compositor, target: &EyeTarget, world: &Pose, fov: &Fov, background: Background<'a>, layers: &mut Layers, hud: Option<&FlatHud>) -> Background<'a> {
         let Some(f) = self.frame.as_mut() else { return background };
@@ -1664,15 +1755,18 @@ impl Stage {
             layers.world_panels.retain(|p| !is_flat_piece(p.srv, &p.uv, srv, pieces));
             layers.panels.retain(|p| !is_flat_piece(p.srv, &p.uv, srv, pieces));
         }
+        // The eyes' pictures, each with where it's seen from (a direction to its clip space).
         let picture = match &background {
-            Background::Reprojected { first, second, .. } => Some((projection(&first.2) * view_matrix(&first.1), second.as_ref().map(|b| projection(&b.2) * view_matrix(&b.1)))),
+            Background::Reprojected { first, second, .. } => Some((
+                (projection(&first.2) * view_matrix(&first.1), first.0.clone()),
+                second.as_ref().map(|b| (projection(&b.2) * view_matrix(&b.1), b.0.clone())),
+            )),
             _ => None,
         };
         if !s.smooth_snaps {
             self.history = None;
-            return background;
         }
-        let Some((eye_a, eye_b)) = picture else {
+        let Some(((eye_a, srv_a), eye_b)) = picture.filter(|_| s.smooth_snaps || s.fill_edges) else {
             self.history = None;
             return background;
         };
@@ -1680,47 +1774,46 @@ impl Stage {
         let ease = self.ground.ease.filter(|_| f.world.rot != f.cam.rot || f.dissolve > 0.0);
         let yaw_now = self.ground.last.map_or(0.0, |(_, m)| m.body_yaw);
         let world_vp = projection(fov) * view_matrix(world);
-        if ease.is_some() {
-            // Mid-jump: the picture from before it where the new one doesn't reach (and over all
-            // of it, fading, for a move a turn can't show).
-            if let (Some(h), Some(kit)) = (self.history.as_ref().filter(|h| h.age.is_some_and(|a| a < HISTORY_KEEP)), self.kit.as_ref()) {
-                let mut cb = FxCb::zeroed();
-                cb.world_inv_vp = world_vp.inverse().to_cols_array();
-                cb.eye_a = eye_a.to_cols_array();
-                cb.eye_b = eye_b.unwrap_or(Mat4::ZERO).to_cols_array();
-                cb.hist_vp = (h.vp * Mat4::from_rotation_y(yaw_now - h.yaw)).to_cols_array();
-                cb.grade = [0.0, 0.0, f.dissolve, 0.0];
-                kit.cb.update(&gpu.ctx, &cb);
-                let ctx = &gpu.ctx;
-                unsafe {
-                    ctx.OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None);
-                    ctx.OMSetBlendState(&kit.alpha, Some(&[0.0; 4]), 0xFFFF_FFFF);
-                }
-                draw_pass(gpu, kit, PASS_HISTORY, target.width, target.height, std::slice::from_ref(&h.tex.srv));
+        let history = self.history.as_ref().filter(|h| ease.is_some() && h.age.is_some_and(|a| a < HISTORY_KEEP));
+        if let Some(kit) = self.kit.as_ref()
+            && (history.is_some() || s.fill_edges)
+        {
+            let mut cb = FxCb::zeroed();
+            cb.world_inv_vp = world_vp.inverse().to_cols_array();
+            cb.eye_a = eye_a.to_cols_array();
+            cb.eye_b = eye_b.as_ref().map_or(Mat4::ZERO, |b| b.0).to_cols_array();
+            cb.hist_vp = history.map_or(Mat4::ZERO, |h| h.vp * Mat4::from_rotation_y(yaw_now - h.yaw)).to_cols_array();
+            let on = |b: bool| if b { 1.0 } else { 0.0 };
+            cb.fill = [on(history.is_some()), f.dissolve, on(s.fill_edges), on(eye_b.is_some())];
+            kit.cb.update(&gpu.ctx, &cb);
+            unsafe {
+                gpu.ctx.OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None);
+                gpu.ctx.OMSetBlendState(&kit.alpha, Some(&[0.0; 4]), 0xFFFF_FFFF);
             }
-        } else {
-            // Steady: this frame's picture is the one to fill in with if a jump comes next.
-            {
-                let mut d = D3D11_TEXTURE2D_DESC::default();
-                unsafe { target.tex.GetDesc(&mut d) };
-                let fits = self.history.as_ref().is_some_and(|h| (h.tex.width, h.tex.height, h.format) == (d.Width, d.Height, d.Format));
-                if !fits {
-                    // (The window's own picture is stored plain and seen as sRGB; the studio's is
-                    // linear.)
-                    let (store, view) = match d.Format {
-                        DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB | DXGI_FORMAT_R8G8B8A8_TYPELESS => (DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
-                        DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB | DXGI_FORMAT_B8G8R8A8_TYPELESS => (DXGI_FORMAT_B8G8R8A8_TYPELESS, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB),
-                        other => (other, other),
-                    };
-                    let desc = TexDesc { width: d.Width, height: d.Height, format: store, rtv: None, srv: Some(view), dsv: None, mips: 1 };
-                    self.history = Texture::new(gpu, &desc).inspect_err(|e| tracing::warn!("desktop view: the picture kept for jumps: {e:#}")).ok().map(|tex| History { tex, format: d.Format, vp: Mat4::IDENTITY, yaw: 0.0, age: None });
-                }
-                if let Some(h) = &mut self.history {
-                    unsafe { gpu.ctx.CopyResource(&h.tex.tex, &target.tex) };
-                    h.vp = world_vp;
-                    h.yaw = yaw_now;
-                    h.age = Some(0.0);
-                }
+            let history_srv = history.and_then(|h| h.tex.srv.clone());
+            draw_pass(gpu, kit, PASS_FILL, target.width, target.height, &[history_srv, Some(srv_a), eye_b.map(|b| b.1)]);
+        }
+        // Steady: this frame's picture is the one to fill in with if a jump comes next.
+        if s.smooth_snaps && ease.is_none() {
+            let mut d = D3D11_TEXTURE2D_DESC::default();
+            unsafe { target.tex.GetDesc(&mut d) };
+            let fits = self.history.as_ref().is_some_and(|h| (h.tex.width, h.tex.height, h.format) == (d.Width, d.Height, d.Format));
+            if !fits {
+                // (The window's own picture is stored plain and seen as sRGB; the studio's is
+                // linear.)
+                let (store, view) = match d.Format {
+                    DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM_SRGB | DXGI_FORMAT_R8G8B8A8_TYPELESS => (DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB),
+                    DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_B8G8R8A8_UNORM_SRGB | DXGI_FORMAT_B8G8R8A8_TYPELESS => (DXGI_FORMAT_B8G8R8A8_TYPELESS, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB),
+                    other => (other, other),
+                };
+                let desc = TexDesc { width: d.Width, height: d.Height, format: store, rtv: None, srv: Some(view), dsv: None, mips: 1 };
+                self.history = Texture::new(gpu, &desc).inspect_err(|e| tracing::warn!("desktop view: the picture kept for jumps: {e:#}")).ok().map(|tex| History { tex, format: d.Format, vp: Mat4::IDENTITY, yaw: 0.0, age: None });
+            }
+            if let Some(h) = &mut self.history {
+                unsafe { gpu.ctx.CopyResource(&h.tex.tex, &target.tex) };
+                h.vp = world_vp;
+                h.yaw = yaw_now;
+                h.age = Some(0.0);
             }
         }
         unsafe { gpu.ctx.OMSetRenderTargets(None, None) };
@@ -1908,7 +2001,7 @@ const PASS_GLOW_DOWN: usize = 7;
 const PASS_GLOW_ACROSS: usize = 8;
 const PASS_GLOW_DOWNWARDS: usize = 9;
 const PASS_FINAL: usize = 10;
-const PASS_HISTORY: usize = 11;
+const PASS_FILL: usize = 11;
 
 /// The effects over the frame's picture (`t.scene`), into its window.
 #[allow(clippy::too_many_arguments)]
@@ -2055,10 +2148,11 @@ pub fn panel(ui: &mut egui::Ui, s: &mut Settings) {
     let st = &mut s.studio;
     ui.separator();
     ui.label("For viewers");
-    ui.checkbox(&mut st.smooth_snaps, "Snap turns, snap crouches and recentres glide instead of cutting");
+    ui.checkbox(&mut st.smooth_snaps, "Snap turns, snap crouches and recentres turn as a head would, instead of cutting");
     if st.smooth_snaps {
-        slider(ui, "Glide over", &mut st.snap_seconds, 0.1, 0.6, " s", 2);
+        slider(ui, "A 45 degree snap settles in", &mut st.snap_seconds, 0.15, 0.8, " s", 2);
     }
+    ui.checkbox(&mut st.fill_edges, "Stretch the picture's edges over the gaps a fast turn leaves (instead of black)");
     ui.checkbox(&mut st.flat_hud, "The game's HUD on the screen where a flat player has it");
     if st.flat_hud {
         slider(ui, "HUD size", &mut st.flat_hud_size, 0.5, 2.0, "", 2);
@@ -2205,6 +2299,38 @@ mod tests {
         let (step, landed) = g.see(60, map(0.0, Vec3::new(0.0, y, 0.0)), at, 60.0 * 0.022);
         assert_eq!(step, Step::Steady);
         assert!(landed.is_some_and(|s| s > 7.0), "{landed:?}");
+    }
+
+    #[test]
+    fn a_snap_turns_as_a_head_does() {
+        let deg = |r: f32| r.to_degrees();
+        let snap = 45f32.to_radians();
+        let mut e = Ease::jump(None, snap, Vec3::ZERO, 0.3, false);
+        // It gathers speed: a frame in it has hardly moved.
+        e.step(1.0 / 90.0, 0.3);
+        assert!(deg(e.yaw) > 44.0, "{}", deg(e.yaw));
+        let (mut t, mut half, mut most_back, mut fastest) = (1.0 / 90.0, None, 0.0f32, 0.0f32);
+        while e.step(1.0 / 90.0, 0.3) {
+            t += 1.0 / 90.0;
+            if half.is_none() && e.yaw < snap * 0.5 {
+                half = Some(t);
+            }
+            most_back = most_back.max(-e.yaw);
+            fastest = fastest.max(e.speed.abs());
+            assert!(t < 0.6, "settled");
+        }
+        let half = half.unwrap();
+        assert!((0.08..0.15).contains(&half), "half way at {half} s");
+        assert!(deg(most_back) > 0.3 && deg(most_back) < 2.0, "lands with a little overshoot: {}", deg(most_back));
+        assert!(deg(fastest) > 200.0 && deg(fastest) < 450.0, "as fast as a head: {} deg/s", deg(fastest));
+        // A second snap mid-turn carries the first's momentum.
+        let mut e = Ease::jump(None, snap, Vec3::ZERO, 0.3, false);
+        for _ in 0..9 {
+            e.step(1.0 / 90.0, 0.3);
+        }
+        let speed = e.speed;
+        let e = Ease::jump(Some(e), snap, Vec3::ZERO, 0.3, false);
+        assert!(e.speed == speed && speed.abs() > 1.0, "{speed}");
     }
 
     #[test]
