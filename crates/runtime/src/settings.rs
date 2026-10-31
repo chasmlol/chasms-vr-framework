@@ -240,9 +240,10 @@ pub struct Studio {
     pub look: Look,
     /// Snap turns, a snap crouch or a recentre jump the headset's view at once; the desktop view
     /// turns through the jump instead, as a head would (gathering speed, carrying it, landing),
-    /// so a viewer never sees a cut. `snap_seconds`: how long a 45 degree snap takes to settle.
+    /// so a viewer never sees a cut. `snap_speed`: how fast it turns through a 45 degree snap at its
+    /// fastest (degrees a second; bigger snaps a little faster, smaller ones slower).
     pub smooth_snaps: bool,
-    pub snap_seconds: f32,
+    pub snap_speed: f32,
     /// Where the desktop view sees past the game's picture (a fast turn it lags behind, a wide
     /// lens), the picture's edge is stretched out over the gap instead of leaving it black.
     pub fill_edges: bool,
@@ -357,7 +358,9 @@ impl Default for Studio {
         Studio {
             look: Look::Clean,
             smooth_snaps: true,
-            snap_seconds: 0.3,
+            // (160 degrees a second: a 45 degree snap settled in about 0.6 s. Twice that, the first
+            // playtest's, was quicker than the player liked.)
+            snap_speed: 160.0,
             fill_edges: true,
             flat_hud: false,
             flat_hud_size: 1.0,

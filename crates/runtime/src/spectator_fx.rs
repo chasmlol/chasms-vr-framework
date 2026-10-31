@@ -8,7 +8,7 @@
 //! **The camera** ([`Stage::shot`]), before anything's drawn:
 //! - *Smoothed jumps*: a snap turn, a snap crouch or a recentre jumps the game's world under the
 //!   player in one frame. The desktop view's camera on the world turns through the jump over
-//!   `snap_seconds` instead (the body and what the runtime draws stay with the player, as they
+//!   `snap_speed` instead (the body and what the runtime draws stay with the player, as they
 //!   turn with them); where the new picture doesn't reach yet, the one from before the jump fills
 //!   in. A move the picture can't be turned through (a crouch, a recentre's step) dissolves from
 //!   the picture before it.
@@ -75,7 +75,7 @@ pub fn look(l: Look, keep: &Studio) -> Studio {
     let clean = Studio {
         look: l,
         smooth_snaps: keep.smooth_snaps,
-        snap_seconds: keep.snap_seconds,
+        snap_speed: keep.snap_speed,
         fill_edges: keep.fill_edges,
         flat_hud: keep.flat_hud,
         flat_hud_size: keep.flat_hud_size,
@@ -247,11 +247,17 @@ struct Ease {
     yaw: f32,
     speed: f32,
     intent: f32,
-    /// The spring's natural frequency (radians a second), from the turn's size.
+    /// The spring's natural frequency (radians a second), from the turn's size and speed.
     omega: f32,
+    /// How long it takes to settle (seconds): the dissolve takes as long.
+    settle: f32,
     pivot: Vec3,
     dissolve: Option<f32>,
 }
+
+/// A 45 degree snap's fastest turn times its settling time (degrees): the spring's shape (its
+/// damping and its intent's let-go) fixes it, so a speed is a settling time.
+const PEAK_BY_SETTLE: f32 = 96.0;
 
 /// The head's damping: under critical, so a 45 degree turn overshoots by about a degree and settles
 /// back, and never wobbles.
@@ -282,16 +288,16 @@ fn bob_turn(cam: &Pose, bobbed: &Pose) -> Quat {
 }
 
 impl Ease {
-    /// A jump of `yaw` (radians) on top of `was` (none: from rest), settled in about `seconds` for a
-    /// 45 degree turn. A head turns further faster and for longer, so a bigger turn takes a little
-    /// longer and a smaller one a little less.
-    fn jump(was: Option<Ease>, yaw: f32, pivot: Vec3, seconds: f32, dissolve: bool) -> Ease {
-        let mut e = was.unwrap_or(Ease { yaw: 0.0, speed: 0.0, intent: 0.0, omega: 1.0, pivot, dissolve: None });
+    /// A jump of `yaw` (radians) on top of `was` (none: from rest), turned through at `speed`
+    /// degrees a second at its fastest for a 45 degree turn. A head turns further faster and for
+    /// longer, so a bigger turn takes a little longer and a smaller one a little less.
+    fn jump(was: Option<Ease>, yaw: f32, pivot: Vec3, speed: f32, dissolve: bool) -> Ease {
+        let mut e = was.unwrap_or(Ease { yaw: 0.0, speed: 0.0, intent: 0.0, omega: 1.0, settle: 0.5, pivot, dissolve: None });
         e.yaw += yaw;
         e.intent += yaw;
         let size = e.yaw.abs().max(e.intent.abs()) / 45f32.to_radians();
-        let settle = seconds.max(0.05) * (0.65 + 0.35 * size).clamp(0.5, 1.6);
-        e.omega = 4.0 / (HEAD_DAMPING * settle);
+        e.settle = (PEAK_BY_SETTLE / speed.max(10.0)) * (0.65 + 0.35 * size).clamp(0.5, 1.6);
+        e.omega = 4.0 / (HEAD_DAMPING * e.settle);
         e.pivot = pivot;
         if dissolve {
             e.dissolve = Some(0.0);
@@ -300,7 +306,7 @@ impl Ease {
     }
 
     /// On by `dt` (in small steps: the spring is stiff); false once it's done.
-    fn step(&mut self, dt: f32, seconds: f32) -> bool {
+    fn step(&mut self, dt: f32) -> bool {
         let n = (dt * 480.0).ceil().clamp(1.0, 64.0) as usize;
         let h = dt / n as f32;
         // (The intent lets go over an eighth of the settling time.)
@@ -313,7 +319,7 @@ impl Ease {
         }
         if let Some(t) = &mut self.dissolve {
             *t += dt;
-            if *t >= seconds {
+            if *t >= self.settle {
                 self.dissolve = None;
             }
         }
@@ -322,9 +328,9 @@ impl Ease {
     }
 
     /// How much of the dissolve is left (1 at the move, 0 when it's done), eased at both ends.
-    fn dissolving(&self, seconds: f32) -> f32 {
+    fn dissolving(&self) -> f32 {
         self.dissolve.map_or(0.0, |t| {
-            let x = (t / seconds.max(0.01)).clamp(0.0, 1.0);
+            let x = (t / self.settle.max(0.01)).clamp(0.0, 1.0);
             1.0 - x * x * (3.0 - 2.0 * x)
         })
     }
@@ -1599,7 +1605,7 @@ impl Stage {
                         let moved = d.transform_point3(pos) - pos;
                         // On top of what's still to come of one before it, and its momentum.
                         let dissolve = moved.length() > JUMP_RISE;
-                        self.ground.ease = Some(Ease::jump(self.ground.ease, yaw, pos, s.snap_seconds, dissolve));
+                        self.ground.ease = Some(Ease::jump(self.ground.ease, yaw, pos, s.snap_speed, dissolve));
                         tracing::info!("desktop view: the world jumped {:.0} degrees and {:.2} m; turning through it as a head would", yaw.to_degrees(), moved.length());
                         // (No blur across the jump itself: the eased turn blurs instead.)
                         cut = cut || dissolve;
@@ -1667,7 +1673,7 @@ impl Stage {
         self.blasts.clear();
         // The jump being turned out: on a step, and the camera leaning into its turn.
         if let Some(e) = &mut self.ground.ease
-            && (!s.smooth_snaps || !e.step(dt, s.snap_seconds))
+            && (!s.smooth_snaps || !e.step(dt))
         {
             self.ground.ease = None;
         }
@@ -1689,7 +1695,7 @@ impl Stage {
             let r = Quat::from_rotation_y(e.yaw);
             world.pos = (e.pivot + r * (pos - e.pivot)).to_array();
             world.rot = (r * rot * bob).normalize().to_array();
-            f.dissolve = e.dissolving(s.snap_seconds);
+            f.dissolve = e.dissolving();
         }
         // The field of view: the lens's (the zoom the desktop view has now kept), wider with speed.
         let aspect = i.fov.right / i.fov.up.max(1e-4);
@@ -2176,7 +2182,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut Settings, status: &crate::menu::Status) 
     ui.label("For viewers");
     ui.checkbox(&mut st.smooth_snaps, "Snap turns, snap crouches and recentres turn as a head would, instead of cutting");
     if st.smooth_snaps {
-        slider(ui, "A 45 degree snap settles in", &mut st.snap_seconds, 0.15, 0.8, " s", 2);
+        slider(ui, "Snap turn speed on the desktop view (its fastest)", &mut st.snap_speed, 60.0, 500.0, " deg/s", 0);
     }
     ui.checkbox(&mut st.fill_edges, "Stretch the picture's edges over the gaps a fast turn leaves (instead of black)");
     ui.checkbox(&mut st.flat_hud, "The game's HUD on the screen where a flat player has it");
@@ -2355,12 +2361,12 @@ mod tests {
     fn a_snap_turns_as_a_head_does() {
         let deg = |r: f32| r.to_degrees();
         let snap = 45f32.to_radians();
-        let mut e = Ease::jump(None, snap, Vec3::ZERO, 0.3, false);
+        let mut e = Ease::jump(None, snap, Vec3::ZERO, 320.0, false);
         // It gathers speed: a frame in it has hardly moved.
-        e.step(1.0 / 90.0, 0.3);
+        e.step(1.0 / 90.0);
         assert!(deg(e.yaw) > 44.0, "{}", deg(e.yaw));
         let (mut t, mut half, mut most_back, mut fastest) = (1.0 / 90.0, None, 0.0f32, 0.0f32);
-        while e.step(1.0 / 90.0, 0.3) {
+        while e.step(1.0 / 90.0) {
             t += 1.0 / 90.0;
             if half.is_none() && e.yaw < snap * 0.5 {
                 half = Some(t);
@@ -2372,14 +2378,23 @@ mod tests {
         let half = half.unwrap();
         assert!((0.08..0.15).contains(&half), "half way at {half} s");
         assert!(deg(most_back) > 0.3 && deg(most_back) < 2.0, "lands with a little overshoot: {}", deg(most_back));
-        assert!(deg(fastest) > 200.0 && deg(fastest) < 450.0, "as fast as a head: {} deg/s", deg(fastest));
+        assert!((deg(fastest) - 320.0).abs() < 40.0, "as fast as asked: {} deg/s", deg(fastest));
+        // At the default speed, half that: twice as long.
+        let mut e = Ease::jump(None, snap, Vec3::ZERO, Studio::default().snap_speed, false);
+        let (mut t, mut fastest) = (0.0, 0.0f32);
+        while e.step(1.0 / 90.0) {
+            t += 1.0 / 90.0;
+            fastest = fastest.max(e.speed.abs());
+        }
+        // (Settled to a tenth of a degree, the last of it too slow to see.)
+        assert!((deg(fastest) - 160.0).abs() < 20.0 && (0.5..1.0).contains(&t), "{} deg/s, settled in {t} s", deg(fastest));
         // A second snap mid-turn carries the first's momentum.
-        let mut e = Ease::jump(None, snap, Vec3::ZERO, 0.3, false);
+        let mut e = Ease::jump(None, snap, Vec3::ZERO, 320.0, false);
         for _ in 0..9 {
-            e.step(1.0 / 90.0, 0.3);
+            e.step(1.0 / 90.0);
         }
         let speed = e.speed;
-        let e = Ease::jump(Some(e), snap, Vec3::ZERO, 0.3, false);
+        let e = Ease::jump(Some(e), snap, Vec3::ZERO, 320.0, false);
         assert!(e.speed == speed && speed.abs() > 1.0, "{speed}");
     }
 
