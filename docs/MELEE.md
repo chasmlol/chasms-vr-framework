@@ -215,13 +215,14 @@ and body rules, shared by the runtime and the range.
   with the rest at its safe distance, back dodges by a chance curve when its guard won't cover
   a blow (always from a thrust at a sword), danger rolled each brain cycle; feints (the user's call).
 * **Fear and pain**: there's no fleeing by health: a fighter flees only unarmed with no weapon to
-  take up (none within 4 m of the player), to the arena's far corners, and is gone; disarmed, it
-  stoops to take a weapon back up. It grunts when hurt, shouts as it swings (seven times in ten),
-  and says its last line by what killed it (silence after a stab through the throat, a grunt for a
-  stab to the head, breathless for a cut throat or a choke, the long one for a stab elsewhere); it
-  screams falling faster than 5 m/s until it lands, and cries out held (its grappled line, not
-  for a wave's fighters); it blinks, and shuts its eyes out cold or dead. Each line is the
-  creature's own voice (`EV_VOICE`'s speaker): a new one cuts off the last.
+  take up (only one more than 4 m from the player, within 30 m, will do), to the arena's far
+  corners, and is gone; disarmed, it stoops to take a weapon back up. It grunts when hurt, shouts
+  as it swings (seven times in ten), and says its last line by what killed it (silence after a
+  stab through the throat, a grunt for a stab to the head, breathless for a cut throat or a choke,
+  the long one for a stab elsewhere); it screams falling faster than 5 m/s until it lands, and
+  cries out held (its grappled line, not for a wave's fighters); it blinks, and shuts its eyes out
+  cold or dead. Each line is the creature's own voice (`EV_VOICE`'s speaker): a new one cuts off
+  the last.
 * **Knockouts**: out cold standing (its brain off, its weapons kept), limp only if already down or
   out, 6 s from the last blow.
 * **Waves** (`arena.rs`): each comes while the player's in the arena; from the second, its
@@ -270,12 +271,12 @@ and body rules, shared by the runtime and the range.
   and the bottom button pushes it away at up to 8 m/s, out to 12 m; at the hand it's taken where it
   touches; let go of with the hand moving it's thrown at 20 m/s, a weapon point first; a weapon
   stuck in something is pulled out (recall). A creature's part is held by the game on a ragdoll
-  drive (`GRAB_TK`: 2000 N/m, 100, at most 2500 N; turning 10, 1, 1000 N m, the neck's x5), its
-  point following the hand at up to 3 m/s (from nothing over 3 s; a dead one's at once), pulled and
-  pushed at 3.2 m/s out to 6 m; let go of with the hand moving, the part flies at 30 m/s and the rest
-  of the body at 8. It isn't struggled out of. Two telekinesis hands on one body tear its tearing
-  joints past 3000 N; a body dead and 10 s alight is charred through: stiff as
-  it lies, its tearing joints breaking at 3000 N.
+  drive (`GRAB_TK`: 2000 N/m, 100, at most 2500 N; turning 10, 1, 1000 N m, the neck's 50, 5,
+  1500), its point following the hand at up to 3 m/s (from nothing over 3 s; a dead one's at
+  once), pulled and pushed at 3.2 m/s out to 6 m; let go of with the hand moving, the part flies at
+  30 m/s and the rest of the body at 8. It isn't struggled out of. Two telekinesis hands on one
+  body tear its tearing joints past 3000 N; a body dead and 10 s alight is
+  charred through: stiff as it lies, its tearing joints breaking at 3000 N.
 * **Slowed time** (`powers.rs`): the off hand's stick click (with the melee buttons, the dominant
   hand's B) slows the game's time to half on a focus meter: it starts at 30 and holds 60, needs
   more than 10, drains 6 a second of real time while slowed and comes back at 3 a second of the
@@ -313,9 +314,9 @@ and body rules, shared by the runtime and the range.
 
 ## Settings and the game's say
 
-`settings.toml`'s `[melee]`: `strength` (1: the standard player), `stamina` (off), `stamina_time` (12 s),
-`stamina_refill` (6 s), `slow_time` (on), `telekinesis` (off), `climbing` (on), `easy_dismemberment`
-(on). A game's
+`settings.toml`'s `[melee]`: `strength` (1: the standard player), `stamina` (off), `stamina_time`
+(12 s), `stamina_refill` (6 s), `slow_time` (on), `telekinesis` (off), `climbing` (on),
+`easy_dismemberment` (on); they're in the file only, not the in-headset menu. A game's
 `MeleeRules` override slowing time, climbing and telekinesis when they say (`RULES_SAYS_*`), turn on
 the melee buttons (`RULES_KICK`: the movement stick kicks, slowing time on the dominant B, the climb
 jump on the dominant stick), give their own slowing (`slow_scale`, `focus_time`, `focus_refill`),
@@ -325,66 +326,66 @@ and their stamina replaces the runtime's.
 
 The choices that need a reason, and why:
 
-| What | Usual | Ours | Why |
-|---|---|---|---|
-| Taking a weapon | pulls it into a posed grip on the handle | the same: near a handle onto it, at its grip turn or reversed, eased into the hand; off its handles taken where it is | the user's rule: weapons snap to their rigged grips (it replaced "grabs never snap") |
-| Drawn from a holster, or caught | into the hand by its grip | the same (into the grip) | a weapon in a holster or in the air has no "where the hand is on it" |
-| Sliding over the guard | the hand jumps to the linked handle | it crosses the gap, the weapon sliding through the fist | a slide goes on as the hand moves, rather than jumping |
-| The hold's solve | a configurable joint | the same spring, damper and caps, solved implicitly per step, with the weight's turn at the grip | stable at any weight in Rapier |
-| Two hands | a joint at each hand | one joint at the holding hand: the other's drive at its distance as leverage, its pull leaning the target | one body, one joint |
-| Sliding's damper | against the hand's slide | against the slide relative to the controller's own motion | a steady swing doesn't slide the hand off |
-| Creature pins | joint drives | implicit drives on each part's mass and its inertia each way, each from how the part moves after the drives before it | explicit drives on light hand parts blew up; one inertia for every way, and drives each solved alone, shook the arms |
-| The creatures' physics step | its fixed step, the headset's frame | one a frame (a frame longer than 1/72 s split evenly) | a fixed 120 Hz stepped twice some frames and none others at 90 Hz, and once in three frames in slowed time |
-| Guns on creatures | none | a round: pistol 15, rifle 30 (and on through flesh and leather), shotgun 45; x0.9 through leather, x0.6 chainmail, x0.4 plate; push levels 1, 2, 3; the part sent on at 3 to 6 m/s; through an arm or a hand, its weapon dropped | the range's guns had no say on them; two rifle rounds or four pistol rounds kill, a head shot sooner |
-| Grenades on creatures | none | a frag: 120 at the centre falling off with the square over 6 m, floored within 4 m, limbs within 1.2 m torn off, thrown at 8 m/s; the fire bomb: 15 over 2.5 m, alight close in; none through the room's walls and furniture | as above |
-| Throwing knives in creatures | none (its daggers are its throwing knives) | a thrown dagger's point: its curve x3, then 7.5 times the part's deep multiplier gone in; the knife rides with the part | the range's knives are its own throwables, not melee weapons |
-| Spells cast at creatures | a projectile at 12 m/s, guided | lands at once on the creature the runtime's aim found: the fire bolt's 10, its push at 12 m/s and its heat; the lightning's 2 at push level 1 and its electrocution | the range has no projectile of its own |
-| A stuck blade's pull on the body | the joint's force on the part's rigidbody | the hand's force as the speed it gives the part's mass in a step, for the game to add (at most 4 m/s) | the protocol pushes by speed |
-| A blade's way between its samples | its colliders, the whole blade | points 6 to 8 cm apart along it | a sweep of points, as close as a hand's thickness |
-| Dismemberment | strict: 12 m/s for a sword, within 4 cm of a joint, square to it (easy dismemberment an option, off by default) | easy dismemberment on by default, for cutting edges only: a stab still sticks | the strict cut proved too hard to land in play, and the user wants limbs coming off; easy dismemberment for stabs too would let a stab into an arm or a face cut it off |
-| Knockouts | the tables carry knockout speeds nothing uses | a blunt head hit past them knocks out | the user asked for knockouts; the speeds are in the tables |
-| Choking | a hand choke hurts nothing | 5 a second | a choke can kill |
-| Wrenching a weapon away | NPCs never let go to a pull | pulled 0.95 m from its holder's chest for 0.25 s, it lets go | the user asked for grab-and-wrench disarms |
-| Feints | fighters never feint | Medium one swing in ten, Hard one in five | the user asked for feints |
-| Stamina | none | the option above | the user asked for one, game-drivable |
-| Burning to death | at 85% of a fire-death animation's clip | 4 s alight | we have no animation |
-| Bone | a material of effects only | cut and stabbed like wood, struck like plate | it needs a row in the tables |
-| A thrown point | its going-in damper is 0 (50 for sword stabs) for 0.5–1 s, then locked going out | goes in to its full depth at once | the same end, without timing the damper |
-| Breaking on the world | left to the hitter's rigid body | the thing's own mass is weighed | a world has no mass |
-| Telekinesis | always there | off by default, on when the game says or the settings ask; the range's melee areas keep the gravity gloves | the user wants the gloves' pull, not telekinesis |
-| A telekinesis throw | a skill | always | the range has no skill tree; it was asked for |
-| Telekinesis on bodies | a skill (or a gravity spell's creature control) | always, with telekinesis | the same |
-| Tearing limbs off | skills (two telekinesis hands on a body, both hands on one); a body burned to a full char | all three, always | the same; it was asked for |
-| A hand by a held blade | the spell hand charges whatever it's near | the spell hand may charge beside the other hand's weapon, and while the gloves only mark something far off | so imbuing works, and casting isn't stolen by a highlight |
-| Climbing a top | the thumb-to-fingers cast must find an edge | an edge, or a ledge's top pressed on | a palm pushing down on a top holds as on its edge |
-| Climbing's body | the player's physical body | an integrated 70 kg body; the game's measured movement is taken only where it held the body back | the game's frames aren't the runtime's |
-| Stepping up | none (a climber jumps) | the range steps a climber let go within a metre below the block's top onto it, besides the climb jump | its block has no foothold to jump from |
-| Buttons | its own (kick on the movement stick, slow time on B, jump on the other stick) | the framework's, unless the game asks for the melee buttons (`RULES_KICK`); the range's melee areas do | a game's own buttons come first |
-| Spells in the range | chosen from a wheel | fire and shock alternate as they're cast | the range has no spell wheel |
-| Blood | its reveal masks, sparse drops and decals that fade in 30 s; only stumps and a neck bleed | the runtime's gore (its own design: wounds bleed a few seconds, blood runs and pools) with blade blood by depth and a bleeding neck | the gore is the framework's, made for every game |
-| The spear's points | two side points | its leaf point and edge only | the range's spear has no side points to put them on |
-| Telekinesis on a fighter's weapon | its handles stay telekinesis's while an NPC holds them | the same: pulled away past 0.95 m for 0.25 s, the fighter lets go | the range's wrench rule, as for a hand |
-| The tearing force | the joint's force, as the engine reports it | each joint's last substep impulse over that substep | Rapier keeps no force; a steady pull reads the same |
-| The grip on a creature | the player's 3000 N | the runtime's setting (1500 N) times the game's strength: 2 in the range's melee areas | the setting is every game's |
-| Waves | waves start when the player picks one | each comes while the player's in the arena | one room holds every area |
-| Moves' shapes | animation clips | keyframed shapes (swings from each side, above, low, a thrust, the combo, a shield push) with each move's marks laid on, through each key at speed | the range has no animation clips |
-| Chains' and ripostes' clips | animation clips | 1.33 s, leaning in 0.22 m as its plain swings do | one length for all of them |
-| Root motion | each clip's root curve | each opening's reduced to its furthest, when, and where it ends, eased between | close enough to its curves |
-| Idles' guards, dodges, picking up, blinking | its clips | ours (guards up and forward; a metre back over 0.6 s; a stoop over 0.75 s, the weapon taken at 1.05 s within 0.45 m; eyes shut for the middle half of 0.5 s) | the range has no animation clips |
-| Spacing | moving to its idles' ranges | hovering just past the player's reach, stepping in when its delay is up; not engaged, at its safe distance + 0.25 to + 2.25 | the idles' ranges, without a navmesh |
-| Spreading out | a spot clear of its allies | it strafes away from the nearest ally in its reach | no navmesh spots |
-| A covered blow | a capsule cast along the blow | the blow's tip's way against its blade, within 6 cm, before the body | the same test without a cast |
-| Where it flees | its level's exits | the arena's two far corners | the range has no exits |
-| Its voice | a clip each line, by its own pitch | the runtime's own sound for each line, one at a time a creature | the range has no voice clips |
-| A blow's shove | a frame's acceleration landing in one physics step | taken at 90 Hz, as a speed change spread over its duration (mass-free; an impulse in its impulse mode) | frame-rate free |
-| A shove from thrown weapons, and in slowed time | per damager's state; x a slow-motion multiplier | never from a thrown weapon; not scaled | the protocol doesn't carry them |
-| Slams | the engine's collision speed; the part's tier and the creature's multiplier | the two bodies' speeds at a new contact, from before the step; 1 and 1 | the solver has changed them after |
-| Grappled turning, stepping, height | its turn speed, feet at 3x its forward speed, its animator's height | 6 a second; our walk's 1.4 m/s x 3; the pelvis squats by the hand's height, down to half | no animator |
-| A held limb's IK | the hand and wrist 1, the shoulder 0.25, the trunk 0.25 | the arm's wrist lerped to the grip by those; a leg pointed at it; no trunk | our two-bone arm IK |
-| The neck held tight | swing 20, twist 20 / 45 on the head and neck | the head's nod ±20, turn -20 / 45 | one joint for head and neck |
-| Escaping a hold | an escape clip, then the hand forced off after the handle's delay; per handle | a 0.6 s twist, the next try 1 s + 2 to 3 s later, the hand let go 0.5 s after one that works; every handle | the range has no escape clip |
-| The armoured fighters | armoured enemies in plate, Heavy brains | from wave 2, each wave's shield-bearer, in plate | so the Heavy tables are played |
-| Block push per weapon | each weapon's own | a table by the range's weapons (longsword, mace, staff, maul) | the protocol doesn't carry it |
+| What | Ours | Why |
+|---|---|---|
+| Taking a weapon | near a handle onto it, at its grip turn or reversed, eased into the hand; off its handles taken where it is | the user's rule: weapons snap to their rigged grips (it replaced "grabs never snap") |
+| Drawn from a holster, or caught | into the hand by its grip | a weapon in a holster or in the air has no "where the hand is on it" |
+| Sliding over the guard | it crosses the gap, the weapon sliding through the fist | a slide goes on as the hand moves, rather than jumping to the linked handle |
+| The hold's solve | a spring, damper and caps, solved implicitly per step, with the weight's turn at the grip | stable at any weight in Rapier |
+| Two hands | one joint at the holding hand: the other's drive at its distance as leverage, its pull leaning the target | one body, one joint |
+| Sliding's damper | against the slide relative to the controller's own motion | a steady swing doesn't slide the hand off |
+| Creature pins | implicit drives on each part's mass and its inertia each way, each from how the part moves after the drives before it | explicit drives on light hand parts blew up; one inertia for every way, and drives each solved alone, shook the arms |
+| The creatures' physics step | one a frame (a frame longer than 1/72 s split evenly) | a fixed 120 Hz stepped twice some frames and none others at 90 Hz, and once in three frames in slowed time |
+| Guns on creatures | a round: pistol 15, rifle 30 (and on through flesh and leather), shotgun 45; x0.9 through leather, x0.6 chainmail, x0.4 plate; push levels 1, 2, 3; the part sent on at 3 to 6 m/s; through an arm or a hand, its weapon dropped | so the range's guns have a say on them; two rifle rounds or four pistol rounds kill, a head shot sooner |
+| Grenades on creatures | a frag: 120 at the centre falling off with the square over 6 m, floored within 4 m, limbs within 1.2 m torn off, thrown at 8 m/s; the fire bomb: 15 over 2.5 m, alight close in; none through the room's walls and furniture | as above |
+| Throwing knives in creatures | a thrown dagger's point: its curve x3, then 7.5 times the part's deep multiplier gone in; the knife rides with the part | the range's knives are its own throwables, not melee weapons |
+| Spells cast at creatures | lands at once on the creature the runtime's aim found: the fire bolt's 10, its push at 12 m/s and its heat; the lightning's 2 at push level 1 and its electrocution | the range has no projectile of its own |
+| A stuck blade's pull on the body | the hand's force as the speed it gives the part's mass in a step, for the game to add (at most 4 m/s) | the protocol pushes by speed |
+| A blade's way between its samples | points 6 to 8 cm apart along it | a sweep of points, as close as a hand's thickness |
+| Dismemberment | easy dismemberment on by default, for cutting edges only: a stab still sticks; turned off, the strict cut (12 m/s for a sword, within 4 cm of a joint, square to it) | the strict cut proved too hard to land in play, and the user wants limbs coming off; easy dismemberment for stabs too would let a stab into an arm or a face cut it off |
+| Knockouts | a blunt head hit past its row's knockout speed knocks out | the user asked for knockouts; the speeds are in the tables |
+| Choking | a hand on the throat does 5 a second | a choke can kill |
+| Wrenching a weapon away | pulled 0.95 m from its holder's chest for 0.25 s, it lets go | the user asked for grab-and-wrench disarms |
+| Feints | Medium one swing in ten, Hard one in five | the user asked for feints |
+| Stamina | the option above | the user asked for one, game-drivable |
+| Burning to death | 4 s alight | there's no death animation to time it by |
+| Bone | cut and stabbed like wood, struck like plate | it needs a row in the tables |
+| A thrown point | goes in to its full depth at once | a thrown point goes deep, without timing a damper |
+| Breaking on the world | the thing's own mass is weighed | a world has no mass |
+| Telekinesis | off by default, on when the game says or the settings ask; the range's melee areas keep the gravity gloves | the user wants the gloves' pull, not telekinesis |
+| A telekinesis throw | always | it was asked for |
+| Telekinesis on bodies | always, with telekinesis | the same |
+| Tearing limbs off | two telekinesis hands on a body, both hands on one, and a body burned to a full char: all three, always | the same; it was asked for |
+| A hand by a held blade | the spell hand may charge beside the other hand's weapon, and while the gloves only mark something far off | so imbuing works, and casting isn't stolen by a highlight |
+| Climbing a top | an edge, or a ledge's top pressed on | a palm pushing down on a top holds as on its edge |
+| Climbing's body | an integrated 70 kg body; the game's measured movement is taken only where it held the body back | the game's frames aren't the runtime's |
+| Stepping up | the range steps a climber let go within a metre below the block's top onto it, besides the climb jump | its block has no foothold to jump from |
+| Buttons | the framework's, unless the game asks for the melee buttons (`RULES_KICK`: kick on the movement stick, slow time on B, jump on the other stick); the range's melee areas do | a game's own buttons come first |
+| Spells in the range | fire and shock alternate as they're cast | the range has no spell wheel |
+| Blood | the runtime's gore (its own design: wounds bleed a few seconds, blood runs and pools) with blade blood by depth and a bleeding neck | the gore is the framework's, made for every game |
+| The spear's points | its leaf point and edge only | the range's spear has no side points |
+| Telekinesis on a fighter's weapon | pulled away past 0.95 m for 0.25 s, the fighter lets go | the range's wrench rule, as for a hand |
+| The tearing force | each joint's last substep impulse over that substep | Rapier keeps no force; a steady pull reads the same |
+| The grip on a creature | the runtime's setting (`[interaction]`'s `creature_strength`, 1500 N) times the game's strength: 2 in the range's melee areas, 3000 N | the setting is every game's |
+| Waves | each comes while the player's in the arena | one room holds every area |
+| Moves' shapes | keyframed shapes (swings from each side, above, low, a thrust, the combo, a shield push) with each move's marks laid on, through each key at speed | the range has no animation clips |
+| Chains' and ripostes' clips | 1.33 s, leaning in 0.22 m as its plain swings do | one length for all of them |
+| Root motion | each opening's reduced to its furthest, when, and where it ends, eased between | close enough to a root curve |
+| Idles' guards, dodges, picking up, blinking | ours (guards up and forward; a metre back over 0.6 s; a stoop over 0.75 s, the weapon taken at 1.05 s within 0.45 m; eyes shut for the middle half of 0.5 s) | the range has no animation clips |
+| Spacing | hovering just past the player's reach, stepping in when its delay is up; not engaged, at its safe distance + 0.25 to + 2.25 | the idles' ranges, without a navmesh |
+| Spreading out | it strafes away from the nearest ally in its reach | no navmesh spots |
+| A covered blow | the blow's tip's way against its blade, within 6 cm, before the body | a capsule cast's test, without the cast |
+| Where it flees | the arena's two far corners | the range has no exits |
+| Its voice | the runtime's own sound for each line, one at a time a creature | the range has no voice clips |
+| A blow's shove (`MeleeBlade::push`) | taken at 90 Hz, as a speed change spread over its duration (mass-free; with `DMGF_PUSH_IMPULSE` an impulse) | frame-rate free |
+| A shove from thrown weapons, and in slowed time | never from a thrown weapon; not scaled | the protocol doesn't carry them |
+| Slams | the two bodies' speeds at a new contact, from before the step; the part's tier and the creature's multiplier 1 and 1 | the solver has changed them after |
+| Grappled turning, stepping, height | 6 a second; our walk's 1.4 m/s x 3; the pelvis squats by the hand's height, down to half | no animator |
+| A held limb's IK | the arm's wrist lerped to the grip (the hand and wrist 1, the shoulder 0.25); a leg pointed at it; no trunk | our two-bone arm IK |
+| The neck held tight | the head's nod ±20, turn -20 / 45 | one joint for head and neck |
+| Escaping a hold | a 0.6 s twist, the next try 1 s + 2 to 3 s later, the hand let go 0.5 s after one that works; every handle | the range has no escape clip |
+| The armoured fighters | from wave 2, each wave's shield-bearer, in plate | so the Heavy tables are played |
+| Block push per weapon | a table by the range's weapons (longsword, mace, staff, maul) | the protocol doesn't carry it |
 
 ## Not done
 
@@ -406,7 +407,11 @@ The choices that need a reason, and why:
 
 Melee is checked by doing it, with the emulated headset (`docs/XRSIM.md`): scripts that take a
 weapon from a table and swing, stab, throw, block, climb, and captures and logs to see what
-happened. `RUSTVR_DEBUG_MELEE=1` logs how far held weapons lag their hands, `RUSTVR_DEBUG_COMBAT=1`
-each contact's judging, `RUSTVR_DEBUG_BRAIN=1` (the range) each fighter's state once a second,
-`RUSTVR_SILENT=1` keeps the runtime's sounds off the speakers.
-`PLAYTEST.md` (at the adapter's root) says how to start each area and what to try.
+happened; and with the runtime's own scenarios (`rustvr --sim sword`, `stab` and `stab_floor`:
+the range's sword chopping and stabbing, DESIGN.md §8). The range starts in an area with
+`--arena <name>` (`range`, `rack`, `arena`, `bench`, `climb`; `rustvr-play --wait -- --arena
+bench`). `RUSTVR_DEBUG_MELEE=1` logs how far held weapons lag their hands,
+`RUSTVR_DEBUG_COMBAT=1` each contact's judging (and draws the parts and damagers judged),
+`RUSTVR_DEBUG_BRAIN=1` (the range) each fighter's state once a second, `RUSTVR_SILENT=1` keeps the
+runtime's sounds off the speakers. The Oblivion adapter's repository keeps the playtest notes,
+`docs/playtest/range-melee.md`: how to start each area and what to try.

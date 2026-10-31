@@ -40,8 +40,10 @@ an armour for a game marks their own models the same way. Oblivion's
 ## 1. Where marks live
 
 `content/armour/<game>.toml` in the game adapter's repository (beside its `local_assets/`), or in
-this repository for a game it carries. The runtime reads the game's file when it puts the player's
-body together. `RUSTVR_ARMOUR=<file>` reads that file instead (to try an edit without rebuilding);
+this repository for a game it carries (none yet). The runtime reads the game's file when it puts
+the player's body together, and logs where from (`runtime: armour marks for N pieces from ...`, or
+`no armour marks for <game>: every piece soft`). `RUSTVR_ARMOUR=<file>` reads that file instead
+(a copy to try edits on);
 a modder's own marks can also go in `local_assets/<game>/armour/*.toml`, read after the game's
 (the last piece naming a model wins). `RUSTVR_SKINNING=linear` (the game's own skinning) or
 `centres` (no plates) draws the body without the marks, to compare.
@@ -54,6 +56,11 @@ target/release/rustvr-armour <game> --set <name>             # a [[set]] from th
 target/release/rustvr-armour <game> <model> <model>...       # models by path (or key)
 target/release/rustvr-armour <game> --set <name> --list      # the listing only
 ```
+
+From a game adapter's repository, build it there
+(`--manifest-path framework/Cargo.toml --target-dir target`) and run it from its `target/`: the
+tool finds the repository (its marks, its `local_assets/<game>/` and its `captures/`) as the
+nearest folder above itself that has a `local_assets/`. The models must have been extracted.
 
 It puts a body together from the game's skeleton, the models and the bare body for the slots they
 leave uncovered (`[preview]`), poses it through the sweep (rest, arms raised and crossed, elbows
@@ -73,11 +80,14 @@ back, reaching, holding a gun, a squat) and draws each pose with the runtime's o
   outlined: where its metal, leather and cloth are drawn, for `uv_within`;
 * `list.txt`: every model's meshes and islands (vertices, triangles, middle and bounds, and the
   bones their skin is on, heaviest first), then the plates its marks make (what each rides, its
-  pivot at rest, its layer), what went wrong, and the rules that chose nothing in it.
+  pivot at rest, its layer), what went wrong, and the rules that chose nothing in it. It's always
+  written; `--list` prints it and draws nothing.
 
-`--poses`, `--size`, `--plain` (one colour, no textures), `--fingers relaxed|open|fist|point|trigger`
-(how the hands are held) and `--visibility hands|arms|full` (what of the body the pose pictures
-show, as the menu's setting does) narrow it down.
+`--poses` (of `rest`, `raised`, `crossed`, `elbows`, `palms_up`, `palms_down`, `wrists_in`,
+`wrists_back`, `reach`, `gun`, `squat`), `--size` (each picture's pixels, 400 by default), `--plain`
+(one colour, no textures), `--fingers relaxed|open|fist|point|trigger` (how the hands are held) and
+`--visibility hands|arms|full` (what of the body the pose pictures show, as the menu's setting
+does) narrow it down.
 
 ## 3. The file
 
@@ -112,7 +122,9 @@ layer = 1
 Bone names may use `*` for any run of characters: `Bip01 * Forearm` is either forearm, and a
 plate riding a bone named that way rides the one on its own side (a plate in the middle rides
 both, half each). Points are in the model's space (metres; X to the body's right, Y up, Z forward)
-and given for the right side; a plate on the left uses them mirrored.
+and given for the right side; a plate on the left uses them mirrored. Model paths match in any
+case, with either slash, and `meshes\` may be left off; `covers`, `bone` and `vertices` take one
+name or a list. A `ride` share must be above 0, and `layer` at most 7.
 
 ### 3.1 Choosing a plate
 
@@ -176,6 +188,7 @@ leather, gives each leg its own). Write two rules to make two plates of one side
 
 Look through the poses in `<pose>.png` with `--skin linear,marked`: plates stay flat where the
 game's bend, nothing pokes through what's over it, nothing tears at a joint. `list.txt` lists every
-plate with its riders; a `PROBLEM` line is a bone the skeleton hasn't. Then in the game: the
+plate with its riders; a `PROBLEM` line is a bone the skeleton hasn't, or a plate that rides
+nothing. Then in the game: the
 runtime's log says, for each piece the player wears, the plates its marks made
 (`avatar: <model> (<piece>): N plates: ...`).

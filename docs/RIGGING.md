@@ -1,10 +1,16 @@
-# Rigging a gun for RustVR
+# Rigging weapons for RustVR
 
 A **rig** says how the player's hands hold a game's gun: where the line of sight runs, where the
 firing hand and the support hand go, which parts of the model are the magazine, the bolt and the
 trigger, where the magazine seats and the muzzle points, and a few facts (rate of fire, weight,
 magazine size, caliber). With a rig, the runtime's player controller (DESIGN.md §6b) can pick the
 gun up, aim it down its own sights, reload it with its own magazine and rack its own handle.
+Sections 0 to 7 are guns; melee weapons, knives, bows and torches are rigged by their grips (§8).
+
+Every weapon snaps to its rigged grip when it's grabbed near it: a gun's pistol grip locks the
+hand on, a handle takes the hand anywhere along it, turned as it's made to be held (or reversed).
+Grabbed anywhere else, a thing is held where the hand took it. Drawn from a holster or caught from
+the gravity gloves, a rigged weapon goes into the hand by its grip wherever the hand is.
 
 Rigs are **data**, measured on the game's own models and committed in `content/rigs/<game>.toml`
 (the measurements are ours; the models stay in the user's own `local_assets/`, never committed).
@@ -42,7 +48,7 @@ through `RUSTVR_ASSETS` (or `local_assets/` at the repository root).
 ## 2. Look at it as the game holds it
 
 ```sh
-RUSTVR_ASSETS=X:/rustvr/local_assets cargo test -p rustvr-range --test rig metro_guns_as_the_game_holds_them
+RUSTVR_ASSETS=<the folder holding metro2033/> cargo test -p rustvr-range --test rig metro_guns_as_the_game_holds_them
 ```
 
 writes `captures/rig/survey/<gun>_<view>.png` for every Metro gun, rigged or not: the model with the
@@ -98,7 +104,7 @@ Every field of a `[[gun]]` (`rustvr_asset::rigs::GunRig`); points are model spac
 | `key` | The gun's key in the asset index | |
 | `name` | Shown to the player (optional; the index's) | |
 | `hold` | `rifle`, `pistol` or `heavy` (§2) | The survey renders |
-| `caliber` | What it fires, as the game calls it (`5.45x39`, `12 gauge`...) | Metro: the bullet section and cartridge case its config names (`config_strings`, §5) |
+| `caliber` | What it fires, as the game calls it (`5.45x39`, `12 gauge`...) | Metro: the bullet section and cartridge case its config names (§5) |
 | `magazine` | The magazine it takes; guns naming the same one take each other's (optional: its own) | The game's magazine overlays (`ak_magazin_30` serves the Kalash and the AKSU), and the meshes being the same |
 | `rear_sight`, `front_sight` | Two points on the line of sight: the top of the rear notch's shoulders and the front post's tip | §4.1 |
 | `grip` | The firing hand's palm centre on the pistol grip's axis: the weapon's origin, and the hold without the game's arms | The survey's `grip` (the axis level with the game's palm) |
@@ -110,19 +116,19 @@ Every field of a `[[gun]]` (`rustvr_asset::rigs::GunRig`); points are model spac
 | `support_tube`, `support_palm` | The support fist's axis and palm normal, used only without the game's arms (optional: the Kalash's cradle) | `rig_probe hand` |
 | `mag_well` | Where the magazine's top sits when it's in (on the magazine's bounds) | The magazine locator (`loc_magazin_m`), or the magazine's top or the rims of its rounds |
 | `muzzle` | The bore's end | `loc_fire_point` when it's at the barrel's end (some sit past the model: then the barrel's end on the bore) |
-| `handle`, `handle_travel` | The part pulled back to chamber (charging handle, bolt knob, slide, pump, cocking lever) and how far it travels (m); none: nothing to rack | The handle's knob from the parts; travel from the real gun or the game's motion (`export_viewmodel --peaks`) |
+| `handle`, `handle_travel` | The part pulled back to chamber (charging handle, bolt knob, slide, pump, cocking lever) and how far it travels (m); none: nothing to rack | The handle's knob from the parts; travel from the real gun or the game's motion (§4.4) |
 | `mag_bones` | Bones (and everything under them) whose skin is the magazine; a trailing `*` matches any ending | The parts list |
 | `mag_meshes` | Whole meshes (by index) that are the magazine too: one the extractor mounted on a bone that isn't the magazine's | `rig_probe parts` lists meshes |
 | `bolt_bones` | Bones whose skin moves back with the handle | The parts list |
 | `hidden_bones` | Bones whose skin isn't drawn: what the game shows only in an animation or with an upgrade (a shell in the hand, an ejected case, an upgrade's barrels' shells) | The survey renders (things floating, or doubled) |
 | `hidden_meshes` | Whole meshes (by index) that are glass: a gauge's (over its needle), a collimator's lens and reticle. The test range can't draw them see-through and leaves them out; the runtime draws them (`Weapon::glass`) with the game's forward shading, or leaves them to a special draw where it doesn't reproduce the game's shader | `rig_probe parts` lists meshes and their textures (`wpn_obves`) |
 | `action` | How it's worked between shots: `auto` (default: it cycles itself), `bolt`, `pump`, `break`, `swing` (§4.4) | What the gun really is, and the game's motions |
-| `hinge`, `open_deg`, `barrel_bones` | Break and swing actions: a point on the hinge's pin, how far it opens (degrees; a break action about model +X tipping the muzzle down, a swing about +Z, positive to the left) and the bones that turn (with their children) | The barrels' bone's origin (`rig_probe bones`) and the game's reload's furthest turn of it (`export_viewmodel --peaks`) |
+| `hinge`, `open_deg`, `barrel_bones` | Break and swing actions: a point on the hinge's pin, how far it opens (degrees; a break action about model +X tipping the muzzle down, a swing about +Z, positive to the left) and the bones that turn (with their children) | The barrels' bone's origin (`rig_probe bones`) and the game's reload's furthest turn of it (§4.4) |
 | `chamber_bones` | Guns loaded round by round into their chambers: each chamber's round (a bone whose origin is its base at the chamber's mouth), in the order they fire. No `mag_bones` then; `mag_well` is the first chamber's mouth, `mag_size` the chambers | The parts list (`patron_stvol_*`) and `rig_probe bones` |
 | `round_bones` | Guns whose magazine stays in them and is loaded one round at a time (a revolving shotgun's cylinder, a dart cluster, a tube): each of its rounds (a bone whose origin is its base), in the order they're loaded and fired. No `mag_bones` then; `mag_well` is the port (the first's base), `mag_size` the rounds | The parts list and `rig_probe bones`; the game's reload (does it load one at a time?) |
-| `bolt_turn` | Bolt actions: the bolt's turn about the bore (degrees about model +Z, positive lifting a handle on the right) closed and open, from the model's pose. `handle` is the knob in the model's pose | The game's cycling motion (`export_viewmodel --peaks`), else the real gun's lift |
+| `bolt_turn` | Bolt actions: the bolt's turn about the bore (degrees about model +Z, positive lifting a handle on the right) closed and open, from the model's pose. `handle` is the knob in the model's pose | The game's cycling motion (§4.4), else the real gun's lift |
 | `handle_swing` | A handle that's a lever: its pivot (model space) and swing (degrees about model +X, positive its far end down and back) at full travel; `bolt_bones` are the lever, `handle_travel` how far the handle comes back over the swing | The lever's bone origin and the game's pump motion |
-| `pressure` | Air guns: `pump` (what a whole stroke of the `handle` adds) and `shot` (what a shot spends), fractions of full, and `min` (below it the trigger hisses); `gauge_bone` with `gauge_turn` (degrees about the bone's own X) or `gauge_slide` (metres along it), empty and full, from the model's pose | The game's gauge poses (`export_viewmodel --peaks` on its needle motions); the numbers from the game's config if it names them, else documented guesses |
+| `pressure` | Air guns: `pump` (what a whole stroke of the `handle` adds) and `shot` (what a shot spends), fractions of full, and `min` (below it the trigger hisses); `gauge_bone` with `gauge_turn` (degrees about the bone's own X) or `gauge_slide` (metres along it), empty and full, from the model's pose | The game's gauge poses (its needle's motions, §4.4); the numbers from the game's config if it names them, else documented guesses |
 | `recoil`, `recoil_feel` | The runtime's own recoil, used only when the game's kicks aren't loaded: climb (deg), scatter (deg), push (m); climb kept on auto, return (1/s), lean (deg) | By class: rifles about `[7, 1.8, 0.025]`, shotguns `[10, 2.5, 0.04]`, pistols `[12, 3, 0.03]` |
 | `rounds_per_second` | Rate of fire | The game's config (§5) |
 | `automatic` | Full auto (default true) | The game's recoil: guns with long-burst tracks are automatic (§5) |
@@ -170,10 +176,12 @@ of a cylinder taken as one (a revolver's six rounds with their cases, a revolvin
 shells: a speed loader). Guns loaded straight into their chambers (a double barrel) have
 `chamber_bones` instead (§4.4). Seated, it
 sits exactly where the model has it (magazine space is the gun's own), and the runtime seats a
-held magazine when its well point comes within 9 cm and 45° of the gun's. Guns naming the same
-`magazine` share one magazine template (and ammo type: `caliber << 8 | magazine`, both numbered in
-order of first appearance), so give it only to guns whose magazines are the same mesh at the same
-place. A gun without `mag_bones` keeps its rounds (the flamethrower's fuel) and has no reload.
+held magazine when its well point comes within 9 cm and 45° of the gun's (`[interaction]`'s
+`easy_mag`, the menu's "Easy magazine insertion", on by default; 4 cm and 25° with it off). Guns
+naming the same `magazine` share one magazine template (and ammo type, the range's
+`physical::ammo_types`: `caliber << 8 | magazine`, both numbered in order of first appearance), so
+give it only to guns whose magazines are the same mesh at the same place. A gun without
+`mag_bones` keeps its rounds (the flamethrower's fuel) and has no reload.
 
 `handle` is whatever is pulled back to chamber: the runtime moves `bolt_bones` straight back by the
 pull (a lever's swing about its pivot with `handle_swing`). Map a **pump** to its forend (the
@@ -188,8 +196,11 @@ magazine then chambers as it goes in.
 (`crates/runtime/src/rig/actions.rs`, DESIGN.md §6b) and reports where the parts are, so the game
 (and the range) draws them. Measure the moving part's **pivot** on the model (`rig_probe <gun>
 bones`: every bone's origin, the point the game's motions turn its skin about) and its **travel**
-from the game's own motion (`export_viewmodel <gun> --peaks <motion>`: each bone's turn from its
-bind pose about its own axis, and its slide, through the motion; `list_motions <gun>` names them).
+from the game's own motion: how far the motion turns the bone from its bind pose about its own
+axis, or slides it, at its furthest. For Metro, `metro-extract --animate <model> <motion> <folder>`
+(in Metro's adapter repository) draws a model posed through a motion, frame by frame; the one-off
+tools that printed each bone's furthest turn (`export_viewmodel --peaks`, `list_motions`) were
+`metro-assets` examples, removed, and are only in that repository's history.
 
 * **`break`** (the Duplet): the barrels' bone and its children turn about `hinge`, model +X,
   `open_deg` (the game's reload holds the Duplet's at 106.5°, hanging straight down). A foregrip
@@ -231,23 +242,23 @@ What the runtime can't do yet, so rigs approximate it:
 
 ## 5. The game's facts
 
-For Metro 2033 Redux (each reads the game read-only):
+For Metro 2033 Redux (read from the game, which is only ever read):
 
 * **Rate of fire**: offset 392 of each gun's own config in `content/config.bin` is rounds per minute
-  (AKSU 700 > Kalash 620 > RPK 500, as the real guns rank):
-  `cargo run --release -p metro-assets --example config_values -- --at 392 ak aksu rpk`;
+  (AKSU 700 > Kalash 620 > RPK 500, as the real guns rank);
 * **Caliber**: the bullet section and cartridge case the gun's config names (`bullet` and
   `cc_545`: 5.45; `bullet_buckshot`: 12 gauge; `bullet_medium`: the revolver's; `bullet_ball`: ball
-  bearings; `bullet_bolt`: darts; `bullet_big`: 12.7 mm):
-  `cargo run --release -p metro-assets --example config_strings -- 'weapon\rpk\rpk'`;
-* **Fire mode**: guns whose recoil has long-burst tracks fire full auto:
-  `cargo run --release -p metro-assets --example recoil_table -- saiga`;
+  bearings; `bullet_bolt`: darts; `bullet_big`: 12.7 mm);
+* **Fire mode**: guns whose recoil has long-burst tracks fire full auto;
 * **Magazine size**: the index (the game's magazine overlays, `ak_magazin_45`); the model's rounds
   otherwise;
 * **Recoil**: the extractor's `recoil/<key>.rvk`, loaded for every gun that has one. The protocol's
   kick table holds 256 kicks, fewer than all the guns' together: every gun keeps one kick of each
-  kind (its recoil for every way of firing), the near table's guns all their variants
-  (`physical::fit_kicks`).
+  kind (its recoil for every way of firing), the near table's guns all their variants (the range's
+  `physical::fit_kicks`).
+
+The one-off tools these were read with (`metro-assets`' `config_values`, `config_strings` and
+`recoil_table` examples) were removed; they're in the history of Metro's adapter repository.
 
 Where the game has no number (masses, a missing config), use a real-world reference for what the
 gun copies, and say so in its comment.
@@ -255,7 +266,7 @@ gun copies, and say so in its comment.
 ## 6. Check it
 
 ```sh
-RUSTVR_ASSETS=X:/rustvr/local_assets cargo test -p rustvr-range
+RUSTVR_ASSETS=<the folder holding metro2033/> cargo test -p rustvr-range
 ```
 
 checks every rig and renders it held the way the runtime holds it into `captures/rig/`
@@ -277,13 +288,14 @@ checks every rig and renders it held the way the runtime holds it into `captures
 * `bench_top.png`, `bench_player.png`, `table_*.png`: where the range lays the guns out.
 
 The numbers checked: the line of sight passes through both sights; the hands drawn are exactly
-the game's (`metro_arms_hold_their_guns`, `tests/handpose.rs`: the same trigger contact and
-fingertip depths as the game's own arms); the magazine is its own small part with the well on it;
-the guns lie apart on the tables; every gun keeps its recoil (`tests/recoil.rs` plays it); a gun
-loaded into its chambers has a small round for each with its mouth on it. Then the physical
-scenarios, which pick guns up, aim, reload and fire through the real runtime (`break_reload`,
-`bolt_cycle` and `pump` work the Duplet, the Ventil and the Tihar: the range's `--table <key>` lays
-a gun nearest on the table at your right hand):
+the game's (`tests/rig.rs`'s `metro_arms_hold_their_guns`; `tests/handpose.rs`, which writes
+`captures/handpose/`: the same trigger contact and fingertip depths as the game's own arms); the
+magazine is its own small part with the well on it; the guns lie apart on the tables; every gun
+keeps its recoil (`tests/recoil.rs` plays it); a gun loaded into its chambers has a small round for
+each with its mouth on it. Then the physical scenarios, which pick guns up, aim, reload and fire
+through the real runtime (`mag_reload`; `break_reload`, `bolt_cycle`, `pump` and `cylinder_reload`
+work the Duplet, the Ventil, the Tihar and the revolver: the range's `--table <key>` lays a gun
+nearest on the table at your right hand):
 
 ```sh
 cargo build --release -p rustvr-runtime -p rustvr-range
@@ -294,10 +306,45 @@ target/release/rustvr --sim all --launch-range
 
 An adapter registers a gun exactly as the range does, through `rustvr_guns` (`crates/guns`, shared by
 the range, the adapters and the runtime): `rustvr_guns::metro::metro_gun(dir, key, ids)` loads the
-rigged gun from the asset cache and returns its registration (`desc::GunRegistration`: the gun's
-`ObjectDesc`, its magazine template, the game's hand poses and its kicks), flagged
+rigged gun from the asset cache and returns it with its registration (`desc::GunRegistration`: the
+gun's `ObjectDesc`, its magazine template, the game's hand poses and its kicks), flagged
 `OBJF_RUNTIME_DRAWS` so the runtime draws the gun and its magazines itself, from the same model
 and rig, with the game's lighting (the game draws neither). What it holds:
 weapon space from the sights and the grip, `grip_rot` and `support_rot` from the game's hands (or
 the measured hold), `handle` and `handle_travel`, `mag_well`, the magazine template's `ammo_type`,
 the fire rate and mode, mass, and the game's hand poses and kicks in their tables.
+
+## 8. Melee weapons and other things held by a handle
+
+A sword, an axe, a shield, a knife, a bow or a torch has no rig file: its adapter describes its
+grip in its `ObjectDesc`, measured on the model where the game's own hand holds it, and the runtime
+snaps the hand onto it (`crates/runtime/src/rig/grips.rs`):
+
+| Field | What |
+|---|---|
+| `grip` | The hold: the hand's controller grip pose's origin (object space) |
+| `grip_rot` | Its turn there, the right hand's. The left hand takes the mirror image (a prop's is held the same way round, turned half round the fist's axis). A rigged weapon drawn or caught goes into the hand this way |
+| `grip_line`, `grip_radius` | The handle's axis, end to end (a sword's grip from the pommel to the guard, an axe's haft, a staff), and its radius. A hand within 7 cm of it goes on anywhere along it, held as `grip_rot` holds it at `grip`, or the other way round it (a reversed grip); a second hand may hold it there too. All zero: a melee weapon's or a knife's handle 6 cm long through `grip`, along `grip_rot`'s fist |
+| `OBJF_UPRIGHT` | Held only its one way up (a torch's flame up); a bow (`OBJ_BOW`) is never held reversed either |
+
+A gun's pistol grip (`grip`, `grip_rot`) locks the hand on within 10 cm; its handguard
+(`foregrip_line`, `foregrip_radius`; all zero: 10 cm of the bore through `foregrip`) takes the
+support hand anywhere along it. A grenade with a `grip_rot` is always held that way.
+
+A melee weapon the game also lists in `MeleeWeapons` (the melee hold, `docs/MELEE.md`) is
+taken by its handles there instead, up to four (`MeleeHandle`):
+
+| Field | What |
+|---|---|
+| `a`, `b`, `radius` | The line the fist closes round (object space), and how thick it is |
+| `rot` | The fist's turn on it, the right hand's (the left holds it the same; a shield's turned half round the fist's axis). Zero: the hand's own turn about the line |
+| `flags` | `HANDLE_MAIN` (where a first hand goes, and a weapon drawn or caught), `HANDLE_SLIDE` (a loosened hand slides along it), `HANDLE_REVERSIBLE` (held either way round), `HANDLE_BLADE` (on the blade, to half-sword) |
+| `kind` | `GRIP_LIGHT`, `GRIP_HEAVY`, `GRIP_SUPER_HEAVY`, `GRIP_SUPPORTING`, `GRIP_HALF_SWORD`, `GRIP_SHIELD`, `GRIP_THROWING_KNIFE`: how strongly a hand holds and turns it there |
+| `links` | The handle a hand sliding off this one's `b` (low byte) or `a` (next byte) goes on to, as its index + 1 |
+| `strength`, `slide_force` | Its share of the hand's hold (0: 1), and the pull a loosened hand needs to slide (0: the runtime's) |
+
+A hand within 7 cm of a handle's line (past its radius) goes onto it, a first hand onto the main
+one whenever that's within reach. Worked examples: the range's weapons (`crates/range/src/arsenal.rs`,
+handles on boxes of our own) and, in the Oblivion adapter, its weapons, shields, bows and
+torches (`crates/oblivion/src/weapons.rs`, `archery.rs`, `torch.rs`: measured on each model, a
+weapon's grip at its origin where the game's hand holds it, a shield's at its strap).
