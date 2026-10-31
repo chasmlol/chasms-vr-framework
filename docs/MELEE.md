@@ -30,8 +30,9 @@ bodies' physics. The two meet through the protocol, as everything else in the fr
   `CE_WOUND` (a blade gone in deep, or out the far side), `CE_PULLED_OUT`, `CE_TOUCH` (a contact
   that did nothing: a scratch, a scuff), `CE_BLOCK` (a weapon met a creature's, a parry if it was
   moving into it), `CE_STRUCK` (a creature's swing hit the player), `CE_BROKE` (a breakable thing
-  broke). A creature's part held by telekinesis is a creature grab (`GRAB_TK`). The game decides
-  what each does to its creatures.
+  broke). A creature's part held by telekinesis is a creature grab (`GRAB_TK`), and a hold the
+  creature broke free of is the game's word back (`ActorBody::let_go`). The game decides what each
+  does to its creatures.
 
 The test range is the game that plays it all: `crates/range` (its dummies, its fighters, their
 brains, its weapons and its areas), and `crates/melee` (`rustvr-melee`) holds the tables, curves
@@ -146,12 +147,17 @@ and body rules, shared by the runtime and the range.
 ## Defence
 
 * **Blocking** is physical: the player's weapon meeting a creature's attacking weapon stops it, and
-  it's told to the game as `CE_BLOCK`.
-* **Parrying**: a block with the weapon moving into the blow (over 1 m/s) is a parry (`CEF_PARRY`);
-  the game's brain rolls its parry reactions (the swing turned back, nothing, or a recoil).
-* **Disarming**: a hit on a creature's hand at push level 2, or a stab through its arm, makes it
-  drop its weapon; a hand can also take a creature's weapon and pull it away (see the
-  calls).
+  it's told to the game as `CE_BLOCK`. A blow the player's weapon or shield stopped doesn't go on
+  into them.
+* **Parrying**: a block with the weapon moving into the blow over 1 m/s inside the swing's damage
+  window is a parry (`CEF_PARRY`); the game's brain rolls its reactions by the hand met: the swing
+  turned back (played back 0.2 s), nothing, or a recoil; a shield never chains off one.
+* **The creatures' guards**: a blocked blow from a heavy weapon pushes the guard by its level
+  against plate (each weapon's block push: L2 and L3 staggers, L4 floors, flings and disarms); a
+  half-raised guard recoils; a shield counters three times in ten.
+* **Disarming**: a hit on a creature's hand at push level 2 (3 for the armoured), or a stab through
+  its arm, makes it drop its weapon; an arm hit while the player holds its weapon too; a hand (or
+  telekinesis) can take a creature's weapon and pull it away (see the calls).
 * **Armour**: each part has its material (leather, chainmail, plate), and the tables judge against
   it: a sword's edge glances off plate; a mace still hurts through it.
 
@@ -159,27 +165,56 @@ and body rules, shared by the runtime and the range.
 
 * **Active ragdolls** (`crates/range/src/ragdoll.rs`): thirteen parts, pinned to an animated pose
   with pins (position 1000/50, at most 1000 N; rotation 800/50, at most 100 N m), the arms
-  pinned harder while swinging (spring ×2, damper ×0, force ×10) and guarding (×3, ×1, ×30). Its
-  balance: standing, knocked down (its pins loosened to a destabilised ×0.5 spring and ×0.1
-  damper, ×0.1 on the ground), getting up once still under 1 m/s for 0.5 s (its pins ramping back
-  over 3 s), or limp. It weighs 65 kg. Falls and slams hurt.
+  pinned harder while swinging (spring x2, damper x0, force x10) and guarding (x3, x1, x30). Its
+  balance: standing, knocked down (its pins loosened to a destabilised x0.5 spring and x0.1
+  damper, x0.1 on the ground), getting up once still under 1 m/s for 0.5 s (its pins ramping back
+  over 3 s; any push puts it down again), or limp. It weighs 65 kg. Falls and slams hurt by the
+  slamming tables (a head's by its own), from the contact's speed and the slamming part's armour.
 * **Hit reactions by force**: each hit's push level (by the hit's speed against its row) picks
-  a reaction for where it landed and what the creature was doing: a flinch, a stagger, a fall.
-* **Melee AI** (`brain.rs`): stances (one sword, sword and shield, two swords), real swings at full
-  speeds that can be blocked and parried, combos and feints; it guards against the player's blades
-  coming at it; Easy, Medium and Hard tiers have their own numbers (how soon it attacks again, its odds
-  of a recoil, of rolling...).
-* **Fear and pain**: badly hurt it may flee; its face shows pain, it grunts, shouts as it swings,
-  and its last breath; disarmed, it goes and picks a weapon back up.
+  a reaction from its brain's push table (Easy, Medium and Hard; the armoured MediumHeavy and
+  HardHeavy a step tougher) for where it landed and what the creature was doing: a flinch, a
+  stagger, a fall. Any stagger stops a swing. A body that's down is pushed by the blow (a punch's
+  100 for 0.15 s, a kick's 400). Shocked, a blow pushes a level harder, any stagger floors it, and
+  it can't get up.
+* **Melee AI** (`brain.rs`): three stances (one sword, sword and shield, two swords), each
+  with its openings, chains and ripostes (ranges, marks, clip lengths, root motion,
+  difficulties, weights, skip chances, sides, sweeps; the dual-wield moves, the cross slash, the
+  shield pushes, lunges and the combo), swung through each strike at speed. Its brain's numbers
+  go by tier: attack delays, at most 1, 2 or 3 of them at the player at once
+  with the rest at its safe distance, back dodges by a chance curve when its guard won't cover
+  a blow (always from a thrust at a sword), danger rolled each brain cycle; feints (the user's call).
+* **Fear and pain**: there's no fleeing by health: a fighter flees only unarmed with no weapon to
+  take up (none within 4 m of the player), to the arena's far corners, and is gone; disarmed, it
+  stoops to take a weapon back up. It grunts when hurt, shouts as it swings (seven times in ten),
+  and says its last line by what killed it (silence after a stab through the throat, a grunt for a
+  stab to the head, breathless for a cut throat or a choke, the long one for a stab elsewhere); it
+  screams falling faster than 5 m/s until it lands, and cries out held (its grappled line, not
+  for a wave's fighters); it blinks, and shuts its eyes out cold or dead. Each line is the
+  creature's own voice (`EV_VOICE`'s speaker): a new one cuts off the last.
+* **Knockouts**: out cold standing (its brain off, its weapons kept), limp only if already down or
+  out, 6 s from the last blow.
+* **Waves** (`arena.rs`): each comes while the player's in the arena; from the second, its
+  shield-bearer is an armoured unit, in plate.
 
 ## Grappling and unarmed
 
-* **Grabbing** any part of a creature (the framework's creature grabs): the throat to choke (a hand's
-  choke), a limb to drag or lift, letting go with a throw. A held creature that's awake struggles.
+* **Grabbing** any part of a creature (the framework's creature grabs) by its handles (neck,
+  mouth, skull, torso, shoulder, wrist, hand, legs): held on the grip (5000 N/m, 50, at
+  most 3000 N; turning 1000, 50, 250 N m), the held arm reaching after the grip, the head held
+  tight on a neck or torso hold. Held standing, it's floored at once in the states its handle says
+  (by the neck or torso idle, fully reeling or shocked; by a leg idle, attacking, reeling or
+  shocked; by a wrist shocked); lifted 5 cm (a leg 10) it falls by a neck or a leg, else the hand's
+  forced off; its head pressed below its hips, it falls. The throat chokes (5 a second; its weapons
+  dropped); a hand over the mouth muffles it. Awake, it struggles: escape tries (10% at
+  first, 5% more each, 10% less in two hands, at most 50%), and one that works forces the hand off
+  (`ActorBody::let_go`). Let go of while moving fast, it's thrown down on its own momentum.
+* **Tearing** (the range's tearing joints: the shoulders, the knees, the neck): two hands
+  holding one body tear a part they hold, or its parent but the torso, past 3450 N; the part comes
+  off, and it kills.
 * **Hands hit**: every empty hand carries a punch damager over its palm and fingers, open
-  or closed, judged by the same judge (the punch's curve, its table: 2 m/s on flesh at x0.5, any way,
-  never going in). It's swept where the controller takes it, not where the drawn hand stops on what
-  it hits. Shoves are the hands' own contact pushes.
+  or closed, judged by the same judge (the punch's curve, its table: 2 m/s on flesh at x0.5, any
+  way, never going in). It's swept where the controller takes it, not where the drawn hand stops on
+  what it hits. Shoves are the hands' own contact pushes.
 * **Kicks** (`kick.rs`), untracked: with the melee buttons (`RULES_KICK`) the movement
   stick's click, walking under 3 m/s, kicks at what the eyes see within 2 m (else straight ahead),
   with the foot on its side: folded up over 0.2 s, driven out 1.2 legs' lengths from the hip over
@@ -204,9 +239,12 @@ and body rules, shared by the runtime and the range.
   and the bottom button pushes it away at up to 8 m/s, out to 12 m; at the hand it's taken where it
   touches; let go of with the hand moving it's thrown at 20 m/s, a weapon point first; a weapon
   stuck in something is pulled out (recall). A creature's part is held by the game on a ragdoll
-  drive (`GRAB_TK`: 2000 N/m, 100, at most 2500 N; the neck's turn x5), its point following the hand
-  at up to 3 m/s (from nothing over 3 s), pulled and pushed at 3.2 m/s out to 6 m, thrown at 30 m/s;
-  two hands holding one body may tear its limbs off (3000 N on their joints).
+  drive (`GRAB_TK`: 2000 N/m, 100, at most 2500 N; turning 10, 1, 1000 N m, the neck's x5), its
+  point following the hand at up to 3 m/s (from nothing over 3 s; a dead one's at once), pulled and
+  pushed at 3.2 m/s out to 6 m; let go of with the hand moving, the part flies at 30 m/s and the rest
+  of the body at 8. It isn't struggled out of. Two telekinesis hands on one body tear its tearing
+  joints past 3000 N; a body dead and 10 s alight is charred through: stiff as
+  it lies, its tearing joints breaking at 3000 N.
 * **Slowed time** (`powers.rs`): the off hand's stick click (with the melee buttons, the dominant
   hand's B) slows the game's time to half on a focus meter: it starts at 30 and holds 60, needs
   more than 10, drains 6 a second of real time while slowed and comes back at 3 a second of the
@@ -287,6 +325,28 @@ The choices that need a reason, and why:
 | Spells in the range | chosen from a wheel | fire and shock alternate as they're cast | the range has no spell wheel |
 | Blood | its reveal masks, sparse drops and decals that fade in 30 s; only stumps and a neck bleed | the runtime's gore (its own design: wounds bleed a few seconds, blood runs and pools) with blade blood by depth and a bleeding neck | the gore is the framework's, made for every game |
 | The spear's points | two side points | its leaf point and edge only | the range's spear has no side points to put them on |
+| Telekinesis on a fighter's weapon | its handles stay telekinesis's while an NPC holds them | the same: pulled away past 0.95 m for 0.25 s, the fighter lets go | the range's wrench rule, as for a hand |
+| The tearing force | the joint's force, as the engine reports it | each joint's last substep impulse over that substep | Rapier keeps no force; a steady pull reads the same |
+| The grip on a creature | the player's 3000 N | the runtime's setting (1500 N) times the game's strength: 2 in the range's melee areas | the setting is every game's |
+| Waves | waves start when the player picks one | each comes while the player's in the arena | one room holds every area |
+| Moves' shapes | animation clips | keyframed shapes (swings from each side, above, low, a thrust, the combo, a shield push) with each move's marks laid on, through each key at speed | the range has no animation clips |
+| Chains' and ripostes' clips | animation clips | 1.33 s, leaning in 0.22 m as its plain swings do | one length for all of them |
+| Root motion | each clip's root curve | each opening's reduced to its furthest, when, and where it ends, eased between | close enough to its curves |
+| Idles' guards, dodges, picking up, blinking | its clips | ours (guards up and forward; a metre back over 0.6 s; a stoop over 0.75 s, the weapon taken at 1.05 s within 0.45 m; eyes shut for the middle half of 0.5 s) | the range has no animation clips |
+| Spacing | moving to its idles' ranges | hovering just past the player's reach, stepping in when its delay is up; not engaged, at its safe distance + 0.25 to + 2.25 | the idles' ranges, without a navmesh |
+| Spreading out | a spot clear of its allies | it strafes away from the nearest ally in its reach | no navmesh spots |
+| A covered blow | a capsule cast along the blow | the blow's tip's way against its blade, within 6 cm, before the body | the same test without a cast |
+| Where it flees | its level's exits | the arena's two far corners | the range has no exits |
+| Its voice | a clip each line, by its own pitch | the runtime's own sound for each line, one at a time a creature | the range has no voice clips |
+| A blow's shove | a frame's acceleration landing in one physics step | taken at 90 Hz, as a speed change spread over its duration (mass-free; an impulse in its impulse mode) | frame-rate free |
+| A shove from thrown weapons, and in slowed time | per damager's state; x a slow-motion multiplier | never from a thrown weapon; not scaled | the protocol doesn't carry them |
+| Slams | the engine's collision speed; the part's tier and the creature's multiplier | the two bodies' speeds at a new contact, from before the step; 1 and 1 | the solver has changed them after |
+| Grappled turning, stepping, height | its turn speed, feet at 3x its forward speed, its animator's height | 6 a second; our walk's 1.4 m/s x 3; the pelvis squats by the hand's height, down to half | no animator |
+| A held limb's IK | the hand and wrist 1, the shoulder 0.25, the trunk 0.25 | the arm's wrist lerped to the grip by those; a leg pointed at it; no trunk | our two-bone arm IK |
+| The neck held tight | swing 20, twist 20 / 45 on the head and neck | the head's nod ±20, turn -20 / 45 | one joint for head and neck |
+| Escaping a hold | an escape clip, then the hand forced off after the handle's delay; per handle | a 0.6 s twist, the next try 1 s + 2 to 3 s later, the hand let go 0.5 s after one that works; every handle | the range has no escape clip |
+| The armoured fighters | armoured enemies in plate, Heavy brains | from wave 2, each wave's shield-bearer, in plate | so the Heavy tables are played |
+| Block push per weapon | each weapon's own | a table by the range's weapons (longsword, mace, staff, maul) | the protocol doesn't carry it |
 
 ## Not done
 
@@ -299,6 +359,8 @@ The choices that need a reason, and why:
   something it isn't in (the runtime has no loop sounds).
 * A hit shaking a climbing grip loose (dagger points, rocks, spells, arrows; the range's fighters
   carry none of those).
+* A breakable's pieces keeping its own speed (the range's debris flies from the blow).
+* Telekinesis choking a body.
 
 ## Testing
 

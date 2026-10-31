@@ -80,10 +80,6 @@ const MASS_HANDLED: f32 = 130.0;
 const MASS_RAGDOLLED: f32 = 227.5;
 /// The physics' fixed step.
 const STEP: f32 = 1.0 / 120.0;
-/// A hand's hold on a creature (the player's grip, with its handles' multipliers): the point it has
-/// pulled to where the hand would have it at 5000 N/m, damped at 50 N s/m against the hand's own
-/// motion, at most the hand's pull (3000 N); the part turned to the hand's turn at
-/// 1000 N m a radian, damped at 50, at most 250 N m.
 /// Telekinesis on a body (its drive x20 and x10 an item's): its spring and damper (its most force
 /// is the runtime's 2500 N); its turning, an item's 10, 1 and 1000 N m, x5 on the neck and x4 the
 /// spring on a wrist; and a body it throws: every other part of it given this along the throw (m/s),
@@ -101,6 +97,10 @@ const RIP_FORCE: f32 = 3000.0;
 const RIP_BRUTE: f32 = 1.15;
 /// Burning this long, dead, it's charred through (s).
 const FULL_CHAR: f64 = 10.0;
+/// A hand's hold on a creature (the player's grip, with its handles' multipliers): the point it has
+/// pulled to where the hand would have it at 5000 N/m, damped at 50 N s/m against the hand's own
+/// motion, at most the hand's pull (3000 N); the part turned to the hand's turn at
+/// 1000 N m a radian, damped at 50, at most 250 N m.
 const GRAB_SPRING: f32 = 5000.0;
 const GRAB_DAMPER: f32 = 50.0;
 const GRAB_TURN_SPRING: f32 = 1000.0;
