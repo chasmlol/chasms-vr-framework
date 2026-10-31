@@ -73,19 +73,46 @@ fn speech_level(samples: &[f32], rate: u32) -> Option<f32> {
     (!voiced.is_empty() && loud > 0.0).then(|| (voiced.iter().map(|r| r * r).sum::<f32>() / voiced.len() as f32).sqrt())
 }
 
-/// A line made as loud as the game's own voice (`level`) times the player's `volume`, its peaks
-/// rounded off softly rather than clipped (above 0.7 they bend towards full scale, never past it).
+/// The loudest a line's samples go (-0.5 dB).
+const CEILING: f32 = 0.94;
+/// How far ahead the limiter turns a line down for a peak, and how fast it comes back up after.
+const LOOKAHEAD: f32 = 0.005;
+const RELEASE: f32 = 0.08;
+
+/// A line made as loud as the game's own voice (`level`) times the player's `volume`. Its peaks
+/// are kept under the `CEILING` by a limiter: the line turned down around a peak, smoothly (from
+/// `LOOKAHEAD` before it, back up over `RELEASE` after), not its waveform bent, which crackles. (The
+/// game's own clips have room to spare; ours are as loud as the game plays them, and the voice is
+/// 3D in the world where the dialogue menu's is 2D, a few dB louder, so the player turns them up.)
 fn as_loud(samples: &[f32], rate: u32, level: Option<f32>, volume: f32) -> Vec<f32> {
     let gain = match (level, speech_level(samples, rate)) {
         (Some(want), Some(have)) => (want / have).clamp(0.25, 8.0) * volume,
         _ => volume,
     };
-    let (knee, room) = (0.7f32, 0.3f32);
-    samples
-        .iter()
-        .map(|&s| {
-            let x = s * gain;
-            if x.abs() <= knee { x } else { x.signum() * (knee + room * ((x.abs() - knee) / room).tanh()) }
+    let loud: Vec<f32> = samples.iter().map(|s| s * gain).collect();
+    let n = loud.len();
+    let ahead = ((LOOKAHEAD * rate as f32) as usize).max(1);
+    // (each sample's most it may be turned up; the least of those within `ahead` of each; their
+    // average across `ahead` either side, which is never more than any sample's own most, but
+    // ramps down to a peak and up from it)
+    let most: Vec<f32> = loud.iter().map(|x| if x.abs() > CEILING { CEILING / x.abs() } else { 1.0 }).collect();
+    let mut least = vec![1.0f32; n];
+    for (i, l) in least.iter_mut().enumerate() {
+        *l = most[i.saturating_sub(ahead)..(i + ahead + 1).min(n)].iter().copied().fold(1.0, f32::min);
+    }
+    let mut sums = vec![0.0f64; n + 1];
+    for i in 0..n {
+        sums[i + 1] = sums[i] + least[i] as f64;
+    }
+    let back = 1.0 - (-1.0 / (RELEASE * rate as f32)).exp();
+    let mut turned = 1.0f32;
+    loud.iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let (from, to) = (i.saturating_sub(ahead), (i + ahead + 1).min(n));
+            let smooth = ((sums[to] - sums[from]) / (to - from) as f64) as f32;
+            turned = smooth.min(turned + (1.0 - turned) * back);
+            x * turned
         })
         .collect()
 }
@@ -458,10 +485,29 @@ mod tests {
         let game = speech_level(&tone(0.3), rate).unwrap();
         let ours = as_loud(&tone(0.1), rate, Some(game), 1.0);
         assert!((speech_level(&ours, rate).unwrap() / game - 1.0).abs() < 0.01);
-        // (louder by the player's volume, its peaks rounded off under full scale)
+        // (louder by the player's volume)
         let louder = as_loud(&tone(0.1), rate, Some(game), 1.5);
         assert!(speech_level(&louder, rate).unwrap() > game * 1.3);
-        assert!(as_loud(&tone(0.01), rate, Some(0.9), 3.0).iter().all(|s| s.abs() < 1.0));
+        // (turned up far past full scale: under the ceiling, and turned down, not bent: away from
+        // its start, every sample the tone's own times one gain)
+        let far = as_loud(&tone(0.1), rate, Some(0.9), 3.0);
+        assert!(far.iter().all(|s| s.abs() <= CEILING + 1e-5), "{}", far.iter().fold(0.0f32, |m, s| m.max(s.abs())));
+        let gains: Vec<f32> = far.iter().zip(tone(0.1)).skip(rate as usize / 2).filter(|(_, x)| x.abs() > 0.02).map(|(y, x)| y / x).collect();
+        let (low, high) = gains.iter().fold((f32::MAX, 0.0f32), |(l, h), &g| (l.min(g), h.max(g)));
+        assert!(high / low < 1.01, "{low} {high}");
+    }
+
+    #[test]
+    fn a_peak_is_turned_down_around_it_not_cut() {
+        // (a quiet voice with one loud word: the word under the ceiling, the voice either side
+        // as it was, a little way off)
+        let rate = 16000;
+        let voice: Vec<f32> = (0..rate as usize).map(|i| (if (7000..9000).contains(&i) { 2.0 } else { 0.2 }) * (i as f32 * 0.05).sin()).collect();
+        let out = as_loud(&voice, rate, None, 1.0);
+        assert!(out.iter().all(|s| s.abs() <= CEILING + 1e-5));
+        assert!((out[4000] - voice[4000]).abs() < 1e-6 && (out[15000] - voice[15000]).abs() < 2e-3);
+        let word = &out[7500..8500];
+        assert!(word.iter().fold(0.0f32, |m, s| m.max(s.abs())) > 0.9 * CEILING);
     }
 
     #[test]

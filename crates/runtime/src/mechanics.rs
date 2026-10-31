@@ -780,23 +780,7 @@ impl Mechanics {
         out.intents.move_xy = move_xy.to_array();
 
         // Turning: firing-hand stick X (on a mount it steers the mount, which turns the view).
-        let tx = if inp.riding { 0.0 } else { deadzone(dc.stick[0], 0.25) };
-        match c.comfort.turn_mode {
-            TurnMode::Snap => {
-                if tx.abs() > 0.75 && now > self.snap_cooldown {
-                    self.turn_total = wrap(self.turn_total + c.comfort.snap_angle.to_radians() * tx.signum());
-                    self.snap_cooldown = now + 0.5;
-                }
-                if tx.abs() < 0.25 {
-                    self.snap_cooldown = self.snap_cooldown.min(now);
-                }
-            }
-            TurnMode::Smooth => {
-                if tx != 0.0 {
-                    self.turn_total = wrap(self.turn_total + c.comfort.smooth_turn_speed.to_radians() * tx * inp.dt);
-                }
-            }
-        }
+        self.turn(c, if inp.riding { 0.0 } else { dc.stick[0] }, now, inp.dt);
         out.tracking.turn_total = self.turn_total;
 
         // Firing-hand stick Y: next / previous weapon.
@@ -1200,7 +1184,30 @@ impl Mechanics {
         self.haptic(dom, 0.04, 150.0, 0.7);
     }
 
-    /// Menus on the panel: the stick and buttons navigate, the laser drives the cursor.
+    /// The view turned by the turning stick's X (`x`, before its dead zone): a step for each flick,
+    /// or smoothly, as the comfort settings say.
+    fn turn(&mut self, c: &Settings, x: f32, now: f64, dt: f32) {
+        let tx = deadzone(x, 0.25);
+        match c.comfort.turn_mode {
+            TurnMode::Snap => {
+                if tx.abs() > 0.75 && now > self.snap_cooldown {
+                    self.turn_total = wrap(self.turn_total + c.comfort.snap_angle.to_radians() * tx.signum());
+                    self.snap_cooldown = now + 0.5;
+                }
+                if tx.abs() < 0.25 {
+                    self.snap_cooldown = self.snap_cooldown.min(now);
+                }
+            }
+            TurnMode::Smooth => {
+                if tx != 0.0 {
+                    self.turn_total = wrap(self.turn_total + c.comfort.smooth_turn_speed.to_radians() * tx * dt);
+                }
+            }
+        }
+    }
+
+    /// Menus on the panel: the stick and buttons navigate, the laser drives the cursor. In one the
+    /// player can turn in (a conversation, [`GS_MENU_TURNS`]) the stick's left and right turn them.
     fn menu_controls(&mut self, inp: &MechInput, out: &mut MechOutput) {
         let f = inp.frame;
         let dom = inp.settings.dominant();
@@ -1208,6 +1215,7 @@ impl Mechanics {
         out.intents.flags |= INT_MENU_MODE;
         out.intents.move_xy = [deadzone(f.hands[off].stick[0], 0.3), deadzone(f.hands[off].stick[1], 0.3)];
         let (sx, sy) = (f.hands[dom].stick[0], f.hands[dom].stick[1]);
+        let turns = !inp.runtime_menu && inp.game.is_some_and(|g| g.flags & GS_MENU_TURNS != 0);
         let mut held = 0u64;
         if sy > 0.6 {
             held |= Action::MenuUp.bit();
@@ -1215,11 +1223,16 @@ impl Mechanics {
         if sy < -0.6 {
             held |= Action::MenuDown.bit();
         }
-        if sx < -0.6 {
-            held |= Action::MenuLeft.bit();
-        }
-        if sx > 0.6 {
-            held |= Action::MenuRight.bit();
+        if turns {
+            self.turn(inp.settings, sx, inp.now, inp.dt);
+            out.tracking.turn_total = self.turn_total;
+        } else {
+            if sx < -0.6 {
+                held |= Action::MenuLeft.bit();
+            }
+            if sx > 0.6 {
+                held |= Action::MenuRight.bit();
+            }
         }
         if !inp.runtime_menu {
             // A on either hand accepts; so does a trigger pull (the natural "continue").
@@ -1573,6 +1586,48 @@ mod tests {
         f.hands[1].stick = [1.0, 0.0];
         run(&mut m, &f, &game(), &s, t + 0.02);
         assert!((m.turn_total - 2.0 * s.comfort.snap_angle.to_radians()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_conversation_turns_with_the_stick_other_menus_take_it() {
+        let menu = |m: &mut Mechanics, f: &HmdFrame, g: &GameState, s: &Settings, t: f64| {
+            m.update(&MechInput {
+                frame: f,
+                game: Some(g),
+                settings: s,
+                now: t,
+                dt: 1.0 / 90.0,
+                menu_mode: true,
+                runtime_menu: false,
+                cursor: None,
+                aux_aspect: 1.0,
+                rumble: None,
+                rig: None,
+                spell_hands: [false; 2],
+                game_shots: 0,
+                held_kicks: &[],
+                riding: false,
+            })
+        };
+        let s = Settings::default();
+        let mut f = standing();
+        f.hands[s.dominant()].stick = [1.0, 0.0];
+        let mut g = game();
+        g.flags |= GS_MENU;
+        // (any other menu: the stick's right is the menu's)
+        let mut m = Mechanics::default();
+        let out = menu(&mut m, &f, &g, &s, 0.0);
+        assert_eq!((m.turn_total, out.intents.held & Action::MenuRight.bit() != 0), (0.0, true));
+        // (a conversation: a step, once for the flick, and the menu doesn't get it)
+        g.flags |= GS_MENU_TURNS;
+        let mut m = Mechanics::default();
+        let mut out = menu(&mut m, &f, &g, &s, 0.0);
+        for i in 1..20 {
+            out = menu(&mut m, &f, &g, &s, i as f64 / 90.0);
+        }
+        assert!((m.turn_total - s.comfort.snap_angle.to_radians()).abs() < 1e-4, "{}", m.turn_total);
+        assert_eq!(out.tracking.turn_total, m.turn_total);
+        assert_eq!(out.intents.held & Action::MenuRight.bit(), 0);
     }
 
     #[test]

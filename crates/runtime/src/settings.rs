@@ -54,7 +54,7 @@ pub struct Voice {
 
 impl Default for Voice {
     fn default() -> Self {
-        Voice { enabled: false, mic: String::new(), volume: 1.5, act_out: true, barge_in: false, pause: 0.3 }
+        Voice { enabled: false, mic: String::new(), volume: 2.5, act_out: true, barge_in: false, pause: 0.3 }
     }
 }
 

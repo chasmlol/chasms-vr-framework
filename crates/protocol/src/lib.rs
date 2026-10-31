@@ -723,6 +723,9 @@ pub const GS_MENU_IN_WORLD: u32 = 1 << 11;
 /// The game wants the mirror up (its character creator is open): the runtime stands it in front of
 /// the player, and puts it away when this goes, unless the player had called it up.
 pub const GS_MIRROR: u32 = 1 << 12;
+/// The open menu is one the player can turn in (a conversation, its pieces with the speaker in the
+/// world): the turning stick's left and right turn them as out of a menu, not the menu's.
+pub const GS_MENU_TURNS: u32 = 1 << 13;
 
 /// Linear-light colours.
 #[repr(C)]

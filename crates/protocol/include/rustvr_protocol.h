@@ -262,6 +262,12 @@
  */
 #define RVR_GS_MIRROR (1 << 12)
 
+/**
+ * The open menu is one the player can turn in (a conversation, its pieces with the speaker in the
+ * world): the turning stick's left and right turn them as out of a menu, not the menu's.
+ */
+#define RVR_GS_MENU_TURNS (1 << 13)
+
 #define RVR_RIG_HAS_SIGHT (1 << 0)
 
 #define RVR_RIG_HAS_MUZZLE (1 << 1)

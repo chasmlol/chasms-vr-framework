@@ -89,7 +89,7 @@ pub struct Rustvr {
 
 impl Default for Rustvr {
     fn default() -> Self {
-        Rustvr { mic: String::new(), volume: 1.5, act_out: true, barge_in: false, pause: 0.3 }
+        Rustvr { mic: String::new(), volume: 2.5, act_out: true, barge_in: false, pause: 0.3 }
     }
 }
 
