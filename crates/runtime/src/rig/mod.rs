@@ -5907,6 +5907,7 @@ impl Rig {
             };
             self.objects.get_mut(&r.object).unwrap().through.push(next);
             self.debug.embeds += 1;
+            tracing::info!("rig: {:#x} runs on into {:?}", r.object, r.into);
             if r.wounding.kind != DMG_SLASH {
                 self.emit(Cue::KnifeStick, hand, Some(r.object), r.point, 1.0);
             }
@@ -5949,6 +5950,7 @@ impl Rig {
         self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
         self.physics.set_pose(body, pos, q);
         self.debug.embeds += 1;
+        tracing::info!("rig: {:#x} goes into {:?}, {:.3} m", r.object, r.into, r.depth);
         // (An edge's cut, 3 mm in, is heard as its hit; a point or an axe that stays in thuds in.)
         if r.wounding.kind != DMG_SLASH || r.slide.is_none() {
             self.emit(Cue::KnifeStick, hand, Some(r.object), r.point, 1.0);
@@ -5978,6 +5980,7 @@ impl Rig {
         let embed::Into::Actor { id: actor, part } = e.into else { return };
         let (point, out) = self.embed_parent(e.into).map_or((Vec3::ZERO, Vec3::ZERO), |p| (p.0 + p.1 * e.at, -(p.1 * e.axis)));
         let hand = if let Holder::Held(h) = holder { h as u32 } else { 2 };
+        tracing::info!("rig: {id:#x} comes out of creature {actor:#x} part {part}, {:.3} m deep at most", e.deepest);
         self.embed_events.push(CombatEvent { kind: CE_PULLED_OUT, actor, part: part as u32, object: id, what: e.wounding.kind, hand, depth: e.deepest, blade: e.wounding.blade, point: point.to_array(), dir: out.to_array(), ..Default::default() });
     }
 
@@ -6089,6 +6092,9 @@ impl Rig {
         }
         let along = d.dot(axis);
         let slide = if slide_w != Vec3::ZERO { d.dot(slide_w) } else { 0.0 };
+        // (How far the hand leads it, as for a weapon held free: what its point presses on the
+        // next body with.)
+        self.objects.get_mut(&id).unwrap().lag = d;
         // The hand's joint pulls it (the player's hold; both hands' when the other's on it too),
         // against the dampers of everything it's in.
         let two = self.two_handed_melee(id);

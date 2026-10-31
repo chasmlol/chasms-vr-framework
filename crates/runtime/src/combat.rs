@@ -1090,8 +1090,9 @@ impl Combat {
             };
             struck.push((hit.actor, hit.index));
             // Gone in: it stays in (a cut 3 mm and sliding along its edge, an axe and a point as
-            // deep as they go), unless it's already in something.
-            if hit.judged.flags & CEF_PENETRATED != 0 && !embedded && !self.embeds.iter().any(|e| e.object == id) {
+            // deep as they go), unless it's already in this creature; one already in another runs
+            // on into it.
+            if hit.judged.flags & CEF_PENETRATED != 0 && !inp.rig.embedded_in(id, hit.actor) && !self.embeds.iter().any(|e| e.object == id) {
                 self.embeds.push(self.judge_embed(inp, id, &b, &hit, along, edge, (wp, wq), inp.rig.held(hand) != Some(id)));
             }
         }
@@ -1160,9 +1161,11 @@ impl Combat {
                     self.contacts.insert(entry, self.frame);
                     // A point pushed in, or an edge pressed on and drawn, goes in by pressure
                     // (`Self::pressure`). (Only a hand pushes: a thrown blade that didn't go in rests
-                    // where it is; and one already in this creature is in.)
+                    // where it is; one already in this creature is in; and another of its damagers
+                    // that struck the part this frame took it.)
                     let cooling = self.cooldowns.get(&(object, blade, hand)).is_some_and(|&(part, until)| part == (body.actor.id, body.index) && until > inp.now);
-                    if matches!(b.kind, DMG_PIERCE | DMG_SLASH) && b.flags & DMGF_PRESSURE != 0 && !inp.rig.embedded_in(object, body.actor.id) && inp.rig.held(hand) == Some(object) && !cooling {
+                    let taken = struck.contains(&(body.actor.id, body.index));
+                    if matches!(b.kind, DMG_PIERCE | DMG_SLASH) && b.flags & DMGF_PRESSURE != 0 && !inp.rig.embedded_in(object, body.actor.id) && inp.rig.held(hand) == Some(object) && !cooling && !taken {
                         let k = SAMPLES - 1;
                         let (_, p, on_axis, _) = contact(k);
                         let normal = (p - on_axis).normalize_or(-along);
