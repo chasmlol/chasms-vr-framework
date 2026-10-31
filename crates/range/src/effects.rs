@@ -441,8 +441,11 @@ impl Effects {
             HitWhat::Object(id, _) => Some((id, None)),
             _ => None,
         };
-        self.decals.push_back(Decal { sprite: self.sprites.hole, pos: at, rot, size, color, t: 0.0, life: DECAL_LIFE, on });
-        self.stats.holes += 1;
+        // (A creature's body wears its own mark of it, where it was hit, as it moves.)
+        if !matches!(hit.what, HitWhat::Body(..)) {
+            self.decals.push_back(Decal { sprite: self.sprites.hole, pos: at, rot, size, color, t: 0.0, life: DECAL_LIFE, on });
+            self.stats.holes += 1;
+        }
         while self.decals.len() > MAX_DECALS {
             self.decals.pop_front();
         }
@@ -455,6 +458,8 @@ impl Effects {
         }
         let bounce = (dir - 2.0 * dir.dot(n) * n).normalize_or(n);
         match s {
+            // (Its blood is the hit's, drawn with it: `combat::shot`.)
+            Surface::Flesh => {}
             Surface::Metal | Surface::Target => {
                 let mut flare = Self::particle(self.sprites.sparks, FxBlend::Add, at + n * 0.02, 0.18, 0.12, [1.5, 1.2, 0.8, 1.0]);
                 flare.animate = true;

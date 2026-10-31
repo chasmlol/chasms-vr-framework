@@ -319,15 +319,15 @@ pub fn part_id(throwable: usize, part: usize) -> usize {
 pub enum Event {
     /// Object `id` went off at `at` (world).
     Exploded { id: u32, at: Vec3, blast: Blast },
-    /// A knife (or sticky bomb) went in, its tip at `tip` (world).
-    Stuck { id: u32, tip: Vec3 },
+    /// A knife (or sticky bomb) went in, its tip at `tip` (world), flying at `vel` the frame before.
+    Stuck { id: u32, tip: Vec3, vel: Vec3 },
 }
 
 /// Watches the runtime's states for detonations and sticks, and puts spent grenades back.
 #[derive(Default)]
 pub struct Watch {
-    /// Per object: detonations seen, stuck last frame.
-    seen: HashMap<u32, (u32, bool)>,
+    /// Per object: detonations seen, stuck last frame, its velocity last frame.
+    seen: HashMap<u32, (u32, bool, Vec3)>,
     respawn: Vec<(u32, f64)>,
 }
 
@@ -338,7 +338,7 @@ impl Watch {
         for (s, p, q) in states {
             let Some(i) = which(s.desc) else { continue };
             let t = &list[i];
-            let (shots, stuck) = self.seen.get(&s.id).copied().unwrap_or((s.shots, s.flags & OS_STUCK != 0));
+            let (shots, stuck, was) = self.seen.get(&s.id).copied().unwrap_or((s.shots, s.flags & OS_STUCK != 0, Vec3::ZERO));
             if s.shots.wrapping_sub(shots) > 0
                 && let Some(blast) = t.blast
             {
@@ -347,9 +347,9 @@ impl Watch {
             }
             let now_stuck = s.flags & OS_STUCK != 0;
             if now_stuck && !stuck {
-                out.push(Event::Stuck { id: s.id, tip: *p + *q * Vec3::from_array(t.desc.muzzle) });
+                out.push(Event::Stuck { id: s.id, tip: *p + *q * Vec3::from_array(t.desc.muzzle), vel: was });
             }
-            self.seen.insert(s.id, (s.shots, now_stuck));
+            self.seen.insert(s.id, (s.shots, now_stuck, Vec3::from_array(s.lin_vel)));
         }
         out
     }

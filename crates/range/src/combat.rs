@@ -1,7 +1,7 @@
 //! The range's combat: training dummies (people the hands can hit, push and stab: `crate::ragdoll`,
 //! published as capsules every frame), the melee weapons (`crate::arsenal`) and one spell, a fire
 //! bolt, so the runtime's melee and magic can be played and tested without a game
-//! (`rustvr_protocol::combat`).
+//! (`rustvr_protocol::combat`); and the range's guns, grenades and throwing knives on them too.
 
 use glam::Vec3;
 use rustvr_melee::body::{Part as BodyPart, Reaction};
@@ -132,6 +132,237 @@ pub fn hit(people: &mut crate::arena::People, ev: &CombatEvent, weapons: &MeleeW
     );
     out
 }
+
+/// A gun's round on a creature (`docs/MELEE.md`): its damage before
+/// the armour's and the part's multipliers (a head x3, the limbs x0.5, the hands x0.25), the push
+/// level it lands at, how fast it sends the part it hits along its way, and whether it carries on
+/// through flesh (out the far side, a second wound).
+#[derive(Clone, Copy, Debug)]
+pub struct Round {
+    pub damage: f32,
+    pub level: u32,
+    pub speed: f32,
+    pub through: bool,
+}
+
+/// A pistol's: four to the body, two to the head. A rifle's: two to the body, one to the head, and
+/// through. A shotgun's: one to the body staggers it hard.
+pub const PISTOL: Round = Round { damage: 15.0, level: 1, speed: 3.0, through: false };
+pub const RIFLE: Round = Round { damage: 30.0, level: 2, speed: 4.0, through: true };
+pub const SHOTGUN: Round = Round { damage: 45.0, level: 3, speed: 6.0, through: false };
+
+/// What armour leaves of a round (our call): leather most of it, chainmail more than half, plate
+/// less than half (and it sparks).
+fn armour_lets_through(material: u32) -> f32 {
+    match material {
+        MAT_LEATHER => 0.9,
+        MAT_CHAINMAIL => 0.6,
+        MAT_PLATE => 0.4,
+        _ => 1.0,
+    }
+}
+
+/// A round from a gun into person `k`'s part `part` at `point` (world), along `dir`: it's hurt by
+/// the round's damage (the throat's cuts its voice, as a stab's does), reels or falls at its push
+/// level, the part is sent along the shot, a round through the arm or the hand makes it let go of
+/// what it holds (as a stab through the arm does), and it's left a wound (and one where a round
+/// that carries on through comes out).
+pub fn shot(people: &mut crate::arena::People, k: usize, part: usize, point: Vec3, dir: Vec3, round: Round) -> Vec<Bled> {
+    let d = &mut people.dummies;
+    let kind = d.part_kind(k, part);
+    let material = d.part_material(k, part);
+    let throat = kind == PART_HEAD && on_neck(d, k, part, point);
+    let body = BodyPart::of(kind, throat);
+    let damage = round.damage * armour_lets_through(material) * body.damage();
+    let (id, alive, now) = (d.people[k].id, d.people[k].alive, d.time);
+    d.people[k].last_hit = (DMG_PIERCE, body);
+    d.people[k].silenced |= body == BodyPart::Neck;
+    d.hurt(k, damage, point);
+    if let Some(brain) = people.brain_of(k) {
+        brain.hurt(damage / rustvr_melee::body::HEALTH, now);
+    }
+    let d = &mut people.dummies;
+    d.react(k, part, round.level, dir, point, false);
+    d.speed_up(k, part, point, dir, round.speed);
+    if let Some(h) = (0..2).find(|&h| [crate::anim::HAND[h], crate::anim::FOREARM[h], crate::anim::UPPER_ARM[h]].contains(&part))
+        && let Some(item) = d.drop_item(k, h)
+    {
+        tracing::info!("range: {id:#x}, shot through the arm, lets go of {item:#x}");
+        d.happened.push(crate::ragdoll::Happened::Disarmed { id, item });
+    }
+    d.wound(k, part, point, DMG_PIERCE, 1.0, true, true, false);
+    let mut out = vec![Bled { point, dir: -dir, strength: 0.8 }];
+    if round.through
+        && matches!(material, MAT_FLESH | MAT_LEATHER)
+        && let Some(exit) = d.exit_point(k, part, point, dir)
+    {
+        d.wound(k, part, exit, DMG_PIERCE, 1.0, true, true, false);
+        out.push(Bled { point: exit, dir, strength: 1.0 });
+    }
+    tracing::info!("range: {id:#x} part {part} ({body:?}) shot: {damage:.1} of its health ({:.0} left){}", d.people[k].health.max(0.0), if alive && !d.people[k].alive { ", dead" } else { "" });
+    out
+}
+
+/// A grenade's blast on the creatures (`docs/MELEE.md`): how far
+/// it reaches (m), the damage at its centre (falling off with the square of the distance, against a
+/// person's 50: a frag kills within about 2 m), within what it floors a person and tears its limbs
+/// off, how fast it throws a body out at its centre, and the heat it gives (100: on fire).
+#[derive(Clone, Copy, Debug)]
+pub struct Blast {
+    pub radius: f32,
+    pub damage: f32,
+    pub floor: f32,
+    pub tear: f32,
+    pub speed: f32,
+    pub heat: f32,
+}
+
+pub const FRAG: Blast = Blast { radius: 6.0, damage: 120.0, floor: 4.0, tear: 1.2, speed: 8.0, heat: 0.0 };
+pub const FIRE: Blast = Blast { radius: 2.5, damage: 15.0, floor: 1.5, tear: 0.0, speed: 4.0, heat: 100.0 };
+
+/// A blast at `at` (world) on every person it reaches that nothing of the room shields (`clear`:
+/// whether the line between two points is clear): hurt by how near its nearest part is, heated,
+/// floored (or set reeling further out), its limbs torn off close in, thrown out, and wounded where
+/// it faced the blast.
+pub fn blast(people: &mut crate::arena::People, at: Vec3, b: Blast, clear: impl Fn(Vec3, Vec3) -> bool) -> Vec<Bled> {
+    let mut out = Vec::new();
+    for k in 0..people.dummies.people.len() {
+        let d = &people.dummies;
+        let Some((near, part)) = (0..crate::anim::PARTS).map(|i| (d.distance_to(k, i, at), i)).min_by(|x, y| x.0.total_cmp(&y.0)) else { continue };
+        if near > b.radius || !clear(at + Vec3::Y * 0.1, d.part_pose(k, crate::anim::TORSO).0) {
+            continue;
+        }
+        let (a, bb, r) = d.capsule(k, part);
+        let t = ((at - a).dot(bb - a) / (bb - a).length_squared().max(1e-9)).clamp(0.0, 1.0);
+        let on = a.lerp(bb, t);
+        let away = (on - at).normalize_or(Vec3::Y);
+        let point = on - away * r;
+        let near_k = 1.0 - near / b.radius;
+        let damage = b.damage * near_k * near_k;
+        let (id, alive, now) = (d.people[k].id, d.people[k].alive, d.time);
+        let d = &mut people.dummies;
+        d.people[k].last_hit = (DMG_BLUNT, BodyPart::Torso);
+        d.hurt(k, damage, point);
+        if let Some(brain) = people.brain_of(k) {
+            brain.hurt(damage / rustvr_melee::body::HEALTH, now);
+        }
+        let d = &mut people.dummies;
+        if b.heat > 0.0 {
+            d.heat(k, b.heat * near_k, point);
+        }
+        if near <= b.floor {
+            d.floor(k, point);
+        } else {
+            d.react(k, part, 1, away, point, false);
+        }
+        // (Its outer parts first: each torn off on its own, not whole from the shoulder.)
+        let mut torn = 0;
+        for i in (0..crate::anim::PARTS).rev() {
+            if near <= b.tear && d.distance_to(k, i, at) <= b.tear {
+                let from = d.part_pose(k, i).0;
+                if d.sever(k, i, (from - at).normalize_or(Vec3::Y)) {
+                    torn += 1;
+                }
+            }
+        }
+        d.blast(k, at, b.radius, b.speed);
+        d.wound(k, part, point, if b.heat > 0.0 { DMG_BLUNT } else { DMG_PIERCE }, near_k, true, false, b.heat > 0.0);
+        if b.heat <= 0.0 {
+            out.push(Bled { point, dir: away, strength: near_k });
+        }
+        tracing::info!(
+            "range: {id:#x} in a blast {near:.1} m off: {damage:.1} of its health ({:.0} left){}{}",
+            d.people[k].health.max(0.0),
+            if torn > 0 { format!(", {torn} parts torn off") } else { String::new() },
+            if alive && !d.people[k].alive { ", dead" } else { "" }
+        );
+    }
+    out
+}
+
+/// A thrown knife stuck in person `k`'s part `part`, its tip at `tip` (world), come along `dir` at
+/// `speed` m/s: a thrown dagger's stab (the curve from 1 at a standstill to 5 at 20 m/s, x3 thrown,
+/// by the armour's row and the part's multiplier; then, gone in, its penetration damage 7.5 times
+/// the part's deep multiplier, a head or a throat x32).
+pub fn knife(people: &mut crate::arena::People, k: usize, part: usize, tip: Vec3, dir: Vec3, speed: f32) -> Vec<Bled> {
+    let d = &mut people.dummies;
+    let kind = d.part_kind(k, part);
+    let material = d.part_material(k, part);
+    let throat = kind == PART_HEAD && on_neck(d, k, part, tip);
+    let body = BodyPart::of(kind, throat);
+    let row = rustvr_melee::row(rustvr_melee::MOD_PIERCE_FINE, material, 1, false);
+    let went_in = row.is_some_and(|r| speed >= r.pen_speed);
+    let hit = rustvr_melee::curve(rustvr_melee::DAGGER_PIERCE_CURVE, rustvr_melee::DAGGER_PIERCE_SLOPES, speed) * KNIFE_THROWN * row.map_or(0.0, |r| r.damage);
+    let damage = hit * body.damage() + if went_in { KNIFE_PENETRATION * body.deep().1 } else { 0.0 };
+    let (id, alive, now) = (d.people[k].id, d.people[k].alive, d.time);
+    d.people[k].last_hit = (DMG_PIERCE, body);
+    d.people[k].silenced |= went_in && body == BodyPart::Neck;
+    d.hurt(k, damage, tip);
+    if let Some(brain) = people.brain_of(k) {
+        brain.hurt(damage / rustvr_melee::body::HEALTH, now);
+    }
+    let d = &mut people.dummies;
+    let level = row.map_or(0, |r| r.push_level(speed, true));
+    d.react(k, part, level, dir, tip, false);
+    d.wound(k, part, tip, DMG_PIERCE, 1.0, damage > 0.0, went_in, false);
+    tracing::info!("range: {id:#x} part {part} ({body:?}) knifed at {speed:.1} m/s{}: {damage:.1} of its health ({:.0} left){}", if went_in { ", in" } else { "" }, d.people[k].health.max(0.0), if alive && !d.people[k].alive { ", dead" } else { "" });
+    if damage > 0.0 { vec![Bled { point: tip, dir: -dir, strength: 0.6 }] } else { Vec::new() }
+}
+
+/// A dagger's stab thrown (its thrown multiplier), and its penetration damage.
+const KNIFE_THROWN: f32 = 3.0;
+const KNIFE_PENETRATION: f32 = 7.5;
+
+/// A spell cast at a creature (the runtime's `CE_CAST` with the creature its aim found): its bolt
+/// lands on what it meets on its way (else its torso). The fire bolt is an energy damager (10 at
+/// any tier, armour no matter, times the part's; its push at its 12 m/s, a body that's down shoved
+/// with 260 for 0.2 s; its fire's heat, `IMBUE_HIT_HEAT` 6); the shock is a lightning hit (2 at
+/// push level 1, electrocuted two times in five, certain on metal, for 2 s, 4 in metal armour).
+pub fn bolt(people: &mut crate::arena::People, ev: &CombatEvent) -> Vec<Bled> {
+    let d = &mut people.dummies;
+    let Some(k) = d.find(ev.actor) else { return Vec::new() };
+    let (from, dir) = (Vec3::from_array(ev.point), Vec3::from_array(ev.dir).normalize_or(Vec3::Z));
+    let (part, point) = match d.raycast(from, dir, 40.0) {
+        Some((_, at, _, crate::ragdoll::Struck::Part(who, part))) if who == k => (part, at),
+        _ => (crate::anim::TORSO, d.part_pose(k, crate::anim::TORSO).0),
+    };
+    let dir = (point - from).normalize_or(dir);
+    let kind = d.part_kind(k, part);
+    let body = BodyPart::of(kind, kind == PART_HEAD && on_neck(d, k, part, point));
+    let now = d.time;
+    let damage = match ev.what {
+        FIRE_BOLT => BOLT_DAMAGE * body.damage(),
+        SHOCK => SHOCK_DAMAGE,
+        _ => return Vec::new(),
+    };
+    d.people[k].last_hit = (DMG_BLUNT, body);
+    d.hurt(k, damage, point);
+    if let Some(brain) = people.brain_of(k) {
+        brain.hurt(damage / rustvr_melee::body::HEALTH, now);
+    }
+    let d = &mut people.dummies;
+    if ev.what == FIRE_BOLT {
+        let level = rustvr_melee::row(rustvr_melee::MOD_ENERGY, MAT_FLESH, 1, false).map_or(0, |r| r.push_level(BOLT_SPEED, false));
+        d.react(k, part, level, dir, point, false);
+        d.shove(k, part, point, dir * BOLT_SPEED, BOLT_FORCE.0, BOLT_FORCE.1, 1.0, 1.0, false);
+        d.heat(k, IMBUE_HIT_HEAT, point);
+        d.wound(k, part, point, DMG_BLUNT, 1.0, true, false, true);
+    } else {
+        d.react(k, part, 1, dir, point, true);
+        let metal = matches!(d.part_material(k, part), MAT_CHAINMAIL | MAT_PLATE);
+        if metal || d.chance() < SHOCK_CHANCE {
+            d.shock(k, if metal { 4.0 } else { 2.0 });
+        }
+    }
+    tracing::info!("range: {:#x} part {part} ({body:?}) hit by a {} bolt: {damage:.1} of its health ({:.0} left)", ev.actor, if ev.what == FIRE_BOLT { "fire" } else { "shock" }, d.people[k].health.max(0.0));
+    Vec::new()
+}
+
+/// The fire bolt (10, flying at 12 m/s, shoving with 260 for 0.2 s) and the shock's damage.
+const BOLT_DAMAGE: f32 = 10.0;
+const BOLT_SPEED: f32 = 12.0;
+const BOLT_FORCE: (f32, f32) = (260.0, 0.2);
+const SHOCK_DAMAGE: f32 = 2.0;
 
 /// A blade going in deep, or out the far side (the runtime's `CE_WOUND`): its penetration damage,
 /// times the part's: a stab's deep multiplier (a head or a neck x32, the torso x2), a cut's (the

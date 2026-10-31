@@ -854,6 +854,9 @@ impl Game {
                     }
                 }
                 CE_CAST => {
+                    if ev.actor != 0 {
+                        combat::bolt(&mut self.people, &ev);
+                    }
                     // The other spell is ready next (a game would have its own way to choose).
                     self.spell = if ev.what == combat::FIRE_BOLT { combat::SHOCK } else { combat::FIRE_BOLT };
                     self.adapter.write_spells(&combat::spells_with(self.spell));
@@ -982,6 +985,34 @@ impl Game {
             .collect()
     }
 
+    /// Gun `weapon`'s round into a creature at `at` (world), along `dir`: what it does to the part
+    /// it met ([`combat::shot`]), or the push on what it holds; what it met, for the shot's look.
+    fn round_into(&mut self, weapon: usize, at: Vec3, dir: Vec3, struck: ragdoll::Struck) -> HitWhat {
+        let w = &self.scene.weapons[weapon].w;
+        let round = if w.pistol {
+            combat::PISTOL
+        } else if w.key.contains("saiga") || w.key.contains("shot") || w.caliber.contains("gauge") {
+            combat::SHOTGUN
+        } else {
+            combat::RIFLE
+        };
+        match struck {
+            ragdoll::Struck::Part(k, part) => {
+                let id = self.people.dummies.people[k].id;
+                let metal = matches!(self.people.dummies.part_material(k, part), MAT_CHAINMAIL | MAT_PLATE);
+                for b in combat::shot(&mut self.people, k, part, at, dir, round) {
+                    self.effects.blood(b.point, b.dir, b.strength);
+                }
+                HitWhat::Body(id, if metal { Surface::Metal } else { Surface::Flesh })
+            }
+            ragdoll::Struck::Item(i) => {
+                self.people.dummies.speed_up_item(i, at, dir, round.speed);
+                let item = &self.people.dummies.items[i];
+                HitWhat::Body(item.id, if item.shield { Surface::Wood } else { Surface::Metal })
+            }
+        }
+    }
+
     /// Where each object is (world), for what rides on them.
     fn object_poses(&self, v: &View) -> HashMap<u32, (Vec3, Quat)> {
         let Some(a) = &self.armory else { return HashMap::new() };
@@ -989,10 +1020,14 @@ impl Game {
     }
 
     /// A shot as the game shows it: the gun's flash, smoke, tracer and casing, and what it hit
-    /// (a hole, sparks or dust, and a push on a loose object).
+    /// (a hole, sparks or dust, and a push on a loose object; a creature in the way first, the
+    /// round in it).
     fn shot_fx(&mut self, weapon: usize, gun: (Vec3, Quat), vel: Vec3, origin: Vec3, dir: Vec3, v: &View) {
         let boxes = self.object_boxes(v);
-        let hit = self.world.raycast(origin, dir, 150.0, &boxes);
+        let mut hit = self.world.raycast(origin, dir, 150.0, &boxes);
+        if let Some((dist, pos, normal, struck)) = self.people.dummies.raycast(origin, dir, hit.map_or(150.0, |h| h.dist)) {
+            hit = Some(hits::Hit { pos, normal, dist, what: self.round_into(weapon, pos, dir, struck) });
+        }
         let Some(fx) = self.gun_fx.get(weapon).copied() else { return };
         self.effects.shot(&fx, gun, vel, dir, hit.as_ref());
         if let Some(h) = hit
@@ -1025,11 +1060,17 @@ impl Game {
             match e {
                 throwables::Event::Exploded { at, blast, .. } => {
                     self.effects.explosion(at, blast);
-                    let (damage, (radius, impulse)) = match blast {
-                        effects::Blast::Frag => (throwables::FRAG_DAMAGE, throwables::FRAG_PUSH),
-                        effects::Blast::Fire => (throwables::FIRE_DAMAGE, throwables::FIRE_PUSH),
+                    let (damage, (radius, impulse), on_people) = match blast {
+                        effects::Blast::Frag => (throwables::FRAG_DAMAGE, throwables::FRAG_PUSH, combat::FRAG),
+                        effects::Blast::Fire => (throwables::FIRE_DAMAGE, throwables::FIRE_PUSH, combat::FIRE),
                     };
                     self.adapter.blast(at.to_array(), radius, impulse);
+                    // The creatures it reaches that the room doesn't shield from it.
+                    let world = &self.world;
+                    let clear = |a: Vec3, b: Vec3| world.raycast(a, (b - a).normalize_or(Vec3::Y), a.distance(b), &[]).is_none();
+                    for b in combat::blast(&mut self.people, at, on_people, clear) {
+                        self.effects.blood(b.point, b.dir, b.strength);
+                    }
                     self.stats_f[rs::F_EXPLOSIONS] += 1.0;
                     for (i, t) in self.targets.iter().enumerate() {
                         if t.center.distance(at) <= damage + t.radius {
@@ -1039,7 +1080,14 @@ impl Game {
                     }
                     tracing::info!("range: an explosion at {at:.2} ({blast:?})");
                 }
-                throwables::Event::Stuck { tip, .. } => {
+                throwables::Event::Stuck { tip, vel, .. } => {
+                    // In a creature: a thrown dagger's stab.
+                    if let Some((k, part)) = self.people.dummies.part_at(tip, 0.03) {
+                        for b in combat::knife(&mut self.people, k, part, tip, vel.normalize_or(Vec3::Z), vel.length()) {
+                            self.effects.blood(b.point, b.dir, b.strength);
+                        }
+                        continue;
+                    }
                     let plate = self.targets.iter().position(|t| throwables::in_plate(tip, (t.center, t.radius)));
                     if let Some(i) = plate {
                         self.stats_f[rs::F_KNIFE_HITS] += 1.0;

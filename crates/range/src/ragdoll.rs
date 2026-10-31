@@ -30,7 +30,7 @@
 
 use std::collections::HashSet;
 
-use glam::{Mat4, Quat, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3};
 use rapier3d::prelude::*;
 use rustvr_melee::body::{Doing, Part as BodyPart, Reaction};
 use rustvr_protocol::*;
@@ -78,8 +78,9 @@ const RISE_TIME: f64 = 3.0;
 const MASS_STANDING: f32 = 65.0;
 const MASS_HANDLED: f32 = 130.0;
 const MASS_RAGDOLLED: f32 = 227.5;
-/// The physics' fixed step.
-const STEP: f32 = 1.0 / 120.0;
+/// The physics' longest step (s): a frame at the headset's rate is one step (the physics steps once
+/// a frame), a longer frame split evenly.
+const MAX_STEP: f32 = 1.0 / 72.0;
 /// Telekinesis on a body (its drive x20 and x10 an item's): its spring and damper (its most force
 /// is the runtime's 2500 N); its turning, an item's 10, 1 and 1000 N m, x5 on the neck and x4 the
 /// spring on a wrist; and a body it throws: every other part of it given this along the throw (m/s),
@@ -425,6 +426,14 @@ struct Slam {
     vel: V3,
 }
 
+/// What a shot met among the creatures: a person's part (person, part), or an item (one held, or
+/// dropped).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Struck {
+    Part(usize, usize),
+    Item(usize),
+}
+
 /// What happened to the creatures this frame, for the game's side (blood, sounds, the arena).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Happened {
@@ -456,8 +465,8 @@ pub struct Dummies {
     /// The parts' contacts last step (a slam is a new one).
     touching: HashSet<(ColliderHandle, ColliderHandle)>,
     rng: u32,
-    /// Time not yet stepped.
-    owed: f32,
+    /// The physics step under way's length (s).
+    dt: f32,
     pub time: f64,
     /// How fast the game's time runs (the player's slowed time): the tearing joints hold the more the
     /// slower it runs, the hands being that much quicker in it.
@@ -505,7 +514,7 @@ impl Dummies {
             shoves: Vec::new(),
             touching: HashSet::new(),
             rng: 0x9e37_79b9,
-            owed: 0.0,
+            dt: 1.0 / 90.0,
             time: 0.0,
             time_scale: 1.0,
             happened: Vec::new(),
@@ -697,19 +706,26 @@ impl Dummies {
         }
     }
 
-    /// One frame of `dt` seconds: the pins, then the physics at its fixed step.
+    /// One frame of `dt` seconds: the pins, then the physics, in as few even steps as keep each
+    /// within [`MAX_STEP`] (one a frame at the headset's rate). Each frame ends on a step: a fixed
+    /// step of its own would carry one frame two steps on and the next one, the creatures juddering
+    /// as they move, and in slowed time (a quarter of a step a frame) moving only every few frames.
     pub fn step(&mut self, dt: f32) {
-        self.owed = (self.owed + dt.clamp(0.0, 0.1)).min(0.1);
-        while self.owed >= STEP {
-            self.owed -= STEP;
-            self.time += STEP as f64;
+        let dt = dt.clamp(0.0, 0.1);
+        if dt <= 0.0 {
+            return;
+        }
+        let steps = (dt / MAX_STEP).ceil().max(1.0);
+        self.dt = dt / steps;
+        for _ in 0..steps as usize {
+            self.time += self.dt as f64;
             self.balance();
             self.burn();
             self.pin();
             self.hold();
             self.shoves();
             self.remember();
-            self.world.integration_parameters.dt = STEP;
+            self.world.integration_parameters.dt = self.dt;
             self.world.step();
             self.slams();
             self.rip();
@@ -764,7 +780,7 @@ impl Dummies {
 
     /// Each part pulled towards its animation, as hard as the person's state allows.
     fn pin(&mut self) {
-        let now = self.time;
+        let (now, dt) = (self.time, self.dt);
         for p in &mut self.people {
             let shocked = p.shocked > now;
             let (stance, gravity, loose) = match p.balance {
@@ -807,28 +823,14 @@ impl Dummies {
                     (pos, rot, from_v(rb.linvel()), from_v(rb.angvel()))
                 })
                 .collect();
-            // Each part's mass and its inertia (the mean of its principal moments), what its pins act
-            // on; a hand's with what it holds welded to it (an NPC's grip is a locked joint: one body
-            // its drive moves, so a heavy weapon doesn't whip a light hand about).
-            let mut masses: Vec<(f32, f32)> = p
-                .parts
-                .iter()
-                .map(|part| {
-                    let rb = &self.world.bodies[part.body];
-                    let i = from_v(rb.mass_properties().local_mprops.principal_inertia());
-                    (rb.mass().max(0.05), ((i.x + i.y + i.z) / 3.0).max(1e-4))
-                })
-                .collect();
-            for h in 0..2 {
-                let Some(item) = p.hands[h].map(|k| &self.items[k]).filter(|it| !it.players) else { continue };
-                let (hand, held) = (&self.world.bodies[p.parts[anim::HAND[h]].body], &self.world.bodies[item.body]);
-                let i = from_v(held.mass_properties().local_mprops.principal_inertia());
-                let lever = from_v(held.center_of_mass()).distance(from_v(hand.translation()));
-                masses[anim::HAND[h]].0 += held.mass();
-                masses[anim::HAND[h]].1 += (i.x + i.y + i.z) / 3.0 + held.mass() * lever * lever;
-            }
+            // Each part's mass and its inertia, what its pins act on ([`part_mass`]).
+            let masses: Vec<(f32, Mat3)> = (0..p.parts.len()).map(|i| part_mass(&self.world.bodies, &self.items, p, i)).collect();
             let mut torques = vec![V3::ZERO; p.parts.len()];
             let mut forces = vec![V3::ZERO; p.parts.len()];
+            // How a part will spin after the torques on it so far: each pull is worked out from that,
+            // not as if it were the only one (two that each would stop a twist in a step would
+            // together throw it back the other way, harder each step).
+            let spun = |torques: &[V3], i: usize| poses[i].3 + masses[i].1.inverse() * torques[i] * dt;
             for i in 0..p.parts.len() {
                 let cut = p.severed & (1 << i) != 0;
                 let (pos, rot, vel, ang) = poses[i];
@@ -837,16 +839,17 @@ impl Dummies {
                 let (target, trot) = targets[i];
                 if !cut && stance > 0.0 {
                     let (m, inertia) = masses[i];
-                    let f = implicit(m, PIN_SPRING * arm.0 * stance, PIN_DAMPER * arm.1 * stance, target - pos, vel, STEP);
+                    let f = implicit(m, PIN_SPRING * arm.0 * stance, PIN_DAMPER * arm.1 * stance, target - pos, vel, dt);
                     forces[i] = f.clamp_length_max(PIN_MAX * arm.2 * stance);
-                    let t = implicit(inertia, PIN_TURN_SPRING * arm.0 * stance, PIN_TURN_DAMPER * arm.1 * stance, shortest(trot * rot.inverse()), ang, STEP);
+                    let t = implicit_each(inertia, PIN_TURN_SPRING * arm.0 * stance, PIN_TURN_DAMPER * arm.1 * stance, shortest(trot * rot.inverse()), ang, dt);
                     torques[i] += t.clamp_length_max(PIN_TURN_MAX * arm.2 * stance);
                 }
-                // Down: each part keeps its pose on its parent, weakly (the loose rotation pins).
+                // Down: each part keeps its pose on its parent, weakly (the loose rotation pins),
+                // turning the two against each other (against their inertias together).
                 if let Some(parent) = anim::PARENT[i].filter(|_| !cut && loose > 0.0) {
-                    let (_, prot, _, pang) = poses[parent];
-                    let want = prot * pose.turn[i];
-                    let t = implicit(masses[i].1, PIN_TURN_SPRING * loose, PIN_TURN_DAMPER * LOOSE_TURN_DAMPER, shortest(want * rot.inverse()), ang - pang, STEP).clamp_length_max(PIN_TURN_MAX);
+                    let want = poses[parent].1 * pose.turn[i];
+                    let between = (masses[i].1.inverse() + masses[parent].1.inverse()).inverse();
+                    let t = implicit_each(between, PIN_TURN_SPRING * loose, PIN_TURN_DAMPER * LOOSE_TURN_DAMPER, shortest(want * rot.inverse()), spun(&torques, i) - spun(&torques, parent), dt).clamp_length_max(PIN_TURN_MAX);
                     torques[i] += t;
                     torques[parent] -= t;
                 }
@@ -1161,27 +1164,31 @@ impl Dummies {
 
     /// The held points pulled where the hands would have them and turned as they'd have them (each
     /// physics step): the grip on the part held, its damping against the hand's own motion, solved
-    /// implicitly as the pins are.
+    /// implicitly as the pins are, from how the part will move after its pins (and another hand's
+    /// hold on it) have pulled it.
     fn hold(&mut self) {
+        let dt = self.dt;
         for h in &self.held {
             let Some(p) = self.people.iter().find(|p| p.id == h.id) else { continue };
+            let (m, inertia) = part_mass(&self.world.bodies, &self.items, p, h.part);
             let rb = &mut self.world.bodies[p.parts[h.part].body];
             let (pos, rot) = from_pose(rb.position());
             let at = pos + rot * h.local;
-            let vel = from_v(rb.velocity_at_point(to_v(at)));
-            let m = rb.mass().max(0.05);
+            let lever = at - from_v(rb.center_of_mass());
+            let spun = |rb: &RigidBody| from_v(rb.angvel()) + inertia.inverse() * from_v(rb.user_torque()) * dt;
+            let vel = from_v(rb.linvel()) + from_v(rb.user_force()) / m * dt + spun(rb).cross(lever);
             let (spring, damper) = if h.tk { (TK_SPRING, TK_DAMPER) } else { (GRAB_SPRING, GRAB_DAMPER) };
-            let f = implicit(m, spring, damper, h.target - at, vel - h.hand_vel, STEP).clamp_length_max(h.force);
+            // (Against the part's mass as it's felt at the point: held off its centre it turns as
+            // well as goes, so less of it is pulled there than its whole.)
+            let f = implicit_each(felt_mass(m, inertia, lever), spring, damper, h.target - at, vel - h.hand_vel, dt).clamp_length_max(h.force);
             rb.add_force_at_point(to_v(f), to_v(at), true);
-            let i = from_v(rb.mass_properties().local_mprops.principal_inertia());
-            let inertia = ((i.x + i.y + i.z) / 3.0).max(1e-4);
             let (spring, damper, most) = match (h.tk, h.handle) {
                 (false, _) => (GRAB_TURN_SPRING, GRAB_TURN_DAMPER, GRAB_TURN_MAX),
                 (true, Handle::Neck) => TK_TURN_NECK,
                 (true, Handle::Wrist) => TK_TURN_WRIST,
                 (true, _) => TK_TURN,
             };
-            let t = implicit(inertia, spring, damper, shortest(h.target_rot * rot.inverse()), from_v(rb.angvel()) - h.hand_spin, STEP).clamp_length_max(most);
+            let t = implicit_each(inertia, spring, damper, shortest(h.target_rot * rot.inverse()), spun(rb) - h.hand_spin, dt).clamp_length_max(most);
             rb.add_torque(to_v(t), true);
         }
     }
@@ -1231,7 +1238,7 @@ impl Dummies {
     /// The shoves under way, each step: every part of the body it's still joined to pushed at the
     /// point hit, by the blow times its share (a cut-off piece is its own).
     fn shoves(&mut self) {
-        let now = self.time;
+        let (now, dt) = (self.time, self.dt);
         self.shoves.retain(|s| s.until >= now);
         for s in &self.shoves {
             let Some(p) = self.people.iter().find(|p| p.id == s.id) else { continue };
@@ -1245,11 +1252,11 @@ impl Dummies {
                 }
                 let rb = &mut self.world.bodies[q.body];
                 if s.impulse {
-                    rb.apply_impulse_at_point(to_v(s.push * x * STEP), to_v(at), true);
+                    rb.apply_impulse_at_point(to_v(s.push * x * dt), to_v(at), true);
                 } else {
                     // As an acceleration at a point: its speed changed, and its spin by the lever
                     // to the point, neither weighed by its mass (a light hand isn't sent spinning).
-                    let dv = s.push * x * STEP * ADD_FORCE_STEP;
+                    let dv = s.push * x * dt * ADD_FORCE_STEP;
                     let lever = at - from_v(rb.translation());
                     rb.set_linvel(rb.linvel() + to_v(dv), true);
                     rb.set_angvel(rb.angvel() + to_v(lever.cross(dv)), true);
@@ -1294,7 +1301,9 @@ impl Dummies {
         }
     }
 
-    fn speed_up(&mut self, k: usize, part: usize, point: V3, dir: V3, speed: f32) {
+    /// Person `k`'s part `part` made to move along `dir` at `point` (world) at least `speed` m/s:
+    /// what's lacking given at the part's mass as it's felt there.
+    pub fn speed_up(&mut self, k: usize, part: usize, point: V3, dir: V3, speed: f32) {
         let Some(part) = self.people[k].parts.get(part) else { return };
         let rb = &mut self.world.bodies[part.body];
         let at = from_v(rb.velocity_at_point(to_v(point))).dot(dir);
@@ -1382,12 +1391,12 @@ impl Dummies {
                     if p.alive && now - since > BURN_DEATH {
                         self.kill(k, at);
                     } else if p.alive {
-                        self.hurt(k, BURN_DPS * STEP, at);
+                        self.hurt(k, BURN_DPS * self.dt, at);
                     } else if !p.charred && now - since >= FULL_CHAR {
                         self.char_through(k);
                     }
                 }
-                None => p.heat = (p.heat - if p.alive { 4.0 } else { 8.0 } * STEP).max(0.0),
+                None => p.heat = (p.heat - if p.alive { 4.0 } else { 8.0 } * self.dt).max(0.0),
             }
         }
     }
@@ -1441,7 +1450,7 @@ impl Dummies {
                 let Some(joint) = self.world.impulse_joints.get(j) else { continue };
                 // (Its last substep's impulse, over that substep: the force on it.)
                 let i = joint.impulses;
-                let substep = STEP / self.world.integration_parameters.num_solver_iterations.max(1) as f32;
+                let substep = self.dt / self.world.integration_parameters.num_solver_iterations.max(1) as f32;
                 let force = V3::new(i[0], i[1], i[2]).length() / substep;
                 if force > RIP_FORCE * x / scale {
                     let rot = self.part_pose(k, part).1;
@@ -1773,6 +1782,67 @@ impl Dummies {
         self.people[k].handled
     }
 
+    /// The first of the creatures' parts and items a ray from `origin` along `dir` (a unit vector)
+    /// meets within `max` metres (not what the player's hands have: the runtime's): how far, where,
+    /// the surface's way out, and what.
+    pub fn raycast(&self, origin: V3, dir: V3, max: f32) -> Option<(f32, V3, V3, Struck)> {
+        let ray = Ray::new(to_v(origin), to_v(dir));
+        let (c, hit) = self.world.cast_ray_and_get_normal(&ray, max, true, QueryFilter::only_dynamic())?;
+        let struck = self.people.iter().enumerate().find_map(|(k, p)| p.parts.iter().position(|q| q.collider == c).map(|i| Struck::Part(k, i))).or_else(|| {
+            self.items.iter().position(|it| !it.players && self.world.colliders.get(c).and_then(|col| col.parent()) == Some(it.body)).map(Struck::Item)
+        })?;
+        let at = origin + dir * hit.time_of_impact;
+        Some((hit.time_of_impact, at, from_v(hit.normal), struck))
+    }
+
+    /// How far `point` (world) is from person `k`'s part `part` (0 inside it).
+    pub fn distance_to(&self, k: usize, part: usize, point: V3) -> f32 {
+        let (a, b, r) = self.capsule(k, part);
+        let ab = b - a;
+        let t = ((point - a).dot(ab) / ab.length_squared().max(1e-9)).clamp(0.0, 1.0);
+        (point.distance(a + ab * t) - r).max(0.0)
+    }
+
+    /// The person and part `point` (world) is in, or within `within` metres of: the nearest.
+    pub fn part_at(&self, point: V3, within: f32) -> Option<(usize, usize)> {
+        let mut best: Option<(f32, usize, usize)> = None;
+        for (k, p) in self.people.iter().enumerate() {
+            for i in 0..p.parts.len() {
+                let d = self.distance_to(k, i, point);
+                if d <= within && best.is_none_or(|b| d < b.0) {
+                    best = Some((d, k, i));
+                }
+            }
+        }
+        best.map(|(_, k, i)| (k, i))
+    }
+
+    /// Item `k` made to move along `dir` at `point` (world) at least `speed` m/s.
+    pub fn speed_up_item(&mut self, k: usize, point: V3, dir: V3, speed: f32) {
+        let Some(item) = self.items.get(k).filter(|it| !it.players) else { return };
+        let rb = &mut self.world.bodies[item.body];
+        let lacking = speed - from_v(rb.velocity_at_point(to_v(point))).dot(dir);
+        if lacking > 0.0 {
+            let impulse = impulse_for(rb, point, dir, lacking).clamp_length_max(PUSH_MAX);
+            rb.apply_impulse_at_point(to_v(impulse), to_v(point), true);
+        }
+    }
+
+    /// A blast at `at`: every part of person `k` (and what it holds) within `radius` thrown out from
+    /// it, `speed` m/s at the blast falling to nothing at `radius`, lifted a little (a blast heaves
+    /// a body up as well as away), whatever its mass (an acceleration).
+    pub fn blast(&mut self, k: usize, at: V3, radius: f32, speed: f32) {
+        let mut bodies: Vec<RigidBodyHandle> = self.people[k].parts.iter().map(|q| q.body).collect();
+        bodies.extend(self.people[k].hands.iter().flatten().map(|&i| &self.items[i]).filter(|it| !it.players).map(|it| it.body));
+        for b in bodies {
+            let rb = &mut self.world.bodies[b];
+            let centre = from_v(rb.center_of_mass());
+            let near = (1.0 - centre.distance(at) / radius).clamp(0.0, 1.0);
+            let away = ((centre - at).normalize_or(V3::Y) + V3::Y * 0.4).normalize();
+            rb.set_linvel(rb.linvel() + to_v(away * speed * near), true);
+        }
+    }
+
     /// Person `k`'s part `part`'s capsule (world ends, radius).
     pub fn capsule(&self, k: usize, part: usize) -> (V3, V3, f32) {
         let q = &self.people[k].parts[part];
@@ -1975,6 +2045,47 @@ fn impulse_for(rb: &RigidBody, point: V3, dir: V3, dv: f32) -> V3 {
 fn implicit(m: f32, k: f32, c: f32, err: V3, vel: V3, dt: f32) -> V3 {
     let next = (vel * m + err * k * dt) / (m + c * dt + k * dt * dt);
     (next - vel) * m / dt
+}
+
+/// [`implicit`] against a mass or an inertia that's its own each way (`m`, world): the force or
+/// torque.
+fn implicit_each(m: Mat3, k: f32, c: f32, err: V3, vel: V3, dt: f32) -> V3 {
+    let next = (m + Mat3::from_diagonal(V3::splat(c * dt + k * dt * dt))).inverse() * (m * vel + err * k * dt);
+    m * (next - vel) / dt
+}
+
+/// Body `rb`'s inertia about `point` (world), each way its own: its principal moments turned as it
+/// is, and its mass carried out to the point.
+fn inertia(rb: &RigidBody, point: V3) -> Mat3 {
+    let mp = &rb.mass_properties().local_mprops;
+    let r = mp.principal_inertia_local_frame;
+    let frame = Mat3::from_quat((from_pose(rb.position()).1 * Q::from_xyzw(r.x, r.y, r.z, r.w)).normalize());
+    let about_com = frame * Mat3::from_diagonal(from_v(mp.principal_inertia()).max(V3::splat(1e-5))) * frame.transpose();
+    let lever = from_v(rb.center_of_mass()) - point;
+    about_com + (Mat3::from_diagonal(V3::splat(lever.length_squared())) - Mat3::from_cols(lever * lever.x, lever * lever.y, lever * lever.z)) * rb.mass()
+}
+
+/// Part `i` of person `p`: its mass and its inertia (world, about its centre, each way its own: an
+/// arm turns far more easily about its length than across it, and a pin that took it for as hard
+/// to twist as to swing would overshoot each twist, the arm shaking); a hand's with what it holds
+/// welded to it (its grip is a locked joint: one body its pins move, so a heavy weapon doesn't whip
+/// a light hand about).
+fn part_mass(bodies: &RigidBodySet, items: &[Item], p: &Person, i: usize) -> (f32, Mat3) {
+    let rb = &bodies[p.parts[i].body];
+    let com = from_v(rb.center_of_mass());
+    let (mut m, mut turn) = (rb.mass().max(0.05), inertia(rb, com));
+    if let Some(item) = (0..2).find(|&h| anim::HAND[h] == i).and_then(|h| p.hands[h]).map(|k| &items[k]).filter(|it| !it.players) {
+        m += bodies[item.body].mass();
+        turn += inertia(&bodies[item.body], com);
+    }
+    (m, turn)
+}
+
+/// The mass a body of mass `m` and inertia `inertia` (world) is felt to have at `lever` from its
+/// centre, each way: a pull there turns it as well as moves it.
+fn felt_mass(m: f32, inertia: Mat3, lever: V3) -> Mat3 {
+    let cross = Mat3::from_cols(V3::new(0.0, lever.z, -lever.y), V3::new(-lever.z, 0.0, lever.x), V3::new(lever.y, -lever.x, 0.0));
+    (Mat3::from_diagonal(V3::splat(1.0 / m)) + cross * inertia.inverse() * cross.transpose()).inverse()
 }
 
 fn smooth(x: f32) -> f32 {

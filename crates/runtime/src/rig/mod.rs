@@ -818,6 +818,9 @@ pub struct Rig {
     proxies: HashMap<(u32, usize), (RigidBodyHandle, ColliderHandle, f32, f32)>,
     /// What blades stuck in creatures drag them by this frame (pushes for the game).
     drags: Vec<GamePush>,
+    /// Thrown knives stuck in the game's creatures: the part each is in, and where it is on it (the
+    /// part's frame, [`creatures::frame`]).
+    in_creatures: HashMap<u32, ((u32, usize), (Vec3, Quat))>,
     /// What the game says about its creatures' bodies (for the hands that take hold of them).
     bodies: HashMap<u32, creatures::Body>,
     /// How strong the game says the player is (1: an average person).
@@ -931,6 +934,7 @@ impl Default for Rig {
             cut_passed: HashSet::new(),
             proxies: HashMap::new(),
             drags: Vec::new(),
+            in_creatures: HashMap::new(),
             bodies: HashMap::new(),
             game_strength: 1.0,
             grabs: [CreatureGrab::default(); 2],
@@ -2367,7 +2371,7 @@ impl Rig {
                     self.objects
                         .iter()
                         .find(|(_, o)| o.collider == c)
-                        .filter(|&(&id, _)| !self.embedded_in(id, actor))
+                        .filter(|&(&id, _)| !self.embedded_in(id, actor) && !self.in_creatures.contains_key(&id))
                         .map(|(_, o)| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
                 });
                 let Some((body, lag, controller)) = pusher else { continue };
@@ -5395,6 +5399,12 @@ impl Rig {
             Some(pp) => compose(inverse(pp), (pos, rot)),
             None => (pos, rot),
         };
+        // In one of the game's creatures: it rides with the part it went into.
+        if let Some((&part, _)) = self.proxies.iter().find(|(_, p)| p.1 == into)
+            && let Some(frame) = self.part_frame(part.0, part.1)
+        {
+            self.in_creatures.insert(id, (part, compose(inverse(frame), (pos, rot))));
+        }
         let o = self.objects.get_mut(&id).unwrap();
         o.holder = Holder::Stuck { parent, rel };
         if let Some(t) = o.throw.as_mut() {
@@ -6499,6 +6509,21 @@ impl Rig {
                     }
                 }
                 // A knife in a loose object rides with it; if that's gone, it falls.
+                // A knife in one of the game's creatures rides with the part it's in; if that's gone,
+                // it falls.
+                Holder::Stuck { parent: 0, .. } if self.in_creatures.contains_key(id) => {
+                    let ((actor, part), rel) = self.in_creatures[id];
+                    match self.part_frame(actor, part) {
+                        Some(frame) => {
+                            let (p, q) = compose(frame, rel);
+                            self.physics.move_kinematic(self.objects[id].body, p, q);
+                        }
+                        None => {
+                            self.in_creatures.remove(id);
+                            self.free_body(*id, groups_free());
+                        }
+                    }
+                }
                 Holder::Stuck { parent, rel } if parent != 0 => match self.obj_pose(parent) {
                     Some(pp) => {
                         let (p, q) = compose(pp, rel);
@@ -6516,6 +6541,7 @@ impl Rig {
         }
         let objects = &self.objects;
         self.melee.held.retain(|id, _| objects.get(id).is_some_and(|o| matches!(o.holder, Holder::Held(_))));
+        self.in_creatures.retain(|id, _| objects.get(id).is_some_and(|o| matches!(o.holder, Holder::Stuck { .. })));
         // The player's body, for the doors to stop on: from just under the head down past the hips.
         let body = {
             let head = v3(inp.frame.hmd.pos);

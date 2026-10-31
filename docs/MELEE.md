@@ -186,6 +186,21 @@ and body rules, shared by the runtime and the range.
   damper, x0.1 on the ground), getting up once still under 1 m/s for 0.5 s (its pins ramping back
   over 3 s; any push puts it down again), or limp. It weighs 65 kg. Falls and slams hurt by the
   slamming tables (a head's by its own), from the contact's speed and the slamming part's armour.
+  Each pin turns its part against the part's own inertia each way (an arm twists about its length
+  far more easily than it swings), and each pull on a part (its pin, a hand's hold, a loose pin to
+  its parent) is worked out from how the part will move after the pulls before it: one that took
+  every part for as hard to twist as to swing, or two that each stopped a twist in one step, shook
+  the arms at 94 rad/s standing still. Its physics steps once a frame, so it moves smoothly in
+  slowed time too.
+* **The range's guns, grenades, knives and spells** on them (see the calls, below): a round meets
+  the first part or held thing on its line (a pistol's 15, a rifle's
+  30 and through, a shotgun's 45, by the armour and the part's multiplier; a push level of 1, 2,
+  3; through the arm, the weapon dropped); a grenade's blast hurts by the distance from its
+  nearest part (a frag's 120 falling off over 6 m with the square, so about 2 m kills; floored
+  within 4 m, the limbs within 1.2 m torn off, thrown out at 8 m/s at its centre; the fire bomb's
+  2.5 m sets it alight), unless the room shields it; a throwing knife that sticks in one is judged
+  as a thrown dagger, and rides with the part; a spell cast at one lands as a fire bolt's or a
+  lightning bolt's hit.
 * **Hit reactions by force**: each hit's push level (by the hit's speed against its row) picks
   a reaction from its brain's push table (Easy, Medium and Hard; the armoured MediumHeavy and
   HardHeavy a step tougher) for where it landed and what the creature was doing: a flinch, a
@@ -318,7 +333,12 @@ The choices that need a reason, and why:
 | The hold's solve | a configurable joint | the same spring, damper and caps, solved implicitly per step, with the weight's turn at the grip | stable at any weight in Rapier |
 | Two hands | a joint at each hand | one joint at the holding hand: the other's drive at its distance as leverage, its pull leaning the target | one body, one joint |
 | Sliding's damper | against the hand's slide | against the slide relative to the controller's own motion | a steady swing doesn't slide the hand off |
-| Creature pins | joint drives | implicit drives on each part's mass and inertia | explicit drives on light hand parts blew up |
+| Creature pins | joint drives | implicit drives on each part's mass and its inertia each way, each from how the part moves after the drives before it | explicit drives on light hand parts blew up; one inertia for every way, and drives each solved alone, shook the arms |
+| The creatures' physics step | its fixed step, the headset's frame | one a frame (a frame longer than 1/72 s split evenly) | a fixed 120 Hz stepped twice some frames and none others at 90 Hz, and once in three frames in slowed time |
+| Guns on creatures | none | a round: pistol 15, rifle 30 (and on through flesh and leather), shotgun 45; x0.9 through leather, x0.6 chainmail, x0.4 plate; push levels 1, 2, 3; the part sent on at 3 to 6 m/s; through an arm or a hand, its weapon dropped | the range's guns had no say on them; two rifle rounds or four pistol rounds kill, a head shot sooner |
+| Grenades on creatures | none | a frag: 120 at the centre falling off with the square over 6 m, floored within 4 m, limbs within 1.2 m torn off, thrown at 8 m/s; the fire bomb: 15 over 2.5 m, alight close in; none through the room's walls and furniture | as above |
+| Throwing knives in creatures | none (its daggers are its throwing knives) | a thrown dagger's point: its curve x3, then 7.5 times the part's deep multiplier gone in; the knife rides with the part | the range's knives are its own throwables, not melee weapons |
+| Spells cast at creatures | a projectile at 12 m/s, guided | lands at once on the creature the runtime's aim found: the fire bolt's 10, its push at 12 m/s and its heat; the lightning's 2 at push level 1 and its electrocution | the range has no projectile of its own |
 | A stuck blade's pull on the body | the joint's force on the part's rigidbody | the hand's force as the speed it gives the part's mass in a step, for the game to add (at most 4 m/s) | the protocol pushes by speed |
 | A blade's way between its samples | its colliders, the whole blade | points 6 to 8 cm apart along it | a sweep of points, as close as a hand's thickness |
 | Dismemberment | strict: 12 m/s for a sword, within 4 cm of a joint, square to it (easy dismemberment an option, off by default) | easy dismemberment on by default, for cutting edges only: a stab still sticks | the strict cut proved too hard to land in play, and the user wants limbs coming off; easy dismemberment for stabs too would let a stab into an arm or a face cut it off |
@@ -368,10 +388,10 @@ The choices that need a reason, and why:
 
 ## Not done
 
-* Spells as spells: thrown fire bolts and lightning, flame and lightning sprays, and the grip
-  casts (a burning or shocking grip). The range's fire and shock are for imbuing.
-* Special moves: a karate chop, punch spells, a telekinetic spin, a stronger
-  kick, a flying kick, chain lightning, a deeper slowed time.
+* Spells as spells: a fire bolt's flight (a cast lands at once on the creature it's aimed at),
+  flame and lightning sprays, and casts from a gripping hand.
+* Special moves: a karate chop, punch spells, a telekinetic spin, a stronger kick, a flying kick,
+  chain lightning, a deeper slowed time.
 * Feet placed on walls while climbing (looks only).
 * Rubbing's sound and sparks: a hit's effect playing on while a blade is drawn along something (the
   runtime's loops have no scrape of their own yet; the buzz is done).
