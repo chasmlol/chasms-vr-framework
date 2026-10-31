@@ -58,6 +58,10 @@ use render::{Draw, Mesh, Renderer};
 use std::collections::HashMap;
 
 const STAND_EYE: f32 = 1.7;
+/// A shield push's shove on the player dies away at this rate (a second).
+const SHOVE_FADE: f32 = 6.0;
+/// The creatures' voices' loudness.
+const VOICE_LOUD: f32 = 0.7;
 /// A broken thing is put back whole this long after (s).
 const BROKEN_FOR: f64 = 8.0;
 const CROUCH_EYE: f32 = 1.1;
@@ -146,15 +150,22 @@ struct Game {
     /// struck.
     player_health: f32,
     struck_at: f64,
-    /// Blades in someone past their deep depth (by object id: who): a spell in one keeps working
-    /// on who it's in.
-    stuck: HashMap<u32, u32>,
+    /// Blades in someone past their deep depth (by object id: who, and which part): a spell in one
+    /// keeps working on who it's in.
+    stuck: HashMap<u32, (u32, u32)>,
     /// Things broken (`OBJF_BREAKABLE`), put back whole this long after (by object id: when).
     broken: HashMap<u32, f64>,
     /// Each fighter's weapon's throwable (for drawing it), by its object id.
     npc_meshes: HashMap<u32, usize>,
-    /// The melee weapons' handles and damagers (`arsenal`), for the runtime.
+    /// The melee weapons' handles and damagers (`arsenal`), for the runtime, and each one's arsenal
+    /// key and mass by its object id.
     melee_weapons: Box<MeleeWeapons>,
+    melee_kinds: HashMap<u32, (String, f32)>,
+    /// How the player moves over the floor (their head's, smoothed), where their head was last
+    /// frame, and a shield push's shove on them (m/s, dying away).
+    player_vel: Vec3,
+    last_head: Option<Vec3>,
+    shoved: Vec3,
     /// The player's side of melee as the runtime last said (`RtMelee`), and the spell selected.
     rt_melee: RtMelee,
     spell: u32,
@@ -252,6 +263,7 @@ impl Game {
             .collect();
         let people = arena::People::new(&solid);
         let mut npc_meshes = HashMap::new();
+        let mut melee_kinds = HashMap::new();
         if let Some(a) = &mut armory {
             let mut placed = throwables::layout(&throw_list);
             // The fighters' weapons: the game's own objects, lying in the arena until handed out.
@@ -269,6 +281,7 @@ impl Game {
             let arms = arsenal::all();
             for (i, d) in &placed {
                 let Some(arm) = arms.iter().find(|w| w.thing.key == throw_list[*i].key) else { continue };
+                melee_kinds.insert(d.id, (throw_list[*i].key.clone(), d.mass));
                 let n = melee_weapons.count as usize;
                 if n < MAX_MELEE_WEAPONS {
                     melee_weapons.weapons[n] = MeleeWeapon { id: d.id, ..arm.melee };
@@ -366,6 +379,10 @@ impl Game {
             broken: HashMap::new(),
             npc_meshes,
             melee_weapons,
+            melee_kinds,
+            player_vel: Vec3::ZERO,
+            last_head: None,
+            shoved: Vec3::ZERO,
             rt_melee: bytemuck::Zeroable::zeroed(),
             spell: combat::FIRE_BOLT,
         })
@@ -532,6 +549,9 @@ impl Game {
             let mv = (right * it.move_xy[0] + fwd * it.move_xy[1]) * speed * dt;
             self.feet += mv;
         }
+        // A shield push's shove, dying away.
+        self.feet += self.shoved * dt;
+        self.shoved *= (-SHOVE_FADE * dt).exp();
         self.climbed = climbing;
         self.feet.x = self.feet.x.clamp(content::ROOM_MIN.x, content::ROOM_MAX.x);
         self.feet.z = self.feet.z.clamp(content::ROOM_MIN.z, content::ROOM_MAX.z);
@@ -671,12 +691,12 @@ impl Game {
         }
         // A blade filled with a spell, stuck in someone, keeps working on them (40 heat a second
         // times its fill; a shock's re-shocking).
-        for (&object, &actor) in &self.stuck {
+        for (&object, &(actor, part)) in &self.stuck {
             if let Some(i) = self.rt_melee.imbue.iter().find(|i| i.object == object && i.charge > 0.0) {
-                combat::imbued_stuck(&mut self.people, actor, i.spell, i.charge, dt);
+                combat::imbued_stuck(&mut self.people, actor, part, i.spell, i.charge, dt);
             }
         }
-        self.stuck.retain(|_, actor| self.people.dummies.find(*actor).is_some());
+        self.stuck.retain(|_, (actor, _)| self.people.dummies.find(*actor).is_some());
         // The fighters' weapons the player's hands have: moved where the runtime has them (their
         // holders dragged after them), and handed back where the runtime let them go.
         if let Some(a) = &self.armory {
@@ -737,7 +757,7 @@ impl Game {
                 }
                 CE_WOUND => {
                     combat::wound(&mut self.people, &ev);
-                    self.stuck.insert(ev.object, ev.actor);
+                    self.stuck.insert(ev.object, (ev.actor, ev.part));
                 }
                 CE_BROKE => {
                     // Its pieces fly, and it's put back whole a while later.
@@ -756,17 +776,12 @@ impl Game {
                 }
                 CE_BLOCK => {
                     // The player's weapon met a fighter's: its swing parried (a roll for a chain, nothing
-                    // or a recoil), or its guard blocked a blow (a riposte maybe).
-                    let now = self.people.dummies.time;
-                    if let Some(k) = self.people.dummies.find(ev.actor) {
-                        let recoil = self.people.brain_of(k).map(|b| if b.attacking() { b.parried(now) } else {
-                            b.blocked(now);
-                            false
-                        });
-                        if recoil == Some(true) {
-                            let dir = Vec3::from_array(ev.dir);
-                            self.people.dummies.react(k, crate::anim::TORSO, 3, dir, Vec3::from_array(ev.point), 0.0);
-                        }
+                    // or a recoil) or its shield push shoving them back, or its guard taking the blow
+                    // (pushed by a heavy one, or a roll for a riposte, nothing or a recoil).
+                    let blade = self.nearest_blade(f, ev.object, Vec3::from_array(ev.point));
+                    let (key, mass) = self.melee_kinds.get(&ev.object).map_or(("", 1.0), |(k, m)| (k.as_str(), *m));
+                    if let Some(shove) = combat::block(&mut self.people, &ev, &self.melee_weapons, key, blade, mass) {
+                        self.shoved = shove;
                     }
                     if rustvr_melee::intensity(ev.speed) > rustvr_melee::SPARKS_FROM {
                         self.effects.sparks(Vec3::from_array(ev.point), Vec3::from_array(ev.dir), rustvr_melee::intensity(ev.speed));
@@ -797,7 +812,7 @@ impl Game {
             }
         }
         // The fighters see the player and their weapons.
-        let sight = self.sight(f);
+        let sight = self.sight(f, dt);
         self.people.think(dt, &sight);
         self.people.dummies.step(dt);
         // The player heals slowly while nothing strikes them.
@@ -805,9 +820,9 @@ impl Game {
             self.player_health = (self.player_health + 2.0 * dt).min(rustvr_melee::body::PLAYER_HEALTH);
         }
         let happened = self.people.happened();
+        // The voices all speak at 0.7.
         for (voice, at) in std::mem::take(&mut self.people.said) {
-            let loud = if voice == VOICE_DEATH { 1.0 } else { 0.7 };
-            self.adapter.push_event(Event { kind: EV_VOICE, a: voice, f: [at.x, at.y, at.z, loud, 0.0, 0.0] });
+            self.adapter.push_event(Event { kind: EV_VOICE, a: voice, f: [at.x, at.y, at.z, VOICE_LOUD, 0.0, 0.0] });
         }
         for h in happened {
             if let ragdoll::Happened::Severed { id, part, at, out, radius } = h {
@@ -836,13 +851,20 @@ impl Game {
         self.adapter.tracking.last_view()
     }
 
-    /// What the fighters see of the player: where they stand, and each of their melee weapons
-    /// (held or thrown) by its blades and how fast their tips go.
-    fn sight(&self, f: &RtFrame) -> brain::Sight {
+    /// What the fighters see of the player: where they stand and how they move over the floor, each
+    /// of their melee weapons (held or thrown) by its blades, how fast their tips go and whether it
+    /// has a point, and how far their held weapons reach from the hand.
+    fn sight(&mut self, f: &RtFrame, dt: f32) -> brain::Sight {
         let Some(v) = self.view_of(f) else { return brain::Sight::default() };
         let head = v.point(Vec3::from_array(f.hmd.pos));
         let feet = Vec3::new(head.x, self.feet.y, head.z);
+        if let Some(last) = self.last_head {
+            let vel = ((head - last) / dt.max(1e-3)).with_y(0.0);
+            self.player_vel = self.player_vel.lerp(vel, (dt * 10.0).min(1.0));
+        }
+        self.last_head = Some(head);
         let mut weapons = Vec::new();
+        let mut reach_of = 0.0f32;
         if let Some(a) = &self.armory {
             for s in a.states().iter().filter(|s| s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT | OS_THROWN) != 0) {
                 let Some(w) = self.melee_weapons.get(s.id).or_else(|| self.melee_weapons.get(s.desc)) else { continue };
@@ -852,10 +874,31 @@ impl Game {
                 let vel = if s.flags & OS_TRACKING != 0 { v.dir(Vec3::from_array(s.lin_vel)) } else { Vec3::from_array(s.lin_vel) };
                 let ang = if s.flags & OS_TRACKING != 0 { v.dir(Vec3::from_array(s.ang_vel)) } else { Vec3::from_array(s.ang_vel) };
                 let tip = p + q * reach;
-                weapons.push((p + q * base, tip, vel + ang.cross(tip - p)));
+                let point = w.blades().iter().any(|b| b.kind == DMG_PIERCE);
+                weapons.push((p + q * base, tip, vel + ang.cross(tip - p), point));
+                if s.flags & (OS_HELD_LEFT | OS_HELD_RIGHT) != 0
+                    && let Some(grip) = w.handles().iter().find(|h| h.flags & HANDLE_MAIN != 0)
+                {
+                    let grip = (Vec3::from_array(grip.a) + Vec3::from_array(grip.b)) * 0.5;
+                    reach_of = reach_of.max(reach.distance(grip));
+                }
             }
         }
-        arena::sight(feet, Vec3::ZERO, &weapons)
+        arena::sight(feet, self.player_vel, &weapons, reach_of)
+    }
+
+    /// Which of weapon `object`'s damagers is nearest `point` (world), where the runtime has it now.
+    fn nearest_blade(&self, f: &RtFrame, object: u32, point: Vec3) -> Option<usize> {
+        let (a, v) = (self.armory.as_ref()?, self.view_of(f)?);
+        let w = self.melee_weapons.get(object)?;
+        let s = a.states().iter().find(|s| s.id == object)?;
+        let (p, q) = physical::Armory::world_pose(s, &v);
+        w.blades().iter().enumerate().map(|(i, b)| {
+            let (ba, bb) = (p + q * Vec3::from_array(b.a), p + q * Vec3::from_array(b.b));
+            let ab = bb - ba;
+            let t = ((point - ba).dot(ab) / ab.length_squared().max(1e-9)).clamp(0.0, 1.0);
+            (i, point.distance(ba + ab * t))
+        }).min_by(|x, y| x.1.total_cmp(&y.1)).map(|(i, _)| i)
     }
 
     fn object_boxes(&self, v: &View) -> Vec<ObjBox> {

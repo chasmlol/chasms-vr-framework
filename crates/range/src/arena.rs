@@ -1,9 +1,11 @@
 //! The range's people (`crate::ragdoll`) and who they are: the training dummies at the start, the
 //! bench's (two one behind the other to skewer, three in leather, chainmail and plate), and the
 //! arena's fighters (`crate::brain`), who come in waves: first an Easy one-handed swordsman and an
-//! Easy one with a shield; then Medium fighters of each stance (one-handed, sword and shield, a sword
-//! in each hand); then Hard ones, again and again. A wave's fighters stand waiting until the player
-//! comes near; when they're all dead (or knocked out), the next comes five seconds later.
+//! Easy one with a shield; then Medium fighters of each stance (one-handed, a sword in each hand,
+//! and sword and shield in plate: `Tier::MediumHeavy`); then Hard ones (the plated one a
+//! `Tier::HardHeavy`), again and again. A wave's fighters stand waiting until the player comes
+//! near; when they're all dead, out cold or gone, the next comes five seconds later. One with no weapon and none
+//! to take up runs for the arena's far corners and is gone.
 //!
 //! The fighters' weapons and shields are the game's own objects (`OBJF_GAME_SIMULATED`): the range
 //! moves them (in a fighter's hand, or loose), the player's hands and weapons meet them, push them
@@ -11,11 +13,12 @@
 //! lets go). A pool of them is registered once; each wave's fighters take theirs from it.
 
 use glam::{Quat, Vec3};
+use rustvr_melee::body::{Doing, Part as BodyPart};
 use rustvr_protocol::*;
 
 use crate::anim;
 use crate::arenas;
-use crate::brain::{self, Brain, Mode, Sight, Stance, Threat, Tier};
+use crate::brain::{self, Brain, Me, Mode, Sight, Stance, Threat, Tier};
 use crate::ragdoll::{self, Balance, Dummies, Happened, ItemSpec};
 
 /// The training dummies' ids (as the game knows them) and where they stand.
@@ -30,14 +33,24 @@ pub const NPC_ITEM_BASE: u32 = 0x9000;
 
 /// Fighters keep this far apart (m).
 const SPACING: f32 = 0.9;
+/// Each line takes this long, and nothing new starts until it's over (a voice says one line at a
+/// time), and an attack begins with a shout seven times in ten.
+const GRUNT: f64 = 0.4;
+const SHOUT: f64 = 0.7;
+const LAST_BREATH: f64 = 1.5;
+const SHOUT_CHANCE: f64 = 0.7;
 
 /// What the pool holds: (the arsenal's key, how many).
 const POOL: [(&str, usize); 4] = [("builtin_sword", 6), ("kit_shield", 2), ("kit_mace", 1), ("kit_axe", 1)];
 
-/// One fighter: its body (a person's index), its brain, and its stance's kit.
+/// The armoured fighters' full plate: the body, arms and legs, and the head.
+const PLATE: [usize; 11] = [anim::TORSO, anim::PELVIS, 3, 4, 6, 7, 9, 10, 11, 12, anim::HEAD];
+
+/// One fighter: its body (a person's index), its brain, and which hands guard (for the runtime).
 pub struct Fighter {
     pub person: usize,
     pub brain: Brain,
+    guarding: [bool; 2],
 }
 
 pub struct People {
@@ -50,10 +63,12 @@ pub struct People {
     wave: u32,
     next_wave: Option<f64>,
     next_id: u32,
-    /// What the people cried out this frame (`VOICE_*`, where), for the runtime's voices; and when
-    /// each last spoke (a voice says one line at a time).
+    /// What the people cried out this frame (`VOICE_*`, where), for the runtime's voices; and until
+    /// when each one's line lasts.
     pub said: Vec<(u32, Vec3)>,
-    spoke: std::collections::HashMap<u32, f64>,
+    speaking: std::collections::HashMap<u32, f64>,
+    /// `RUSTVR_DEBUG_BRAIN`: each fighter's state logged once a second, next then.
+    debug: Option<f64>,
 }
 
 /// The arsenal's weapon of `key` as a held thing: its mass, its boxes, its grip and blade.
@@ -80,12 +95,8 @@ impl People {
         let face_player = Quat::from_rotation_y(std::f32::consts::PI);
         dummies.spawn(BENCH_ID, Vec3::new(x0, 0.0, z), face_player, &[]);
         dummies.spawn(BENCH_ID + 1, Vec3::new(x0, 0.0, z + 0.42), face_player, &[]);
-        let body = [anim::TORSO, anim::PELVIS, 3, 4, 6, 7, 9, 10, 11, 12];
         for (n, m) in [MAT_LEATHER, MAT_CHAINMAIL, MAT_PLATE].into_iter().enumerate() {
-            let mut armour: Vec<(usize, u32)> = body.iter().map(|&p| (p, m)).collect();
-            if m == MAT_PLATE {
-                armour.push((anim::HEAD, MAT_PLATE));
-            }
+            let armour: Vec<(usize, u32)> = PLATE.iter().filter(|&&p| p != anim::HEAD || m == MAT_PLATE).map(|&p| (p, m)).collect();
             dummies.spawn(BENCH_ID + 2 + n as u32, Vec3::new(x0 + 1.3 + n as f32 * 1.0, 0.0, z), face_player, &armour);
         }
         let mut pool = Vec::new();
@@ -99,8 +110,9 @@ impl People {
             }
         }
         let made = vec![None; pool.len()];
-        let mut people = People { dummies, fighters: Vec::new(), pool, made, wave: 0, next_wave: Some(0.0), next_id: FIGHTER_ID, said: Vec::new(), spoke: Default::default() };
-        people.next_wave(0.0);
+        let debug = std::env::var_os("RUSTVR_DEBUG_BRAIN").is_some().then_some(0.0);
+        let mut people = People { dummies, fighters: Vec::new(), pool, made, wave: 0, next_wave: Some(0.0), next_id: FIGHTER_ID, said: Vec::new(), speaking: Default::default(), debug };
+        people.next_wave();
         people
     }
 
@@ -110,25 +122,29 @@ impl People {
         self.pool.iter().map(|(id, key, _)| (*id, *key)).collect()
     }
 
-    fn next_wave(&mut self, now: f64) {
+    fn next_wave(&mut self) {
         self.next_wave = None;
         self.wave += 1;
-        let (tier, stances): (Tier, Vec<Stance>) = match self.wave {
-            1 => (Tier::Easy, vec![Stance::OneHanded, Stance::SwordShield]),
-            2 => (Tier::Medium, vec![Stance::OneHanded, Stance::SwordShield, Stance::DualWield]),
-            _ => (Tier::Hard, vec![Stance::DualWield, Stance::SwordShield, Stance::OneHanded]),
+        // Each wave's fighters by stance and brain; from the second, its shield-bearer is an
+        // armoured one (`Tier::MediumHeavy` and `Tier::HardHeavy`: in plate, a step tougher).
+        let fighters: Vec<(Stance, Tier)> = match self.wave {
+            1 => vec![(Stance::OneHanded, Tier::Easy), (Stance::SwordShield, Tier::Easy)],
+            2 => vec![(Stance::OneHanded, Tier::Medium), (Stance::SwordShield, Tier::MediumHeavy), (Stance::DualWield, Tier::Medium)],
+            _ => vec![(Stance::DualWield, Tier::Hard), (Stance::SwordShield, Tier::HardHeavy), (Stance::OneHanded, Tier::Hard)],
         };
-        tracing::info!("range: the arena's wave {} ({tier:?}): {stances:?}", self.wave);
+        tracing::info!("range: the arena's wave {}: {fighters:?}", self.wave);
         let (lo, hi) = arenas::ARENA;
-        let n = stances.len();
-        for (i, stance) in stances.into_iter().enumerate() {
+        let n = fighters.len();
+        for (i, (stance, tier)) in fighters.into_iter().enumerate() {
             let x = lo.x + 1.0 + (hi.x - lo.x - 2.0) * (i as f32 + 0.5) / n as f32;
             let at = Vec3::new(x, 0.0, hi.z - 1.5);
             let face = Quat::from_rotation_y(std::f32::consts::PI);
             let id = self.next_id;
             self.next_id += 1;
-            // (A person's slot is reused once its body's gone: the dummies keep a list.)
-            let person = self.dummies.spawn(id, at, face, &[(anim::TORSO, MAT_LEATHER), (anim::PELVIS, MAT_LEATHER)]);
+            let heavy = tier.difficulty().heavy;
+            let armour: Vec<(usize, u32)> = if heavy { PLATE.iter().map(|&p| (p, MAT_PLATE)).collect() } else { vec![(anim::TORSO, MAT_LEATHER), (anim::PELVIS, MAT_LEATHER)] };
+            let person = self.dummies.spawn(id, at, face, &armour);
+            self.dummies.people[person].heavy = heavy;
             let kit: &[(usize, &str)] = match stance {
                 Stance::OneHanded => &[(1, "builtin_sword")],
                 Stance::SwordShield => &[(1, "builtin_sword"), (0, "kit_shield")],
@@ -139,9 +155,8 @@ impl People {
             }
             let mut brain = Brain::new(tier, stance, id);
             brain.mode = Mode::Waiting;
-            self.fighters.push(Fighter { person, brain });
+            self.fighters.push(Fighter { person, brain, guarding: [false; 2] });
         }
-        let _ = now;
     }
 
     /// A pool item of `key` (one no one holds, the player hasn't got, not lying where it fell) into
@@ -168,34 +183,76 @@ impl People {
         let now = self.dummies.time;
         // Loose items any fighter could take up.
         let loose: Vec<(usize, Vec3)> = self.dummies.items.iter().enumerate().filter(|(_, i)| i.holder.is_none() && !i.players && !i.shield).map(|(k, _)| (k, self.dummies.item_pose(k).0)).collect();
-        let sight = Sight { loose, ..sight.clone() };
-        for f in &mut self.fighters {
+        // The ways out: the arena's far corners, where its fighters came in.
+        let (lo, hi) = arenas::ARENA;
+        let exits = vec![Vec3::new(lo.x + 0.3, 0.0, hi.z - 0.3), Vec3::new(hi.x - 0.3, 0.0, hi.z - 0.3)];
+        // Which of them are at the player (awake, standing, and within their own safe distance of
+        // them), and where each stands.
+        let at_player: Vec<bool> = self
+            .fighters
+            .iter()
+            .map(|f| {
+                let p = &self.dummies.people[f.person];
+                p.alive && p.balance == Balance::Standing && p.stun.is_none() && f.brain.mode == Mode::Fighting && (p.at.0 - sight.feet).with_y(0.0).length() <= f.brain.tier.difficulty().safe
+            })
+            .collect();
+        let feet: Vec<Option<Vec3>> = self.fighters.iter().map(|f| {
+            let p = &self.dummies.people[f.person];
+            (p.alive && matches!(p.balance, Balance::Standing | Balance::Rising(_))).then_some(p.at.0)
+        }).collect();
+        let mut shouts = Vec::new();
+        for (n, f) in self.fighters.iter_mut().enumerate() {
             let p = &self.dummies.people[f.person];
             if !p.alive || !matches!(p.balance, Balance::Standing | Balance::Rising(_)) {
-                f.brain.swing = None;
+                // Down, it stops whatever it was swinging.
+                f.brain.sleep(now);
+                f.guarding = [false; 2];
+                continue;
+            }
+            if p.stun.is_some() {
+                // Out cold on its feet: its brain off, it stands dazed.
+                f.brain.sleep(now);
+                f.guarding = [false; 2];
+                let p = &mut self.dummies.people[f.person];
+                p.pose = brain::dazed();
+                p.doing = Doing::Idle;
+                p.arms = [(1.0, 1.0, 1.0); 2];
                 continue;
             }
             let (at, face) = p.at;
             let hands = [0, 1].map(|h| p.hands[h].map(|k| {
                 let item = &self.dummies.items[k];
-                brain::Hold { reach: item.blade.1.length(), mass: item.mass, shield: item.shield }
+                let (ip, iq) = self.dummies.item_pose(k);
+                brain::Hold { reach: item.blade.1.length(), mass: item.mass, shield: item.shield, players: item.players, blade: (ip + iq * item.blade.0, ip + iq * item.blade.1) }
             }));
             let staggered = p.stagger.is_some_and(|s| now - s.since < 0.6 / f.brain.tier.difficulty().recovery as f64) || self.dummies.is_shocked(f.person) || p.burning.is_some();
-            let swinging = f.brain.swing.is_some();
-            let t = f.brain.think(now, dt, at, face, hands, &sight, staggered);
+            let me = Me {
+                at,
+                face,
+                hands,
+                head: self.dummies.part_pose(f.person, anim::HEAD).0,
+                staggered,
+                rising: matches!(p.balance, Balance::Rising(_)),
+                lost: 1.0 - (p.health / rustvr_melee::body::HEALTH).clamp(0.0, 1.0),
+                held: (p.balance == Balance::Standing).then(|| self.dummies.hold_on(f.person, sight.feet)).flatten(),
+            };
+            let others: Vec<Vec3> = feet.iter().enumerate().filter(|&(m, _)| m != n).filter_map(|(_, f)| *f).collect();
+            let engaged = at_player.iter().enumerate().filter(|&(m, &a)| m != n && a).count();
+            let seen = Sight { loose: loose.clone(), allies: others, engaged, exits: exits.clone(), ..sight.clone() };
+            f.brain.escaping = (now - p.struggled < 0.6).then_some(p.struggled);
+            let t = f.brain.think(now, dt, &me, &seen);
             // A shout as it swings, seven times in ten.
-            if !swinging && f.brain.swing.is_some() && (now * 7919.0).fract() < 0.7 {
-                let head = self.dummies.part_pose(f.person, anim::HEAD).0;
-                self.said.push((VOICE_ATTACK, head));
+            if t.shout && (now * 7919.0 + n as f64 * 0.37).fract() < SHOUT_CHANCE {
+                shouts.push((p.id, me.head));
             }
+            f.guarding = t.guarding;
             let p = &mut self.dummies.people[f.person];
             p.pose = t.pose;
-            p.doing = f.brain.doing(now);
+            p.doing = f.brain.doing();
             // Its arms: stiff while it swings, stiffer while it guards.
-            p.arms = [0, 1].map(|h| if t.attacking == Some(h) { ragdoll::ATTACK_ARM } else if t.guarding { ragdoll::GUARD_ARM } else { (1.0, 1.0, 1.0) });
+            p.arms = [0, 1].map(|h| if t.attacking[h] { ragdoll::ATTACK_ARM } else if t.guarding[h] { ragdoll::GUARD_ARM } else { (1.0, 1.0, 1.0) });
             // It walks and turns.
-            let walk = face * t.walk * dt;
-            let mut at = at + walk;
+            let mut at = at + face * t.walk * dt;
             let (lo, hi) = (crate::content::ROOM_MIN, crate::content::ROOM_MAX);
             at.x = at.x.clamp(lo.x, hi.x);
             at.z = at.z.clamp(lo.z, hi.z);
@@ -207,15 +264,21 @@ impl People {
                 None => face,
             };
             p.at = (at, face);
-            // A fetched weapon within reach of its hand: taken up.
-            if let Mode::Fetching(k) = f.brain.mode {
+            // Stooped to its fetched weapon, it takes it up once its hand is there.
+            if let Some(k) = brain::taking(f.brain.mode, now) {
                 let (hand_at, _) = self.dummies.part_pose(f.person, anim::HAND[1]);
                 if brain::within_reach(hand_at, self.dummies.item_pose(k).0) && self.dummies.people[f.person].hands[1].is_none() {
                     self.dummies.pick_up(f.person, 1, k);
-                    tracing::info!("range: fighter {} takes up a weapon", self.dummies.people[f.person].id);
+                    tracing::info!("range: fighter {:#x} takes up a weapon", self.dummies.people[f.person].id);
                 }
             }
         }
+        for (id, at) in shouts {
+            self.say(id, VOICE_ATTACK, at, SHOUT);
+        }
+        // Gone: it ran out of the arena, and what it held is left.
+        let gone: Vec<usize> = self.fighters.iter().filter(|f| f.brain.mode == Mode::Gone).map(|f| f.person).collect();
+        self.remove_people(gone);
         // Fighters keep a body's width apart (they strafe and close in round the player, not
         // through each other).
         let n = self.fighters.len();
@@ -232,17 +295,26 @@ impl People {
                 }
             }
         }
-        // The wave's over when none of it can fight: the next one comes.
+        if let Some(t) = self.debug
+            && now >= t
+        {
+            self.debug = Some(now + 1.0);
+            for f in &self.fighters {
+                let p = &self.dummies.people[f.person];
+                tracing::info!("brain {:#x}: {:.2} m from the player, {:?}, health {:.0}{}, {}", p.id, (p.at.0 - sight.feet).with_y(0.0).length(), p.balance, p.health, if p.stun.is_some() { ", out cold" } else { "" }, f.brain.describe(now));
+            }
+        }
+        // The wave's over when none of it can fight: dead, out cold, or gone.
         let done = self.fighters.iter().all(|f| {
             let p = &self.dummies.people[f.person];
-            !p.alive || matches!(p.balance, Balance::Limp(_))
+            !p.alive || p.stun.is_some()
         });
         match self.next_wave {
-            None if done && !self.fighters.is_empty() => self.next_wave = Some(now + 5.0),
+            None if done => self.next_wave = Some(now + 5.0),
             Some(t) if now >= t => {
                 // The fallen go (their bodies stay a while: they're cleared with the next wave).
                 self.clear_fallen();
-                self.next_wave(now);
+                self.next_wave();
             }
             _ => {}
         }
@@ -251,19 +323,28 @@ impl People {
     /// The last wave's bodies go: their items fall loose first.
     fn clear_fallen(&mut self) {
         let fallen: Vec<usize> = self.fighters.iter().map(|f| f.person).collect();
-        for k in fallen {
+        self.remove_people(fallen);
+        self.fighters.clear();
+    }
+
+    /// People `ks` go, and with them their fighters: their items fall loose, and the people after each
+    /// move up one (from the last, so each index still means who it did).
+    fn remove_people(&mut self, mut ks: Vec<usize>) {
+        ks.sort_unstable();
+        ks.dedup();
+        for &k in ks.iter().rev() {
             for h in 0..2 {
                 self.dummies.drop_item(k, h);
             }
+            tracing::info!("range: {:#x} goes", self.dummies.people[k].id);
             self.dummies.remove(k);
+            self.fighters.retain(|f| f.person != k);
             for f in &mut self.fighters {
                 if f.person > k {
                     f.person -= 1;
                 }
             }
         }
-        self.fighters.clear();
-        // Item holders' person indices shift too (done in `remove`).
     }
 
     /// The fighter whose body is person `k`.
@@ -271,40 +352,66 @@ impl People {
         self.fighters.iter_mut().find(|f| f.person == k).map(|f| &mut f.brain)
     }
 
-    /// What the runtime should know about the fighters' weapons: which items swing now and which
-    /// guard.
+    /// What the runtime should know about the fighters' weapons: which hands' items swing now (their
+    /// damage windows) and which guard.
     pub fn items_for_runtime(&self) -> (ActorItems, Vec<(u32, Vec3, Quat)>) {
-        let attacking = |k: usize| self.fighters.iter().any(|f| f.person == k && f.brain.swing.is_some_and(|s| s.hurting(self.dummies.time)));
-        let blocking = |k: usize| self.fighters.iter().any(|f| f.person == k && f.brain.block > 0.3);
-        let feinting = |k: usize| self.fighters.iter().any(|f| f.person == k && f.brain.feinting());
+        let now = self.dummies.time;
+        let fighter = |k: usize| self.fighters.iter().find(|f| f.person == k);
+        let attacking = |k: usize, h: usize| fighter(k).is_some_and(|f| f.brain.hurting(now)[h]);
+        let blocking = |k: usize, h: usize| fighter(k).is_some_and(|f| f.guarding[h]);
+        let feinting = |k: usize| fighter(k).is_some_and(|f| f.brain.feinting());
         self.dummies.held_items(attacking, blocking, feinting)
     }
 
+    /// Person `id` says `voice` at `at`, a line `long` seconds long, unless it's saying something
+    /// already, its voice is cut, or a hand is over its mouth.
+    fn say(&mut self, id: u32, voice: u32, at: Vec3, long: f64) {
+        let now = self.dummies.time;
+        let Some(k) = self.dummies.find(id) else { return };
+        let p = &self.dummies.people[k];
+        if p.silenced || p.muffled || self.speaking.get(&id).is_some_and(|&t| now < t) {
+            return;
+        }
+        self.speaking.insert(id, now + long);
+        self.said.push((voice, at));
+    }
+
     /// What happened, for the game's side (sounds, blood); drained. The people cry out at it: a
-    /// grunt at every hurt, a last breath dying, one line at a time.
+    /// grunt at every hurt but a choke's, and dying their last line by what
+    /// killed them: none after a stab through the throat (its voice cut), only a grunt from a stab to
+    /// the head, else its death (the longer one for a stab, and the breathless one for the throat,
+    /// have no words of their own yet: `VOICE_DEATH`).
     pub fn happened(&mut self) -> Vec<Happened> {
         let out = std::mem::take(&mut self.dummies.happened);
-        let now = self.dummies.time;
         for h in &out {
-            let (id, voice) = match *h {
-                Happened::Hurt { id, .. } => (id, VOICE_HURT),
-                Happened::Died { id, .. } => (id, VOICE_DEATH),
-                _ => continue,
-            };
-            if self.spoke.get(&id).is_some_and(|&t| now - t < 0.4) && voice != VOICE_DEATH {
-                continue;
-            }
-            self.spoke.insert(id, now);
-            if let Some(k) = self.dummies.find(id) {
-                self.said.push((voice, self.dummies.part_pose(k, anim::HEAD).0));
+            match *h {
+                Happened::Hurt { id, voice: true, .. } => {
+                    if let Some(k) = self.dummies.find(id) {
+                        let at = self.dummies.part_pose(k, anim::HEAD).0;
+                        self.say(id, VOICE_HURT, at, GRUNT);
+                    }
+                }
+                Happened::Died { id, .. } => {
+                    let Some(k) = self.dummies.find(id) else { continue };
+                    let at = self.dummies.part_pose(k, anim::HEAD).0;
+                    let line = match self.dummies.people[k].last_hit {
+                        (DMG_PIERCE, BodyPart::Head) => VOICE_HURT,
+                        _ => VOICE_DEATH,
+                    };
+                    // A last breath cuts off whatever it was saying.
+                    self.speaking.remove(&id);
+                    self.say(id, line, at, LAST_BREATH);
+                }
+                _ => {}
             }
         }
         out
     }
 }
 
-/// The player as the fighters see them: where they stand and how they move, and their weapons (each
-/// blade's ends and how fast its tip goes), from the runtime's objects.
-pub fn sight(feet: Vec3, vel: Vec3, weapons: &[(Vec3, Vec3, Vec3)]) -> Sight {
-    Sight { feet, vel, threats: weapons.iter().map(|&(a, b, vel)| Threat { a, b, vel }).collect(), loose: Vec::new() }
+/// The player as the fighters see them: where they stand and how they move, their weapons (each
+/// blade's ends, how fast its tip goes, whether it has a point), and their longest weapon's reach,
+/// from the runtime's objects.
+pub fn sight(feet: Vec3, vel: Vec3, weapons: &[(Vec3, Vec3, Vec3, bool)], reach: f32) -> Sight {
+    Sight { feet, vel, threats: weapons.iter().map(|&(a, b, vel, point)| Threat { a, b, vel, point }).collect(), reach, ..Default::default() }
 }

@@ -7,12 +7,20 @@
 //!
 //! It has no balance controller, only states that hits and handling change.
 //! * **Standing**: pinned to its animation.
-//! * **Destabilised** (knocked off its feet): the position pins let go, the rotation pins go weak
-//!   (spring x0.5, damper x0.1; x0.1 once on the ground), gravity is back and it falls. Once its
-//!   pelvis has moved slower than 1 m/s for half a second on the ground it gets up, its pins ramping
-//!   back over three seconds.
-//! * **Limp**: knocked out (blunt to the head) or dead: no pins at all.
+//! * **Down** (knocked off its feet): the position pins let go, the rotation pins go weak (spring
+//!   x0.5, damper x0.1; x0.1 once on the ground), gravity is back and it falls. Once its pelvis has
+//!   moved slower than 1 m/s for half a second on the ground it gets up, its pins ramping back over
+//!   three seconds.
+//! * **Limp**: dead, or knocked out while already down: no pins at all. Knocked out standing (its
+//!   brain off, its eyes shut for 6 s), it stays on its feet.
+//!
 //! Its mass: 65 kg standing, 130 while a hand holds it, 227.5 limp or down.
+//!
+//! The player's hands hold it by the point they grab: each held point pulled to where the hand has
+//! it on the player's grip (5000 N/m, 50 against the hand's own motion, at most 3000 N; turning
+//! 1000, 50, at most 250 N m), by one of its handles (the neck, the mouth, the skull, the torso, a
+//! shoulder, a wrist, a hand, a leg) with that handle's rules for lifting it, flooring it, and how
+//! it struggles free.
 //!
 //! The range is the game here: hits land on it by the melee rules (`rustvr_melee`: the part's
 //! multiplier, armour as each part's material, health 50, push levels that stagger and floor it, the
@@ -20,12 +28,15 @@
 //! fighters) on fixed joints at its hands, which the player's weapons meet, push and wrench away.
 //! A brain (`crate::brain`) animates a fighter; a training dummy just stands.
 
+use std::collections::HashSet;
+
 use glam::{Mat4, Quat, Vec3};
 use rapier3d::prelude::*;
 use rustvr_melee::body::{Doing, Part as BodyPart, Reaction};
 use rustvr_protocol::*;
 
 use crate::anim::{self, PARTS, Pose};
+use crate::brain::{Grappled, Handle};
 
 type V3 = Vec3;
 type Q = Quat;
@@ -69,29 +80,51 @@ const MASS_HANDLED: f32 = 130.0;
 const MASS_RAGDOLLED: f32 = 227.5;
 /// The physics' fixed step.
 const STEP: f32 = 1.0 / 120.0;
-/// A hand's hold: the spring pulling the point it has to where the hand would have it (N/m, and
-/// N s/m on the point's speed): the player's hand on a creature (5000, damper x0.5).
+/// A hand's hold on a creature (the player's grip, with its handles' multipliers): the point it has
+/// pulled to where the hand would have it at 5000 N/m, damped at 50 N s/m against the hand's own
+/// motion, at most the hand's pull (3000 N); the part turned to the hand's turn at
+/// 1000 N m a radian, damped at 50, at most 250 N m.
 const GRAB_SPRING: f32 = 5000.0;
 const GRAB_DAMPER: f32 = 50.0;
-/// A standing creature lifted by its neck or torso this far above its stance (metres:
-/// 0.05, legs 0.1) is destabilised.
+const GRAB_TURN_SPRING: f32 = 1000.0;
+const GRAB_TURN_DAMPER: f32 = 50.0;
+const GRAB_TURN_MAX: f32 = 250.0;
+/// A standing creature's root raised this far above its stance by a hand (metres: 0.05; a leg, its
+/// own part, 0.1) falls (a neck's or a leg's hold) or the hand comes off (the others').
 const LIFT: f32 = 0.05;
 const LIFT_LEGS: f32 = 0.1;
-/// Let go while moving faster than this (m/s), it's knocked over.
+/// Let go by its last hand while the part held moves faster than this (m/s), it's knocked over:
+/// thrown, on its own momentum.
 const THROWN_SPEED: f32 = 2.0;
+/// A neck or torso hold tightens the head on its neck (swing 20 degrees, twist 20 one way and 45
+/// the other): the nod (radians), and the turn.
+const HELD_NOD: [f32; 2] = [-0.349, 0.349];
+const HELD_TURN: [f32; 2] = [-0.349, 0.785];
 /// A weapon the player holds pulled this far from its holder's chest (m) for this long (s) is
 /// wrenched from its hand.
 const WRENCH_REACH: f32 = 0.95;
 const WRENCH_TIME: f64 = 0.25;
-/// A hand on the throat squeezing past this chokes (one weapon dropped after 2 s,
-/// both after 5); it hurts at 5 a second (that it hurts at all is
-/// our call, so a choke can kill).
-const CHOKE_SQUEEZE: f32 = 0.5;
-const CHOKE_DPS: f32 = 5.0;
-/// A held creature that's awake struggles: a try every 2 to 3 s, 10% at first, 5% more each time,
-/// at most 50%; a try that works wrenches its held part away.
-const STRUGGLE_EVERY: f64 = 2.5;
-const STRUGGLE_JERK: f32 = 5.0;
+/// A hand on the throat chokes (one weapon dropped after 2 s if it holds two, both after 5); it
+/// hurts, 5 every 1 s give or take 0.3, so a choke can kill.
+const CHOKE_ONE: f64 = 2.0;
+const CHOKE_BOTH: f64 = 5.0;
+const CHOKE_DAMAGE: f32 = 5.0;
+const CHOKE_EVERY: f64 = 1.0;
+const CHOKE_VARY: f64 = 0.3;
+/// A held creature that's awake struggles: a try at once, then each 2 to 3 s after its escape's
+/// animation (1 s); the chance 10% at first, 5% more each failed try, 10% less held in two hands, at
+/// most 50%, back to 10% when it's hurt; a try that works forces the hand off after the handle's
+/// escape delay (0.5 s).
+const ESCAPE_FIRST: f32 = 0.1;
+const ESCAPE_STEP: f32 = 0.05;
+const ESCAPE_TWO: f32 = 0.1;
+const ESCAPE_MAX: f32 = 0.5;
+const ESCAPE_EVERY: (f64, f64) = (2.0, 3.0);
+const ESCAPE_ANIM: f64 = 1.0;
+const ESCAPE_DELAY: f64 = 0.5;
+/// Its eyes blink (0.5 s, every 2.5 to 5 s), shut for the blink's middle.
+const BLINK: f64 = 0.5;
+const BLINK_EVERY: (f64, f64) = (2.5, 5.0);
 
 /// On fire: 2 damage every half second, and dead once its fire has run its course (s).
 const BURN_DPS: f32 = 4.0;
@@ -99,9 +132,17 @@ const BURN_DEATH: f64 = 4.0;
 
 /// The most a push may give a part at once (N s).
 const PUSH_MAX: f32 = 60.0;
-/// A part slamming into something this much faster than it was going is a slam (m/s), and does
-/// slam damage.
-const SLAM_FROM: f32 = 4.0;
+/// A push given as an acceleration is applied once a frame and lands in one physics step (a frame
+/// at the headset's rate): we take 90 Hz's (s).
+const ADD_FORCE_STEP: f32 = 1.0 / 90.0;
+/// A body part slams into the same thing again only after this (s).
+const SLAM_AGAIN: f64 = 0.1;
+/// A body's damage against another creature it slams into, by speed (0 at a standstill, 5 at
+/// 12 m/s, its keys' slopes 0.282 and 0.830).
+const BODY_CURVE: [f32; 4] = [0.0, 0.0, 12.0, 5.0];
+const BODY_SLOPES: [f32; 2] = [0.282_455_6, 0.829_812_8];
+/// A head's slams are judged by the head's own slam table (`rustvr_melee`'s, once it has one).
+const MOD_RAGDOLL_HEAD: u32 = 14;
 
 /// One part: a capsule from `a` to `b` (the person's space, standing, feet at the origin, facing
 /// +Z), its radius, its share of the mass, its kind, and the part it hangs from with its joint's
@@ -162,6 +203,7 @@ fn body() -> [PartSpec; PARTS] {
 
 struct Part {
     body: RigidBodyHandle,
+    collider: ColliderHandle,
     /// The joint to its parent (gone once it's cut off).
     joint: Option<ImpulseJointHandle>,
     /// Its rest centre in the person's space (its capsule along the body's local frame there).
@@ -173,8 +215,9 @@ struct Part {
     /// What covers it (`MAT_*`): flesh, or armour.
     material: u32,
     mass: f32,
-    /// Its speed last step, for slams.
+    /// Its speed before the last step (a slam's impact speed), and when it last slammed.
     was: V3,
+    slammed: f64,
 }
 
 /// Its balance: what holds it up.
@@ -256,11 +299,34 @@ pub struct Person {
     pub heat: f32,
     pub burning: Option<f64>,
     pub shocked: f64,
-    /// Choked by a hand since then; when it next tries to struggle free, and how often it has.
+    /// Knocked out: its brain off and its eyes shut until it wakes.
+    pub stun: Option<Stun>,
+    /// Its eyes last blinked then, and blink next then.
+    blink: f64,
+    next_blink: f64,
+    /// Its voice is cut (a stab through its throat), and a hand is over its mouth.
+    pub silenced: bool,
+    pub muffled: bool,
+    /// What last hurt it (`DMG_*`, 0 a choke) and where, for its death's line.
+    pub last_hit: (u32, BodyPart),
+    /// Choked by a hand since then, and its choke's next hurt.
     choked_since: Option<f64>,
-    choked_by: Option<usize>,
+    next_choke: f64,
+    /// Struggling free: its next try, its failed tries, its last try (for the brain's twist), and a
+    /// hold it has broken free of (forced off then: its serial).
     next_struggle: f64,
     struggles: u32,
+    pub struggled: f64,
+    escape: Option<(f64, u32)>,
+    /// Its head is held tight on its neck (a neck or torso hold).
+    tight: bool,
+}
+
+/// Knocked out until then; extended once by a push since.
+#[derive(Clone, Copy, Debug)]
+pub struct Stun {
+    pub wake: f64,
+    extended: bool,
 }
 
 /// A weapon or shield a creature holds (or dropped): its body in the creatures' world, the object
@@ -296,16 +362,47 @@ pub struct ItemSpec {
     pub blade: (V3, V3),
 }
 
-/// A hand holding a part: the point it has (the part's body's own space), where the hand would have
-/// it, and how hard it pulls.
+/// A hand holding a part: its hold's serial, the point it has (the part's body's own space), where
+/// the hand would have it and how it would have the part turned, how the hand moves, how hard it
+/// pulls, and by which of its handles it holds.
 #[derive(Clone, Copy, Debug)]
 struct Held {
     id: u32,
+    serial: u32,
     part: usize,
     local: V3,
     target: V3,
+    target_rot: Q,
+    hand_vel: V3,
+    hand_spin: V3,
     force: f32,
-    throat: bool,
+    handle: Handle,
+}
+
+/// A shove on a body that isn't standing, a moment long: the blow at a point on a part (its own
+/// space), for every part of its body, until then.
+#[derive(Clone, Copy, Debug)]
+struct Shove {
+    id: u32,
+    part: usize,
+    local: V3,
+    /// The blow's velocity times its push (an acceleration, or with `impulse` an impulse, per m/s of
+    /// the blow, each second), times this on the part hit and on the rest.
+    push: V3,
+    part_x: f32,
+    other_x: f32,
+    impulse: bool,
+    until: f64,
+}
+
+/// A part of person `k` slamming into something (another person's part, or the world) at `at`, at
+/// `vel` against it.
+struct Slam {
+    k: usize,
+    part: usize,
+    other: Option<(usize, usize)>,
+    at: V3,
+    vel: V3,
 }
 
 /// What happened to the creatures this frame, for the game's side (blood, sounds, the arena).
@@ -313,8 +410,8 @@ struct Held {
 pub enum Happened {
     /// A limb (and what hangs from it) came off creature `id` at `at` (world), the stump's way out.
     Severed { id: u32, part: usize, at: V3, out: V3, radius: f32 },
-    /// It was hurt (a grunt), it died, it was knocked out.
-    Hurt { id: u32, at: V3 },
+    /// It was hurt (a grunt, if `voice`), it died, it was knocked out.
+    Hurt { id: u32, at: V3, voice: bool },
     Died { id: u32, at: V3 },
     KnockedOut { id: u32, at: V3 },
     /// It let go of its weapon (hit on the hand, stabbed through the arm, floored while guarding).
@@ -327,9 +424,18 @@ pub struct Dummies {
     world: PhysicsWorld,
     pub people: Vec<Person>,
     pub items: Vec<Item>,
-    /// What the hands hold this frame, and the grabs they last let go of (each hand's serial).
+    /// What the hands hold this frame, the grabs they last let go of and held last frame (each
+    /// hand's serial), and the holds the creatures have broken (struggled free of, or lifted off a
+    /// handle that won't take it), which they ignore until the runtime lets go.
     held: Vec<Held>,
     released: [u32; 2],
+    holding: [u32; 2],
+    freed: Vec<u32>,
+    /// The shoves under way.
+    shoves: Vec<Shove>,
+    /// The parts' contacts last step (a slam is a new one).
+    touching: HashSet<(ColliderHandle, ColliderHandle)>,
+    rng: u32,
     /// Time not yet stepped.
     owed: f32,
     pub time: f64,
@@ -365,7 +471,21 @@ impl Dummies {
             let h = (*hi - *lo) * 0.5;
             w.insert_collider(ColliderBuilder::cuboid(h.x, h.y, h.z).translation(to_v(c)).friction(0.8), None);
         }
-        Dummies { world: w, people: Vec::new(), items: Vec::new(), held: Vec::new(), released: [0; 2], owed: 0.0, time: 0.0, happened: Vec::new() }
+        Dummies {
+            world: w,
+            people: Vec::new(),
+            items: Vec::new(),
+            held: Vec::new(),
+            released: [0; 2],
+            holding: [0; 2],
+            freed: Vec::new(),
+            shoves: Vec::new(),
+            touching: HashSet::new(),
+            rng: 0x9e37_79b9,
+            owed: 0.0,
+            time: 0.0,
+            happened: Vec::new(),
+        }
     }
 
     /// A person standing at `foot` facing `face`, with id `id` and each part covered by `armour`
@@ -373,6 +493,8 @@ impl Dummies {
     pub fn spawn(&mut self, id: u32, foot: V3, face: Q, armour: &[(usize, u32)]) -> usize {
         let k = self.people.len();
         let spec = body();
+        // 65 kg standing, shared among the parts as our body's proportions have it.
+        let scale = MASS_STANDING / spec.iter().map(|p| p.mass).sum::<f32>();
         let mut parts: Vec<Part> = Vec::new();
         for (i, p) in spec.iter().enumerate() {
             // Each body's frame at rest is the person's (turned to face): its capsule placed in it.
@@ -381,8 +503,9 @@ impl Dummies {
             let rb = RigidBodyBuilder::dynamic().pose(to_pose(foot + face * rest, face)).gravity_scale(0.0).linear_damping(0.1).angular_damping(0.4).ccd_enabled(true);
             let half = ((b - a).length() * 0.5).max(0.001);
             let along = Quat::from_rotation_arc(V3::Y, (b - a).normalize_or(V3::Y));
-            let collider = ColliderBuilder::capsule_y(half, p.radius).position(to_pose(V3::ZERO, along)).mass(p.mass).friction(0.7).collision_groups(group(k));
-            let (body, _) = self.world.insert(rb, collider);
+            let mass = p.mass * scale;
+            let collider = ColliderBuilder::capsule_y(half, p.radius).position(to_pose(V3::ZERO, along)).mass(mass).friction(0.7).collision_groups(group(k));
+            let (body, collider) = self.world.insert(rb, collider);
             let joint = anim::PARENT[i].map(|parent| {
                 let pr = parts[parent].rest;
                 let pivot = anim::pivot(i);
@@ -393,7 +516,7 @@ impl Dummies {
                 self.world.insert_impulse_joint(parts[parent].body, body, j)
             });
             let material = armour.iter().find(|(part, _)| *part == i).map_or(MAT_FLESH, |(_, m)| *m);
-            parts.push(Part { body, joint, rest, a, b, radius: p.radius, kind: p.kind, material, mass: p.mass, was: V3::ZERO });
+            parts.push(Part { body, collider, joint, rest, a, b, radius: p.radius, kind: p.kind, material, mass, was: V3::ZERO, slammed: -1.0 });
         }
         self.people.push(Person {
             id,
@@ -415,10 +538,19 @@ impl Dummies {
             heat: 0.0,
             burning: None,
             shocked: -10.0,
+            stun: None,
+            blink: -10.0,
+            next_blink: self.time + 1.0 + (id % 7) as f64 * 0.5,
+            silenced: false,
+            muffled: false,
+            last_hit: (0, BodyPart::Torso),
             choked_since: None,
-            choked_by: None,
+            next_choke: 0.0,
             next_struggle: 0.0,
             struggles: 0,
+            struggled: -10.0,
+            escape: None,
+            tight: false,
         });
         k
     }
@@ -550,26 +682,39 @@ impl Dummies {
             self.burn();
             self.pin();
             self.hold();
+            self.shoves();
+            self.remember();
             self.world.integration_parameters.dt = STEP;
             self.world.step();
             self.slams();
         }
     }
 
-    /// The states that change by themselves: down and still long enough, it gets up; up, it
-    /// stands; knocked out long enough, it comes to (on the ground).
+    /// The states that change by themselves: down and still long enough, it gets up (not while a
+    /// hand holds it, it's shocked or it's out cold); up, it stands; out cold long enough, it comes
+    /// to (on the ground, if it went limp); and its eyes blink.
     fn balance(&mut self) {
         let now = self.time;
+        let mut rng = self.rng;
         for p in &mut self.people {
             let pelvis = &self.world.bodies[p.parts[anim::PELVIS].body];
             let speed = from_v(pelvis.linvel()).length();
             let (ppos, _) = from_pose(pelvis.position());
             let grounded = ppos.y < 0.5;
+            if p.stun.is_some_and(|s| now > s.wake) {
+                p.stun = None;
+                tracing::info!("range: {:#x} comes to", p.id);
+            }
+            if now >= p.next_blink {
+                p.blink = now;
+                p.next_blink = now + BLINK_EVERY.0 + (BLINK_EVERY.1 - BLINK_EVERY.0) * next(&mut rng) as f64;
+            }
+            let may_rise = p.alive && !p.handled && p.shocked <= now && p.stun.is_none();
             p.balance = match p.balance {
-                Balance::Down { since, still } if p.alive && !p.handled => {
+                Balance::Down { since, still } if may_rise => {
                     let still = if speed < STILL_SPEED && grounded { Some(still.unwrap_or(now)) } else { None };
                     match still {
-                        Some(t) if now - t > STILL_TIME && now - since > 1.0 => {
+                        Some(t) if now - t > STILL_TIME => {
                             // Up where it lies, facing the way its body points.
                             let (tpos, trot) = from_pose(self.world.bodies[p.parts[anim::TORSO].body].position());
                             let fwd = trot * V3::Z;
@@ -582,11 +727,13 @@ impl Dummies {
                         _ => Balance::Down { since, still },
                     }
                 }
+                Balance::Down { since, .. } => Balance::Down { since, still: None },
                 Balance::Rising(t) if now - t > RISE_TIME => Balance::Standing,
                 Balance::Limp(until) if p.alive && now > until => Balance::Down { since: now, still: None },
                 b => b,
             };
         }
+        self.rng = rng;
     }
 
     /// Each part pulled towards its animation, as hard as the person's state allows.
@@ -605,8 +752,9 @@ impl Dummies {
                 }
                 Balance::Limp(_) => (0.0, 1.0, 0.0),
             };
-            // Its masses: 65 kg standing, 130 handled, 227.5 down or limp.
-            let total = if p.handled { MASS_HANDLED } else if stance < 0.5 { MASS_RAGDOLLED } else { MASS_STANDING };
+            // Its masses: 130 kg handled, else from 227.5 ragdolled to 65 standing by how hard its
+            // position pins hold it.
+            let total = if p.handled { MASS_HANDLED } else { MASS_RAGDOLLED + (MASS_STANDING - MASS_RAGDOLLED) * stance.clamp(0.0, 1.0) };
             let base: f32 = p.parts.iter().map(|q| q.mass).sum();
             let (foot, face) = p.at;
             let mut pose = p.pose;
@@ -633,8 +781,10 @@ impl Dummies {
                     (pos, rot, from_v(rb.linvel()), from_v(rb.angvel()))
                 })
                 .collect();
-            // Each part's mass and its inertia (the mean of its principal moments), what its pins act on.
-            let masses: Vec<(f32, f32)> = p
+            // Each part's mass and its inertia (the mean of its principal moments), what its pins act
+            // on; a hand's with what it holds welded to it (an NPC's grip is a locked joint: one body
+            // its drive moves, so a heavy weapon doesn't whip a light hand about).
+            let mut masses: Vec<(f32, f32)> = p
                 .parts
                 .iter()
                 .map(|part| {
@@ -643,6 +793,14 @@ impl Dummies {
                     (rb.mass().max(0.05), ((i.x + i.y + i.z) / 3.0).max(1e-4))
                 })
                 .collect();
+            for h in 0..2 {
+                let Some(item) = p.hands[h].map(|k| &self.items[k]).filter(|it| !it.players) else { continue };
+                let (hand, held) = (&self.world.bodies[p.parts[anim::HAND[h]].body], &self.world.bodies[item.body]);
+                let i = from_v(held.mass_properties().local_mprops.principal_inertia());
+                let lever = from_v(held.center_of_mass()).distance(from_v(hand.translation()));
+                masses[anim::HAND[h]].0 += held.mass();
+                masses[anim::HAND[h]].1 += (i.x + i.y + i.z) / 3.0 + held.mass() * lever * lever;
+            }
             let mut torques = vec![V3::ZERO; p.parts.len()];
             let mut forces = vec![V3::ZERO; p.parts.len()];
             for i in 0..p.parts.len() {
@@ -680,138 +838,288 @@ impl Dummies {
         }
     }
 
-    /// A body part hitting the world (or another) much faster than it was going hurts it (the
-    /// ragdoll damager on itself: nothing at 4 m/s, 12.5 at 12, times the part's multiplier).
+    /// Each part's speed before the step: a slam's impact speed.
+    fn remember(&mut self) {
+        for p in &mut self.people {
+            for part in &mut p.parts {
+                part.was = from_v(self.world.bodies[part.body].linvel());
+            }
+        }
+    }
+
+    /// A body that isn't standing hurts itself on what it slams into (only while it's down or dead):
+    /// at a new contact's impact speed (the two bodies' speeds against each other before the step),
+    /// against the world by `slam_damage` (nothing at 4 m/s, 12.5 at 12), against another creature by
+    /// [`BODY_CURVE`] (0 to 5 at 12), each by its own armour's row of the ragdoll table there
+    /// (flesh from 5 m/s at x1, leather 8 at x0.1, chainmail 6 at x0.75, plate 7 at x0.2; a head's
+    /// from 3, 4, 4 and 5) and its part's multiplier. A standing creature it slams into takes the same
+    /// curve's damage, and its push.
     fn slams(&mut self) {
-        for k in 0..self.people.len() {
-            if matches!(self.people[k].balance, Balance::Standing) {
-                for part in &mut self.people[k].parts {
-                    part.was = from_v(self.world.bodies[part.body].linvel());
-                }
+        let now = self.time;
+        let mut owner = std::collections::HashMap::new();
+        for (k, p) in self.people.iter().enumerate() {
+            for (i, part) in p.parts.iter().enumerate() {
+                owner.insert(part.collider, (k, i));
+            }
+        }
+        let mut touching = HashSet::new();
+        let mut slams: Vec<Slam> = Vec::new();
+        for pair in self.world.contact_pairs() {
+            if !pair.has_any_active_contact() {
                 continue;
             }
-            let mut hurt = 0.0;
-            let mut at = V3::ZERO;
-            for part in &mut self.people[k].parts {
-                let rb = &self.world.bodies[part.body];
-                let v = from_v(rb.linvel());
-                let change = (part.was - v).length();
-                if change > SLAM_FROM {
-                    hurt += rustvr_melee::body::slam_damage(change) * BodyPart::of(part.kind, false).damage();
-                    at = from_v(rb.translation());
-                }
-                part.was = v;
+            let (c1, c2) = (pair.collider1, pair.collider2);
+            let key = if c1.into_raw_parts() <= c2.into_raw_parts() { (c1, c2) } else { (c2, c1) };
+            touching.insert(key);
+            if self.touching.contains(&key) {
+                continue;
             }
-            if hurt > 0.0 {
-                self.hurt(k, hurt, at);
+            let Some((_, contact)) = pair.find_deepest_contact() else { continue };
+            let (p1, q1) = from_pose(self.world.colliders[c1].position());
+            let at = p1 + q1 * from_v(contact.local_p1);
+            // Each body's speed (the bodies' own, not their spin at the contact): a part's from
+            // before the step, a loose thing's now, the world's nothing.
+            let speed_of = |c: ColliderHandle| -> V3 {
+                match owner.get(&c) {
+                    Some(&(k, i)) => self.people[k].parts[i].was,
+                    None => self.world.colliders[c].parent().map_or(V3::ZERO, |b| from_v(self.world.bodies[b].linvel())),
+                }
+            };
+            for (me, other) in [(c1, c2), (c2, c1)] {
+                let Some(&(k, i)) = owner.get(&me) else { continue };
+                if matches!(self.people[k].balance, Balance::Standing | Balance::Rising(_)) && self.people[k].alive {
+                    continue;
+                }
+                let vel = speed_of(me) - speed_of(other);
+                slams.push(Slam { k, part: i, other: owner.get(&other).copied(), at, vel });
+            }
+        }
+        self.touching = touching;
+        for Slam { k, part: i, other, at, vel } in slams {
+            let speed = vel.length();
+            if self.people[k].parts[i].slammed > now - SLAM_AGAIN {
+                continue;
+            }
+            let part = &self.people[k].parts[i];
+            let (kind, material) = (part.kind, part.material);
+            let table = if kind == PART_HEAD { MOD_RAGDOLL_HEAD } else { rustvr_melee::MOD_RAGDOLL };
+            let Some(row) = rustvr_melee::row(table, material, 0, false).or_else(|| rustvr_melee::row(rustvr_melee::MOD_RAGDOLL, material, 0, false)) else { continue };
+            if speed < row.min_speed {
+                continue;
+            }
+            self.people[k].parts[i].slammed = now;
+            let base = match other {
+                Some(_) => rustvr_melee::curve(BODY_CURVE, BODY_SLOPES, speed),
+                None => rustvr_melee::body::slam_damage(speed),
+            };
+            let damage = base * row.damage * BodyPart::of(kind, false).damage();
+            if damage > 0.0 {
+                tracing::info!("range: {:#x}'s part {i} slams into {} at {speed:.1} m/s: {damage:.1}", self.people[k].id, if other.is_some() { "a body" } else { "the world" });
+                self.hurt(k, damage, at);
+            }
+            // A standing creature it slams into is hurt by it too, and pushed.
+            if let Some((o, j)) = other
+                && matches!(self.people[o].balance, Balance::Standing | Balance::Rising(_))
+            {
+                self.hurt(o, base, at);
+                self.react(o, j, row.push_level(speed, false), vel.normalize_or_zero(), at, false);
             }
         }
     }
 
     /// The runtime's hands on the creatures: each held point pulled to where its hand would have it
-    /// (applied every step with the pins); a standing creature lifted by its neck, torso or legs
-    /// goes down; a held one stays down; let go fast, it's knocked over and takes the throw.
+    /// (every step, with the pins), by the handle it's on. Held standing, a creature is floored at
+    /// once in the states its handle says, falls or shakes the hand off when it's lifted off its
+    /// feet, and falls when its head is pressed below its hips; held by the throat it's choked;
+    /// awake, it struggles free now and then. Let go of by its last hand while the part held moves
+    /// fast, it's thrown down.
     pub fn grab(&mut self, grabs: &CreatureGrabs) {
+        let now = self.time;
         self.held.clear();
         for p in &mut self.people {
             p.handled = false;
+            p.muffled = false;
         }
+        // The holds broken that the runtime has since let go of are done with.
+        self.freed.retain(|s| grabs.grabs.iter().any(|g| g.serial == *s && g.flags & GRAB_HELD != 0));
         for (hand, g) in grabs.grabs.iter().enumerate() {
-            let Some(k) = self.people.iter().position(|p| p.id == g.actor) else { continue };
+            let Some(k) = self.find(g.actor) else { continue };
             let Some(part) = self.people[k].parts.get(g.part as usize) else { continue };
             // The point is in the part's frame as the runtime has it: its capsule's start, turned as
             // its body is (see `bodies`).
             let local = part.a + V3::from_array(g.point);
+            let (body, (pos, rot)) = (part.body, from_pose(self.world.bodies[part.body].position()));
             if g.flags & GRAB_HELD != 0 {
-                self.held.push(Held { id: g.actor, part: g.part as usize, local, target: V3::from_array(g.target), force: g.force, throat: g.flags & GRAB_THROAT != 0 });
-                self.people[k].handled = true;
+                let handle = handle_of(g.part as usize, part, g.flags & GRAB_THROAT != 0, local);
+                let new = self.holding[hand] != g.serial;
+                self.holding[hand] = g.serial;
+                if self.freed.contains(&g.serial) {
+                    continue;
+                }
+                let turn = Quat::from_array(g.target_rot);
+                let target_rot = if turn.length_squared() > 0.5 && turn.is_finite() { turn.normalize() } else { rot };
+                let first = !self.held.iter().any(|h| h.id == g.actor);
+                self.held.push(Held { id: g.actor, serial: g.serial, part: g.part as usize, local, target: V3::from_array(g.target), target_rot, hand_vel: V3::from_array(g.vel), hand_spin: V3::from_array(g.ang_vel), force: g.force, handle });
+                let p = &mut self.people[k];
+                if new {
+                    tracing::info!("range: {:#x} held by its {handle:?}", p.id);
+                    // An escape is tried at once when a first hand takes hold.
+                    if first && !p.handled {
+                        p.next_struggle = now;
+                    }
+                }
+                p.handled = true;
+                p.muffled |= handle == Handle::Mouth;
                 continue;
             }
+            self.holding[hand] = 0;
             if g.serial != 0 && self.released[hand] != g.serial {
                 self.released[hand] = g.serial;
-                let (pos, rot) = from_pose(self.world.bodies[part.body].position());
-                let throw = V3::from_array(g.vel);
-                if g.flags & GRAB_SLIPPED == 0 && throw.length() > 0.3 {
-                    let at = pos + rot * local;
-                    self.speed_up(k, g.part as usize, at, throw.normalize(), throw.length());
-                    // Let go fast, it's thrown off its feet.
-                    if throw.length() > THROWN_SPEED {
-                        self.floor(k, at);
+                let other = grabs.grabs[hand ^ 1];
+                if other.flags & GRAB_HELD == 0 || other.actor != g.actor {
+                    let speed = from_v(self.world.bodies[body].linvel()).length();
+                    self.people[k].struggles = 0;
+                    if speed > THROWN_SPEED && self.people[k].alive {
+                        tracing::info!("range: {:#x} let go of at {speed:.1} m/s: thrown down", self.people[k].id);
+                        self.floor(k, pos);
                     }
                 }
             }
         }
+        let mut rng = self.rng;
+        for k in 0..self.people.len() {
+            let id = self.people[k].id;
+            let holds: Vec<Held> = self.held.iter().filter(|h| h.id == id).copied().collect();
+            // A neck or torso hold tightens its head on its neck.
+            let tight = holds.iter().any(|h| matches!(h.handle, Handle::Neck | Handle::Torso));
+            if tight != self.people[k].tight {
+                self.neck_limits(k, tight);
+            }
+            self.choke(k, holds.iter().any(|h| h.handle == Handle::Neck), &mut rng);
+            let p = &self.people[k];
+            if holds.is_empty() || !p.alive || p.balance != Balance::Standing {
+                continue;
+            }
+            // Forced down: held by the neck or torso while idle, reeling fully or shocked; by a
+            // leg while idle, attacking, reeling at all or shocked; by a wrist while shocked: down at
+            // once.
+            let reeling = p.stagger.filter(|s| now - s.since < 0.6);
+            let fully = reeling.is_some_and(|s| s.recoil >= 1.0);
+            let shocked = p.shocked > now;
+            let forced = holds.iter().find(|h| match h.handle {
+                Handle::Neck | Handle::Torso => p.doing == Doing::Idle || fully || shocked,
+                Handle::Legs => p.doing == Doing::Idle || p.doing == Doing::Attacking || reeling.is_some() || shocked,
+                Handle::Wrist => shocked,
+                _ => false,
+            });
+            let feet = p.at.0;
+            if let Some(h) = forced {
+                tracing::info!("range: {id:#x} taken by its {:?} {}: down", h.handle, if shocked { "shocked" } else if p.doing == Doing::Idle { "unawares" } else { "reeling" });
+                let at = self.part_pose(k, h.part).0;
+                self.floor(k, at);
+                continue;
+            }
+            // Lifted off its feet: its root (a leg its own part) above its stance by `LIFT`, a
+            // neck's or a leg's hold floors it, the others' come off.
+            let mut lifted = None;
+            for h in &holds {
+                let (part, offset) = match h.handle {
+                    Handle::Hand => continue,
+                    Handle::Legs => (h.part, LIFT_LEGS),
+                    _ => (anim::PELVIS, LIFT),
+                };
+                let height = self.part_pose(k, part).0.y - feet.y;
+                if height > self.people[k].parts[part].rest.y + offset {
+                    lifted = Some(*h);
+                    break;
+                }
+            }
+            if let Some(h) = lifted {
+                let at = self.part_pose(k, h.part).0;
+                if matches!(h.handle, Handle::Neck | Handle::Legs) {
+                    tracing::info!("range: {id:#x} lifted by its {:?}: down", h.handle);
+                    self.floor(k, at);
+                } else {
+                    tracing::info!("range: {id:#x} lifted by its {:?}: the hand comes off", h.handle);
+                    self.freed.push(holds[0].serial);
+                }
+                continue;
+            }
+            // Its head pressed below its hips' standing height, it falls.
+            let head = self.part_pose(k, anim::HEAD).0;
+            if head.y - feet.y < self.people[k].parts[anim::PELVIS].rest.y {
+                tracing::info!("range: {id:#x} pressed down below its hips: down");
+                self.floor(k, head);
+                continue;
+            }
+            // Struggling free, awake and not reeling.
+            let p = &mut self.people[k];
+            if let Some((at, serial)) = p.escape
+                && now >= at
+            {
+                p.escape = None;
+                tracing::info!("range: {id:#x} breaks free of the hand");
+                self.freed.push(serial);
+                continue;
+            }
+            if p.stun.is_some() || reeling.is_some() || p.escape.is_some() || now < p.next_struggle {
+                continue;
+            }
+            let chance = (ESCAPE_FIRST + ESCAPE_STEP * p.struggles as f32 - if holds.len() > 1 { ESCAPE_TWO } else { 0.0 }).min(ESCAPE_MAX);
+            let pick = holds[((next(&mut rng) * holds.len() as f32) as usize).min(holds.len() - 1)];
+            p.struggled = now;
+            p.next_struggle = now + ESCAPE_ANIM + ESCAPE_EVERY.0 + (ESCAPE_EVERY.1 - ESCAPE_EVERY.0) * next(&mut rng) as f64;
+            if next(&mut rng) < chance {
+                p.escape = Some((now + ESCAPE_DELAY, pick.serial));
+                p.struggles = 0;
+                tracing::info!("range: {id:#x} struggles ({:.0}%): it works", chance * 100.0);
+            } else {
+                p.struggles += 1;
+                tracing::info!("range: {id:#x} struggles ({:.0}%)", chance * 100.0);
+            }
+        }
+        self.rng = rng;
+    }
+
+    /// A hand on its throat (one is enough): after 2 s it lets go of the weapon in its left hand if
+    /// it holds one in each, after 5 s of both; and it's hurt, 5 every second or so of the game's
+    /// time, once however many hands are on it, with no grunt (its throat is held).
+    fn choke(&mut self, k: usize, throat: bool, rng: &mut u32) {
         let now = self.time;
-        // Choked: weapons dropped after 2 and 5 seconds, and hurt.
-        for (hand, g) in grabs.grabs.iter().enumerate() {
-            let held = g.flags & GRAB_HELD != 0 && g.flags & GRAB_THROAT != 0 && g.squeeze > CHOKE_SQUEEZE;
-            let Some(k) = self.people.iter().position(|p| p.id == g.actor) else { continue };
-            if !held {
-                if self.people[k].choked_by == Some(hand) {
-                    self.people[k].choked_by = None;
-                }
-                continue;
+        let p = &mut self.people[k];
+        if !throat || !p.alive {
+            p.choked_since = None;
+            return;
+        }
+        let since = match p.choked_since {
+            Some(t) => t,
+            None => {
+                p.choked_since = Some(now);
+                p.next_choke = now + CHOKE_EVERY + CHOKE_VARY * (2.0 * next(rng) as f64 - 1.0);
+                now
             }
-            let p = &mut self.people[k];
-            let since = *p.choked_since.get_or_insert(now);
-            p.choked_by = Some(hand);
-            let (choking, id) = (now - since, p.id);
-            for (after, h) in [(2.0, 1), (5.0, 0)] {
-                if choking > after
-                    && let Some(item) = self.drop_item(k, h)
-                {
-                    self.happened.push(Happened::Disarmed { id, item });
-                }
+        };
+        let id = p.id;
+        let both = p.hands.iter().all(|h| h.is_some());
+        let drops: &[usize] = if now - since > CHOKE_BOTH { &[0, 1] } else if now - since > CHOKE_ONE && both { &[0] } else { &[] };
+        for &h in drops {
+            if let Some(item) = self.drop_item(k, h) {
+                tracing::info!("range: {id:#x}, choked, lets go of {item:#x}");
+                self.happened.push(Happened::Disarmed { id, item });
             }
+        }
+        if now >= self.people[k].next_choke {
+            self.people[k].next_choke = now + CHOKE_EVERY + CHOKE_VARY * (2.0 * next(rng) as f64 - 1.0);
+            self.people[k].last_hit = (0, BodyPart::Neck);
             let at = self.part_pose(k, anim::HEAD).0;
-            self.hurt(k, CHOKE_DPS * STEP.max(1.0 / 90.0), at);
-        }
-        for p in &mut self.people {
-            if p.choked_by.is_none() {
-                p.choked_since = None;
-            }
-        }
-        // Struggling: an awake creature held tries to break free now and then.
-        for h in self.held.clone() {
-            let Some(k) = self.people.iter().position(|p| p.id == h.id) else { continue };
-            let p = &mut self.people[k];
-            if !p.alive || matches!(p.balance, Balance::Limp(_)) {
-                continue;
-            }
-            if now < p.next_struggle {
-                continue;
-            }
-            p.next_struggle = now + STRUGGLE_EVERY + ((now * 3.7).fract() - 0.5);
-            let chance = (0.1 + 0.05 * p.struggles as f32).min(0.5);
-            p.struggles += 1;
-            if (now * 7.31).fract() as f32 >= chance {
-                continue;
-            }
-            p.struggles = 0;
-            let rb = &mut self.world.bodies[p.parts[h.part].body];
-            let (pos, rot) = from_pose(rb.position());
-            let away = (pos + rot * h.local - h.target).normalize_or(V3::Y);
-            let jerk = away * STRUGGLE_JERK * rb.mass();
-            rb.apply_impulse(to_v(jerk), true);
-            tracing::info!("range: {:#x} struggles free", p.id);
-        }
-        for h in self.held.clone() {
-            let Some(k) = self.people.iter().position(|p| p.id == h.id) else { continue };
-            let part = &self.people[k].parts[h.part];
-            let (pos, rot) = from_pose(self.world.bodies[part.body].position());
-            let lifted = (h.target - (pos + rot * h.local)).y;
-            let lift = if part.kind == PART_LEG { LIFT_LEGS } else { LIFT };
-            let by = matches!(part.kind, PART_HEAD | PART_TORSO | PART_LEG) && (h.throat || part.kind != PART_HEAD);
-            if lifted > lift && by && self.people[k].balance == Balance::Standing {
-                self.floor(k, pos);
-            }
-            if let Balance::Down { since, .. } = self.people[k].balance {
-                self.people[k].balance = Balance::Down { since: since.max(now - 0.5), still: None };
-            }
+            self.hurt_with(k, CHOKE_DAMAGE, at, false);
+            tracing::info!("range: {id:#x} choked: {:.0} left", self.people[k].health.max(0.0));
         }
     }
 
-    /// The held points pulled where the hands would have them (each physics step).
+    /// The held points pulled where the hands would have them and turned as they'd have them (each
+    /// physics step): the grip on the part held, its damping against the hand's own motion, solved
+    /// implicitly as the pins are.
     fn hold(&mut self) {
         for h in &self.held {
             let Some(p) = self.people.iter().find(|p| p.id == h.id) else { continue };
@@ -819,8 +1127,85 @@ impl Dummies {
             let (pos, rot) = from_pose(rb.position());
             let at = pos + rot * h.local;
             let vel = from_v(rb.velocity_at_point(to_v(at)));
-            let f = (GRAB_SPRING * (h.target - at) - GRAB_DAMPER * vel).clamp_length_max(h.force);
+            let m = rb.mass().max(0.05);
+            let f = implicit(m, GRAB_SPRING, GRAB_DAMPER, h.target - at, vel - h.hand_vel, STEP).clamp_length_max(h.force);
             rb.add_force_at_point(to_v(f), to_v(at), true);
+            let i = from_v(rb.mass_properties().local_mprops.principal_inertia());
+            let inertia = ((i.x + i.y + i.z) / 3.0).max(1e-4);
+            let t = implicit(inertia, GRAB_TURN_SPRING, GRAB_TURN_DAMPER, shortest(h.target_rot * rot.inverse()), from_v(rb.angvel()) - h.hand_spin, STEP).clamp_length_max(GRAB_TURN_MAX);
+            rb.add_torque(to_v(t), true);
+        }
+    }
+
+    /// Its head held tight on its neck (a neck or torso hold), or loose again.
+    fn neck_limits(&mut self, k: usize, tight: bool) {
+        let p = &mut self.people[k];
+        p.tight = tight;
+        let Some(j) = p.parts[anim::HEAD].joint else { return };
+        let rest = body()[anim::HEAD].limits;
+        let (nod, turn) = if tight { (HELD_NOD, HELD_TURN) } else { (rest[0], rest[1]) };
+        if let Some(joint) = self.world.impulse_joints.get_mut(j, true) {
+            joint.data.set_limits(JointAxis::AngX, nod);
+            joint.data.set_limits(JointAxis::AngY, turn);
+        }
+    }
+
+    /// How a hand holds person `k`, standing, for its brain (`Grappled`): by which handle,
+    /// on which limb, where the hand would have the point it holds and how high that point stands,
+    /// and the one holding it at `grabber`.
+    pub fn hold_on(&self, k: usize, grabber: V3) -> Option<Grappled> {
+        let p = &self.people[k];
+        let h = self.held.iter().find(|h| h.id == p.id)?;
+        let limb = usize::from(![3, 4, 5, 9, 10].contains(&h.part));
+        Some(Grappled { handle: h.handle, limb, grip: h.target, stand: p.parts[h.part].rest.y + h.local.y, grabber })
+    }
+
+    /// A shove: a blow on a body that isn't standing (down, or dead) pushes it for a moment: the
+    /// blow's velocity times the weapon's push (`force`: an acceleration a second per m/s, or with
+    /// `impulse` an impulse), for `seconds`, times `part_x` on the part hit and `other_x` on the rest
+    /// of its body, at the point hit. As an acceleration it doesn't care for the body's mass: about
+    /// 0.33 of the blow's speed for a punch (100 for 0.15 s, x2).
+    #[allow(clippy::too_many_arguments)]
+    pub fn shove(&mut self, k: usize, part: usize, point: V3, vel: V3, force: f32, seconds: f32, part_x: f32, other_x: f32, impulse: bool) {
+        let p = &self.people[k];
+        let standing = p.alive && matches!(p.balance, Balance::Standing | Balance::Rising(_));
+        if force <= 0.0 || seconds <= 0.0 || standing {
+            return;
+        }
+        let Some(q) = p.parts.get(part) else { return };
+        let (pos, rot) = from_pose(self.world.bodies[q.body].position());
+        let gain = if impulse { force * seconds } else { force * seconds * ADD_FORCE_STEP };
+        tracing::info!("range: {:#x} down, shoved on part {part} at {:.1} m/s ({force} for {seconds} s: {:.2} of it{})", p.id, vel.length(), gain * part_x, if impulse { " a kg" } else { "" });
+        self.shoves.push(Shove { id: p.id, part, local: rot.inverse() * (point - pos), push: vel * force, part_x, other_x, impulse, until: self.time + seconds as f64 });
+    }
+
+    /// The shoves under way, each step: every part of the body it's still joined to pushed at the
+    /// point hit, by the blow times its share (a cut-off piece is its own).
+    fn shoves(&mut self) {
+        let now = self.time;
+        self.shoves.retain(|s| s.until >= now);
+        for s in &self.shoves {
+            let Some(p) = self.people.iter().find(|p| p.id == s.id) else { continue };
+            let (pos, rot) = from_pose(self.world.bodies[p.parts[s.part].body].position());
+            let at = pos + rot * s.local;
+            let off = p.severed & (1 << s.part) != 0;
+            for (i, q) in p.parts.iter().enumerate() {
+                let x = if i == s.part { s.part_x } else { s.other_x };
+                if x <= 0.0 || (p.severed & (1 << i) != 0) != off {
+                    continue;
+                }
+                let rb = &mut self.world.bodies[q.body];
+                if s.impulse {
+                    rb.apply_impulse_at_point(to_v(s.push * x * STEP), to_v(at), true);
+                } else {
+                    // As an acceleration at a point: its speed changed, and its spin by the lever
+                    // to the point, neither weighed by its mass (a light hand isn't sent spinning).
+                    let dv = s.push * x * STEP * ADD_FORCE_STEP;
+                    let lever = at - from_v(rb.translation());
+                    rb.set_linvel(rb.linvel() + to_v(dv), true);
+                    rb.set_angvel(rb.angvel() + to_v(lever.cross(dv)), true);
+                }
+            }
         }
     }
 
@@ -849,7 +1234,7 @@ impl Dummies {
                     let at = from_v(rb.velocity_at_point(to_v(point))).dot(dir);
                     let lacking = g.normal[3] - at;
                     if lacking > 0.0 {
-                        let impulse = (dir * lacking * rb.mass()).clamp_length_max(PUSH_MAX);
+                        let impulse = impulse_for(rb, point, dir, lacking).clamp_length_max(PUSH_MAX);
                         rb.apply_impulse_at_point(to_v(impulse), to_v(point), true);
                     }
                 }
@@ -868,23 +1253,29 @@ impl Dummies {
         if lacking <= 0.0 {
             return;
         }
-        let impulse = (dir * lacking * rb.mass()).clamp_length_max(PUSH_MAX);
+        let impulse = impulse_for(rb, point, dir, lacking).clamp_length_max(PUSH_MAX);
         rb.apply_impulse_at_point(to_v(impulse), to_v(point), true);
     }
 
-    /// Damage to person `k` (its health; dead at nothing).
+    /// Damage to person `k` (its health; dead at nothing), with a grunt.
     pub fn hurt(&mut self, k: usize, damage: f32, at: V3) {
+        self.hurt_with(k, damage, at, true);
+    }
+
+    /// Damage to person `k`, with a grunt or without. Hurt, its struggles start over.
+    fn hurt_with(&mut self, k: usize, damage: f32, at: V3, voice: bool) {
         let p = &mut self.people[k];
         if !p.alive || damage <= 0.0 {
             return;
         }
         p.health -= damage;
         p.hurt_at = self.time;
+        p.struggles = 0;
         let id = p.id;
         if p.health <= 0.0 {
             self.kill(k, at);
         } else {
-            self.happened.push(Happened::Hurt { id, at });
+            self.happened.push(Happened::Hurt { id, at, voice });
         }
     }
 
@@ -955,48 +1346,68 @@ impl Dummies {
         self.people[k].shocked > self.time
     }
 
-    /// Knocked out for `seconds`: limp, eyes shut.
-    pub fn knock_out(&mut self, k: usize, seconds: f64, at: V3) {
+    /// Knocked out: its brain off and its eyes shut for 6 s, its weapons kept; it goes limp only if
+    /// it was down already, or out cold already; knocked out again while out, it's out 6 s from then.
+    pub fn knock_out(&mut self, k: usize, at: V3) {
+        let now = self.time;
         let p = &mut self.people[k];
         if !p.alive {
             return;
         }
-        p.balance = Balance::Limp(self.time + seconds);
+        let wake = now + rustvr_melee::body::KNOCKOUT_TIME as f64;
+        let limp = p.stun.is_some() || matches!(p.balance, Balance::Down { .. } | Balance::Limp(_));
+        let stun = match p.stun {
+            Some(s) if s.wake >= wake => s,
+            _ => Stun { wake, extended: false },
+        };
+        p.stun = Some(stun);
+        if limp {
+            p.balance = Balance::Limp(stun.wake);
+        }
         p.stagger = None;
         let id = p.id;
         self.happened.push(Happened::KnockedOut { id, at });
-        for h in 0..2 {
-            if let Some(item) = self.drop_item(k, h) {
-                self.happened.push(Happened::Disarmed { id, item });
-            }
-        }
     }
 
-    /// A hit's push on person `k`'s part (its push level and the hit-reaction table): a stagger
-    /// away from it, or knocked off its feet; and the hit's own shove (its impulse along the way it
-    /// went, as the mace and shield damagers add one).
-    pub fn react(&mut self, k: usize, part: usize, level: u32, dir: V3, point: V3, shove: f32) {
+    /// A hit's push on person `k`'s part (by its push table): a stagger away from it, or knocked off
+    /// its feet. Already down it takes no push; getting up, any push puts it down again; shocked, a
+    /// blow (not the shock's own, `lightning`) pushes a level harder and any stagger floors it; out
+    /// cold, it reels fully at least and its stun lasts on, once. Returns what it did.
+    pub fn react(&mut self, k: usize, part: usize, level: u32, dir: V3, point: V3, lightning: bool) -> Reaction {
         let now = self.time;
         let p = &self.people[k];
-        let kind = p.parts.get(part).map_or(PART_TORSO, |q| q.kind);
-        if let Some(q) = p.parts.get(part) {
-            let rb = &mut self.world.bodies[q.body];
-            rb.apply_impulse_at_point(to_v(dir * shove), to_v(point), true);
-        }
         if !p.alive || !matches!(p.balance, Balance::Standing | Balance::Rising(_)) {
-            return;
+            return Reaction::None;
         }
+        let id = p.id;
+        if matches!(p.balance, Balance::Rising(_)) {
+            tracing::info!("range: {id:#x} pushed getting up: down again");
+            self.people[k].balance = Balance::Down { since: now, still: None };
+            self.happened.push(Happened::Floored { id, at: point });
+            return Reaction::Destabilize;
+        }
+        let shocked = p.shocked > now;
+        if shocked && lightning {
+            return Reaction::None;
+        }
+        let level = if shocked { level + 1 } else { level };
+        let kind = p.parts.get(part).map_or(PART_TORSO, |q| q.kind);
         let body = BodyPart::of(kind, false);
         let doing = match (p.stagger, p.doing) {
             (Some(s), _) if now - s.since < 0.6 && s.recoil >= 1.0 => Doing::FullyStaggered,
             (Some(s), _) if now - s.since < 0.6 => Doing::Staggered,
             (_, d) => d,
         };
-        let r = rustvr_melee::body::reaction(level, body, doing, p.heavy);
-        // Getting up, any push puts it back down.
-        if matches!(p.balance, Balance::Rising(_)) && level > 0 {
-            self.people[k].balance = Balance::Down { since: now, still: None };
-            return;
+        let mut r = rustvr_melee::body::reaction(level, body, doing, p.heavy);
+        if let Some(s) = p.stun {
+            r = r.max(Reaction::Full);
+            if !s.extended {
+                let wake = now + rustvr_melee::body::KNOCKOUT_TIME as f64;
+                self.people[k].stun = Some(Stun { wake, extended: true });
+            }
+        }
+        if shocked && r != Reaction::None {
+            r = Reaction::Destabilize;
         }
         match r {
             Reaction::None => {}
@@ -1007,6 +1418,7 @@ impl Dummies {
                 self.people[k].stagger = Some(Stagger { recoil: r.recoil(), dir: local, since: now, head: body == BodyPart::Head });
             }
         }
+        r
     }
 
     /// Cuts person `k`'s part `part` off at its joint (and what hangs from it): its joint gone, its
@@ -1141,9 +1553,9 @@ impl Dummies {
             let b = &mut t.bodies[k];
             b.id = p.id;
             let down = matches!(p.balance, Balance::Down { .. } | Balance::Limp(_));
-            let conscious = p.alive && !matches!(p.balance, Balance::Limp(_));
+            let conscious = p.alive && !matches!(p.balance, Balance::Limp(_)) && p.stun.is_none();
             b.flags = BODY_GRABBABLE | if conscious { BODY_CONSCIOUS } else { 0 } | if down { BODY_RAGDOLL } else { 0 };
-            b.mass = if down { MASS_RAGDOLLED } else { MASS_STANDING };
+            b.mass = if p.handled { MASS_HANDLED } else if down { MASS_RAGDOLLED } else { MASS_STANDING };
             for (i, part) in p.parts.iter().take(MAX_ACTOR_PARTS).enumerate() {
                 let rb = &self.world.bodies[part.body];
                 let (_, rot) = from_pose(rb.position());
@@ -1155,8 +1567,10 @@ impl Dummies {
         t
     }
 
-    /// What the creatures hold, for the runtime: each item where it is now, and how it moves.
-    pub fn held_items(&self, attacking: impl Fn(usize) -> bool, blocking: impl Fn(usize) -> bool, feinting: impl Fn(usize) -> bool) -> (ActorItems, Vec<(u32, V3, Q)>) {
+    /// What the creatures hold, for the runtime: each item where it is now, how it moves, and
+    /// whether its hand swings it (`attacking`: by person and hand), guards with it (`blocking`) or
+    /// feints; nothing of that for what the player's hand has hold of too.
+    pub fn held_items(&self, attacking: impl Fn(usize, usize) -> bool, blocking: impl Fn(usize, usize) -> bool, feinting: impl Fn(usize) -> bool) -> (ActorItems, Vec<(u32, V3, Q)>) {
         let mut t: ActorItems = bytemuck::Zeroable::zeroed();
         let mut poses = Vec::new();
         for item in &self.items {
@@ -1174,10 +1588,10 @@ impl Dummies {
                 id: item.id,
                 actor: self.people[who].id,
                 hand: hand as u32,
-                flags: if attacking(who) && !item.shield { AI_ATTACKING } else { 0 }
-                    | if blocking(who) { AI_BLOCKING } else { 0 }
+                flags: if !item.players && attacking(who, hand) { AI_ATTACKING } else { 0 }
+                    | if !item.players && blocking(who, hand) { AI_BLOCKING } else { 0 }
                     | if item.shield { AI_SHIELD } else { 0 }
-                    | if feinting(who) && !item.shield { AI_FEINT } else { 0 },
+                    | if !item.players && feinting(who) && !item.shield { AI_FEINT } else { 0 },
                 vel: from_v(rb.linvel()).to_array(),
                 ang_vel: from_v(rb.angvel()).to_array(),
                 ..Default::default()
@@ -1226,6 +1640,35 @@ impl Dummies {
         self.people[k].parts.get(part).map_or(PART_TORSO, |q| q.kind)
     }
 
+    /// What covers person `k`'s part `part` (`MAT_*`).
+    pub fn part_material(&self, k: usize, part: usize) -> u32 {
+        self.people[k].parts.get(part).map_or(MAT_FLESH, |q| q.material)
+    }
+
+    /// It reels (a stagger of `recoil`, away along `dir`), as a parry's recoil makes it, outside its
+    /// push table.
+    pub fn reel(&mut self, k: usize, recoil: f32, dir: V3) {
+        let now = self.time;
+        let p = &mut self.people[k];
+        if !p.alive || p.balance != Balance::Standing {
+            return;
+        }
+        let local = (p.at.1.inverse() * dir).with_y(0.0).normalize_or(-V3::Z);
+        p.stagger = Some(Stagger { recoil, dir: local, since: now, head: false });
+    }
+
+    /// Every part of person `k` given `impulse` (N s, each part the whole of it).
+    pub fn fling(&mut self, k: usize, impulse: V3) {
+        for part in &self.people[k].parts {
+            self.world.bodies[part.body].apply_impulse(to_v(impulse), true);
+        }
+    }
+
+    /// A roll of the creatures' dice, 0..1.
+    pub fn chance(&mut self) -> f32 {
+        next(&mut self.rng)
+    }
+
     pub fn find(&self, id: u32) -> Option<usize> {
         self.people.iter().position(|p| p.id == id)
     }
@@ -1262,7 +1705,8 @@ impl Dummies {
                 // Its eyes: open, screwed up in pain for a moment after a hit, shut knocked out or
                 // dead, or mid-blink.
                 if i == anim::HEAD {
-                    let shut = !p.alive || matches!(p.balance, Balance::Limp(_));
+                    let blinking = self.time - p.blink > BLINK * 0.25 && self.time - p.blink < BLINK * 0.75;
+                    let shut = !p.alive || matches!(p.balance, Balance::Limp(_)) || p.stun.is_some() || blinking;
                     let pain = self.time - p.hurt_at < 0.75;
                     let h = if shut { 0.004 } else if pain { 0.008 } else { 0.022 };
                     for s in [-1.0f32, 1.0] {
@@ -1331,6 +1775,32 @@ impl Dummies {
     }
 }
 
+/// The handle a hold at `local` (the part's body's own space) on part `i` is on: the neck by the
+/// throat, the mouth on the face's lower front, the skull above, the torso and hips, a shoulder on
+/// an upper arm, a wrist on a forearm, a hand, a leg.
+fn handle_of(i: usize, part: &Part, throat: bool, local: V3) -> Handle {
+    match part.kind {
+        _ if throat => Handle::Neck,
+        PART_HEAD if local.z > part.radius * 0.5 && local.y < 0.03 => Handle::Mouth,
+        PART_HEAD => Handle::Skull,
+        PART_ARM if anim::UPPER_ARM.contains(&i) => Handle::Shoulder,
+        PART_ARM => Handle::Wrist,
+        PART_HAND => Handle::Hand,
+        PART_LEG | PART_FOOT => Handle::Legs,
+        _ => Handle::Torso,
+    }
+}
+
+/// The creatures' own dice (xorshift): 0..1.
+fn next(rng: &mut u32) -> f32 {
+    let mut x = *rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *rng = x;
+    (x as f32) / (u32::MAX as f32)
+}
+
 /// The gore's limb for a part.
 pub fn limb_of(part: usize) -> u32 {
     let left = if [3, 4, 5, 9, 10].contains(&part) { LIMB_LEFT } else { 0 };
@@ -1342,6 +1812,17 @@ pub fn limb_of(part: usize) -> u32 {
         9 | 11 => LIMB_THIGH,
         _ => LIMB_CALF,
     }
+}
+
+/// The impulse along `dir` (a unit vector) at `point` that changes `rb`'s speed there along it by
+/// `dv`: the body's mass as it's felt at the point (turning as well as going), so a light blade
+/// pushed at its tip isn't flung off faster than it was asked to go.
+fn impulse_for(rb: &RigidBody, point: V3, dir: V3, dv: f32) -> V3 {
+    let props = rb.mass_properties();
+    let turn_axis = (point - from_v(props.world_com)).cross(dir);
+    let turning = from_v(props.effective_world_inv_inertia * to_v(turn_axis));
+    let felt = props.effective_inv_mass.x.max(0.0) + turn_axis.dot(turning);
+    dir * dv / felt.max(1e-6)
 }
 
 /// A pin's pull as a joint drive pulls (implicitly: stable however stiff the spring, however light
