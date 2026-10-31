@@ -44,7 +44,25 @@ VOut VSFull(uint id : SV_VertexID) {
     return o;
 }
 
-float4 PSBlit(VOut i) : SV_Target { return float4(tex.Sample(samp, i.uv).rgb, 1); }
+// The game's picture over the pixel's footprint: a game drawn sharper than the headset shows it (the
+// render scale) has more pixels than the headset, and one tap a pixel would skip the ones between
+// (fine far detail flickering in and out as the head moves). Taps spread over the footprint average
+// them, as a mip level would; one tap at the headset's own sharpness or below.
+float4 PSBlit(VOut i) : SV_Target {
+    uint w, h;
+    tex.GetDimensions(w, h);
+    float2 dx = ddx(i.uv), dy = ddy(i.uv);
+    float s = max(length(dx * float2(w, h)), length(dy * float2(w, h)));
+    int n = (int)clamp(ceil(s - 0.01), 1, 4);
+    float3 c = 0;
+    [loop] for (int y = 0; y < n; y++) {
+        [loop] for (int x = 0; x < n; x++) {
+            float2 o = (float2(x, y) + 0.5) / n - 0.5;
+            c += tex.SampleLevel(samp, i.uv + o.x * dx + o.y * dy, 0).rgb;
+        }
+    }
+    return float4(c / (n * n), 1);
+}
 
 // Another camera's view of the game's picture: each pixel's direction looked up in one eye's image
 // (`view_proj` here is that eye's; the camera stands where it was drawn from, so a turn of the

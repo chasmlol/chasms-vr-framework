@@ -93,11 +93,30 @@ WOut VSMain(uint id : SV_VertexID) {
 struct POut { TARGETS };
 struct PDOut { TARGETS float depth : SV_Depth; };
 
-// The picture at `uv` into `o`.
+// The picture over a target pixel's footprint (`dx`, `dy`: how far its `uv` goes a target pixel
+// across and down). A game drawn sharper than the headset shows it (the render scale) has more
+// pixels than the target: one tap a target pixel would skip the ones between, and fine detail (far
+// branches, fences, the far distance) would flicker in and out of the taps as the head moves. Taps
+// spread over the footprint average them, as a mip level would. (One tap at the headset's own
+// sharpness or below.)
+float3 footprint(float2 uv, float2 dx, float2 dy) {
+    float s = max(length(dx * src_info.xy), length(dy * src_info.xy));
+    int n = (int)clamp(ceil(s - 0.01), 1, 4);
+    float3 c = 0;
+    [loop] for (int y = 0; y < n; y++) {
+        [loop] for (int x = 0; x < n; x++) {
+            float2 o = (float2(x, y) + 0.5) / n - 0.5;
+            c += src.SampleLevel(samp, uv + o.x * dx + o.y * dy, 0).rgb;
+        }
+    }
+    return c / (n * n);
+}
+
+// The picture at `uv` into `o` (the bloom and lens are soft: one tap).
 #if BLOOM
-#define SAMPLE(o, uv) o.color = float4(src.SampleLevel(samp, uv, 0).rgb, 1); o.bloom = src_bloom.SampleLevel(samp, uv, 0); o.lens = src_lens.SampleLevel(samp, uv, 0);
+#define SAMPLE(o, uv, dx, dy) o.color = float4(footprint(uv, dx, dy), 1); o.bloom = src_bloom.SampleLevel(samp, uv, 0); o.lens = src_lens.SampleLevel(samp, uv, 0);
 #else
-#define SAMPLE(o, uv) o.color = float4(src.SampleLevel(samp, uv, 0).rgb, 1);
+#define SAMPLE(o, uv, dx, dy) o.color = float4(footprint(uv, dx, dy), 1);
 #endif
 
 // The source picture's point at `uv`, `d` metres along its view; and where a point is in it.
@@ -145,6 +164,9 @@ bool astray(WOut i) {
 PDOut PSMain(WOut i) {
     PDOut o;
     float2 uv = i.uv;
+    // (The footprint from where the grid put the pixel, smooth across the cells; taken before
+    // anything branches.)
+    float2 dx = ddx(i.uv), dy = ddy(i.uv);
     o.z = i.vz;
     o.depth = i.pos.z;
     if (astray(i)) {
@@ -250,17 +272,18 @@ PDOut PSMain(WOut i) {
             o.depth = 0.999998;
         }
     }
-    SAMPLE(o, uv)
+    SAMPLE(o, uv, dx, dy)
     return o;
 }
 
 // The other eye's picture, drawn after: only where the eye's own has nothing real (its edges, what
 // a move uncovers); its own strays are left out.
 POut PSOther(WOut i) {
+    float2 dx = ddx(i.uv), dy = ddy(i.uv);
     if (astray(i)) discard;
     POut o;
     o.z = i.vz;
-    SAMPLE(o, i.uv)
+    SAMPLE(o, i.uv, dx, dy)
     return o;
 }
 
