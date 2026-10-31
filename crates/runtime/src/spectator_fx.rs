@@ -2128,10 +2128,11 @@ fn slider(ui: &mut egui::Ui, label: &str, v: &mut f32, lo: f32, hi: f32, suffix:
     ui.add(egui::Slider::new(v, lo..=hi).text(label).suffix(suffix).fixed_decimals(decimals));
 }
 
-/// The menu's Studio tab: the looks, then every effect with its own strengths. (The desktop
-/// view's own settings, its eye, field of view and smoothing, stay on the Display tab; the aim
-/// zoom's and the view bob's go in the Camera section here once they're merged.)
-pub fn panel(ui: &mut egui::Ui, s: &mut Settings) {
+/// The menu's Studio tab: the looks; what's for viewers; the desktop camera (its field of view,
+/// the overscan that gives it room, its bob as the player walks); then every effect with its own
+/// strengths. (The desktop view's eye and smoothing stay on the Display tab; the aim zoom's goes in
+/// the Camera section here once it's merged.)
+pub fn panel(ui: &mut egui::Ui, s: &mut Settings, status: &crate::menu::Status) {
     ui.label("Effects only the desktop window shows, for recording and streaming: never the headset.");
     ui.horizontal_wrapped(|ui| {
         ui.label("Look");
@@ -2159,6 +2160,31 @@ pub fn panel(ui: &mut egui::Ui, s: &mut Settings) {
     }
     ui.separator();
     ui.label("Camera");
+    // One field of view: the look's lens where it has one (changing it makes the look custom),
+    // else the desktop view's own.
+    let mut deg = if st.lens_fov > 1.0 { st.lens_fov } else { s.spectator.fov };
+    slider(ui, "Desktop field of view", &mut deg, 60.0, 140.0, " deg", 0);
+    if st.lens_fov > 1.0 {
+        st.lens_fov = deg;
+        ui.label(egui::RichText::new("(this look's lens; the Clean look uses your own)").weak());
+    } else {
+        s.spectator.fov = deg;
+    }
+    // (More draws more, in the headset too: for a wider desktop view, in games that can spare it.)
+    slider(ui, "Overscan: the game drawn past the headset's view", &mut s.vr.overscan, 0.0, 30.0, " deg", 0);
+    if s.vr.overscan - status.overscan_shown > 0.5 {
+        ui.label(egui::RichText::new(format!("The game can't change its size while it runs: {:.0} of the {:.0} degrees show now", status.overscan_shown, s.vr.overscan)).weak());
+    }
+    ui.horizontal_wrapped(|ui| {
+        use crate::settings::BobMode;
+        ui.label("Bobs as you walk (never the headset)");
+        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Off, "off");
+        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Generic, "the runtime's");
+        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Game, "the game's own");
+    });
+    if s.desktop_bob.mode != crate::settings::BobMode::Off {
+        slider(ui, "Bob strength", &mut s.desktop_bob.strength, 0.0, 3.0, "x", 2);
+    }
     ui.checkbox(&mut st.motion_blur, "Motion blur");
     if st.motion_blur {
         slider(ui, "Shutter", &mut st.shutter, 0.0, 360.0, " deg", 0);
@@ -2187,7 +2213,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut Settings) {
     }
     ui.separator();
     ui.label("Lens and film");
-    slider(ui, "Field of view (0: the Display tab's)", &mut st.lens_fov, 0.0, 140.0, " deg", 0);
     slider(ui, "Fisheye", &mut st.fisheye, 0.0, 1.0, "", 2);
     slider(ui, "Colour fringes", &mut st.chromatic, 0.0, 1.0, "", 2);
     slider(ui, "Vignette", &mut st.vignette, 0.0, 1.0, "", 2);

@@ -55,6 +55,8 @@ pub struct RuntimeMenu {
     tex: Texture,
     tab: Tab,
     was_down: bool,
+    /// How far the stick has scrolled it since it was last drawn (points).
+    scroll: f32,
     message: String,
     /// Centres of named widgets as panel UVs (tests aim the laser at them).
     widgets: Vec<(String, Vec2)>,
@@ -90,6 +92,7 @@ impl RuntimeMenu {
             tex: Texture::new(gpu, &desc)?,
             tab: Tab::Help,
             was_down: false,
+            scroll: 0.0,
             message: "Changes apply immediately".into(),
             widgets: Vec::new(),
             changed: false,
@@ -115,6 +118,15 @@ impl RuntimeMenu {
 
     pub fn srv(&self) -> &ID3D11ShaderResourceView {
         self.tex.srv.as_ref().unwrap()
+    }
+
+    /// The dominant hand's stick this frame (its forward and back, -1..1), `dt` seconds of it: the
+    /// menu scrolls by it, as the game's own menus do (`menu_scroll` wheel notches a second at full
+    /// tilt), wherever the laser points.
+    pub fn scroll(&mut self, stick: f32, dt: f32, notches_per_second: f32) {
+        // (Past a dead zone, then as far as it's pushed; a notch is a line and a half of the menu.)
+        let past = ((stick.abs() - 0.2) / 0.8).clamp(0.0, 1.0) * stick.signum();
+        self.scroll += past * notches_per_second * 60.0 * dt.clamp(0.0, 0.1);
     }
 
     /// Runs and paints the menu. `pointer`: where the laser hits it (UV) and whether the trigger
@@ -150,6 +162,7 @@ impl RuntimeMenu {
             ..Default::default()
         };
         let before = s.clone();
+        let scroll = std::mem::take(&mut self.scroll);
         let mut tab = self.tab;
         let mut recenter = false;
         let mut holsters = false;
@@ -183,7 +196,11 @@ impl RuntimeMenu {
                     }
                 });
                 ui.separator();
-                egui::ScrollArea::vertical().max_height(size.y - 190.0).show(ui, |ui| match tab {
+                egui::ScrollArea::vertical().max_height(size.y - 190.0).show(ui, |ui| {
+                    if scroll != 0.0 {
+                        ui.scroll_with_delta_animation(egui::vec2(0.0, scroll), egui::style::ScrollAnimation::none());
+                    }
+                    match tab {
                     Tab::Comfort => comfort(ui, s, &mut rects),
                     Tab::Hands => hands(ui, s, &mut rects),
                     Tab::Body => measure = body(ui, s, status, &mut rects),
@@ -191,7 +208,8 @@ impl RuntimeMenu {
                     Tab::Controls => controls(ui, s),
                     Tab::Weapon => weapon(ui, s),
                     Tab::Display => display(ui, s, status),
-                    Tab::Studio => crate::spectator_fx::panel(ui, s),
+                    Tab::Studio => crate::spectator_fx::panel(ui, s, status),
+                    }
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -615,20 +633,10 @@ fn display(ui: &mut egui::Ui, s: &mut Settings, status: &Status) {
         ui.radio_value(&mut s.spectator.eye, crate::settings::Eye::Left, "left eye");
         ui.radio_value(&mut s.spectator.eye, crate::settings::Eye::Right, "right eye (your aiming eye)");
     });
-    slider(ui, "Desktop field of view", &mut s.spectator.fov, 60.0, 140.0, " deg", 0);
+    ui.label(egui::RichText::new("(Its field of view, its bob and its effects are in the Studio tab.)").weak());
     slider(ui, "Desktop camera smoothing", &mut s.spectator.smoothing, 0.0, 0.4, " s", 2);
     slider(ui, "Desktop camera lag at most", &mut s.spectator.max_lag, 0.0, 20.0, " deg", 0);
     ui.checkbox(&mut s.spectator.roll_lock, "Keep the desktop view's horizon level");
-    ui.horizontal(|ui| {
-        use crate::settings::BobMode;
-        ui.label("Desktop view bobs as you walk (never the headset)");
-        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Off, "off");
-        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Generic, "the runtime's");
-        ui.radio_value(&mut s.desktop_bob.mode, BobMode::Game, "the game's own");
-    });
-    if s.desktop_bob.mode != crate::settings::BobMode::Off {
-        slider(ui, "Desktop view's bob strength", &mut s.desktop_bob.strength, 0.0, 3.0, "x", 2);
-    }
     ui.checkbox(&mut s.spectator.fullscreen, "Desktop view opens fullscreen (F11 switches)");
     ui.checkbox(&mut s.ui.obs_view, "OBS in the headset: look at the back of your left wrist, or F9 to pin it");
 }

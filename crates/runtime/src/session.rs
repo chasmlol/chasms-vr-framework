@@ -1430,6 +1430,8 @@ impl Session {
                 game_size: self.targets.as_ref().map(|t| (t.spec.eye_w, t.spec.eye_h)),
                 mirror: self.mirror.shown(),
             };
+            // (The dominant stick scrolls it, as it does the game's menus.)
+            self.menu.scroll(frame.hands[dom].stick[1], frame.dt, self.settings.current.ui.menu_scroll);
             self.menu.update(&self.gpu, &mut self.settings.current, menu_pointer, &status)?;
             if std::mem::take(&mut self.menu.changed)
                 && let Err(e) = self.settings.save() {
