@@ -89,9 +89,12 @@ fn a_hand_pressed_flat_on_a_wall() {
                 grasps: [None; 2],
                 finger_give: give,
                 locomotion: Vec3::ZERO,
+                swim: None,
+                kicks: [None; 2],
                 eye_height: 1.7,
                 floor: 0.0,
                 saddle: None,
+                hands_only: false,
                 settings: &settings,
             });
         }

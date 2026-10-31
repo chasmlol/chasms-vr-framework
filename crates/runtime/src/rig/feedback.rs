@@ -128,6 +128,24 @@ pub enum Cue {
     /// A fingertip coming down on a sheet's face ([`super::sheet`]): a tap, felt only (the game
     /// sounds what the touch does).
     Touch,
+    /// A hand sliding along a weapon's handle ([`super::melee`]): a buzz while it runs, the
+    /// stronger the faster (felt only).
+    Slide,
+    /// A held blade stuck in something moving in it ([`super::embed`]): a short pulse as strong as
+    /// its intensity, each centimetre it goes in or comes out and each two it slides (0.9 going in
+    /// or out, 0.8 sliding; felt only).
+    Penetrate,
+    /// A held weapon rubbing along what it touches: a short pulse each 2 cm it slides (0.8,
+    /// [`super::melee::RUB_PERIOD`]; felt only).
+    Rub,
+    /// Melee hits, heard by what met what (`crate::combat`; their pulses are the combat's own): an
+    /// edge cutting flesh, a point going in, a blunt blow, metal on metal (blades, armour), a blade
+    /// biting wood.
+    HitCut,
+    HitStab,
+    HitBlunt,
+    Clash,
+    Chop,
 }
 
 impl Cue {
@@ -205,6 +223,14 @@ impl Cue {
             Cue::Grind => "grind",
             Cue::GrindStroke => "grind_stroke",
             Cue::Touch => "touch",
+            Cue::Slide => "slide",
+            Cue::Penetrate => "penetrate",
+            Cue::Rub => "rub",
+            Cue::HitCut => "hit_cut",
+            Cue::HitStab => "hit_stab",
+            Cue::HitBlunt => "melee",
+            Cue::Clash => "clash",
+            Cue::Chop => "chop",
         }
     }
 }
@@ -319,6 +345,12 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::GrindStroke => (0.03, 90.0, 0.45),
         // A fingertip on paper: a light, short tap.
         Cue::Touch => (0.012, 220.0, 0.3),
+        // Wood or leather running through a loose fist: a fine, rising buzz.
+        Cue::Slide => (0.015, 180.0 + 120.0 * i, (0.08 + 0.3 * i).min(0.4)),
+        // (Its intensity is its strength.)
+        Cue::Penetrate | Cue::Rub => (0.01, 160.0, 1.0),
+        // (The combat feels its hits itself.)
+        Cue::HitCut | Cue::HitStab | Cue::HitBlunt | Cue::Clash | Cue::Chop => return None,
     })
 
 }

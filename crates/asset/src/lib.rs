@@ -15,6 +15,7 @@
 //! | `recoil/<key>.rvk` | [`Recoil`] of the gun `<key>`, postcard-encoded |
 //! | `fonts/<key>.rvf` | [`Font`]: a game's bitmap font (its atlas a texture here), postcard-encoded |
 //! | `morphs/<key>.rvf` | [`FaceMorphs`] of the model `<key>` (a head and its parts), postcard-encoded |
+//! | `facegen.toml` | [`FaceControls`]: FaceGen's named controls, age and gender (the game's `si.ctl`) |
 //!
 //! Space: model positions are in the game's own model space, converted to left-handed metres with
 //! X right, Y up and Z forward (the same convention as the RustVR protocol). Viewmodels (first-person
@@ -26,7 +27,10 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub mod armour;
+pub mod facegen;
 pub mod rigs;
+
+pub use facegen::{FaceControl, FaceControls, load_face_controls, save_face_controls};
 
 pub const MODEL_EXT: &str = "rvm";
 pub const TEXTURE_EXT: &str = "rvt";

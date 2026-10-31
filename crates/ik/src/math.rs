@@ -13,6 +13,43 @@ pub fn smoothing(dt: f32, tau: f32) -> f32 {
     1.0 - (-dt / tau).exp()
 }
 
+/// A value carried towards its target as a mass on a critically damped spring: where first-order
+/// smoothing (`smoothing`) starts moving at full speed the frame the target moves, this gathers
+/// speed and settles, so a trunk turning or bending after the head has no jolt at either end (the
+/// research: the trunk as a second-order follower, critically damped). Its mean lag is `tau`, a
+/// first-order filter's with the same `tau`. Solved exactly, so stable at any frame time.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Follow {
+    pub value: f32,
+    pub speed: f32,
+}
+
+impl Follow {
+    pub fn new(value: f32) -> Self {
+        Follow { value, speed: 0.0 }
+    }
+
+    /// One frame towards a target `error` away (target minus value: angles can be wrapped first).
+    pub fn step(&mut self, error: f32, dt: f32, tau: f32) -> f32 {
+        if tau <= 0.0 {
+            self.value += error;
+            self.speed = 0.0;
+            return self.value;
+        }
+        if dt <= 0.0 {
+            return self.value;
+        }
+        let w = 2.0 / tau;
+        let (e, v) = (-error, self.speed);
+        let decay = (-w * dt).exp();
+        let k = v + w * e;
+        let e1 = (e + k * dt) * decay;
+        self.speed = (v - w * k * dt) * decay;
+        self.value += e1 - e;
+        self.value
+    }
+}
+
 /// The frame time the filters see: non-finite or negative becomes 0, and long frames are capped
 /// so one hitch can't fling a filter (FRIK clamps to 3 nominal frames).
 pub fn clamp_dt(dt: f32, max_dt: f32) -> f32 {
@@ -93,6 +130,34 @@ mod tests {
         assert!((two - one).abs() < 1e-6);
         assert_eq!(smoothing(0.0, tau), 0.0);
         assert_eq!(smoothing(0.1, 0.0), 1.0);
+    }
+
+    #[test]
+    fn follow_settles_without_a_jolt() {
+        // From rest towards a step: hardly moving the first frame, the target reached and not
+        // passed, and half-way about one lag `tau` in.
+        let (dt, tau) = (1.0 / 90.0, 0.1);
+        let mut f = Follow::new(0.0);
+        let first = f.step(1.0, dt, tau);
+        assert!(first < 0.05, "{first}");
+        let mut half = None;
+        for k in 1..200 {
+            let v = f.step(1.0 - f.value, dt, tau);
+            assert!(v <= 1.0 + 1e-5, "overshot to {v}");
+            if half.is_none() && v > 0.5 {
+                half = Some(k as f32 * dt);
+            }
+        }
+        assert!((f.value - 1.0).abs() < 1e-3 && f.speed.abs() < 1e-2);
+        let half = half.unwrap();
+        assert!((0.5 * tau..1.5 * tau).contains(&half), "{half}");
+        // Frame-rate independent: one long frame lands where several short ones do.
+        let (mut a, mut b) = (Follow::new(0.0), Follow::new(0.0));
+        for _ in 0..4 {
+            a.step(1.0 - a.value, dt, tau);
+        }
+        b.step(1.0, 4.0 * dt, tau);
+        assert!((a.value - b.value).abs() < 1e-4 && (a.speed - b.speed).abs() < 1e-3);
     }
 
     #[test]

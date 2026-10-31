@@ -46,6 +46,8 @@ pub const STRAIN_FULL: f32 = 0.3;
 pub struct Body {
     pub flags: u32,
     pub mass: f32,
+    /// A hold the creature broke free of (its serial; see [`ActorBody::let_go`]).
+    pub let_go: u32,
     pub parts: Vec<Part>,
 }
 
@@ -54,6 +56,7 @@ pub struct Part {
     pub kind: u32,
     pub rot: Option<Quat>,
     pub mass: f32,
+    pub vel: Vec3,
 }
 
 impl Body {
@@ -63,10 +66,10 @@ impl Body {
             .map(|i| {
                 let b = body.map(|b| b.parts[i]).unwrap_or_default();
                 let q = Quat::from_array(b.rot);
-                Part { kind: actor.parts[i].kind, rot: (q.length_squared() > 0.5 && q.is_finite()).then(|| q.normalize()), mass: b.mass }
+                Part { kind: actor.parts[i].kind, rot: (q.length_squared() > 0.5 && q.is_finite()).then(|| q.normalize()), mass: b.mass, vel: Vec3::from_array(b.vel) }
             })
             .collect();
-        Body { flags: body.map_or(0, |b| b.flags), mass: body.map_or(0.0, |b| b.mass), parts }
+        Body { flags: body.map_or(0, |b| b.flags), mass: body.map_or(0.0, |b| b.mass), let_go: body.map_or(0, |b| b.let_go), parts }
     }
 
     pub fn grabbable(&self) -> bool {

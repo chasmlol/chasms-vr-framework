@@ -506,7 +506,9 @@ impl GoreGpu {
         }
         if !self.textures.contains_key(name) {
             let (game, key) = name.split_once('/').unwrap_or(("", name));
-            let loaded = asset::load_texture(&self.root.join(game), key)
+            // A game with no blood art of its own names the runtime's (`builtin/splat`).
+            let found = if game == "builtin" { Ok(builtin_splat(key)) } else { asset::load_texture(&self.root.join(game), key) };
+            let loaded = found
                 .and_then(|t| Ok(Loaded { color: mean_color(&t), tex: crate::render::upload_texture(gpu, &t)? }))
                 .map_err(|e| tracing::warn!("gore: texture {name}: {e:#}"))
                 .ok();
@@ -690,6 +692,45 @@ impl GoreGpu {
             ctx.PSSetShaderResources(19, Some(&[None]));
         }
     }
+}
+
+/// The runtime's own blood splat, for a game with no art of its own (`builtin/<anything>`): a dark
+/// red blot with a ragged edge and a few spatters round it, its alpha the shape.
+fn builtin_splat(seed: &str) -> asset::Texture {
+    const N: usize = 64;
+    let mut rng = seed.bytes().fold(0x9E37_79B9u32, |h, b| h.rotate_left(5) ^ b as u32).max(1);
+    let mut next = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 17;
+        rng ^= rng << 5;
+        rng as f32 / u32::MAX as f32
+    };
+    // The blot's ragged radius by angle, and a handful of spatters.
+    let lobes: Vec<f32> = (0..9).map(|_| 0.75 + 0.35 * next()).collect();
+    let spatters: Vec<(f32, f32, f32)> = (0..7).map(|_| (next() * 2.0 - 1.0, next() * 2.0 - 1.0, 0.04 + 0.07 * next())).collect();
+    let mut data = vec![0u8; N * N * 4];
+    for y in 0..N {
+        for x in 0..N {
+            let (u, v) = ((x as f32 + 0.5) / N as f32 * 2.0 - 1.0, (y as f32 + 0.5) / N as f32 * 2.0 - 1.0);
+            let r = (u * u + v * v).sqrt();
+            let a = v.atan2(u) / std::f32::consts::TAU * lobes.len() as f32;
+            let (i, f) = (a.rem_euclid(lobes.len() as f32).floor() as usize, a.rem_euclid(1.0));
+            let edge = 0.62 * (lobes[i] * (1.0 - f) + lobes[(i + 1) % lobes.len()] * f);
+            let mut alpha = ((edge - r) / 0.06).clamp(0.0, 1.0);
+            for &(sx, sy, sr) in &spatters {
+                let d = ((u - sx * 0.85).powi(2) + (v - sy * 0.85).powi(2)).sqrt();
+                alpha = alpha.max(((sr - d) / 0.02).clamp(0.0, 1.0));
+            }
+            // Darker towards its middle, where it's thickest.
+            let shade = 1.0 - 0.35 * (1.0 - r).clamp(0.0, 1.0);
+            let o = (y * N + x) * 4;
+            data[o] = (150.0 * shade) as u8;
+            data[o + 1] = (8.0 * shade) as u8;
+            data[o + 2] = (6.0 * shade) as u8;
+            data[o + 3] = (alpha * 255.0) as u8;
+        }
+    }
+    asset::Texture { version: 1, source: format!("builtin/{seed}"), width: N as u32, height: N as u32, format: asset::TexFormat::Rgba8, mips: vec![data], faces: 1 }
 }
 
 /// Runs of equal keys in a sorted list: (key, first, count).

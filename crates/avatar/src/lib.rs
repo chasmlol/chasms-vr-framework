@@ -51,6 +51,7 @@ pub mod armour;
 pub mod collimator;
 pub mod cor;
 pub mod facegen;
+pub mod sculpt;
 pub mod fit;
 pub mod gamebryo;
 pub mod gore;
@@ -219,6 +220,9 @@ pub struct MeshExtras {
     pub face_detail: Option<String>,
     /// The hair's tint ([`asset::Shader::GamebryoHair`]).
     pub hair_tint: Option<[f32; 3]>,
+    /// A FaceGen part's shape as the face moves it ([`facegen::FaceShape`]): the mesh is drawn
+    /// again as the face changes live ([`Avatar::set_face_shape`]).
+    pub shape: Option<Arc<facegen::FaceShape>>,
 }
 
 /// The game's lighting for this frame, to shade the body exactly as the game shades its own
@@ -306,6 +310,18 @@ impl Avatar {
         if let Some(a) = &mut self.arms {
             a.gaze = at;
         }
+    }
+
+    /// Draws `face` on the body's FaceGen parts from now on, without putting it together again (a
+    /// face shaped by hand, live; None: the face it was put together with).
+    pub fn set_face_shape(&mut self, face: Option<Arc<facegen::FaceNow>>) {
+        self.body.face = face;
+    }
+
+    /// Where the bone `name` is as `frame` poses the body (with its head, as a mirror shows it): its
+    /// skinning matrix, bind model space -> tracking space.
+    pub fn bone_skin(&mut self, frame: &AvatarFrame, name: &str) -> Option<Mat4> {
+        self.renderer.bone_skin(frame, &mut self.body, name)
     }
 
     /// The model's hands' size (wrist to the middle finger's knuckle, metres, its bind pose).
@@ -710,6 +726,7 @@ impl HeldModel {
             material: Some(paper()),
             depth_slack: 0.0,
             centres: Vec::new(),
+            shape: None,
         };
         let mut meshes = vec![mesh("sheet face", quad(half.y + OVER, [0.0, 0.0, 1.0, 1.0]), placeholder.clone())];
         if let Some((t, uv)) = back {
@@ -745,6 +762,8 @@ pub(crate) struct SourceMesh {
     pub depth_slack: f32,
     /// Its vertices' centres of rotation ([`Centres`]); empty: not worked out yet.
     pub centres: Vec<[f32; 4]>,
+    /// A FaceGen part's shape as the face moves it: its vertices are rewritten as the face changes.
+    pub shape: Option<Arc<facegen::FaceShape>>,
 }
 
 pub(crate) struct SourceMaterial {
@@ -810,6 +829,7 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
     // (What's worn first, then the body under it, from this mesh on.)
     let (worn, under): (Vec<&String>, Vec<&String>) = parts.iter().partition(|k| !k.ends_with(rustvr_protocol::UNDER));
     let mut first_under = usize::MAX;
+    let mut face_parts = 0usize;
     for (key, is_under) in worn.into_iter().map(|k| (k.as_str(), false)).chain(under.into_iter().map(|k| (k.trim_end_matches(rustvr_protocol::UNDER), true))) {
         if is_under && first_under == usize::MAX {
             first_under = model.meshes.len();
@@ -825,13 +845,19 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
         // The face, on a part made to it (before the part is put on this skeleton: its morphs are
         // in the part's own bind pose).
         let mut face_tex = None;
+        // (Its shape with no face on it and each coordinate's move, kept for changing the face live.)
+        let mut shape: Option<(usize, facegen::FaceShape)> = None;
         if let Some(f) = face
             && asset::has_morphs(dir, key)
         {
             match cached::morphs(dir, key) {
                 Ok(m) => {
                     if let Some(mesh) = part.meshes.get_mut(m.mesh as usize) {
+                        let rest = mesh.vertices.iter().map(|v| v.pos).collect();
                         facegen::morph_mesh(mesh, &m, &f.coords);
+                        let fit = |set: &Vec<Vec<[f32; 3]>>| set.iter().map(|d| (0..mesh.vertices.len()).map(|i| d.get(i).copied().unwrap_or([0.0; 3])).collect()).collect();
+                        shape = Some((m.mesh as usize, facegen::FaceShape { part: face_parts, rest, symmetric: fit(&m.symmetric), asymmetric: fit(&m.asymmetric) }));
+                        face_parts += 1;
                     }
                     face_tex = m.texture.as_ref().map(|t| (m.mesh as usize, facegen::morph_texture(t, &f.coords.texture_symmetric)));
                 }
@@ -839,11 +865,27 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             }
         }
         if part.bones.len() != model.bones.len() || part.bones.iter().zip(&model.bones).any(|(a, b)| a.name != b.name) {
+            // (The face's moves go onto the skeleton as the vertices they move do.)
+            if let Some((mesh, s)) = shape.as_mut()
+                && let Ok(moves) = rebind_moves(&part, &model.bones)
+                && let Some(moves) = moves.get(*mesh)
+            {
+                for (i, m) in moves.iter().enumerate() {
+                    let Some(m) = m else { continue };
+                    if let Some(p) = s.rest.get_mut(i) {
+                        *p = m.transform_point3(glam::Vec3::from_array(*p)).to_array();
+                    }
+                    for d in s.symmetric.iter_mut().chain(s.asymmetric.iter_mut()).filter_map(|d| d.get_mut(i)) {
+                        *d = m.transform_vector3(glam::Vec3::from_array(*d)).to_array();
+                    }
+                }
+            }
             if let Err(e) = rebind(&mut part, &model.bones) {
                 tracing::warn!("avatar: part {key} isn't skinned to the skeleton {skeleton}: {e:#}: left out");
                 continue;
             }
         }
+        let mut shape = shape.map(|(mesh, s)| (mesh, Arc::new(s)));
         for k in 0..3 {
             lo[k] = lo[k].min(part.bounds_min[k]);
             hi[k] = hi[k].max(part.bounds_max[k]);
@@ -870,6 +912,9 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
             swap(&mut m.material.bump);
             swap(&mut m.material.detail);
             let mut x = MeshExtras::default();
+            if shape.as_ref().is_some_and(|(mesh, _)| *mesh == i) {
+                x.shape = shape.take().map(|(_, s)| s);
+            }
             if let Some(f) = face {
                 if face_tex.as_ref().is_some_and(|(mesh, _)| *mesh == i) {
                     x.face = face_tex.take().map(|(_, t)| t);
@@ -979,6 +1024,72 @@ pub fn compose(dir: &std::path::Path, skeleton: &str, parts: &[String], swaps: &
     Ok(AvatarSource::Composed { model, textures, extras, skinning: Some(Skin { centres, copies }) })
 }
 
+/// A body's face on its own ([`face_source`]): the FaceGen parts of a body put together with a face
+/// (the head and what's made to it: ears, mouth, teeth, tongue, eyes, hair), each mesh with its
+/// shape ([`MeshExtras::shape`]), its textures and shading, in the body's model space (bind pose);
+/// and the bone that carries the head. For a copy of the head to shape by hand ([`HeldModel::face`]),
+/// and the shapes for finding where a hand is on it.
+#[derive(Clone)]
+pub struct FaceSource {
+    pub meshes: Vec<(asset::Mesh, MeshExtras)>,
+    pub textures: HashMap<String, Arc<asset::Texture>>,
+    /// The head's bone (the one most of the face's vertices ride), its name and bind pose (model
+    /// space).
+    pub head: (String, Mat4),
+}
+
+impl FaceSource {
+    /// The face's shapes, by part ([`facegen::FaceShape::part`]), each with its mesh's triangles.
+    pub fn shapes(&self) -> Vec<(Arc<facegen::FaceShape>, &[u32])> {
+        let mut out: Vec<(Arc<facegen::FaceShape>, &[u32])> = self.meshes.iter().filter_map(|(m, x)| x.shape.clone().map(|s| (s, m.indices.as_slice()))).collect();
+        out.sort_by_key(|(s, _)| s.part);
+        out
+    }
+}
+
+/// The face of a body [`compose`] put together with one, if it has one.
+pub fn face_source(source: &AvatarSource) -> Option<FaceSource> {
+    let AvatarSource::Composed { model, textures, extras, .. } = source else { return None };
+    let meshes: Vec<(asset::Mesh, MeshExtras)> = model.meshes.iter().zip(extras).filter(|(_, x)| x.shape.is_some()).map(|(m, x)| (m.clone(), x.clone())).collect();
+    if meshes.is_empty() {
+        return None;
+    }
+    let mut weight = vec![0u64; model.bones.len()];
+    for v in meshes.iter().flat_map(|(m, _)| &m.vertices) {
+        for k in 0..4 {
+            if let Some(w) = weight.get_mut(v.bones[k] as usize) {
+                *w += v.weights[k] as u64;
+            }
+        }
+    }
+    let head = (0..weight.len()).max_by_key(|&b| weight[b])?;
+    let bone = &model.bones[head];
+    let keys: std::collections::HashSet<&String> = meshes.iter().flat_map(|(m, x)| [&m.texture, &m.material.bump, &m.material.detail, &m.material.env].into_iter().chain(x.face_detail.as_ref())).collect();
+    let textures = textures.iter().filter(|(k, _)| keys.contains(k)).map(|(k, t)| (k.clone(), t.clone())).collect();
+    Some(FaceSource { meshes, textures, head: (bone.name.clone(), Mat4::from_cols_array(&bone.model_matrix)) })
+}
+
+impl HeldModel {
+    /// A face on its own ([`FaceSource`]) as a held model of one part, in the body's model space:
+    /// drawn as the body draws it (its textures, the game's FaceGen blend, the hair's tint), its
+    /// FaceGen parts reshaped live ([`HeldModel::set_face`]).
+    pub fn face(gpu: &Gpu, face: &FaceSource) -> Result<HeldModel> {
+        let model = asset::Model { source: "a face".into(), meshes: face.meshes.iter().map(|(m, _)| m.clone()).collect(), ..Default::default() };
+        let extras = face.meshes.iter().map(|(_, x)| x.clone()).collect();
+        let source = from_model_with(model, extras, None, |key| face.textures.get(key).cloned());
+        let meshes = source
+            .meshes
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let name = m.name.clone();
+                (m, HeldMeshInfo { part: 0, source: i, name, special: false }, None)
+            })
+            .collect();
+        render::HeldModel::new(gpu, meshes)
+    }
+}
+
 /// What [`compose`] loads from an asset cache folder, kept as loaded: a character creator puts the
 /// same parts together again at every slider's move, and the files are big (a head's texture morphs
 /// are ten megabytes). Forgotten all at once past a few hundred things.
@@ -1059,32 +1170,19 @@ fn eye_bone(bones: &mut Vec<asset::Bone>, part: &mut asset::Model, side: usize) 
 /// sum of each bone's move, as the game skins a part to whatever skeleton it's on), and its bone
 /// indices become this skeleton's. An error when a bone the part is weighted to isn't in it.
 pub fn rebind(part: &mut asset::Model, bones: &[asset::Bone]) -> Result<()> {
-    use glam::{Mat4, Vec3};
+    use glam::Vec3;
     let by_name: HashMap<String, usize> = bones.iter().enumerate().map(|(i, b)| (b.name.to_ascii_lowercase(), i)).collect();
     let to: Vec<Option<usize>> = part.bones.iter().map(|b| by_name.get(&b.name.to_ascii_lowercase()).copied()).collect();
-    // Each of the part's bones' move: off its bind pose, onto this skeleton's.
-    let moves: Vec<Option<Mat4>> = part
-        .bones
-        .iter()
-        .zip(&to)
-        .map(|(b, t)| t.map(|t| Mat4::from_cols_array(&bones[t].model_matrix) * Mat4::from_cols_array(&b.model_matrix).inverse()))
-        .collect();
+    let moves = rebind_moves(part, bones)?;
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-    for m in &mut part.meshes {
-        for v in &mut m.vertices {
-            let total: u32 = v.weights.iter().map(|&w| w as u32).sum();
-            if total > 0 {
-                let mut sum = Mat4::ZERO;
+    for (m, moves) in part.meshes.iter_mut().zip(moves) {
+        for (v, sum) in m.vertices.iter_mut().zip(moves) {
+            if let Some(sum) = sum {
                 for k in 0..4 {
-                    if v.weights[k] == 0 {
-                        continue;
+                    if v.weights[k] > 0 {
+                        let t = to.get(v.bones[k] as usize).copied().flatten().context("a bone the skeleton hasn't")?;
+                        v.bones[k] = u8::try_from(t).context("a bone past the 256th")?;
                     }
-                    let b = v.bones[k] as usize;
-                    let (Some(mv), Some(t)) = (moves.get(b).copied().flatten(), to.get(b).copied().flatten()) else {
-                        anyhow::bail!("the skeleton has no {}", part.bones.get(b).map_or("(bone)", |b| b.name.as_str()));
-                    };
-                    sum += mv * (v.weights[k] as f32 / total as f32);
-                    v.bones[k] = u8::try_from(t).context("a bone past the 256th")?;
                 }
                 let p = sum.transform_point3(Vec3::from_array(v.pos));
                 v.pos = p.to_array();
@@ -1099,6 +1197,48 @@ pub fn rebind(part: &mut asset::Model, bones: &[asset::Bone]) -> Result<()> {
         (part.bounds_min, part.bounds_max) = (lo.to_array(), hi.to_array());
     }
     Ok(())
+}
+
+/// How [`rebind`] moves each vertex of a part onto the skeleton `bones` (by mesh, then vertex): the
+/// weighted sum of its bones' moves off the part's bind pose onto the skeleton's (None: a vertex
+/// no bone moves). An error when a bone a vertex is weighted to isn't the skeleton's.
+pub fn rebind_moves(part: &asset::Model, bones: &[asset::Bone]) -> Result<Vec<Vec<Option<glam::Mat4>>>> {
+    use glam::Mat4;
+    let by_name: HashMap<String, usize> = bones.iter().enumerate().map(|(i, b)| (b.name.to_ascii_lowercase(), i)).collect();
+    let to: Vec<Option<usize>> = part.bones.iter().map(|b| by_name.get(&b.name.to_ascii_lowercase()).copied()).collect();
+    // Each of the part's bones' move: off its bind pose, onto this skeleton's.
+    let moves: Vec<Option<Mat4>> = part
+        .bones
+        .iter()
+        .zip(&to)
+        .map(|(b, t)| t.map(|t| Mat4::from_cols_array(&bones[t].model_matrix) * Mat4::from_cols_array(&b.model_matrix).inverse()))
+        .collect();
+    part.meshes
+        .iter()
+        .map(|m| {
+            m.vertices
+                .iter()
+                .map(|v| {
+                    let total: u32 = v.weights.iter().map(|&w| w as u32).sum();
+                    if total == 0 {
+                        return Ok(None);
+                    }
+                    let mut sum = Mat4::ZERO;
+                    for k in 0..4 {
+                        if v.weights[k] == 0 {
+                            continue;
+                        }
+                        let b = v.bones[k] as usize;
+                        let Some(mv) = moves.get(b).copied().flatten() else {
+                            anyhow::bail!("the skeleton has no {}", part.bones.get(b).map_or("(bone)", |b| b.name.as_str()));
+                        };
+                        sum += mv * (v.weights[k] as f32 / total as f32);
+                    }
+                    Ok(Some(sum))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// The skeleton of the built-in mannequin (Unity humanoid names, bound in the reference T-pose),
@@ -1171,7 +1311,7 @@ fn from_model_with(model: asset::Model, extras: Vec<MeshExtras>, centres: Option
                     hair_tint: x.hair_tint,
                 })
             });
-            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material, depth_slack: 0.0, centres }
+            SourceMesh { name: m.name, vertices: m.vertices, indices: m.indices, texture, tint: [1.0; 3], material, depth_slack: 0.0, centres, shape: x.shape }
         })
         .collect();
     Source { bones: model.bones, meshes, copies: Vec::new() }

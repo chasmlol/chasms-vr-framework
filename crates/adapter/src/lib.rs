@@ -184,6 +184,15 @@ impl Adapter {
         self.last_frame.as_ref()
     }
 
+    /// Says the adapter is alive while the game isn't calling it: a load blocking the game's main
+    /// thread between two of its frames. The runtime counts an adapter gone after
+    /// [`HEARTBEAT_TIMEOUT_MS`] without a beat, and lets go of the picture it was showing.
+    pub fn heartbeat(&self) {
+        if let Some(l) = &self.link {
+            l.heartbeat_adapter();
+        }
+    }
+
     fn maintain(&mut self) {
         let now = std::time::Instant::now();
         if self.link.is_none() {
@@ -540,6 +549,49 @@ impl Adapter {
         }
     }
 
+    /// The melee weapons' handles and damagers, with the game's numbers (see [`MeleeWeapons`]):
+    /// when they change.
+    pub fn write_melee_weapons(&self, table: &MeleeWeapons) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_melee_weapons(table);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What the game's creatures hold (see [`ActorItems`]): every frame, with the actors.
+    pub fn write_actor_items(&self, items: &ActorItems) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_actor_items(items);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The game's rules for the player's melee (see [`MeleeRules`]): when they change.
+    pub fn write_melee_rules(&self, rules: &MeleeRules) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_melee_rules(rules);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The player's melee side this frame (see [`RtMelee`]): how fast the game's time should run,
+    /// the arms' climbing, stamina spent, imbuing.
+    pub fn read_rt_melee(&self, out: &mut RtMelee) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_rt_melee_into(out),
+            _ => false,
+        }
+    }
+
     /// The bowls the hands make things in (see [`Receptacles`]): when they change.
     pub fn write_receptacles(&self, table: &Receptacles) -> bool {
         match &self.link {
@@ -636,6 +688,15 @@ impl Adapter {
                 l.write_face(face);
                 true
             }
+            _ => false,
+        }
+    }
+
+    /// The face as the player's hands have shaped it (see [`FaceSculpt`]), while the face says it
+    /// may be ([`FACE_SCULPT`]): false when there's none (nothing written yet).
+    pub fn read_face_sculpt(&self, out: &mut FaceSculpt) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_face_sculpt_into(out) && out.seq != 0,
             _ => false,
         }
     }

@@ -179,9 +179,12 @@ fn hands_close_on_what_they_take() {
                 grasps: [None, grasp.as_ref()],
                 finger_give: [[0.0; 5]; 2],
                 locomotion: Vec3::ZERO,
+                swim: None,
+                kicks: [None; 2],
                 eye_height: 1.7,
                 floor: 0.0,
                 saddle: None,
+                hands_only: false,
                 settings: &settings,
             });
         }

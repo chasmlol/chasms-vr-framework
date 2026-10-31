@@ -10,6 +10,12 @@
 //! Reprojected`). Everything the runtime draws (the body, hands, guns, the laser, panels) is drawn
 //! again from the camera itself. In the framework view the window shows that view too.
 //!
+//! While the player aims ([`AimZoom`]), the field of view eases down to `aim_fov`, as a flat game's
+//! does aiming down the sights, and back after: a gun whose sights line up with the aiming eye, a
+//! bow drawn with its string hand anchored at the cheek. It's the same view narrowed, nothing else
+//! (no scope's picture); the camera is steadied the more for it, and the headset's view never
+//! changes.
+//!
 //! The window never takes focus when it opens. F11 switches it to borderless fullscreen on the
 //! monitor it's on and back; it opens sized to fit its monitor.
 
@@ -73,6 +79,129 @@ pub fn fov(degrees: f32, aspect: f32) -> Fov {
 /// The middle of the two eyes.
 pub fn between(eyes: &[Pose; 2]) -> Vec3 {
     (Vec3::from_array(eyes[0].pos) + Vec3::from_array(eyes[1].pos)) * 0.5
+}
+
+/// A gun's line of sight passes this near the aiming eye to aim (metres): its sights line up with
+/// that eye. Staying aimed, a little further: the head and hands shake a little.
+const SIGHT_IN: f32 = 0.025;
+const SIGHT_OUT: f32 = 0.045;
+/// ... its sights no further ahead of the eye than this (metres): a pistol held out at arm's
+/// length is aimed, a gun lined up by chance across the room isn't.
+const SIGHT_REACH: f32 = 0.75;
+/// The gun, or the bow, no further off where the head looks than this (cosines: about 25 degrees
+/// in, 37 staying), as the runtime's own aiming down the sights has it (`mechanics`).
+const LOOK_IN: f32 = 0.9;
+const LOOK_OUT: f32 = 0.8;
+/// A gun stays aimed through a burst, as a flat game's aim does: firing, and for this long after
+/// while the gun comes back (s), while its sights are this near the eye (metres) and it points this
+/// near where the head looks (a cosine: 60 degrees). A burst kicks the gun back and its sights off
+/// the eye, and its muzzle up (the range's rifle in one hand, held still: 5.5 cm and 44 degrees in
+/// two seconds), and the zoom pumping out and in with it would be worse than its staying
+/// (`mechanics` keeps aiming down the sights through a burst too).
+const RECOVER: f32 = 0.5;
+const SIGHT_FIRING: f32 = 0.12;
+const LOOK_FIRING: f32 = 0.5;
+/// A bow: drawn past this share of its full draw, ...
+const DRAW_IN: f32 = 0.5;
+const DRAW_OUT: f32 = 0.4;
+/// ... the string hand anchored this near the archer's anchor (metres): from the cheekbone to
+/// under the jaw, all within it; a hand drawn to the chest isn't.
+const ANCHOR_IN: f32 = 0.12;
+const ANCHOR_OUT: f32 = 0.17;
+/// (The anchor: the corner of the mouth, about this far under the aiming eye, metres.)
+const ANCHOR_DROP: f32 = 0.06;
+/// ... and the bow arm out, its grip at least this far from the eye (metres).
+const ARM_IN: f32 = 0.4;
+const ARM_OUT: f32 = 0.32;
+/// The zoom goes in once the player has aimed this long, and out once they've stopped this long
+/// (s): a sight sweeping past the eye doesn't flash it, and a frame's tracking slip doesn't drop it.
+const HOLD_IN: f32 = 0.15;
+const HOLD_OUT: f32 = 0.12;
+
+/// What the player holds up to aim with, tracking space ([`AimZoom::update`]).
+#[derive(Clone, Copy, Debug)]
+pub enum Aim {
+    /// A gun: a point on its line of sight (through its rear sight, or its bore when it has no
+    /// sights) and the line's way, and whether it's firing (its trigger held; [`AimZoom`] has it
+    /// firing a moment longer, while it comes back from the kick).
+    Gun { sight: Vec3, dir: Vec3, firing: bool },
+    /// A bow drawn with an arrow on its string: the draw's share of its full draw, where the string
+    /// hand pinches the string, and where the bow hand grips the bow.
+    Bow { draw: f32, string: Vec3, grip: Vec3 },
+}
+
+/// Whether `aim` is aimed from the aiming eye at `eye` with the head turned `head`: `strict` to
+/// start aiming, else the looser test of staying aimed.
+pub fn aimed(aim: &Aim, eye: Vec3, head: Quat, strict: bool) -> bool {
+    let pick = |going_in: f32, staying: f32| if strict { going_in } else { staying };
+    let look = head * Vec3::Z;
+    match *aim {
+        Aim::Gun { sight, dir, firing } => {
+            let dir = dir.normalize_or_zero();
+            let to = sight - eye;
+            let ahead = to.dot(dir);
+            let off = (to - dir * ahead).length();
+            let (sight_out, look_out) = if firing { (SIGHT_FIRING, LOOK_FIRING) } else { (SIGHT_OUT, LOOK_OUT) };
+            off < pick(SIGHT_IN, sight_out) && (-0.05..SIGHT_REACH).contains(&ahead) && dir.dot(look) > pick(LOOK_IN, look_out)
+        }
+        Aim::Bow { draw, string, grip } => {
+            let anchor = eye - head * Vec3::Y * ANCHOR_DROP;
+            let out = grip - eye;
+            draw > pick(DRAW_IN, DRAW_OUT)
+                && string.distance(anchor) < pick(ANCHOR_IN, ANCHOR_OUT)
+                && out.length() > pick(ARM_IN, ARM_OUT)
+                && out.normalize_or_zero().dot(look) > pick(LOOK_IN, LOOK_OUT)
+        }
+    }
+}
+
+/// The desktop view's zoom while the player aims (`aim_zoom`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AimZoom {
+    /// Aiming, as the zoom has it (after the holds).
+    aiming: bool,
+    /// How long the player has done otherwise (s).
+    changing: f32,
+    /// How far in the zoom is, before it's eased (0 out, 1 all the way in).
+    t: f32,
+    /// Seconds since the gun last fired.
+    since_fired: f32,
+}
+
+impl AimZoom {
+    /// This frame's zoom, 0 (none) to 1 (all the way in), eased: `aim` what the player holds up to
+    /// aim with, if anything; `eye` the aiming eye; `head` the head's turn.
+    pub fn update(&mut self, aim: Option<Aim>, eye: Vec3, head: Quat, dt: f32, s: &Settings) -> f32 {
+        self.since_fired = if matches!(aim, Some(Aim::Gun { firing: true, .. })) { 0.0 } else { self.since_fired + dt };
+        let aim = aim.map(|a| match a {
+            Aim::Gun { sight, dir, .. } => Aim::Gun { sight, dir, firing: self.since_fired < RECOVER },
+            bow => bow,
+        });
+        let now = s.aim_zoom && aim.is_some_and(|a| aimed(&a, eye, head.normalize(), !self.aiming));
+        if now == self.aiming {
+            self.changing = 0.0;
+        } else {
+            self.changing += dt;
+            if self.changing >= if now { HOLD_IN } else { HOLD_OUT } {
+                self.aiming = now;
+                self.changing = 0.0;
+                tracing::info!("desktop view: {}", if now { "aiming, zooming in" } else { "not aiming, zooming out" });
+            }
+        }
+        let rate = if self.aiming { 1.0 / s.aim_in.max(0.01) } else { -1.0 / s.aim_out.max(0.01) };
+        self.t = (self.t + rate * dt).clamp(0.0, 1.0);
+        // (Smooth at both ends: it starts gently and settles gently.)
+        self.t * self.t * (3.0 - 2.0 * self.t)
+    }
+}
+
+/// The desktop view's settings `k` of the way zoomed in for aiming: its field of view narrowed
+/// towards `aim_fov`, and its camera steadied as many times more as the view is narrowed (the
+/// head's small shakes show that much more in it).
+pub fn zoomed(s: &Settings, k: f32) -> Settings {
+    let fov = s.fov + (s.aim_fov - s.fov) * k.clamp(0.0, 1.0);
+    let steadier = (s.fov / fov.max(1.0)).max(1.0);
+    Settings { fov, smoothing: s.smoothing * steadier, max_lag: s.max_lag * steadier, ..s.clone() }
 }
 
 #[cfg(windows)]

@@ -25,9 +25,10 @@ pub fn standing_head() -> Pose {
     head(Vec3::new(0.0, EYE, 0.0), 0.0, 0.0)
 }
 
-/// Eyes to the default skeleton's neck pivot, in head space (0.13 m, Parger).
+/// Eyes to the default skeleton's head joint (where the skull turns on the neck), in head space.
 pub fn eye_to_neck() -> Vec3 {
-    Vec3::new(0.0, -0.075, -0.0805).normalize() * 0.13
+    let [down, back] = BodyParams::default().head_pivot;
+    Vec3::new(0.0, -down, -back)
 }
 
 /// A head turned about the standing neck pivot, the way a real head turns (the eyes swing).
@@ -55,10 +56,11 @@ pub fn gun_grip(pos: Vec3, dir: Vec3, handle: f32) -> Pose {
     Pose { pos, rot: aim(dir) * Quat::from_rotation_x(-deg(handle)) }
 }
 
-/// A fist hanging at the side, the controller pointing forward.
+/// A fist hanging at the side, the controller pointing forward: the wrist at 0.48 of stature
+/// (ANSUR II), the grip 8 cm below it.
 pub fn hanging_grip(side: Side) -> Pose {
     let x = if side == Side::Left { -0.22 } else { 0.22 };
-    Pose { pos: Vec3::new(x, 0.76, -0.03), rot: Quat::IDENTITY }
+    Pose { pos: Vec3::new(x, 0.79, -0.03), rot: Quat::IDENTITY }
 }
 
 /// The named poses the gallery draws and the gun-pose tests check.
@@ -127,7 +129,7 @@ pub const POSES: [&str; 11] = [
 ];
 
 pub fn input(head: Pose, left: Option<Pose>, right: Option<Pose>) -> TrackedInput {
-    TrackedInput { dt: DT, head, grips: [left, right], locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], swim: None }
+    TrackedInput { dt: DT, head, grips: [left, right], locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], shoulders: [None; 2], swim: None, kicks: [None; 2] }
 }
 
 pub fn solver() -> BodySolver {

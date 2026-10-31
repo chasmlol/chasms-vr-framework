@@ -363,6 +363,13 @@ impl Link {
     pub fn read_face_into(&self, out: &mut FaceDesc) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_FACE), out) }
     }
+    /// Runtime: the face as the hands have shaped it ([`FaceSculpt`]).
+    pub fn write_face_sculpt(&self, v: &FaceSculpt) {
+        unsafe { seq_write(self.base.add(OFF_FACE_SCULPT), v) }
+    }
+    pub fn read_face_sculpt_into(&self, out: &mut FaceSculpt) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_FACE_SCULPT), out) }
+    }
     /// Adapter: what the things it offers are ([`ItemInfos`]).
     pub fn write_item_infos(&self, v: &ItemInfos) {
         unsafe { seq_write(self.base.add(OFF_ITEM_INFO), v) }
@@ -430,6 +437,34 @@ impl Link {
     }
     pub fn read_cards_into(&self, out: &mut Cards) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_CARDS), out) }
+    }
+    /// Adapter: its melee weapons' handles and damagers ([`MeleeWeapons`]).
+    pub fn write_melee_weapons(&self, v: &MeleeWeapons) {
+        unsafe { seq_write(self.base.add(OFF_MELEE_WEAPONS), v) }
+    }
+    pub fn read_melee_weapons_into(&self, out: &mut MeleeWeapons) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_MELEE_WEAPONS), out) }
+    }
+    /// Adapter: what its creatures hold, every frame ([`ActorItems`]).
+    pub fn write_actor_items(&self, v: &ActorItems) {
+        unsafe { seq_write(self.base.add(OFF_ACTOR_ITEMS), v) }
+    }
+    pub fn read_actor_items_into(&self, out: &mut ActorItems) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_ACTOR_ITEMS), out) }
+    }
+    /// Adapter: its rules for the player's melee ([`MeleeRules`]).
+    pub fn write_melee_rules(&self, v: &MeleeRules) {
+        unsafe { seq_write(self.base.add(OFF_MELEE_RULES), v) }
+    }
+    pub fn read_melee_rules_into(&self, out: &mut MeleeRules) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_MELEE_RULES), out) }
+    }
+    /// Runtime: the player's melee side, every frame ([`RtMelee`]).
+    pub fn write_rt_melee(&self, v: &RtMelee) {
+        unsafe { seq_write(self.base.add(OFF_RT_MELEE), v) }
+    }
+    pub fn read_rt_melee_into(&self, out: &mut RtMelee) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_RT_MELEE), out) }
     }
     /// Runtime: a melee hit, block or cast for the game.
     pub fn push_combat_event(&self, ev: &CombatEvent) {

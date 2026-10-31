@@ -44,7 +44,25 @@ VOut VSFull(uint id : SV_VertexID) {
     return o;
 }
 
-float4 PSBlit(VOut i) : SV_Target { return float4(tex.Sample(samp, i.uv).rgb, 1); }
+// The game's picture over the pixel's footprint: a game drawn sharper than the headset shows it (the
+// render scale) has more pixels than the headset, and one tap a pixel would skip the ones between
+// (fine far detail flickering in and out as the head moves). Taps spread over the footprint average
+// them, as a mip level would; one tap at the headset's own sharpness or below.
+float4 PSBlit(VOut i) : SV_Target {
+    uint w, h;
+    tex.GetDimensions(w, h);
+    float2 dx = ddx(i.uv), dy = ddy(i.uv);
+    float s = max(length(dx * float2(w, h)), length(dy * float2(w, h)));
+    int n = (int)clamp(ceil(s - 0.01), 1, 4);
+    float3 c = 0;
+    [loop] for (int y = 0; y < n; y++) {
+        [loop] for (int x = 0; x < n; x++) {
+            float2 o = (float2(x, y) + 0.5) / n - 0.5;
+            c += tex.SampleLevel(samp, i.uv + o.x * dx + o.y * dy, 0).rgb;
+        }
+    }
+    return float4(c / (n * n), 1);
+}
 
 // Another camera's view of the game's picture: each pixel's direction looked up in one eye's image
 // (`view_proj` here is that eye's; the camera stands where it was drawn from, so a turn of the
@@ -60,6 +78,45 @@ cbuffer Reproject : register(b1) {
 };
 Texture2D tex_b : register(t1);
 Texture2D<float> depth_b : register(t3);
+
+// The game's fog where it measures its distance in clip space, as Gamebryo's shaders do: the
+// length of a point's clip-space x, y and depth, not how far away it is. That grows towards the
+// edges of an eye's frustum, so the same far hill is foggier near the edge of one eye's picture
+// than in the middle of the other's, and the join between them shows as a step in the fog. Where
+// the other eye's picture fills in, its fog is made the first eye's (`refog_on`: 1 to; the game's
+// colour in its display's values; amount = saturate(distance·y + x), in the game's units of
+// distance, `b_depth.x` metres each).
+cbuffer Refog : register(b3) {
+    float4 refog_color;
+    float4 refog_fade;
+    float4 refog_on;
+};
+float3 display_of(float3 c) {
+    c = max(c, 0);
+    return lerp(1.055 * pow(c, 1 / 2.4) - 0.055, c * 12.92, step(c, 0.0031308));
+}
+float3 linear_of(float3 c) {
+    c = max(c, 0);
+    return lerp(pow((c + 0.055) / 1.055, 2.4), c / 12.92, step(c, 0.04045));
+}
+// How far the game measured a point `r` metres along `u` for its fog, seen from the eye of `m` (its
+// view-projection; the eyes are 6 cm apart, nothing next to the distances fog is seen at).
+float fog_amount(float4x4 m, float3 u, float r) {
+    float4 c = mul(m, float4(u, 0));
+    return saturate(length(float3(c.xy, c.w)) * r / max(b_depth.x, 1e-6) * refog_fade.y + refog_fade.x);
+}
+// The other eye's colour `c`, `r` metres along `u`, with the first eye's fog instead of its own.
+float3 refog(float3 c, float3 u, float r) {
+    if (refog_on.x == 0 || r <= 0) return c;
+    float fa = fog_amount(view_proj_src, u, r);
+    float fb = fog_amount(eye_b, u, r);
+    if (fb > 0.995) return c;
+    float3 d = display_of(c);
+    // (Thicker: more of the fog over it. Thinner: some of its fog taken back off, no more than
+    // fourfold, which lifts the dark and the noise as much.)
+    d = fa >= fb ? lerp(d, refog_color.rgb, (fa - fb) / (1 - fb)) : refog_color.rgb + (d - refog_color.rgb) * min((1 - fa) / (1 - fb), 4);
+    return linear_of(d);
+}
 
 float depth_b_at(float2 uv) {
     uint w, h;
@@ -110,11 +167,16 @@ bool march_b(float3 d, out float2 uv, out float t) {
     }
     return false;
 }
-float3 eye_sample(Texture2D t, float4x4 m, float3 d, out bool ok) {
+bool eye_uv(float4x4 m, float3 d, out float2 uv) {
     float4 c = mul(m, float4(d, 0));
     float2 n = c.xy / max(c.w, 1e-6);
-    ok = c.w > 0 && abs(n.x) <= 1 && abs(n.y) <= 1;
-    return t.SampleLevel(samp, float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5), 0).rgb;
+    uv = float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
+    return c.w > 0 && abs(n.x) <= 1 && abs(n.y) <= 1;
+}
+float3 eye_sample(Texture2D t, float4x4 m, float3 d, out bool ok) {
+    float2 uv;
+    ok = eye_uv(m, d, uv);
+    return t.SampleLevel(samp, uv, 0).rgb;
 }
 float4 PSReproject(VOut i) : SV_Target {
     float2 ndc = float2(i.uv.x * 2 - 1, 1 - i.uv.y * 2);
@@ -126,9 +188,10 @@ float4 PSReproject(VOut i) : SV_Target {
     if (ok) return float4(c, 1);
     float2 uv;
     float t;
-    if (march_b(d, uv, t)) return float4(tex_b.SampleLevel(samp, uv, 0).rgb, 1);
-    c = eye_sample(tex_b, eye_b, d, ok);
-    if (ok) return float4(c, 1);
+    if (march_b(d, uv, t)) return float4(refog(tex_b.SampleLevel(samp, uv, 0).rgb, d, t), 1);
+    // (By direction: as far along this ray as the other eye's depth there, measured along its
+    // forward. The sky has none, and keeps its colour.)
+    if (eye_uv(eye_b, d, uv)) return float4(refog(tex_b.SampleLevel(samp, uv, 0).rgb, d, depth_b_at(uv) / max(dot(d, b_fwd.xyz), 1e-3)), 1);
     return float4(0.004, 0.004, 0.005, 1);
 }
 
@@ -148,12 +211,6 @@ Texture2D bloom_b : register(t5);
 Texture2D lens_a : register(t6);
 Texture2D lens_b : register(t7);
 struct PostOut { float depth : SV_Target0; float4 bloom : SV_Target1; float4 lens : SV_Target2; };
-bool eye_uv(float4x4 m, float3 d, out float2 uv) {
-    float4 c = mul(m, float4(d, 0));
-    float2 n = c.xy / max(c.w, 1e-6);
-    uv = float2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5);
-    return c.w > 0 && abs(n.x) <= 1 && abs(n.y) <= 1;
-}
 float load_depth(Texture2D<float> t, float2 uv) {
     uint w, h;
     t.GetDimensions(w, h);
@@ -366,6 +423,34 @@ impl ReprojectCb {
     }
 }
 
+/// The game's fog for [`Background::Reprojected`]'s other eye, when the game measures its distance
+/// in clip space (Gamebryo's shaders: see `refog` in the shader).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipFog {
+    /// Its colour, in the game's display's values.
+    pub color: [f32; 3],
+    /// Its amount = saturate(distance·`fade[1]` + `fade[0]`), the distance in the game's world
+    /// units (the depth's).
+    pub fade: [f32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct RefogCb {
+    color: [f32; 4],
+    fade: [f32; 4],
+    on: [f32; 4],
+}
+
+impl RefogCb {
+    fn new(fog: Option<&ClipFog>) -> Self {
+        match fog {
+            Some(f) => RefogCb { color: [f.color[0], f.color[1], f.color[2], 0.0], fade: [f.fade[0], f.fade[1], 0.0, 0.0], on: [1.0, 0.0, 0.0, 0.0] },
+            None => RefogCb::zeroed(),
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ReprojectPostCb {
@@ -418,6 +503,9 @@ pub enum Background<'a> {
         second: Option<(&'a ID3D11ShaderResourceView, Pose, Fov)>,
         second_depth: Option<&'a ID3D11ShaderResourceView>,
         metres: f32,
+        /// The game's fog, when it measures its distance in clip space: `second`'s picture is
+        /// refogged as `first`'s would be where it fills in, so the two meet without a step.
+        fog: Option<ClipFog>,
     },
     /// What's in the target already (the game's picture moved there, `crate::warp`).
     Keep,
@@ -562,6 +650,7 @@ pub struct Compositor {
     full_comfort: Program,
     full_reproject: Program,
     reproject_cb: ConstantBuffer<ReprojectCb>,
+    refog_cb: ConstantBuffer<RefogCb>,
     full_post: Program,
     post_cb: ConstantBuffer<ReprojectPostCb>,
     quad: Program,
@@ -584,6 +673,7 @@ impl Compositor {
             full_comfort: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSComfort", &[])?,
             full_reproject: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSReproject", &[])?,
             reproject_cb: ConstantBuffer::new(gpu)?,
+            refog_cb: ConstantBuffer::new(gpu)?,
             full_post: Program::with_entries(gpu, SHADER, "compositor", "VSFull", "PSReprojectPost", &[])?,
             post_cb: ConstantBuffer::new(gpu)?,
             quad: Program::with_entries(gpu, SHADER, "compositor", "VSQuad", "PSQuad", &[])?,
@@ -711,14 +801,16 @@ impl Compositor {
                     self.full_void.bind(ctx);
                     ctx.PSSetShaderResources(0, Some(&[None]));
                 }
-                Background::Reprojected { first, second, second_depth, metres } => {
+                Background::Reprojected { first, second, second_depth, metres, fog } => {
                     let mut c = cb;
                     c.view_proj_src = (projection(&first.2) * view_matrix(&first.1)).to_cols_array();
                     self.cb.update(ctx, &c);
                     // (Nothing to fall back on: a matrix that puts everything behind it.)
                     let b = second.as_ref().map(|(_, pose, fov)| (projection(fov) * view_matrix(pose), pose));
                     self.reproject_cb.update(ctx, &ReprojectCb::new(Vec3::from_array(first.1.pos), b, second_depth.is_some(), metres));
+                    self.refog_cb.update(ctx, &RefogCb::new(fog.as_ref().filter(|_| second.is_some())));
                     ctx.PSSetConstantBuffers(1, Some(&[Some(self.reproject_cb.buf.clone())]));
+                    ctx.PSSetConstantBuffers(3, Some(&[Some(self.refog_cb.buf.clone())]));
                     self.full_reproject.bind(ctx);
                     ctx.PSSetShaderResources(0, Some(&[Some(first.0.clone()), second.map(|s| s.0.clone()), None, second_depth.cloned()]));
                 }
@@ -924,4 +1016,90 @@ pub fn project(eye: &Pose, fov: &Fov, p: Vec3) -> Option<Vec2> {
         return None;
     }
     Some(Vec2::new(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustvr_gpu::{TexDesc, Texture};
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB};
+
+    /// Gamebryo's fog for a point `r` along `dir` from an eye: by the length of its clip-space x, y
+    /// and depth (Oblivion's `SLS2000.vso`: `length(mul(ModelViewProj, v).xyz)`).
+    fn gamebryo_fog(pose: &Pose, fov: &Fov, dir: Vec3, r: f32, far: f32) -> f32 {
+        let c = projection(fov) * view_matrix(pose) * dir.extend(0.0) * r;
+        (Vec3::new(c.x, c.y, c.w).length() / far).clamp(0.0, 1.0)
+    }
+
+    #[test]
+    fn the_other_eyes_picture_takes_the_first_eyes_fog() {
+        let gpu = Gpu::new().unwrap();
+        // Oblivion's eyes in the playtest (its log's frustums: the headset's and 11 degrees of
+        // overscan), the right eye the desktop view's; a world of far hills all round, fogged
+        // linearly from the eye out to `far`.
+        let (l, r, u, d) = (-2.1376505, 1.2318016, 1.4244225, -2.2386353);
+        let eyes = [
+            (Pose { pos: [-0.032, 0.0, 0.0], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] }, Fov { left: l, right: r, up: u, down: d }),
+            (Pose { pos: [0.032, 0.0, 0.0], valid: 1, rot: [0.0, 0.0, 0.0, 1.0] }, Fov { left: -r, right: -l, up: u, down: d }),
+        ];
+        let (base, fog) = (Vec3::new(0.2, 0.5, 0.2), Vec3::new(0.7, 0.75, 0.8));
+        let check = |hills: f32, far: f32| -> (f32, f32) {
+            let size = 256u32;
+            let mut pictures = Vec::new();
+            for (pose, fov) in &eyes {
+                let (mut colour, mut depth) = (Vec::new(), Vec::new());
+                for y in 0..size {
+                    for x in 0..size {
+                        let n = Vec2::new((x as f32 + 0.5) / size as f32 * 2.0 - 1.0, 1.0 - (y as f32 + 0.5) / size as f32 * 2.0);
+                        let tan = Vec2::new((n.x * (fov.right - fov.left) + fov.left + fov.right) / 2.0, (n.y * (fov.up - fov.down) + fov.up + fov.down) / 2.0);
+                        let dir = tan.extend(1.0).normalize();
+                        let c = base.lerp(fog, gamebryo_fog(pose, fov, dir, hills, far));
+                        colour.extend([c.x, c.y, c.z, 1.0].map(|v| (v * 255.0).round() as u8));
+                        depth.extend_from_slice(&(hills * dir.z).to_ne_bytes());
+                    }
+                }
+                let colour = Texture::upload(&gpu, size, size, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, &[&colour]).unwrap();
+                let depth = Texture::upload(&gpu, size, size, DXGI_FORMAT_R32_FLOAT, &[&depth]).unwrap();
+                pictures.push((colour, depth));
+            }
+            // The desktop view: 128 degrees across from the right eye, looking ahead.
+            let (w, h) = (512u32, 288u32);
+            let out = Texture::new(&gpu, &TexDesc::target(w, h, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)).unwrap();
+            let target = EyeTarget { tex: out.tex.clone(), rtv: out.rtv.clone().unwrap(), width: w, height: h };
+            let tan = 64f32.to_radians().tan();
+            let view = Fov { left: -tan, right: tan, up: tan * h as f32 / w as f32, down: -tan * h as f32 / w as f32 };
+            let mut errs = (0.0f32, 0.0f32);
+            for refog in [false, true] {
+                let background = Background::Reprojected {
+                    first: (pictures[1].0.srv.as_ref().unwrap(), eyes[1].0, eyes[1].1),
+                    second: Some((pictures[0].0.srv.as_ref().unwrap(), eyes[0].0, eyes[0].1)),
+                    second_depth: pictures[0].1.srv.as_ref(),
+                    metres: 1.0,
+                    fog: refog.then_some(ClipFog { color: fog.to_array(), fade: [0.0, 1.0 / far] }),
+                };
+                Compositor::new(&gpu).unwrap().draw_view(&gpu, &target, &eyes[1].0, &view, background, &Layers::default(), false, &mut |_| {});
+                let px = out.read_rgba8(&gpu).unwrap();
+                // Along the middle row, the fog each pixel shows against the right eye's, carried on
+                // past its edge.
+                let mut worst = 0.0f32;
+                for x in 0..w {
+                    let ndc = (x as f32 + 0.5) / w as f32 * 2.0 - 1.0;
+                    let dir = Vec3::new(ndc * tan, 0.0, 1.0).normalize();
+                    let at = ((h / 2 * w + x) * 4) as usize;
+                    let shown = (px[at + 2] as f32 / 255.0 - base.z) / (fog.z - base.z);
+                    let want = gamebryo_fog(&eyes[1].0, &eyes[1].1, dir, hills, far);
+                    worst = worst.max((shown - want).abs());
+                }
+                if refog { errs.1 = worst } else { errs.0 = worst }
+            }
+            errs
+        };
+        // Hills far off (found by direction in the left eye's picture) and near (followed out
+        // through its depth).
+        for (hills, far) in [(500.0, 1000.0), (40.0, 80.0)] {
+            let (before, after) = check(hills, far);
+            assert!(before > 0.06, "the left eye's fog differs at {hills} m: by {before}");
+            assert!(after < 0.02, "the fog carries on past the right eye's edge at {hills} m: off by {after}");
+        }
+    }
 }

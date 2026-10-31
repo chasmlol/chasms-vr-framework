@@ -104,6 +104,8 @@ pub struct Session {
     spectator: Option<crate::spectator::Window>,
     /// The game's depth, bloom and lens as the desktop view's camera sees them.
     spectator_post: Option<crate::compositor::PostTargets>,
+    /// Its camera's bob as the player walks (`crate::view_bob`).
+    spectator_bob: crate::view_bob::Bob,
     /// And as the headset's view of an overscanned picture sees them.
     headset_post: Option<crate::compositor::PostTargets>,
     /// The game's eye textures as the settings ask for them, and how much smaller they're made
@@ -116,8 +118,13 @@ pub struct Session {
     overscan_shown: f32,
     overscan_said: f32,
     spectator_cam: crate::spectator::SteadyCamera,
+    /// Its zoom while the player aims.
+    spectator_zoom: crate::spectator::AimZoom,
     /// Tests: where the desktop view's frames are saved, and when one was last.
     spectator_capture: Option<(PathBuf, f64)>,
+    /// Its effects studio (`crate::spectator_fx`): motion blur, a lens, a grade, a smoothed camera,
+    /// the flat HUD; the headset's view never has them.
+    spectator_fx: crate::spectator_fx::Stage,
     physics_tris: Vec<([Vec3; 3], [f32; 3])>,
     /// The rig ran this step (there's a physics world to show).
     rig_active_last: bool,
@@ -137,6 +144,10 @@ pub struct Session {
     /// The mirror the player or the game's character creator has up (`crate::mirror`), and whether
     /// where the game's menu stands beside it was said.
     mirror: crate::mirror::Mirror,
+    /// The face shaped by hand in the game's character creator, and the copy of the head's place to
+    /// draw.
+    sculpt: crate::sculpt::Sculpt,
+    sculpt_parts: [Option<glam::Mat4>; 1],
     menu_beside_said: bool,
     cards: [Option<(panels::Panel, f32)>; 2],
     /// The bow's crosshair (the Hands tab's option), and this frame's place for it.
@@ -158,6 +169,13 @@ pub struct Session {
     combat: crate::combat::Combat,
     /// The hands' magic: the spells they hold, the wheel, charging and casting (crate::magic).
     magic: crate::magic::Magic,
+    /// The melee weapons table the rig last took ([`MeleeWeapons::seq`]).
+    melee_weapons_seq: u32,
+    /// Slowing time, stamina, imbuing (crate::powers).
+    powers: crate::powers::Powers,
+    /// The player's kicks ([`crate::kick`]), and where the last frame's had the feet.
+    foot_kicks: crate::kick::Kicks,
+    kick_out: crate::kick::KickOut,
     /// Blood and limbs cut off (crate::gore).
     gore: crate::gore::Gore,
     /// Hands whose trigger casts a spell this frame (`crate::combat`).
@@ -201,6 +219,11 @@ pub struct Session {
     /// Since when a menu over the game's world has had no pieces: the flat screen stands in for it
     /// only after a moment (see `ungrouped`).
     ungrouped_since: Option<f64>,
+    /// The place the player was in, held while the game loads another (`crate::held`).
+    held_world: crate::held::HeldWorld,
+    /// How black the game's own fade makes its picture now, when there's no held place to fade
+    /// from (`SlotInfo::held_over`): drawn as the comfort fade is.
+    game_black: f32,
     /// Where the game's own simulated objects are (`OBJF_GAME_SIMULATED`).
     game_poses: Box<GamePoses>,
     /// Where the hands push them (see `Rig::game_pushes`).
@@ -297,8 +320,8 @@ impl Session {
             }
         }
         // The desktop view: off in tests on the emulated headset (RUSTVR_DESKTOP_VIEW=0, or
-        // `capture:<dir>`: off screen, a frame saved there every few seconds) and with the
-        // built-in simulator.
+        // `capture:<dir>`: off screen, a frame saved there every few seconds, or every
+        // RUSTVR_DESKTOP_EVERY seconds) and with the built-in simulator.
         let sp = &settings.current.spectator;
         let env = std::env::var("RUSTVR_DESKTOP_VIEW").unwrap_or_default();
         let capture = env.strip_prefix("capture:").map(PathBuf::from);
@@ -312,6 +335,7 @@ impl Session {
         Ok(Session {
             spectator,
             spectator_post: None,
+            spectator_bob: Default::default(),
             headset_post: None,
             target_wanted: None,
             target_shrink: 1.0,
@@ -319,10 +343,12 @@ impl Session {
             overscan_said: 0.0,
             spectator_capture: capture.map(|d| (d, 0.0)),
             spectator_cam: crate::spectator::SteadyCamera::default(),
+            spectator_zoom: crate::spectator::AimZoom::default(),
             comp: Compositor::new(&gpu)?,
             warp: crate::warp::Warp::new(&gpu)?,
             physics_view: crate::physics_view::PhysicsView::new(&gpu)?,
             pacing: crate::pacing::Pacing::new(&gpu)?,
+            spectator_fx: crate::spectator_fx::Stage::new(&gpu),
             physics_tris: Vec::new(),
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
@@ -333,6 +359,8 @@ impl Session {
             receptacles: bytemuck::zeroed_box(),
             obs: crate::obs_view::ObsView::default(),
             mirror: crate::mirror::Mirror::default(),
+            sculpt: Default::default(),
+            sculpt_parts: [None],
             menu_beside_said: false,
             cards: [None; 2],
             crosshair: Default::default(),
@@ -357,6 +385,10 @@ impl Session {
             rig_out: RigOutput::default(),
             combat: crate::combat::Combat::default(),
             magic: crate::magic::Magic::default(),
+            melee_weapons_seq: 0,
+            powers: Default::default(),
+            foot_kicks: Default::default(),
+            kick_out: Default::default(),
             gore: crate::gore::Gore::default(),
             spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
@@ -380,6 +412,8 @@ impl Session {
             hud_layout_seq: 0,
             hud_layout_next: bytemuck::zeroed_box(),
             ungrouped_since: None,
+            held_world: Default::default(),
+            game_black: 0.0,
             game_poses: bytemuck::zeroed_box(),
             game_pushes: bytemuck::zeroed_box(),
             actor_bodies: bytemuck::zeroed_box(),
@@ -395,8 +429,12 @@ impl Session {
             pointer: 1,
             sheets_drawn: 0,
             menu_pieces: Vec::new(),
-            audio: if opts.audio {
+            // (`RUSTVR_SILENT=1`: an unattended test run on the emulated headset mixes its sounds
+            // offline rather than out of the speakers.)
+            audio: if opts.audio && !std::env::var("RUSTVR_SILENT").is_ok_and(|v| v == "1") {
                 Some(rustvr_audio::Audio::new())
+            } else if opts.audio {
+                Some(rustvr_audio::Audio::offline(OFFLINE_RATE))
             } else {
                 opts.offline_audio.then(|| rustvr_audio::Audio::offline(OFFLINE_RATE))
             },
@@ -578,6 +616,8 @@ impl Session {
         let mut rumble = None;
         let dom = self.settings.current.dominant();
         while let Some(ev) = self.link.pop_event() {
+            // (What shakes the desktop view's camera: the game's rumble, its explosions.)
+            self.spectator_fx.event(&ev);
             match ev.kind {
                 EV_HAPTIC => {
                     let hand = match ev.a {
@@ -597,6 +637,34 @@ impl Session {
                 // The game's mirror spell, and its effect's moment.
                 EV_MIRROR_CAST => self.mirror.cast(),
                 EV_MIRROR_HIT => self.mirror.hit(ev.a),
+                // A creature's voice the game has none of its own for: the runtime's line there, on
+                // that creature's one voice.
+                EV_VOICE => {
+                    if let (Some(map), true, Some(a)) = (self.map_now, self.settings.current.sound.enabled, &self.audio) {
+                        use rustvr_audio::Event as E;
+                        let speaker = (ev.a >> 8) as u64;
+                        let event = match ev.a & 0xff {
+                            VOICE_HUSH => None,
+                            VOICE_ATTACK => Some(E::Shout),
+                            VOICE_DEATH => Some(E::Death),
+                            VOICE_DEATH_LONG => Some(E::DeathLong),
+                            VOICE_BREATHLESS => Some(E::Gasp),
+                            VOICE_FALLING => Some(E::Scream),
+                            VOICE_GRAPPLED => Some(E::Struggle),
+                            _ => Some(E::Grunt),
+                        };
+                        let (pos, loud) = (map.inv_point(Vec3::new(ev.f[0], ev.f[1], ev.f[2])), ev.f[3].clamp(0.1, 1.0));
+                        match event {
+                            None if speaker != 0 => a.hush(speaker),
+                            None => {}
+                            Some(e) if speaker != 0 => a.play_voice(e, e.fallback(), pos, loud, speaker),
+                            Some(e) => a.play_event(e, rustvr_audio::SetKey::NONE, e.fallback(), pos, loud),
+                        }
+                        if event.is_some() {
+                            self.sounds_played += 1;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -614,7 +682,9 @@ impl Session {
         // A menu over the game's world, which goes on being drawn (the game keeps rendering it, and
         // its menus have real alpha): the world, the body and the menu floating in it, never the
         // void.
-        let mut floating = menu_mode && alive && shown_info.is_some_and(|i| i.flags & SLOT_STEREO != 0) && self.hud_layout.flags & HUDL_ALPHA != 0;
+        // (A game's menu cut into pieces with real alpha floats over the runtime's room too, when
+        // there's no world picture: its loading bar before there's a place to hold.)
+        let mut floating = menu_mode && alive && shown_info.is_some_and(|i| i.flags & SLOT_STEREO != 0 || self.hud_layout.group_count > 0) && self.hud_layout.flags & HUDL_ALPHA != 0;
         let grouped = floating && self.hud_layout.group_count > 0;
         // A menu over the world whose pieces haven't come yet shows nothing, not the flat screen:
         // the game says it's in a menu as the frame that opens it starts, and what the menu's
@@ -639,7 +709,10 @@ impl Session {
             .or_else(|| self.targets.as_ref().map(|t| t.spec.hud_w as f32 / t.spec.hud_h.max(1) as f32));
         // (A menu shown in the world stands beside the mirror as soon as it opens, with whatever
         // pieces float over it: a question it asks, where the eyes look.)
-        let menu_panel = if menu_mode && (menu_in_world || !grouped && (!floating || ungrouped)) { hud_aspect.or(Some(16.0 / 9.0)) } else { None };
+        // (Never over a place held while the game loads: what it shows then that isn't cut into
+        // pieces, its picture of the loading screen, isn't the world's.)
+        let held_now = shown_info.is_some_and(|i| i.flags & SLOT_HELD != 0);
+        let menu_panel = if menu_mode && (menu_in_world || !grouped && (!floating || ungrouped) && !held_now) { hud_aspect.or(Some(16.0 / 9.0)) } else { None };
         let hud_panel = if !menu_mode && shown_info.is_some_and(|i| i.flags & SLOT_HUD != 0) { hud_aspect } else { None };
         let head_pos = Vec3::from_array(frame.hmd.pos);
         let head_rot = quat(frame.hmd.rot);
@@ -677,7 +750,8 @@ impl Session {
                 let m = map?;
                 physics.ray_world(m.point(from), m.rot(Quat::IDENTITY) * dir, reach * m.world_per_meter).map(|d| d / m.world_per_meter)
             };
-            let empty = [0, 1].map(|i| self.rig_out.hands[i].flags & HAND_HOLDING == 0);
+            let sculpting = self.sculpt.busy();
+            let empty = [0, 1].map(|i| self.rig_out.hands[i].flags & HAND_HOLDING == 0 && !sculpting[i]);
             self.mirror.update(&crate::mirror::MirrorInput {
                 settings: &self.settings.current.mirror,
                 game_flags: gflags,
@@ -722,12 +796,16 @@ impl Session {
         // The laser from the dominant hand, unless it's holding a menu (a book, the map): then from
         // the other, free one, for what floats (a question over the map). What's held in the hands
         // has no laser: its buttons are pressed with the fingers (`crate::held_menus`).
-        let pointer = if self.held.holding[dom] && !self.held.holding[dom ^ 1] { dom ^ 1 } else { dom };
+        // A hand on the face shaped in the character creator (`crate::sculpt`) has no laser either:
+        // its trigger is the pull's (asymmetry), not a click.
+        let sculpting = self.sculpt.busy();
+        let busy = [0, 1].map(|i| self.held.holding[i] || sculpting[i]);
+        let pointer = if busy[dom] && !busy[dom ^ 1] { dom ^ 1 } else { dom };
         self.pointer = pointer;
         let hand = &frame.hands[pointer];
         let laser_origin = Vec3::from_array(hand.aim.pos);
         let laser_dir = quat(hand.aim.rot) * Vec3::Z;
-        let mut pick = if hand.connected != 0 && (layout.game_menu.is_some() || layout.runtime_menu.is_some()) {
+        let mut pick = if hand.connected != 0 && !sculpting[pointer] && (layout.game_menu.is_some() || layout.runtime_menu.is_some()) {
             layout.pick(laser_origin, laser_dir)
         } else {
             None
@@ -905,10 +983,13 @@ impl Session {
             let rig_paused = (menu_mode && !held_open) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             let game_name = name_str(&g.name).to_owned();
             self.holsters.before(&self.link, &mut self.rig, &mut self.settings, &game_name, &self.gpu, &mut self.held_objects);
+            // Slowed time (crate::powers): the player's world steps less a frame; the hands keep their
+            // real speed, so in it they swing faster.
+            let world_dt = frame.dt * self.powers.time_scale;
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
                 map: rig_map,
-                dt: frame.dt,
+                dt: world_dt,
                 now,
                 settings: &self.settings.current,
                 eye_height: if stand > 1.0 { stand } else { 1.7 },
@@ -1041,10 +1122,67 @@ impl Session {
             // The game's own cards beside its objects.
             self.game_cards.read(&self.link);
             self.game_card_panels = self.game_cards.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
-            // The body the game makes up, when it changes.
-            self.body.read_game_body(&self.link);
+            // The body the game makes up, when it changes (a face shaped by hand drawn live meanwhile).
+            self.body.face_live = self.sculpt.active();
+            self.body.read_game_body(&self.link, now);
+            // The face shaped by hand in the game's character creator: the hands on it, the face they
+            // make (drawn live on the body), and where the face holds them.
+            if let Some(kit) = self.body.take_face() {
+                self.sculpt.set_face(kit);
+            }
+            let own_head = self.sculpt.head_bone().and_then(|b| self.body.bone_skin(&b));
+            self.sculpt.update(
+                &self.link,
+                &crate::sculpt::SculptInput {
+                    frame: &frame,
+                    hands: self.rig_out.hands.map(|h| (Vec3::from_array(h.pose.pos), quat(h.pose.rot))),
+                    head: (Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot)),
+                    own_head,
+                    now,
+                    dt: frame.dt,
+                },
+            );
+            self.body.set_face_now(self.sculpt.face_now());
+            for i in 0..2 {
+                if let Some(o) = self.sculpt.hand_out(i) {
+                    let h = &mut self.rig_out.hands[i];
+                    // Drawn where the face holds it (the controller's ghost where it is, with ghost hands on).
+                    if o.moved.length() > 0.004 && self.settings.current.interaction.ghost_hands {
+                        self.rig_out.ghosts[i] = Some(frame.hands[i].grip);
+                        h.flags |= HAND_BLOCKED;
+                    }
+                    h.pose.pos = (Vec3::from_array(h.pose.pos) + o.moved).to_array();
+                }
+            }
+            for (h, secs, freq, amp) in self.sculpt.haptics.drain(..) {
+                self.backend.haptic(h, secs, freq, amp);
+            }
+            for (take, at) in self.sculpt.sounds.drain(..) {
+                if let (Some(a), true) = (&self.audio, self.settings.current.sound.enabled) {
+                    let event = if take { rustvr_audio::Event::FaceTake } else { rustvr_audio::Event::FaceLetGo };
+                    a.play_event(event, rustvr_audio::SetKey::NONE, None, at, 1.0);
+                }
+            }
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
             self.combat.read(&self.link);
+            // The game's melee weapons' handles, and how strong it says the player is.
+            if self.combat.weapons.seq != self.melee_weapons_seq {
+                self.melee_weapons_seq = self.combat.weapons.seq;
+                self.rig.set_melee_weapons(&self.combat.weapons);
+            }
+            // Climbing: as the settings have it, unless the game says.
+            let rules = &self.combat.rules;
+            let climbing = if rules.flags & RULES_SAYS_CLIMB != 0 { rules.flags & RULES_CLIMB != 0 } else { self.settings.current.melee.climbing };
+            self.rig.set_climbing_allowed(climbing);
+            self.rig.set_melee_buttons(rules.flags & RULES_KICK != 0);
+            let tk = if rules.flags & RULES_SAYS_TELEKINESIS != 0 { rules.flags & RULES_TELEKINESIS != 0 } else { self.settings.current.melee.telekinesis };
+            if tk != self.rig.telekinesis_on() {
+                self.rig.set_telekinesis(tk);
+            }
+            let game_strength = if self.combat.rules.strength > 0.0 { self.combat.rules.strength } else { 1.0 };
+            self.rig.set_melee_strength(game_strength * self.powers.strength());
+            self.combat.imbues = self.powers.imbues.keys().filter_map(|&id| self.powers.imbue_of(id).map(|i| (id, i))).collect();
+            self.combat.fire_spells = self.magic.table().entries().iter().filter(|s| s.flags & SPELL_FIRE != 0).map(|s| s.id).collect();
             // The game's effect shaders over what the runtime draws, when they change.
             if self.link.read_overlays_into(&mut self.overlays) && self.overlays.seq != self.overlays_seq {
                 self.overlays_seq = self.overlays.seq;
@@ -1053,6 +1191,31 @@ impl Session {
             self.rig.set_actor_parts(self.combat.actor_parts());
             self.link.read_actor_bodies_into(&mut self.actor_bodies);
             self.rig.set_actor_bodies(self.combat.actors(), &self.actor_bodies);
+            // What the creatures' weapons can strike: the player's body as capsules (world).
+            let player = crate::combat::player_capsules(&self.body.body.joints, &rig_map);
+            // A kick (the melee buttons, the game's say): the movement stick's click, at what the
+            // eyes see, the foot driven out by the body's legs and judged with the Kick damager.
+            self.kick_out = if self.combat.rules.flags & RULES_KICK != 0 {
+                let targets: Vec<(Vec3, Vec3, f32)> = self.combat.actor_parts().into_iter().map(|(_, (a, b, r))| (rig_map.inv_point(a), rig_map.inv_point(b), r / rig_map.world_per_meter)).collect();
+                let off = self.settings.current.dominant() ^ 1;
+                self.foot_kicks.update(&crate::kick::KickInput {
+                    frame: &frame,
+                    stick_hand: off,
+                    now,
+                    joints: &self.body.body.joints,
+                    floor: self.floor,
+                    walking: self.locomotion.walk().0.length() / rig_map.world_per_meter,
+                    targets: &targets,
+                    paused: rig_paused || menu_mode,
+                })
+            } else {
+                crate::kick::KickOut::default()
+            };
+            let kick = self.kick_out.striking.and_then(|(foot, way)| {
+                let toes = Vec3::from_array(self.body.body.joints[if foot == 0 { Joint::LeftToes } else { Joint::RightToes } as usize].pos);
+                self.kick_out.ankles[foot].map(|a| (foot, rig_map.point(a), rig_map.point(toes), rig_map.rot(Quat::IDENTITY) * way))
+            });
+            self.rig.set_actor_items(&self.combat.items);
             let combat = self.combat.update(&crate::combat::CombatInput {
                 rig: &self.rig,
                 out: &self.rig_out,
@@ -1061,9 +1224,15 @@ impl Session {
                 objects: &self.objects,
                 dominant: self.settings.current.dominant(),
                 now,
-                dt: frame.dt,
+                dt: world_dt,
                 paused: rig_paused || menu_mode,
+                player: &player,
+                kick,
+                easy_dismemberment: self.settings.current.melee.easy_dismemberment,
             });
+            if self.combat.kicked {
+                self.foot_kicks.met(now);
+            }
             for ev in &combat {
                 self.link.push_combat_event(ev);
             }
@@ -1089,6 +1258,45 @@ impl Session {
             for p in &self.magic.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
+            // The powers: slowing time, stamina, imbuing, for the game too.
+            {
+                let held: [Option<u32>; 2] = [self.rig.held(0), self.rig.held(1)];
+                let charging = std::array::from_fn(|h| {
+                    let c = self.magic.casting[h];
+                    let flags = self.magic.table().get(c.spell).map_or(0, |s| s.flags);
+                    (matches!(c.state, CAST_CHARGING | CAST_READY) && c.object == 0).then(|| (c.spell, c.charge, rig_map.point(Vec3::from_array(c.at.pos)), flags))
+                });
+                let melee_held = held
+                    .iter()
+                    .flatten()
+                    .filter_map(|&id| self.combat.weapons.get(id).map(|w| (id, w.tier, self.rig.mass_of(id), self.combat.blades(id).into_iter().map(|(a, b, _)| (a, b)).collect())))
+                    .collect();
+                let hits = combat.iter().filter(|e| e.kind == CE_HIT).map(|e| e.object).collect();
+                let loose = self.powers.imbues.keys().copied().filter(|id| self.rig.is_free(*id)).collect();
+                let off = self.settings.current.dominant() ^ 1;
+                self.powers.update(&crate::powers::PowersInput {
+                    frame: &frame,
+                    settings: &self.settings.current.melee,
+                    rules: &self.combat.rules,
+                    dominant: self.settings.current.dominant(),
+                    dt: frame.dt,
+                    now,
+                    walking: Vec2::from_array(frame.hands[off].stick).length() > 0.2,
+                    charging,
+                    held: melee_held,
+                    world_per_meter: rig_map.world_per_meter,
+                    loose,
+                    hits,
+                    paused: rig_paused || menu_mode,
+                });
+                let mut rt = self.powers.report(held);
+                rt.climb = self.rig.climb_velocity().to_array();
+                rt.jump = self.rig.take_climb_jump().unwrap_or(Vec3::ZERO).to_array();
+                if self.rig.climbing() {
+                    rt.flags |= RTM_CLIMBING;
+                }
+                self.link.write_rt_melee(&rt);
+            }
             // Each hand's casting, for the game's own casting art.
             let mut casters: Casters = bytemuck::Zeroable::zeroed();
             casters.frame = frame.index;
@@ -1102,18 +1310,40 @@ impl Session {
             }
             // Gore: the blood the hits and the stumps spill, the limbs the game says were cut off.
             let gore_events = self.gore.read(&self.link);
-            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, combat: &self.combat, now, dt: frame.dt, paused: rig_paused || menu_mode };
+            let stuck_events = self.rig.embed_events.clone();
+            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, stuck_events: &stuck_events, combat: &self.combat, now, dt: world_dt, paused: rig_paused || menu_mode };
             self.gore.update(&mut self.rig, &gore_input, &gore_events);
             for p in &self.gore.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
-            // Blades that went in and stay in.
+            // Blades that went in and stay in, and ones that cut a limb off and carry on through.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);
+            }
+            for (object, actor) in std::mem::take(&mut self.combat.cuts) {
+                self.rig.cut_through(object, actor);
+            }
+            // What blades stuck in creatures did (gone in deep, out the far side, pulled out), the
+            // part as the game numbers it.
+            for mut ev in std::mem::take(&mut self.rig.embed_events) {
+                ev.part = self.combat.game_part(ev.actor, ev.part as usize);
+                self.link.push_combat_event(&ev);
+            }
+            // Things broken (`rig::breaking`): the game makes their pieces.
+            for ev in self.rig.take_breaks() {
+                self.link.push_combat_event(&ev);
             }
             for p in &self.combat.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
+            // The hits heard: by what met what, as loud as they were hard.
+            if self.settings.current.sound.enabled {
+                for (cue, at, intensity, object) in std::mem::take(&mut self.combat.sounds) {
+                    let fb = feedback::Feedback { cue, hand: None, object: (object != 0).then_some(object), pos: rig_map.inv_point(at), intensity };
+                    self.play_cue(&fb);
+                }
+            }
+            self.combat.sounds.clear();
             self.spell_hands = self.magic.spell_hands(&self.rig, &self.rig_out);
             // Where the hands push the game's own props.
             self.game_pushes.count = self.rig.game_pushes.len().min(MAX_GAME_PUSHES) as u32;
@@ -1156,6 +1386,7 @@ impl Session {
             game_shots: std::mem::take(&mut self.game_shots),
             held_kicks: &self.held_kicks,
             riding,
+            sculpting: self.sculpt.busy(),
         });
         for h in self.mech.haptics.drain(..) {
             self.backend.haptic(h.hand, h.seconds, h.frequency, h.amplitude);
@@ -1287,7 +1518,9 @@ impl Session {
             };
             let mv = Vec2::from_array(out.intents.move_xy);
             let locomotion = Quat::from_rotation_y(head_yaw) * Vec3::new(mv.x, 0.0, mv.y) * 2.5;
-            let stand = self.mech.debug.stand_h;
+            // The body is sized standing: while the game crouches its eye is a crouch's, and with it
+            // the floor under the head.
+            let stand = if gflags & GS_CROUCHED == 0 { self.mech.debug.stand_h } else { 0.0 };
             let floor = self.floor;
             // Hands holding a gun the game has its own hand pose for are drawn in it, where the rig
             // holds the gun (tracking space).
@@ -1311,7 +1544,11 @@ impl Session {
                 ghosts,
                 holds,
                 held,
-                grasps: if rig_active { [self.rig.grasps()[0].as_ref(), self.rig.grasps()[1].as_ref()] } else { [None; 2] },
+                grasps: if rig_active {
+                    [0, 1].map(|i| self.sculpt.hand_out(i).and_then(|o| o.grasp.as_ref()).or(self.rig.grasps()[i].as_ref()))
+                } else {
+                    [None; 2]
+                },
                 finger_give: if rig_active { self.rig_out.finger_give } else { [[0.0; 5]; 2] },
                 locomotion,
                 swim: self.swim_out.swimming.then(|| {
@@ -1324,7 +1561,9 @@ impl Session {
                 }),
                 eye_height: if stand > 0.5 { stand } else { 0.0 },
                 floor,
+                kicks: self.kick_out.ankles,
                 saddle: self.saddle(),
+                hands_only: gflags & GS_HANDS_ONLY != 0,
                 settings: &self.settings.current,
             });
             self.link.write_body(body);
@@ -1450,6 +1689,8 @@ impl Session {
                 game_size: self.targets.as_ref().map(|t| (t.spec.eye_w, t.spec.eye_h)),
                 mirror: self.mirror.shown(),
             };
+            // (The dominant stick scrolls it, as it does the game's menus.)
+            self.menu.scroll(frame.hands[dom].stick[1], frame.dt, self.settings.current.ui.menu_scroll);
             self.menu.update(&self.gpu, &mut self.settings.current, menu_pointer, &status)?;
             if std::mem::take(&mut self.menu.changed)
                 && let Err(e) = self.settings.save() {
@@ -1502,7 +1743,10 @@ impl Session {
         let framework_shown = self.mech.framework_view && self.rig_active_last;
         self.pacing.cpu(ms(t_rig, t_end), framework_shown);
         if let Some(line) = self.pacing.report(now) {
-            tracing::info!("runtime: {line}");
+            // (With its video memory: past its budget, what a frame uses is copied in and out of
+            // the system's memory, and every GPU command waits on it.)
+            let video = self.gpu.video_memory().map(|(used, budget)| format!("; video memory {used} of {budget} MB{}", if used > budget { " (over its budget)" } else { "" }));
+            tracing::info!("runtime: {line}{}", video.unwrap_or_default());
         }
         let budget = 1500.0 / self.backend.refresh_hz().max(30.0);
         if ms(t_rig, t_end) > budget && now - self.slow_logged > 1.0 {
@@ -1595,9 +1839,11 @@ impl Session {
             fade = 1.0;
         }
         let kf = 1.0 - (-dt / 0.08).exp();
-        if (fade > 0.5) != (self.comfort.fade > 0.5) {
+        if (fade > 0.5) != (self.comfort.fade > 0.5) && self.game_black < 0.5 {
             tracing::info!("runtime: the head is {} the world's geometry: fading {}", if fade > 0.5 { "inside" } else { "out of" }, if fade > 0.5 { "out" } else { "back in" });
         }
+        // The game's own fade from black after a load, when there's no place held to fade from.
+        let fade = fade.max(self.game_black);
         self.comfort.fade += (fade - self.comfort.fade) * kf;
         self.stats.vignette = self.comfort.vignette;
         self.stats.fade = self.comfort.fade;
@@ -1774,6 +2020,23 @@ impl Session {
         let menu_in_world = menu_mode && self.game.as_ref().is_some_and(|g| g.flags & GS_MENU_IN_WORLD != 0);
         let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && (!menu_mode || floating || menu_in_world) && alive);
         let framework = self.mech.framework_view && self.rig_active_last;
+        // The place the player was in, held while the game loads another (`crate::held`): copied
+        // the first time it's shown, drawn fixed in tracking space while it is; then over the
+        // game's new picture as much as the game's fade says (with nothing held, the fade is the
+        // game's own black).
+        let held_shown = stereo.as_ref().is_some_and(|(_, i)| i.flags & SLOT_HELD != 0);
+        let mut held_over = 0.0;
+        self.game_black = 0.0;
+        match &stereo {
+            Some((slot, info)) if held_shown => self.held_world.keep(&self.gpu, slot, info),
+            Some((_, info)) => {
+                if !self.held_world.has() {
+                    self.game_black = info.held_over.clamp(0.0, 1.0);
+                }
+                held_over = self.held_world.over(info, frame.dt);
+            }
+            None => {}
+        }
         // The game's picture moved to this headset frame's eyes, by its depth (`crate::warp`), and
         // everything drawn and submitted with them: the world where it is at every headset frame,
         // however late the picture. Not moved, everything over the game's picture is drawn from
@@ -1784,7 +2047,7 @@ impl Session {
         // does a native game's. A picture shown later than it was drawn for (a game slower than
         // the headset, the same picture again), or drawn with the head somewhere else, is moved:
         // the head where it is, and the walk carried on over how late it is.
-        let late = stereo.as_ref().map_or(0.0, |(_, info)| {
+        let late = stereo.as_ref().filter(|_| !held_shown).map_or(0.0, |(_, info)| {
             self.frame_log
                 .iter()
                 .find(|l| l.0 == info.frame_index && l.0 != 0)
@@ -1793,7 +2056,9 @@ impl Session {
         let head_off = stereo.as_ref().map_or(0.0, |(_, info)| {
             (0..2).map(|e| Vec3::from_array(info.eye_pose[e].pos).distance(Vec3::from_array(frame.eyes[e].pos))).fold(0.0, f32::max)
         });
-        let warped = s.vr.reproject && stereo.is_some() && !framework && (late > 0.002 || head_off > 0.004);
+        // (A held place is always moved: it's where it was, the head somewhere else. So is a picture
+        // the held place is fading over, so it's under it before the rest is drawn.)
+        let warped = stereo.is_some() && !framework && (held_shown || held_over > 0.0 || s.vr.reproject && (late > 0.002 || head_off > 0.004));
         self.stats.warped_frames += warped as u64;
         let walk = self.locomotion.walk();
         // (Drawn wider than the headset shows, overscanned, the headset is given its own view of it at
@@ -2130,11 +2395,14 @@ impl Session {
                 tracing::warn!("combat debug view: {e:#}");
             }
         }
+        self.sculpt.prepare(&self.gpu);
+        let sculpt_draw = if draw_body && !framework { self.sculpt.draw(&mut self.sculpt_parts) } else { None };
         let body = &mut self.body;
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
         let reins = &mut self.reins;
         let warp = &mut self.warp;
+        let held_world = &self.held_world;
         let mirror = &mut self.mirror;
         // The game's world in the mirror: its picture from the camera asked for (`MirrorView`), with
         // its depth, carried from where it was drawn in the world to where the mirror is now.
@@ -2199,10 +2467,26 @@ impl Session {
                             metres_per_unit: 1.0 / if given { then.world_per_meter } else { wpm },
                         })
                     };
-                    let sources: Vec<_> = [source(e ^ 1), source(e)].into_iter().flatten().collect();
+                    let sources: Vec<_> = if held_shown {
+                        [held_world.source(e ^ 1, wpm), held_world.source(e, wpm)].into_iter().flatten().collect()
+                    } else {
+                        [source(e ^ 1), source(e)].into_iter().flatten().collect()
+                    };
+                    // The place held, fading out over the new one: moved first, to go over it.
+                    let over = (held_over > 0.0).then(|| [held_world.source(e ^ 1, wpm), held_world.source(e, wpm)].into_iter().flatten().collect::<Vec<_>>()).filter(|v| !v.is_empty());
+                    let over = over.is_some_and(|o| match warp.draw_held(&self.gpu, target.width, target.height, eye, fov, &o) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            tracing::warn!("runtime: moving the place held: {err:#}");
+                            false
+                        }
+                    });
                     if !sources.is_empty() {
                         match warp.draw(&self.gpu, target, eye, fov, &sources).and_then(|_| warp.post(&self.gpu, target.width, target.height)) {
                             Ok(post) => {
+                                if over {
+                                    warp.blend_held(&self.gpu, target, held_over);
+                                }
                                 background = crate::compositor::Background::Keep;
                                 moved = true;
                                 depth_units = 1.0;
@@ -2220,7 +2504,7 @@ impl Session {
                 // depth, bloom and lens for that part.
                 let cropped = !moved && !same_fov(&info.fov[e], fov);
                 if cropped && let Some(srv) = slot.eyes[e].srv.as_ref() {
-                    background = crate::compositor::Background::Reprojected { first: (srv, info.eye_pose[e], info.fov[e]), second: None, second_depth: None, metres: 1.0 / wpm.max(1e-6) };
+                    background = crate::compositor::Background::Reprojected { first: (srv, info.eye_pose[e], info.fov[e]), second: None, second_depth: None, metres: 1.0 / wpm.max(1e-6), fog: None };
                     if info.flags & SLOT_DEPTH != 0
                         && let Some(d) = slot.depth.as_ref().and_then(|d| d[e].srv.as_ref())
                     {
@@ -2276,6 +2560,7 @@ impl Session {
             reins.place(picture);
             let mut held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
             held.extend(reins.draw().filter(|_| draw_body && !framework));
+            held.extend(sculpt_draw.as_ref().map(|d| rustvr_avatar::HeldDraw { model: d.model, parts: d.parts, key: d.key, overlay: None, bend: 0.0 }));
             // The blood, where this eye's picture has the world (set before the mirror's reflection,
             // so the player and the world in the glass have this eye's blood too).
             let gore = (draw_body && !framework && self.gore.active()).then(|| {
@@ -2322,8 +2607,10 @@ impl Session {
                 }
             }
         }
-        // The desktop view: the same frame from its steadied camera between the eyes.
-        if let Some(target) = self.spectator.as_ref().and_then(|w| w.target()) {
+        // The desktop view: the same frame from its steadied camera between the eyes (into the
+        // effects studio's own picture while it has effects to draw over it).
+        let desktop = self.spectator.as_ref().and_then(|w| w.target()).map(|w| self.spectator_fx.target(&self.gpu, w, &s.studio));
+        if let Some(target) = desktop.as_ref() {
             let sp = &s.spectator;
             let head = quat(frame.hmd.rot);
             let first = match sp.eye {
@@ -2337,11 +2624,57 @@ impl Session {
                 (Some((_, info)), false) => Vec3::from_array(info.eye_pose[first].pos),
                 _ => crate::spectator::between(&frame.eyes),
             };
+            // Narrowed while the player aims, as a flat game's view is down the sights: a bow drawn
+            // (an arrow on the string, the string hand at the face), else the gun in hand.
+            let bow = self.rig.drawn_arrow().and_then(|(bow, _, _, draw)| {
+                let hand = (0..2).find(|&h| self.rig.held(h) == Some(bow))?;
+                let (bow_hand, string_hand) = (&frame.hands[hand], &frame.hands[hand ^ 1]);
+                let pinch = Vec3::from_array(string_hand.grip.pos) + quat(string_hand.grip.rot) * crate::rig::bow::PINCH;
+                let connected = bow_hand.connected != 0 && string_hand.connected != 0;
+                connected.then(|| crate::spectator::Aim::Bow { draw, string: pinch, grip: Vec3::from_array(bow_hand.grip.pos) })
+            });
+            // (Firing as `mechanics` has it: the dominant hand's trigger.)
+            let firing = frame.hands[s.dominant()].trigger > 0.5;
+            let aim = bow.or(out.weapon.map(|w| crate::spectator::Aim::Gun { sight: w.sight_origin, dir: w.aim_dir, firing }));
+            let zoom = self.spectator_zoom.update(aim, Vec3::from_array(frame.eyes[first].pos), head, frame.dt, sp);
+            let sp = &crate::spectator::zoomed(sp, zoom);
             let cam = self.spectator_cam.update(head, at, frame.dt, sp);
             let fov = crate::spectator::fov(sp.fov, target.width as f32 / target.height.max(1) as f32);
+            // Bobbing as the player walks by the stick or the game, the steadied camera otherwise
+            // steady (`crate::view_bob`): the game's own bob, or the runtime's. Damped as far as the
+            // view is narrowed from its setting's (for aiming, as a flat game's view down its sights).
+            let bob = self.spectator_bob.update(
+                &crate::view_bob::BobInput {
+                    step: self.game.as_ref().map(|g| (crate::view_bob::seconds(g.time_qpc), WorldMap::from_state(&g.tracking))),
+                    crouched: self.game.as_ref().is_some_and(|g| g.flags & GS_CROUCHED != 0),
+                    swimming: self.game.as_ref().is_some_and(|g| g.water.flags & WATER_SWIMMING != 0),
+                    game: self.game.as_ref().map_or(ViewBob::default(), |g| g.view_bob),
+                    in_picture: s.comfort.head_bob,
+                    narrowed: sp.fov / s.spectator.fov.max(1.0),
+                },
+                frame.dt,
+                &s.desktop_bob,
+            );
+            // (Given to the effects studio, which turns the world with it: `crate::spectator_fx`.)
+            let bobbed = bob.apply(cam);
             // The game's depth (and its bloom and lens) as this camera sees them: the body hides
             // behind what the game drew in front of it (a gun in the hand) and gets its light, as in
             // the headset.
+            // (The camera first through the effects studio: turned after the chest, shaken, wider
+            // with speed; and `world`, its view of the game's world, turned through a snap turn
+            // being eased out.)
+            let shot = self.spectator_fx.shot(&crate::spectator_fx::ShotInput {
+                settings: s,
+                cam,
+                bobbed,
+                fov,
+                frame,
+                picture: stereo.as_ref().filter(|_| !framework).map(|(_, info)| (info, first)),
+                rig: self.rig_active_last.then_some(&self.rig_out),
+                feedback: if self.rig_active_last { &self.rig.feedback } else { &[] },
+                weapon: out.weapon.as_ref(),
+            });
+            let (cam, fov, world) = (shot.cam, shot.fov, shot.world);
             let mut post = None;
             if let (Some((slot, info)), false) = (&stereo, framework)
                 && info.flags & SLOT_DEPTH != 0
@@ -2362,7 +2695,7 @@ impl Session {
                         self.spectator_post = crate::compositor::PostTargets::new(&self.gpu, size.0, size.1).inspect_err(|e| tracing::warn!("desktop view: depth targets: {e:#}")).ok();
                     }
                     if let Some(p) = &self.spectator_post {
-                        self.comp.reproject_post(&self.gpu, p, &cam, &fov, &a, src(first ^ 1).as_ref(), 1.0 / wpm.max(1e-6));
+                        self.comp.reproject_post(&self.gpu, p, &world, &fov, &a, src(first ^ 1).as_ref(), 1.0 / wpm.max(1e-6));
                         post = Some(p);
                     }
                 }
@@ -2377,18 +2710,41 @@ impl Session {
                             second: b,
                             second_depth: (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[first ^ 1].srv.as_ref())).flatten(),
                             metres: 1.0 / wpm.max(1e-6),
+                            // Gamebryo's shaders fog by clip-space distance: where the other eye's
+                            // picture fills in, its fog is made this eye's (`refog` in the
+                            // compositor's shader). Not once the adapter has its shaders fog by the
+                            // distance (`fog_fade.z`).
+                            fog: (self.has_game_lighting
+                                && self.game_lighting.model == rustvr_protocol::lighting::LM_GAMEBRYO
+                                && self.game_lighting.fog_fade[1] != 0.0
+                                && self.game_lighting.fog_fade[2] == 0.0)
+                                .then(|| {
+                                let (c, f) = (self.game_lighting.fog_color, self.game_lighting.fog_fade);
+                                crate::compositor::ClipFog { color: [c[0], c[1], c[2]], fade: [f[0], f[1]] }
+                            }),
                         },
                         (None, _) => crate::compositor::Background::Void,
                     }
                 }
                 _ => crate::compositor::Background::Void,
             };
+            // The game's world from `world` (and the picture from before a snap where the new one
+            // doesn't reach yet), and the game's HUD where a flat player has it, when the studio
+            // puts it there.
+            let flat_hud = locked
+                .as_ref()
+                .and_then(|(slot, _)| slot.hud.as_ref())
+                .zip(layout.hud.filter(|_| stereo.is_some() && !framework))
+                .map(|(tex, p)| crate::spectator_fx::FlatHud { tex, layout: &self.hud_layout, aspect: p.width / p.height.max(1e-4) });
+            let background = self.spectator_fx.background(&self.gpu, &self.comp, target, &world, &fov, background, &mut layers, flat_hud.as_ref());
             // (Placed by the picture it's drawn over: the first eye's.)
             let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| WorldMap::from_slot(&info.eye_map[first]));
             self.held_objects.place(eye_map.as_ref().or(self.map_now.as_ref()));
             self.reins.place(glam::Mat4::IDENTITY);
             let mut held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
             held.extend(self.reins.draw().filter(|_| draw_body && !framework));
+            // (The copy of the head the hands shape, as in the headset.)
+            held.extend(sculpt_draw.as_ref().map(|d| rustvr_avatar::HeldDraw { model: d.model, parts: d.parts, key: d.key, overlay: None, bend: 0.0 }));
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");
@@ -2401,6 +2757,8 @@ impl Session {
                     body.draw(gpu, target, &cam, &fov, light, depth.take(), &held);
                 }
             });
+            let game_depth = post.and_then(|p| p.depth.srv.as_ref());
+            self.spectator_fx.drawn(&self.gpu, body, if draw_body { &held[..] } else { &[] }, game_depth, 1.0 / wpm.max(1e-6), flat_hud.as_ref());
         }
         if let Some((slot, info)) = &locked {
             slot.release();
@@ -2415,10 +2773,16 @@ impl Session {
         let t_wait = std::time::Instant::now();
         self.backend.submit(&self.gpu, &poses, &fovs)?;
         self.pacing.wait(crate::pacing::Wait::Submit, t_wait.elapsed().as_secs_f32() * 1000.0);
+        // The desktop view's effects and its flat HUD, now the headset has its frame.
+        self.spectator_fx.finish(&self.gpu);
         if let Some(w) = &self.spectator {
             let now = frame.display_time_ns as f64 * 1e-9;
+            // (Every five seconds, or as often as `RUSTVR_DESKTOP_EVERY` says: a walk's steps one
+            // after another.)
+            static EVERY: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+            let every = *EVERY.get_or_init(|| std::env::var("RUSTVR_DESKTOP_EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(5.0));
             if let Some((dir, last)) = &mut self.spectator_capture
-                && now - *last > 5.0
+                && now - *last > every
             {
                 *last = now;
                 let path = dir.join(format!("desktop_{:06}.png", frame.index));
@@ -2525,7 +2889,12 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audi
         // The game sounds its own grinding (the bowl's strokes).
         C::Grind | C::GrindStroke => return None,
         // And what a touch on its page does.
-        C::Touch => return None,
+        C::Touch | C::Slide | C::Penetrate | C::Rub => return None,
+        C::HitCut => (E::HitCut, S::Cut),
+        C::HitStab => (E::HitStab, S::Stab),
+        C::HitBlunt => (E::Melee, S::Melee),
+        C::Clash => (E::Clash, S::Clash),
+        C::Chop => (E::Chop, S::Chop),
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

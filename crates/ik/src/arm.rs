@@ -1,5 +1,12 @@
-//! Arms: clavicle reach (FRIK/VRIK), the elbow swivel, and an analytic two-bone solve with
-//! FRIK's flexion clamps.
+//! Arms: the shoulder girdle (the scapulohumeral rhythm, then FRIK/VRIK's clavicle reach), the
+//! elbow swivel, and an analytic two-bone solve with FRIK's flexion clamps.
+//!
+//! The shoulder joint isn't fixed to the chest. As the arm rises past 30 degrees the shoulder
+//! blade turns up with it and the clavicle lifts, so the joint rises (some 4-5 cm by the
+//! horizontal); reaching forward or across the body it slides forward round the ribs, reaching
+//! behind it pulls back and up (Klopčar & Lenarčič's shoulder-girdle model, Ludewig's bone-pin
+//! measurements, `docs/research/ik.md`). Every VR body before this held the shoulder still until
+//! the hand passed the arm's full reach.
 //!
 //! The swivel (the elbow's angle around the shoulder -> wrist axis) starts from VRArmIK's tuned
 //! version of Parger's position model with Parger's singularity blend. Parger then corrects the
@@ -37,12 +44,17 @@ const W_WRIST: f32 = 8.0;
 const W_TWIST: f32 = 4.0;
 const W_PREVIOUS: f32 = 0.3;
 const W_TORSO: f32 = 20.0;
+/// An elbow tucked further in towards the body's middle than both the shoulder and the wrist (the
+/// arm folded across the chest, the upper arm turned right in) pays this per 10 cm past them (est.).
+const W_INWARD: f32 = 2.0;
 /// The swivel search runs from just above outward round to a little inward under the arm.
 const SWIVEL_RANGE_DEG: [f32; 2] = [30.0, 215.0];
 const SWIVEL_STEP_DEG: f32 = 10.0;
-/// The forearm joint sits halfway along the forearm, so it shows half of the twist between the
-/// elbow hinge and the hand (FRIK spreads forearm roll 0 / 0.5 / 0.5 over its twist bones).
-const FOREARM_JOINT_TWIST: f32 = 0.5;
+/// The forearm joint carries none of the hand's roll about the forearm: that's the radius turning
+/// about the ulna, nothing at the elbow and all of it at the wrist. The avatar spreads it along the
+/// forearm (its twist bones by where they sit, or half on a forearm without them), so the skin at
+/// the elbow doesn't turn with the wrist.
+const FOREARM_JOINT_TWIST: f32 = 0.0;
 /// The elbow is kept out of a box around the ribcage (upper chest space, metres at reference
 /// size): half width, back, front, bottom.
 const TORSO_BOX: [f32; 4] = [0.14, -0.12, 0.11, -0.55];
@@ -62,6 +74,47 @@ pub struct ArmPose {
 pub struct ArmState {
     /// Smoothed elbow direction, in upper chest space.
     pole: Option<Vec3>,
+    /// The upper arm's direction last frame, in upper chest space with +X outward on either side:
+    /// what the shoulder girdle follows.
+    upper: Option<Vec3>,
+    /// The shoulder girdle's lift and swing forward (radians, see `girdle`), smoothed.
+    girdle: Option<[f32; 2]>,
+}
+
+/// The shoulder girdle's lift scaled down from the skin-marker measurements it comes from: bone
+/// pins show the clavicle rising less than markers on the skin over it (Ludewig 2009; the
+/// research's 0.6-0.8).
+const GIRDLE_RISE: f32 = 0.7;
+/// The shoulder girdle follows the arm this quickly (est.; the research's 50-80 ms).
+const GIRDLE_TAU: f32 = 0.06;
+
+/// How the shoulder girdle turns about the sternoclavicular joint for an upper arm pointing `dir`
+/// (upper chest space, +X outward on either side): its lift (radians, the shoulder end up) and
+/// swing forward (radians, the shoulder end forward; back is negative).
+///
+/// Klopčar & Lenarčič 2006: with the humerus raised φ degrees from hanging, the girdle lifts
+/// 0.36φ - 10.8° past 30° and swings back 0.22φ - 15.4° past 70°; reaching behind (extension) it
+/// lifts 0.3° and swings back 0.35° a degree. Ludewig 2009 (bone pins): the clavicle swings back
+/// 7.5° more raising the arm out to the side than in the plane of the shoulder blade (some 35°
+/// forward of it), and as much less raising it forward. Across the body the shoulder blade wraps
+/// forward round the ribs, a quarter of a degree for every degree past that plane (est., up to
+/// 20°: the sternoclavicular joint's protraction range).
+fn girdle(dir: Vec3) -> [f32; 2] {
+    let d = dir.normalize_or(-UP);
+    let raised = (-d.y).clamp(-1.0, 1.0).acos().to_degrees();
+    let horizontal = (d.x * d.x + d.z * d.z).sqrt();
+    // The plane it's raised in: 0 out to the side, 90 forward, past that across the body.
+    let plane = d.z.atan2(d.x).to_degrees();
+    let mut lift = if raised > 30.0 { 0.36 * raised - 10.8 } else { 0.0 };
+    let mut forth = if raised > 70.0 { -0.22 * raised + 15.4 } else { 0.0 };
+    forth += 7.5 * ((plane - 35.0) / 55.0).clamp(-1.0, 1.0) * smoothstep(30.0, 120.0, raised);
+    if plane > 35.0 {
+        forth += (0.25 * (plane - 35.0)).min(20.0) * horizontal;
+    }
+    let behind = (-d.z).max(0.0).asin().to_degrees();
+    lift += 0.3 * behind;
+    forth -= 0.35 * behind;
+    [(lift * GIRDLE_RISE).clamp(0.0, 40.0).to_radians(), forth.clamp(-25.0, 25.0).to_radians()]
 }
 
 pub struct ArmInput {
@@ -73,6 +126,8 @@ pub struct ArmInput {
     /// Where the headset tracks the elbow, when it does: the elbow points the way the player's
     /// does (the arm's own lengths kept).
     pub elbow: Option<Vec3>,
+    /// The learned prior's way for the elbow out from the shoulder-to-wrist line (`prior`).
+    pub prior: Option<Vec3>,
 }
 
 /// Swivel frame around the shoulder -> wrist axis: elbow direction e(α) = u cos α + o sin α, so
@@ -162,7 +217,7 @@ pub fn two_bone(
 /// where the shoulder rests: `d`, until `ease` short of full reach; from there it eases (with the
 /// same slope at its start and none at its end) onto full reach, `ease` past it, and stays there.
 /// The shoulder goes the rest of the way.
-fn eased_reach(d: f32, length: f32, ease: f32) -> f32 {
+pub(crate) fn eased_reach(d: f32, length: f32, ease: f32) -> f32 {
     if ease > 0.0 && d > length - ease {
         let u = (d - (length - ease)).min(2.0 * ease);
         length - ease + u - u * u / (4.0 * ease)
@@ -186,7 +241,23 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     // would snap straight), then all of it; the bones keep their length. Only past the shoulder's
     // own reach does the arm stretch. The clavicle points at it.
     let clavicle_root = input.chest_pos + q * Vec3::new(sign * skel.clavicle_root, skel.shoulder_up, 0.0);
-    let rest_shoulder = input.chest_pos + q * Vec3::new(sign * skel.shoulder_half, skel.shoulder_up, 0.0);
+    // The girdle turns the shoulder about the clavicle's root as the arm last pointed (a frame's
+    // lag, under its own smoothing), or as the hand is first time round.
+    let mirror = |v: Vec3| Vec3::new(v.x * sign, v.y, v.z);
+    let hanging = Vec3::new(sign * skel.shoulder_half, skel.shoulder_up, 0.0);
+    let pointing = state.upper.unwrap_or_else(|| mirror(q.inverse() * (wrist - (input.chest_pos + q * hanging))));
+    let target = girdle(pointing);
+    let [lift, forth] = match state.girdle {
+        Some(g) if dt <= 0.0 => g,
+        Some(g) => {
+            let a = smoothing(dt, GIRDLE_TAU);
+            [g[0] + (target[0] - g[0]) * a, g[1] + (target[1] - g[1]) * a]
+        }
+        None => target,
+    };
+    state.girdle = Some([lift, forth]);
+    let clavicle = Quat::from_rotation_y(-forth) * Quat::from_rotation_z(lift) * Vec3::new(skel.shoulder_half - skel.clavicle_root, 0.0, 0.0);
+    let rest_shoulder = input.chest_pos + q * mirror(Vec3::new(skel.clavicle_root, skel.shoulder_up, 0.0) + clavicle);
     let to_hand = wrist - rest_shoulder;
     let reaching = to_hand.length();
     let bend_at = eased_reach(reaching, arm, (p.arm_ease * arm).clamp(0.0, 0.25 * arm));
@@ -228,7 +299,7 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     let d = shoulder.distance(wrist).min(a + b);
     let flexion = ((d * d - a * a - b * b) / (2.0 * a * b)).clamp(-1.0, 1.0).acos();
     let straight = smoothstep(30f32.to_radians(), 8f32.to_radians(), flexion);
-    let target_dir = swivel_target(skel, &frame, sign, rest_shoulder, previous, straight, input, |e| {
+    let target_dir = swivel_target(p, skel, &frame, sign, rest_shoulder, previous, straight, input, |e| {
         two_bone(shoulder, wrist, lengths, e, flex, p.arm_stretch)
     });
     // The headset's own tracking of the elbow: its way out from the shoulder-to-wrist line, the
@@ -245,6 +316,8 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
     // Smooth the swivel, never the hand: the elbow direction is filtered in chest space.
     let local = q.inverse() * target_dir;
     let pole_local = match state.pole {
+        // (A frame that takes no time leaves it exactly as it was.)
+        Some(prev) if dt <= 0.0 => prev,
         Some(prev) => prev.lerp(local, smoothing(dt, p.swivel_tau)).normalize_or(local),
         None => local,
     };
@@ -254,10 +327,11 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
 
     let solved = two_bone(shoulder, wrist, lengths, pole, flex, p.arm_stretch);
     let upper_dir = (solved.elbow - shoulder).normalize_or(-UP);
+    state.upper = Some(mirror(q.inverse() * upper_dir));
     // The upper arm's +Z faces the way the forearm folds (forward in the T-pose), straight or not.
     let upper = frame_yz(upper_dir, solved.fold, forward);
     // The forearm joint without twist is the upper arm frame turned through the elbow hinge;
-    // it then takes part of the hand's twist about the forearm.
+    // it then takes its share of the hand's twist about the forearm (none, `FOREARM_JOINT_TWIST`).
     let hinge = Quat::from_rotation_arc(upper_dir, solved.forearm);
     let untwisted = hinge * (upper * Vec3::Z);
     let twist = signed_angle(untwisted, hand_rot * Vec3::Z, solved.forearm) * FOREARM_JOINT_TWIST;
@@ -269,6 +343,7 @@ pub fn solve(p: &BodyParams, skel: &Skeleton, dt: f32, state: &mut ArmState, inp
 /// The elbow direction this frame, before smoothing.
 #[allow(clippy::too_many_arguments)]
 fn swivel_target(
+    p: &BodyParams,
     skel: &Skeleton,
     frame: &SwivelFrame,
     sign: f32,
@@ -302,6 +377,11 @@ fn swivel_target(
         let fixed = chest_rot * Vec3::new(PARGER_FIXED_ELBOW.x * sign, PARGER_FIXED_ELBOW.y, PARGER_FIXED_ELBOW.z);
         let fixed = fixed.reject_from(swivel_axis).normalize_or(prior);
         prior = prior.lerp(fixed, blend.clamp(0.0, 1.0)).normalize_or(prior);
+    }
+    // 3. The learned prior's way, as far as it's trusted (`BodyParams::prior_elbow`).
+    if let Some(learned) = input.prior {
+        let learned = learned.reject_from(swivel_axis).normalize_or(prior);
+        prior = prior.lerp(learned, p.prior_elbow).normalize_or(prior);
     }
     let (hand_x, hand_y, hand_z) = (input.target.rot * Vec3::X, input.target.rot * UP, input.target.rot * Vec3::Z);
     let mut prior = frame.angle(prior);
@@ -338,6 +418,9 @@ fn swivel_target(
         if inside_torso(skel, chest_rot.inverse() * (arm.elbow - input.chest_pos)) {
             c += W_TORSO;
         }
+        let outward = |v: Vec3| (chest_rot.inverse() * (v - input.chest_pos)).x * sign;
+        let tucked = outward(rest_shoulder).min(outward(wrist)) - outward(arm.elbow);
+        c += W_INWARD * (tucked.max(0.0) / (0.1 * skel.scale)).powi(2);
         c
     };
     let [lo, hi] = SWIVEL_RANGE_DEG.map(f32::to_radians);

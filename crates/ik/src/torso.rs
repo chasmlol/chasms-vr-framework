@@ -6,7 +6,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use glam::Vec3;
 
 use crate::BodyParams;
-use crate::math::{flat, smoothing, smoothstep, wrap_angle, yaw_dir, yaw_of};
+use crate::math::{flat, smoothing, smoothstep, wrap_angle, yaw_dir, yaw_of, Follow};
 
 /// Parger settles the both-hands-behind ambiguity with the head: a hand estimate this far from
 /// the head's yaw is taken to be the flipped one.
@@ -17,6 +17,8 @@ const MIN_HORIZONTAL: [f32; 2] = [0.05, 0.15];
 #[derive(Clone, Copy, Debug)]
 pub struct TorsoYaw {
     pub yaw: f32,
+    /// The yaw as it follows its target (a critically damped follower: no jolt as it starts).
+    follow: Follow,
     /// Last hand yaw with a usable magnitude, for the flip detector.
     prev_raw: Option<f32>,
     flipped: bool,
@@ -24,11 +26,12 @@ pub struct TorsoYaw {
 
 impl TorsoYaw {
     pub fn new(yaw: f32) -> Self {
-        TorsoYaw { yaw, prev_raw: None, flipped: false }
+        TorsoYaw { yaw, follow: Follow::new(yaw), prev_raw: None, flipped: false }
     }
 
     /// `eyes` and `head_joint` are the HMD and neck-pivot positions, `head_yaw` the head's facing,
-    /// `hands` the tracked palm positions [left, right].
+    /// `hands` the tracked palm positions [left, right], `tracked` the chest's yaw where the
+    /// headset's body tracking has it (it then wins over the hands'), `learned` the learned prior's.
     #[allow(clippy::too_many_arguments)]
     pub fn update(
         &mut self,
@@ -39,11 +42,20 @@ impl TorsoYaw {
         head_joint: Vec3,
         head_yaw: f32,
         hands: [Option<Vec3>; 2],
+        tracked: Option<f32>,
+        learned: Option<f32>,
     ) -> f32 {
         let (target, tau) = match hands {
+            _ if tracked.is_some() => {
+                self.prev_raw = None;
+                (tracked.unwrap_or(head_yaw), p.torso_yaw_tau)
+            }
             [Some(l), Some(r)] => {
                 let offset = self.hand_offset(p, scale, eyes, head_joint, head_yaw, l, r);
-                (head_yaw + offset, p.torso_yaw_tau)
+                // The learned prior's chest, as far as it's trusted (`BodyParams::prior_chest`).
+                let target = head_yaw + offset;
+                let target = learned.map_or(target, |y| target + wrap_angle(y - target) * p.prior_chest);
+                (target, p.torso_yaw_tau)
             }
             // One hand alone can't tell a turned torso from a hand held out to the side, so with
             // fewer than two hands the torso just trails the head.
@@ -53,11 +65,13 @@ impl TorsoYaw {
                 (head_yaw, p.torso_yaw_tau_head_only)
             }
         };
-        self.yaw = wrap_angle(self.yaw + wrap_angle(target - self.yaw) * smoothing(dt, tau));
+        self.follow.value = self.yaw;
+        self.yaw = wrap_angle(self.follow.step(wrap_angle(target - self.yaw), dt, tau));
         // Parger keeps the head within 90° of the neck whatever the filter is doing.
         let off = wrap_angle(self.yaw - head_yaw);
         if off.abs() > FRAC_PI_2 {
             self.yaw = wrap_angle(head_yaw + FRAC_PI_2.copysign(off));
+            self.follow.speed = 0.0;
         }
         self.yaw
     }
@@ -103,23 +117,33 @@ impl TorsoYaw {
         let magnitude = sum.length();
         // FRIK zeroes the hand yaw when either hand is unreliable rather than letting the other
         // hand alone steer the torso, so the weights gate the confidence.
-        let confidence = smoothstep(0.2, 0.8, magnitude) * weight(left).min(weight(right)) * uncrossed;
+        let weights = weight(left).min(weight(right));
+        let confidence = smoothstep(0.2, 0.8, magnitude) * weights * uncrossed;
         if magnitude < 0.2 {
+            self.prev_raw = None;
             return 0.0;
         }
         let raw = yaw_of(sum);
         // VRArmIK's flip detector: both hands going behind the body swings the sum through zero,
-        // so its yaw jumps by about 180° in one step.
-        if let Some(prev) = self.prev_raw {
-            let jump = (raw - prev).rem_euclid(TAU).to_degrees();
-            if (p.flip_jump_min_deg..=p.flip_jump_max_deg).contains(&jump) {
-                self.flipped = !self.flipped;
+        // so its yaw jumps by about 180° in one step. It only reads hands well out from under the
+        // head and away from the face: bent over with the hands under it (sweeping, picking
+        // something up), their directions are noise whose jumps it took for the hands going behind
+        // the back, and it turned the chest round backwards, the shoulders leaping.
+        let steady = weights > 0.5;
+        if steady {
+            if let Some(prev) = self.prev_raw {
+                let jump = (raw - prev).rem_euclid(TAU).to_degrees();
+                if (p.flip_jump_min_deg..=p.flip_jump_max_deg).contains(&jump) {
+                    self.flipped = !self.flipped;
+                }
             }
         }
-        self.prev_raw = Some(raw);
+        self.prev_raw = steady.then_some(raw);
         let mut offset = wrap_angle(raw + if self.flipped { PI } else { 0.0 } - head_yaw);
         if offset.abs() > FLIP_BY_HEAD {
-            self.flipped = !self.flipped;
+            if steady {
+                self.flipped = !self.flipped;
+            }
             offset = wrap_angle(offset + PI);
         }
         let clamp = p.torso_yaw_clamp_deg.to_radians();
@@ -160,7 +184,7 @@ mod tests {
         let eyes = Vec3::new(0.0, 1.7, 0.0);
         let head_joint = eyes + crate::math::yaw_rot(head_yaw) * Vec3::new(0.0, -0.09, -0.095);
         for _ in 0..360 {
-            t.update(&p, 1.0 / 90.0, 1.0, eyes, head_joint, head_yaw, hands);
+            t.update(&p, 1.0 / 90.0, 1.0, eyes, head_joint, head_yaw, hands, None, None);
         }
         t.yaw
     }

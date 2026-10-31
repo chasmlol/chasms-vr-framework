@@ -6,7 +6,8 @@ use rustvr_protocol::{JOINT_COUNT, Joint};
 
 use crate::arm::{self, ArmInput, ArmState};
 use crate::legs::{self, Feet, FeetInput};
-use crate::math::{clamp_dt, flat, frame_yz, sanitize_pos, sanitize_rot, smoothing, wrap_angle, yaw_of, UP};
+use crate::prior::{Prediction, Prior, PriorInput, PriorState};
+use crate::math::{clamp_dt, flat, frame_yz, sanitize_pos, sanitize_rot, smoothing, wrap_angle, yaw_of, Follow, UP};
 use crate::skeleton::Skeleton;
 use crate::spine::{self, ChainInput, MAX_PITCH};
 use crate::swim::{self, SwimState};
@@ -16,6 +17,10 @@ use crate::{BodyOutput, BodyParams, Calibration, Pose, Saddle, Side, StraightArm
 /// In a saddle the chest turns with the head this far at most either way (radians): looking
 /// round from a horse's back turns the shoulders a little, the hips stay with the mount.
 const SADDLE_TWIST: f32 = 50.0 * std::f32::consts::PI / 180.0;
+/// The centre of mass is this share of the way from the hips joint to the head joint (a standing
+/// body's is about 56% of its height up, a little above the hips joint, and the trunk above
+/// carries it with it as it leans; est., against motion capture's steps).
+const COM_UP_THE_SPINE: f32 = 0.3;
 /// Smoothing of the centre-of-mass and head velocities the stepping logic reads (est.).
 const VELOCITY_TAU: f32 = 0.1;
 /// An untracked hand eases from where it was lost to hanging at the side (est.).
@@ -28,10 +33,10 @@ const ARM_SPAN_RANGE: [f32; 2] = [0.9, 2.6];
 struct State {
     torso: TorsoYaw,
     root: RootYaw,
-    pitch: f32,
+    pitch: Follow,
     feet: Feet,
     arms: [ArmState; 2],
-    com: Vec3,
+    com: Option<Vec3>,
     com_vel: Vec3,
     eyes: Vec3,
     head_speed: f32,
@@ -41,6 +46,8 @@ struct State {
     loose_hand: [Pose; 2],
     /// The body in water: floating, and how far into its swimming pose.
     swim: SwimState,
+    /// The learned prior's running averages.
+    prior: PriorState,
 }
 
 pub struct BodySolver {
@@ -50,12 +57,14 @@ pub struct BodySolver {
     state: Option<State>,
     /// Riding: the seat the body sits in instead of standing ([`BodySolver::ride`]).
     saddle: Option<Saddle>,
+    /// The learned prior (`prior`), when its weights are compiled in.
+    prior: Option<Prior>,
 }
 
 impl BodySolver {
     pub fn new(params: BodyParams, calibration: Calibration) -> Self {
         let calibration = sanitize_calibration(calibration, Calibration::default());
-        BodySolver { skel: Skeleton::new(&params, calibration), params, calibration, state: None, saddle: None }
+        BodySolver { skel: Skeleton::new(&params, calibration), params, calibration, state: None, saddle: None, prior: Prior::load() }
     }
 
     /// Riding: the body sits in this saddle (the game's own seat on its mount) from the next solve
@@ -113,7 +122,9 @@ impl BodySolver {
                     locomotion: Vec3::ZERO,
                     seated: false,
                     elbows: [None; 2],
+                    shoulders: [None; 2],
                     swim: None,
+                    kicks: [None; 2],
                 };
                 let mut out = s.solve(&input);
                 for _ in 0..30 {
@@ -163,7 +174,9 @@ impl BodySolver {
             locomotion: Vec3::ZERO,
             seated: false,
             elbows: [None, None],
+            shoulders: [None, None],
             swim: None,
+            kicks: [None; 2],
         };
         let out = self.solve_frame(&neutral);
         self.state = None;
@@ -172,6 +185,7 @@ impl BodySolver {
 
     fn solve_frame(&mut self, input: &TrackedInput) -> BodyOutput {
         let saddle = self.saddle;
+        let prior = self.prior.as_ref();
         let p = &self.params;
         let skel = &self.skel;
         let s = skel.scale;
@@ -196,19 +210,27 @@ impl BodySolver {
             State {
                 torso: TorsoYaw::new(yaw),
                 root: RootYaw::new(yaw, p),
-                pitch: 0.0,
+                pitch: Follow::new(0.0),
                 feet: Feet::new(p, skel, head_joint, yaw),
                 arms: [ArmState::default(); 2],
-                com: eyes,
+                com: None,
                 com_vel: Vec3::ZERO,
                 eyes,
                 head_speed: 0.0,
                 hip_drop: 0.0,
                 loose_hand: [Side::Left, Side::Right].map(|side| rest_hand(skel, side)),
                 swim: SwimState::default(),
+                prior: PriorState::default(),
             }
         });
         let head_yaw = if facing.length_squared() > 1e-8 { yaw_of(facing) } else { state.torso.yaw };
+        // The learned prior's guess at the chest's and elbows' ways, from the head and hands.
+        let hands = [Side::Left, Side::Right].map(|side| grips[side as usize].map(|g| p.hand_offsets.hand_frame(side, g)));
+        let prior_input = PriorInput { dt, eyes, head_rot, eye_height: skel.eye_height, arm_length: skel.arm_length(), hands };
+        let learned: Option<Prediction> = match (prior, state.prior.features(&prior_input)) {
+            (Some(prior), Some(features)) => Some(prior.predict(&features, head_yaw)),
+            _ => None,
+        };
         let velocity_a = smoothing(dt, VELOCITY_TAU);
         if dt > 0.0 {
             let speed = flat(eyes - state.eyes).length() / dt;
@@ -232,7 +254,7 @@ impl BodySolver {
                 state.torso = TorsoYaw::new(torso_yaw);
                 state.root = RootYaw::new(mount_yaw, p);
                 state.feet = Feet::new(p, skel, head_joint, mount_yaw);
-                state.pitch = 0.0;
+                state.pitch = Follow::new(0.0);
                 state.hip_drop = 0.0;
                 let up = (saddle.seat.rot * UP).normalize_or(UP);
                 // (The hip joints sit over the seat, the hips joint over them.)
@@ -246,8 +268,21 @@ impl BodySolver {
             None => {
             // ---- torso ----
             let palms = grips.map(|g| g.map(|g| g.pos));
-            let torso_yaw = state.torso.update(p, dt, s, eyes, head_joint, head_yaw, palms);
-            let root_yaw = state.root.update(p, dt, torso_yaw, moving);
+            // The headset's own tracking of the shoulders: the chest square to the line between
+            // them (a line too short or too steep to say is no tracking).
+            let tracked = match input.shoulders {
+                [Some(l), Some(r)] if l.is_finite() && r.is_finite() => {
+                    let across = flat(r - l);
+                    (across.length() > 0.15 * s).then(|| yaw_of(across.cross(UP)))
+                }
+                _ => None,
+            };
+            let learned_chest = learned.filter(|_| p.prior_chest > 0.0).map(|l| l.chest_yaw);
+            let torso_yaw = state.torso.update(p, dt, s, eyes, head_joint, head_yaw, palms, tracked, learned_chest);
+            // The feet and hips trail the chest past a dead zone; the prior's hips, as far as it's
+            // trusted, say where the chest's twist leaves them.
+            let toward = learned.filter(|_| tracked.is_none() && p.prior_hips > 0.0).map_or(torso_yaw, |l| torso_yaw + wrap_angle(l.hips_yaw - torso_yaw) * p.prior_hips);
+            let root_yaw = state.root.update(p, dt, toward, moving);
             // In water the body floats, leaning into the way it swims (`swim`).
             state.swim.update(dt, input.swim.as_ref(), torso_yaw);
             let floating = state.swim.weight;
@@ -259,28 +294,27 @@ impl BodySolver {
             let level_eyes_y = head_joint.y - skel.eye_to_head.y;
             let target = spine::target_pitch(p, skel, level_eyes_y, h0, head_pitch);
             let target = target + (state.swim.lean() - target) * floating;
-            state.pitch += (target - state.pitch) * smoothing(dt, p.spine_tau);
+            state.pitch.step(target - state.pitch.value, dt, p.spine_tau);
             let chain_at = |pitch| spine::build(skel, &ChainInput { head_joint, head_rot, torso_yaw, root_yaw, pitch });
-            let mut chain = chain_at(state.pitch);
+            let mut chain = chain_at(state.pitch.value);
 
             // ---- feet ----
-            let mut com = chain.hips() + head_joint;
-            let mut weight = 2.0;
-            for palm in palms.iter().flatten() {
-                // VRIK's centre of mass: pelvis and head 1 each, hands 0.2.
-                com += *palm * 0.2;
-                weight += 0.2;
+            // The centre of mass: most of a body's mass is in its trunk and legs, so it sits a little
+            // above the hips and moves with the trunk; the head and the arms (some 8% and 10% of
+            // the mass, Winter's tables) hardly move it. (VRIK weights the head as the pelvis,
+            // which has a body step whenever it looks down or reaches.)
+            let com = chain.hips().lerp(head_joint, COM_UP_THE_SPINE);
+            // (The first frame has nothing to take a velocity from.)
+            if let (Some(last), true) = (state.com, dt > 0.0) {
+                state.com_vel = state.com_vel.lerp((com - last) / dt, velocity_a);
             }
-            let com = com / weight;
-            if dt > 0.0 {
-                state.com_vel = state.com_vel.lerp((com - state.com) / dt, velocity_a);
-            }
-            state.com = com;
+            state.com = Some(com);
             let seated_hips = input.seated.then(|| {
                 let [l, r] = hip_joints(&chain);
                 (l + r) * 0.5
             });
-            let feet_input = FeetInput { com, com_vel: state.com_vel, root_yaw, locomotion, seated_hips };
+            let hips_yaw = chain.yaw[0];
+            let feet_input = FeetInput { com, com_vel: state.com_vel, root_yaw, locomotion, seated_hips, hips: hip_joints(&chain), hips_yaw };
             // Floating, the feet are kept under the body, where they'll stand again.
             if input.swim.is_some() {
                 state.feet = Feet::new(p, skel, chain.hips(), root_yaw);
@@ -302,14 +336,15 @@ impl BodySolver {
             let (low, _) = hips_range(&chain);
             if chain.hips().y < low && floating < 0.5 {
                 // Too low for the knees: bend the spine further (that raises the hips), then squash it.
-                let (mut lo, mut hi) = (state.pitch, MAX_PITCH);
+                let (mut lo, mut hi) = (state.pitch.value, MAX_PITCH);
                 if chain_at(hi).hips().y >= low {
                     for _ in 0..12 {
                         let mid = 0.5 * (lo + hi);
                         if chain_at(mid).hips().y >= low { hi = mid } else { lo = mid }
                     }
                 }
-                state.pitch = hi;
+                // (Where the knees can't bend further, the spine bends at once.)
+                state.pitch = Follow::new(hi);
                 chain = chain_at(hi);
                 let short = low - chain.hips().y;
                 if short > 0.0 {
@@ -337,6 +372,12 @@ impl BodySolver {
             if floating > 0.0 {
                 let float = state.swim.legs(skel, chain.rot[0], joints_at_hips);
                 legs = [0, 1].map(|i| swim::blend(&legs[i], &float[i], floating));
+            }
+            // A kick: that leg drives its ankle where the kick has it.
+            for i in 0..2 {
+                if let Some(ankle) = input.kicks[i].filter(|a| a.is_finite()) {
+                    legs[i] = legs::solve_kick(skel, joints_at_hips[i], ankle, hips_fwd);
+                }
             }
                 (chain, legs)
             }
@@ -368,7 +409,8 @@ impl BodySolver {
             targets[i] = target;
             // (A tracked elbow that isn't a number is no elbow.)
             let elbow = input.elbows[i].filter(|e| e.is_finite());
-            let input = ArmInput { side, chest_pos, chest_rot, target, elbow };
+            let prior = learned.filter(|_| p.prior_elbow > 0.0).map(|l| l.elbows[i]);
+            let input = ArmInput { side, chest_pos, chest_rot, target, elbow, prior };
             arm::solve(p, skel, dt, &mut state.arms[i], &input)
         });
 

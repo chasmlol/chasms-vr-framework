@@ -93,11 +93,30 @@ WOut VSMain(uint id : SV_VertexID) {
 struct POut { TARGETS };
 struct PDOut { TARGETS float depth : SV_Depth; };
 
-// The picture at `uv` into `o`.
+// The picture over a target pixel's footprint (`dx`, `dy`: how far its `uv` goes a target pixel
+// across and down). A game drawn sharper than the headset shows it (the render scale) has more
+// pixels than the target: one tap a target pixel would skip the ones between, and fine detail (far
+// branches, fences, the far distance) would flicker in and out of the taps as the head moves. Taps
+// spread over the footprint average them, as a mip level would. (One tap at the headset's own
+// sharpness or below.)
+float3 footprint(float2 uv, float2 dx, float2 dy) {
+    float s = max(length(dx * src_info.xy), length(dy * src_info.xy));
+    int n = (int)clamp(ceil(s - 0.01), 1, 4);
+    float3 c = 0;
+    [loop] for (int y = 0; y < n; y++) {
+        [loop] for (int x = 0; x < n; x++) {
+            float2 o = (float2(x, y) + 0.5) / n - 0.5;
+            c += src.SampleLevel(samp, uv + o.x * dx + o.y * dy, 0).rgb;
+        }
+    }
+    return c / (n * n);
+}
+
+// The picture at `uv` into `o` (the bloom and lens are soft: one tap).
 #if BLOOM
-#define SAMPLE(o, uv) o.color = float4(src.SampleLevel(samp, uv, 0).rgb, 1); o.bloom = src_bloom.SampleLevel(samp, uv, 0); o.lens = src_lens.SampleLevel(samp, uv, 0);
+#define SAMPLE(o, uv, dx, dy) o.color = float4(footprint(uv, dx, dy), 1); o.bloom = src_bloom.SampleLevel(samp, uv, 0); o.lens = src_lens.SampleLevel(samp, uv, 0);
 #else
-#define SAMPLE(o, uv) o.color = float4(src.SampleLevel(samp, uv, 0).rgb, 1);
+#define SAMPLE(o, uv, dx, dy) o.color = float4(footprint(uv, dx, dy), 1);
 #endif
 
 // The source picture's point at `uv`, `d` metres along its view; and where a point is in it.
@@ -145,6 +164,9 @@ bool astray(WOut i) {
 PDOut PSMain(WOut i) {
     PDOut o;
     float2 uv = i.uv;
+    // (The footprint from where the grid put the pixel, smooth across the cells; taken before
+    // anything branches.)
+    float2 dx = ddx(i.uv), dy = ddy(i.uv);
     o.z = i.vz;
     o.depth = i.pos.z;
     if (astray(i)) {
@@ -250,17 +272,18 @@ PDOut PSMain(WOut i) {
             o.depth = 0.999998;
         }
     }
-    SAMPLE(o, uv)
+    SAMPLE(o, uv, dx, dy)
     return o;
 }
 
 // The other eye's picture, drawn after: only where the eye's own has nothing real (its edges, what
 // a move uncovers); its own strays are left out.
 POut PSOther(WOut i) {
+    float2 dx = ddx(i.uv), dy = ddy(i.uv);
     if (astray(i)) discard;
     POut o;
     o.z = i.vz;
-    SAMPLE(o, i.uv)
+    SAMPLE(o, i.uv, dx, dy)
     return o;
 }
 
@@ -305,6 +328,13 @@ float PSHeadsetDepth(FOut i) : SV_Depth {
     // (D3D's depth for the projection's near and far planes: `grid.w` near, `src_tan.x` far.)
     float n = grid.w, f = src_tan.x;
     return saturate(f / (f - n) * (1 - n / max(z, n)));
+}
+
+// A picture drawn whole over the target (the place held after a load, over the new one): its
+// colour, made as opaque as the blend's factor says.
+float4 PSOver(FOut i) : SV_Target {
+    float2 uv = float2(i.ndc.x * 0.5 + 0.5, 0.5 - i.ndc.y * 0.5);
+    return float4(src.SampleLevel(samp, uv, 0).rgb, 1);
 }
 "#;
 
@@ -390,6 +420,11 @@ pub struct Warp {
     /// Without the bloom and lens, and with them.
     programs: [Programs; 2],
     headset_depth: Program,
+    /// A picture drawn whole over the target, as opaque as a blend factor ([`Warp::blend_held`]).
+    over: Program,
+    by_factor: ID3D11BlendState,
+    /// Where a second picture is moved to, to go over the first ([`Warp::draw_held`]): by size.
+    scratch: Vec<Texture>,
     cb: ConstantBuffer<WarpCb>,
     linear: ID3D11SamplerState,
     point: ID3D11SamplerState,
@@ -446,6 +481,24 @@ impl Warp {
         Ok(Warp {
             programs: [Programs::new(gpu, false)?, Programs::new(gpu, true)?],
             headset_depth: Program::with_entries(gpu, SHADER, "warp", "VSFill", "PSHeadsetDepth", &[])?,
+            over: Program::with_entries(gpu, SHADER, "warp", "VSFill", "PSOver", &[])?,
+            by_factor: {
+                let rt = D3D11_RENDER_TARGET_BLEND_DESC {
+                    BlendEnable: true.into(),
+                    SrcBlend: D3D11_BLEND_BLEND_FACTOR,
+                    DestBlend: D3D11_BLEND_INV_BLEND_FACTOR,
+                    BlendOp: D3D11_BLEND_OP_ADD,
+                    SrcBlendAlpha: D3D11_BLEND_ZERO,
+                    DestBlendAlpha: D3D11_BLEND_ONE,
+                    BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                    RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+                };
+                let desc = D3D11_BLEND_DESC { AlphaToCoverageEnable: false.into(), IndependentBlendEnable: false.into(), RenderTarget: [rt; 8] };
+                let mut b = None;
+                unsafe { gpu.device.CreateBlendState(&desc, Some(&mut b))? };
+                b.unwrap()
+            },
+            scratch: Vec::new(),
             cb: ConstantBuffer::new(gpu)?,
             linear: pipeline::sampler(gpu, true, false)?,
             point: pipeline::sampler(gpu, false, false)?,
@@ -592,6 +645,51 @@ impl Warp {
             ctx.OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None);
         }
         Ok(())
+    }
+
+    /// Moves a second picture (`sources`, as [`Warp::draw`] takes them: the place held after a load)
+    /// to `eye` with `fov`, for a target `width` x `height`, to go over the first with
+    /// [`Warp::blend_held`]. Drawn before the first: it uses the same depth and seen-from-here
+    /// targets, which the first's draw then writes for the body.
+    pub fn draw_held(&mut self, gpu: &Gpu, width: u32, height: u32, eye: &Pose, fov: &Fov, sources: &[WarpSource]) -> Result<()> {
+        let i = match self.scratch.iter().position(|t| (t.width, t.height) == (width, height)) {
+            Some(i) => i,
+            None => {
+                // (Linear colour, as the warp's shaders write it; an eye's size or two.)
+                if self.scratch.len() >= 2 {
+                    self.scratch.remove(0);
+                }
+                self.scratch.push(Texture::new(gpu, &TexDesc::target(width, height, DXGI_FORMAT_R16G16B16A16_FLOAT))?);
+                self.scratch.len() - 1
+            }
+        };
+        let t = &self.scratch[i];
+        let target = EyeTarget { tex: t.tex.clone(), rtv: t.rtv.clone().unwrap(), width, height };
+        self.draw(gpu, &target, eye, fov, sources)
+    }
+
+    /// The second picture moved by [`Warp::draw_held`] over `target`, `opacity` of it.
+    pub fn blend_held(&mut self, gpu: &Gpu, target: &EyeTarget, opacity: f32) {
+        let Some(t) = self.scratch.iter().find(|t| (t.width, t.height) == (target.width, target.height)) else { return };
+        let ctx = &gpu.ctx;
+        let k = opacity.clamp(0.0, 1.0);
+        unsafe {
+            ctx.OMSetRenderTargets(Some(&[Some(target.rtv.clone())]), None);
+            ctx.OMSetDepthStencilState(&self.no_depth, 0);
+            ctx.OMSetBlendState(&self.by_factor, Some(&[k; 4]), 0xFFFF_FFFF);
+            ctx.RSSetState(&self.raster);
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.IASetInputLayout(None);
+            ctx.PSSetSamplers(0, Some(&[Some(self.linear.clone()), Some(self.point.clone())]));
+        }
+        pipeline::viewport(ctx, target.width, target.height);
+        self.over.bind(ctx);
+        unsafe {
+            ctx.PSSetShaderResources(0, Some(&[t.srv.clone()]));
+            ctx.Draw(3, 0);
+            ctx.PSSetShaderResources(0, Some(&[None]));
+            ctx.OMSetBlendState(&self.opaque, Some(&[0.0; 4]), 0xFFFF_FFFF);
+        }
     }
 
     /// Writes one eye's depth for the headset (`target`) from a view depth (`depth`: along the eye's

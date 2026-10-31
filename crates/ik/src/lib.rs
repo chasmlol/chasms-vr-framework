@@ -55,6 +55,8 @@ mod fingers;
 mod legs;
 mod math;
 mod params;
+#[doc(hidden)]
+pub mod prior;
 mod skeleton;
 mod solver;
 mod spine;
@@ -63,7 +65,7 @@ mod torso;
 
 pub use fingers::{FingerInput, FingerSolver, HoldShape};
 pub use params::{BodyParams, HandGeometry, HandOffsets};
-pub use skeleton::REF_EYE_HEIGHT;
+pub use skeleton::{NECK_LEAN, REF_EYE_HEIGHT};
 pub use solver::BodySolver;
 
 use glam::{Quat, Vec3};
@@ -100,8 +102,13 @@ pub struct TrackedInput {
     /// Each elbow where the headset tracks it [left, right] (a Quest's body tracking), tracking
     /// space; `None` = not tracked: the arm's own model places it.
     pub elbows: [Option<Vec3>; 2],
+    /// Each shoulder joint where the headset tracks it [left, right], tracking space: with both,
+    /// the chest faces square to the line between them rather than as the hands and head suggest.
+    pub shoulders: [Option<Vec3>; 2],
     /// The player is swimming: the body floats.
     pub swim: Option<Swimming>,
+    /// A kick under way: where it has each foot's ankle (tracking space; `None`: the gait's).
+    pub kicks: [Option<Vec3>; 2],
 }
 
 /// A swimming body: how it moves through the water.

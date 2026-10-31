@@ -46,11 +46,13 @@
 //! | [`OFF_INVENTORY`] .. [`OFF_SLOT_EDITS`] | the player's things and the body's slots (see [`inventory`]) | both | seqlock |
 //! | [`OFF_POCKETS`] .. [`OFF_POCKETS_END`] | the creatures' pockets and what the hands do in them: see [`pockets`] | both | seqlock, ring |
 //! | [`OFF_STATIONS`], [`OFF_CARDS`] | [`Receptacles`]: bowls the hands make things in (see [`stations`]); [`Cards`]: cards made of a game's own interface (see [`cards`]) | adapter -> runtime | seqlock |
+//! | [`OFF_FACE_SCULPT`] | [`FaceSculpt`]: the face as the hands shape it (see [`avatar`]) | runtime -> adapter | seqlock |
+//! | [`OFF_MELEE_WEAPONS`] .. [`OFF_RT_MELEE`] | [`MeleeWeapons`], [`ActorItems`], [`MeleeRules`] (adapter -> runtime), [`RtMelee`] (runtime -> adapter): melee (see [`melee`]) | both | seqlock |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
 //! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, the
-//! inventory with the body's slots, the creatures' pockets, the bowls and the cards (a new one goes
-//! after the last).
+//! inventory with the body's slots, the creatures' pockets, the bowls, the cards, the face the
+//! hands shape and the melee (a new one goes after the last).
 //! Every region is listed in address order in `LAYOUT`, which the build checks: none overlaps the
 //! next, and all lie inside [`MAPPING_BYTES`].
 //!
@@ -84,6 +86,7 @@ pub mod inventory;
 pub mod items;
 pub mod stations;
 pub mod cards;
+pub mod melee;
 pub mod sound;
 pub mod world;
 pub mod lighting;
@@ -102,6 +105,7 @@ pub use inventory::*;
 pub use items::*;
 pub use stations::*;
 pub use cards::*;
+pub use melee::*;
 pub use sound::*;
 pub use world::*;
 pub use lighting::*;
@@ -111,9 +115,10 @@ pub use ride::*;
 pub use pockets::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 14;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v14";
-pub const MAPPING_BYTES: usize = 0x0053_0000;
+pub const VERSION: u32 = 16;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v16";
+/// (Grew by 64 KB in v16: the melee's regions after the face the hands shape.)
+pub const MAPPING_BYTES: usize = 0x0054_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;
@@ -728,6 +733,8 @@ pub struct GameState {
     /// The part of the game's menu picture its menu is in (u0, v0, u1, v1, 0..1 from the top left;
     /// all zero: the whole picture), for a menu shown in the world ([`GS_MENU_IN_WORLD`]).
     pub menu_uv: [f32; 4],
+    /// The game's own first-person view bob this frame, for the runtime's desktop view.
+    pub view_bob: ViewBob,
 }
 pub const GS_IN_GAME: u32 = 1 << 0;
 /// A game menu is open: the runtime shows the HUD texture as a big panel and points a laser at it.
@@ -753,6 +760,9 @@ pub const GS_MENU_IN_WORLD: u32 = 1 << 11;
 /// The game wants the mirror up (its character creator is open): the runtime stands it in front of
 /// the player, and puts it away when this goes, unless the player had called it up.
 pub const GS_MIRROR: u32 = 1 << 12;
+/// The player has no body in the game yet (a title screen in the world, before a character is
+/// made or loaded): the runtime draws the hands alone.
+pub const GS_HANDS_ONLY: u32 = 1 << 13;
 
 /// Linear-light colours.
 #[repr(C)]
@@ -795,6 +805,26 @@ pub const WATER_SWIMMING: u32 = 1 << 1;
 pub const WATER_HEAD_UNDER: u32 = 1 << 2;
 /// The player walks on water (the game's water walking): no swimming.
 pub const WATER_WALKING: u32 = 1 << 3;
+
+/// How the game's own first-person camera bobs this frame, as its flat game shows it: its walk's
+/// bob, a landing's dip, whatever its camera does with the player's steps. It's given apart from the
+/// eye the headset is anchored on ([`crate::GameState::view_bob`]; the adapter SDK's `Anchor::
+/// base_eye` is the eye without it). The runtime adds it to its desktop view only, when the player
+/// chooses the game's own bob there; the headset's view never moves with it (unless the player
+/// keeps the game's bob, [`TRK_HEAD_BOB`], when the eye has it already).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct ViewBob {
+    pub flags: u32, // BOB_*
+    /// Where it moves the view, in the view's own frame (metres: x right, y up, z forward of where
+    /// the game's camera looks).
+    pub offset: [f32; 3],
+    /// How it turns the view after where it looks (a quaternion `[x, y, z, w]`, in the same frame;
+    /// all zero: not at all).
+    pub rot: [f32; 4],
+}
+/// The game gives its bob: the desktop view's "the game's own" shows this one, not the runtime's.
+pub const BOB_GIVEN: u32 = 1 << 0;
 
 /// The adapter's tracking -> world mapping as it was last applied (written by the adapter SDK).
 #[repr(C)]
@@ -900,7 +930,11 @@ pub struct SlotInfo {
     /// [`crate::link::Link::hud_layout_seq`] gave it after it was written; 0: not said). The runtime cuts
     /// a picture's pieces by the layout it was drawn with, never one a frame older or newer.
     pub hud_layout: u32,
-    pub _pad: [u32; 2],
+    /// How much of the place the player was in still shows over this picture (0..1), as the game
+    /// brings a new place in after a load ([`SLOT_HELD`]): the runtime draws the picture it held
+    /// over this one that much (none held: this one under that much black, the game's own fade).
+    pub held_over: f32,
+    pub _pad: [u32; 1],
     /// Where each eye's picture was in the world when it was rendered: the tracking -> world
     /// mapping it was drawn with. With the depth, the runtime moves the picture to where the head
     /// and the walking player are when it's shown.
@@ -938,6 +972,11 @@ pub const SLOT_BLOOM: u32 = 1 << 5;
 /// The aux view is the mirror's world ([`MirrorView`], the camera of the frame `aux_frame`), with its
 /// depth in the aux depth (linear metres).
 pub const SLOT_MIRROR: u32 = 1 << 6;
+/// The eyes are the last picture the game drew of its world, given again while it can't draw one
+/// (it's loading another place): the runtime keeps it where it was in tracking space (the head
+/// moves through it, the player's walk and the game's teleport don't move it), holds a copy of it,
+/// and when the game draws again fades from it as [`SlotInfo::held_over`] says.
+pub const SLOT_HELD: u32 = 1 << 7;
 
 /// Depth holds linear view distance in metres.
 pub const DEPTH_LINEAR: u32 = 1 << 0;
@@ -976,6 +1015,24 @@ pub const EV_MIRROR_CAST: u32 = 7;
 /// The game's effect for the mirror's summons `a` ([`MirrorView::summons`]) reached its moment:
 /// the glass appears (or goes) now, as a summoned creature appears at its effect's "Hit".
 pub const EV_MIRROR_HIT: u32 = 8;
+/// One of the game's creatures cries out (a grunt as it's hit, a shout as it swings, its last
+/// breath), for a game with no voices of its own: `a`'s low byte which (`VOICE_*`), and above it a
+/// number the game keeps for the creature speaking (0: none); f0..f2 where (world), f3 how loud
+/// (0..1). A creature has one voice: its new line cuts off the one it was saying, and
+/// [`VOICE_HUSH`] stops it.
+pub const EV_VOICE: u32 = 9;
+pub const VOICE_HUSH: u32 = 0;
+pub const VOICE_HURT: u32 = 1;
+pub const VOICE_ATTACK: u32 = 2;
+pub const VOICE_DEATH: u32 = 3;
+/// Dying slowly (killed by a stab).
+pub const VOICE_DEATH_LONG: u32 = 4;
+/// Choking for breath (a throat cut or stabbed, or strangled).
+pub const VOICE_BREATHLESS: u32 = 5;
+/// A scream as it falls, until it lands ([`VOICE_HUSH`]).
+pub const VOICE_FALLING: u32 = 6;
+/// Struggling in a hold.
+pub const VOICE_GRAPPLED: u32 = 7;
 
 pub const HAPTIC_LEFT: u32 = 0;
 pub const HAPTIC_RIGHT: u32 = 1;
@@ -997,8 +1054,9 @@ const _: () = {
     assert!(size_of::<TrackingState>() == 64);
     assert!(size_of::<WeaponRig>() == 144);
     assert!(size_of::<TargetRequest>() == 32);
-    assert!(size_of::<GameState>() == 560);
+    assert!(size_of::<GameState>() == 592);
     assert!(size_of::<WaterState>() == 32);
+    assert!(size_of::<ViewBob>() == 32);
     assert!(size_of::<LightHint>() == 48);
     assert!(size_of::<SlotInfo>() == 256);
     assert!(size_of::<SlotMap>() == 32);
@@ -1064,6 +1122,11 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_POCKET_EVENTS, size_of::<PocketEvents>()),
     (OFF_STATIONS, size_of::<Receptacles>()),
     (OFF_CARDS, size_of::<Cards>()),
+    (OFF_FACE_SCULPT, size_of::<FaceSculpt>()),
+    (OFF_MELEE_WEAPONS, size_of::<MeleeWeapons>()),
+    (OFF_ACTOR_ITEMS, size_of::<ActorItems>()),
+    (OFF_MELEE_RULES, size_of::<MeleeRules>()),
+    (OFF_RT_MELEE, size_of::<RtMelee>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

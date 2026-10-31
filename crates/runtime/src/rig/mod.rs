@@ -27,6 +27,10 @@ pub mod fingers;
 pub mod grips;
 pub mod valve;
 pub mod kick;
+pub mod melee;
+pub mod breaking;
+pub mod climbing;
+pub mod telekinesis;
 pub mod physics;
 pub mod pickpocket;
 pub mod pockets;
@@ -39,9 +43,9 @@ pub mod weapon;
 pub mod zones;
 
 use glam::{EulerRot, Mat3, Quat, Vec3};
-use rapier3d::prelude::{ColliderHandle, RigidBodyHandle};
+use rapier3d::prelude::{ColliderHandle, InteractionGroups, RigidBodyHandle};
 use rustvr_protocol::*;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::backend::HmdFrame;
 use crate::settings::{BodySlot, GrenadeArming, Settings};
@@ -198,8 +202,10 @@ struct Obj {
     /// frame; empty: its rim), from the model the runtime draws it with ([`Rig::set_valve_shape`]).
     valve: Option<valve::Valve>,
     valve_shape: Vec<Vec3>,
-    /// Stuck in something it chopped or stabbed into ([`embed`]).
+    /// Stuck in something it chopped or stabbed into ([`embed`]), and the further creatures it's run
+    /// on into along its way.
     embed: Option<embed::Embedded>,
+    through: Vec<embed::Embedded>,
     /// A bow's string and the arrow on it ([`bow`]).
     bow: Option<bow::BowState>,
     /// A thing drawn from one of the body's slots ([`pockets`]): the runtime's copy of one of the
@@ -447,6 +453,9 @@ pub struct RigOutput {
     pub hand_busy: [bool; 2],
     /// Hands pointing at something they could grab or pull (the trigger shouldn't "use").
     pub hand_targeting: [bool; 2],
+    /// Of those, hands only marking something far off for the gloves (the grip takes it; the
+    /// trigger is free to charge a spell, as telekinesis leaves it).
+    pub hand_glove_hovers: [bool; 2],
     /// Objects flying to each hand (gravity gloves), tracking space.
     pub pulled: [Option<Vec3>; 2],
     /// How each hand's fingers wrap what it holds.
@@ -530,6 +539,13 @@ pub struct RigDebug {
     pub nocks: u32,
     pub looses: u32,
     pub last_loose: f32,
+}
+
+/// What became of a held thing stuck in something this step ([`Rig::hold_embedded`]).
+enum Stuck {
+    Held,
+    Out,
+    LetGo,
 }
 
 /// A push from the game (its explosion, a bullet), applied on the next step.
@@ -796,11 +812,18 @@ pub struct Rig {
     objects: BTreeMap<u32, Obj>,
     /// The creatures' body parts this frame (world), what a blade stuck in one rides with.
     actor_parts: HashMap<(u32, usize), (Vec3, Vec3, f32)>,
+    /// The player's eyes' height standing (metres).
+    eye_height: f32,
+    /// The creatures a weapon carried on through last step (their parts' groups to put back).
+    cut_passed: HashSet<u32>,
     /// Those parts in the physics: kinematic capsules following them (half length, radius), that
     /// the hands and what they hold meet ([`Rig::follow_actors`]).
     proxies: HashMap<(u32, usize), (RigidBodyHandle, ColliderHandle, f32, f32)>,
     /// What blades stuck in creatures drag them by this frame (pushes for the game).
     drags: Vec<GamePush>,
+    /// Thrown knives stuck in the game's creatures: the part each is in, and where it is on it (the
+    /// part's frame, [`creatures::frame`]).
+    in_creatures: HashMap<u32, ((u32, usize), (Vec3, Quat))>,
     /// What the game says about its creatures' bodies (for the hands that take hold of them).
     bodies: HashMap<u32, creatures::Body>,
     /// How strong the game says the player is (1: an average person).
@@ -877,6 +900,13 @@ pub struct Rig {
     grind_felt: [f64; 2],
     /// The sheets' touches ([`sheet`]).
     touches: HashMap<u32, sheet::Touches>,
+    /// The melee weapons and the hands' hold on them ([`melee`]).
+    melee: melee::MeleeRig,
+    /// Things broken and breaking ([`breaking`]).
+    breaking: breaking::Breaking,
+    /// What blades stuck in creatures did this frame (gone in deep, out the far side, pulled out),
+    /// for the game: their part is the creature's part index.
+    pub embed_events: Vec<CombatEvent>,
 }
 
 /// Something the player did with the body's slots that the runtime keeps (in its settings) or
@@ -903,8 +933,11 @@ impl Default for Rig {
             next_spawn: SPAWN_BASE,
             game_poses: HashMap::new(),
             actor_parts: HashMap::new(),
+            eye_height: 1.7,
+            cut_passed: HashSet::new(),
             proxies: HashMap::new(),
             drags: Vec::new(),
+            in_creatures: HashMap::new(),
             bodies: HashMap::new(),
             game_strength: 1.0,
             grabs: [CreatureGrab::default(); 2],
@@ -944,6 +977,9 @@ impl Default for Rig {
             grinds: HashMap::new(),
             grind_felt: [0.0; 2],
             touches: HashMap::new(),
+            melee: melee::MeleeRig { strength: 1.0, ..Default::default() },
+            breaking: Default::default(),
+            embed_events: Vec::new(),
         }
     }
 }
@@ -1316,6 +1352,8 @@ impl Rig {
                     }
                     if o.spawn_seq != d.spawn_seq {
                         o.spawn_seq = d.spawn_seq;
+                        // (Put back whole, if it had broken.)
+                        self.breaking.broken.remove(&d.id);
                         // Put back by the game (a grenade that went off, say): safe again.
                         if let Some(t) = &mut o.throw {
                             t.reset();
@@ -1382,6 +1420,7 @@ impl Rig {
                 valve: (d.kind == OBJ_VALVE).then(|| valve_of(&d, valve::Valve::new(pos, rot, d.radius, d.mass, d.friction))),
                 valve_shape: Vec::new(),
                 embed: None,
+                through: Vec::new(),
                 bow: (d.kind == OBJ_BOW).then(bow::BowState::default),
                 drawn: None,
                 shown: None,
@@ -1653,6 +1692,7 @@ impl Rig {
         o.free_since = now;
         o.glide = Some((p, q, now));
         o.embed = None;
+        o.through.clear();
         let (body, collider) = (o.body, o.collider);
         self.physics.set_kinematic(body, true);
         self.physics.set_groups(collider, groups_none());
@@ -1834,6 +1874,18 @@ impl Rig {
     }
 
     /// A loose dynamic body again: gravity, normal damping, colliding with everything.
+    /// Thing `id`'s air drag, as its game says: a melee weapon's own (or [`melee::DRAG`]), else the
+    /// rig's light one.
+    pub(super) fn air_drag(&mut self, id: u32) {
+        let Some(o) = self.objects.get(&id) else { return };
+        let (linear, angular) = match self.melee.weapons.get(&id) {
+            Some(w) if w.drag != [0.0; 2] => (w.drag[0], w.drag[1]),
+            Some(_) => (melee::DRAG.0, melee::DRAG.1),
+            None => (0.05, 0.2),
+        };
+        self.physics.set_damping(o.body, linear, angular);
+    }
+
     fn free_body(&mut self, id: u32, groups: rapier3d::prelude::InteractionGroups) {
         self.out_of_bowl(id);
         let Some(o) = self.objects.get_mut(&id) else { return };
@@ -1842,7 +1894,8 @@ impl Rig {
         o.blend = None;
         self.physics.set_kinematic(o.body, false);
         self.physics.set_gravity(o.body, 1.0);
-        self.physics.set_angular_damping(o.body, 0.2);
+        self.air_drag(id);
+        let Some(o) = self.objects.get(&id) else { return };
         // (A sheet lets the hands through, whatever else is free.)
         let groups = if o.desc.flags & OBJF_SHEET != 0 { physics::groups_sheet() } else { groups };
         self.physics.set_groups(o.collider, groups);
@@ -1970,6 +2023,8 @@ impl Rig {
             }
         }
         self.frame_index = inp.frame.index;
+        self.eye_height = if inp.eye_height > 1.0 { inp.eye_height } else { 1.7 };
+        self.melee.hold_strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05);
         self.feedback.clear();
         self.pocket_events.clear();
         let dt = inp.dt.clamp(1e-4, 0.05);
@@ -2031,7 +2086,10 @@ impl Rig {
             self.pocket_holds(inp);
             self.use_drawn(inp, dt);
             for i in 0..2 {
-                if !self.page_hands[i] {
+                if self.page_hands[i] {
+                } else if self.melee.tk_on {
+                    self.telekinesis(i, inp);
+                } else {
                     self.gloves(i, inp);
                 }
             }
@@ -2046,11 +2104,21 @@ impl Rig {
                 }
             }
         }
+        if !inp.paused {
+            for i in 0..2 {
+                self.slide_melee(i, inp, dt);
+            }
+            self.fly_melee(dt);
+            self.tk_hold(inp, dt);
+        }
+        self.climb(inp, dt);
         self.drive(inp, dt, &zones);
         self.place_fingers(inp);
         self.apply_pushes();
         self.physics.set_dt(dt);
         self.physics.step();
+        self.breaks();
+        self.rub_melee();
         self.after_step(inp);
         self.bowls(dt);
         self.sheets();
@@ -2224,6 +2292,7 @@ impl Rig {
     fn pushes(&self) -> Vec<GamePush> {
         let Some(hands) = &self.hands else { return Vec::new() };
         let mut out = self.actor_pushes();
+        out.extend(self.item_pushes());
         for (id, o) in &self.objects {
             let constrained = o.desc.flags & OBJF_CONSTRAINED != 0;
             let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && (constrained || self.now - o.free_since > GAME_HANDBACK as f64);
@@ -2293,6 +2362,16 @@ impl Rig {
                 }
             }
         }
+        // A weapon carrying on through a cut it made passes the creature's body (and meets it again
+        // once it's clear of it).
+        self.end_cuts();
+        let passing: HashSet<u32> = self.melee.cutting.values().copied().collect();
+        let regroup: Vec<(ColliderHandle, InteractionGroups)> =
+            self.proxies.iter().filter(|&(&(actor, _), _)| passing.contains(&actor) || self.cut_passed.contains(&actor)).map(|(&(actor, _), &(_, c, ..))| (c, self.actor_groups(actor))).collect();
+        for (c, g) in regroup {
+            self.physics.set_groups(c, g);
+        }
+        self.cut_passed = passing;
     }
 
     /// What the hands, what they hold and loose things push the game's creatures by: each part
@@ -2318,8 +2397,13 @@ impl Rig {
                 // Who's pressing, and how far behind where it's driven it is (what it presses with).
                 // (Only an open hand shoves: one closing is taking hold, a fist punches, the game's
                 // own blow.)
+                // (A blade stuck in it passes through it: it drags it as it's stuck, below.)
                 let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0, Some(if h.squeeze < OPEN_HAND { self.map.vel(h.vel_t) } else { Vec3::ZERO }))).or_else(|| {
-                    self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
+                    self.objects
+                        .iter()
+                        .find(|(_, o)| o.collider == c)
+                        .filter(|&(&id, _)| !self.embedded_in(id, actor) && !self.in_creatures.contains_key(&id))
+                        .map(|(_, o)| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
                 });
                 let Some((body, lag, controller)) = pusher else { continue };
                 let Some((point, normal, depth)) = self.physics.overlap(c, proxy).or_else(|| {
@@ -3188,6 +3272,22 @@ impl Rig {
         let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
         match hover {
             Hover::None => {
+                // The world, where it has an edge to close on: the hand holds it, to climb.
+                if let Some(g) = self.climb_grip(i) {
+                    self.melee.climbs[i] = Some(g);
+                    tracing::info!("rig: hand {i} holds the world at {:.2} to climb", g.0);
+                    self.emit(Cue::Grab, Some(i), None, palm, 0.6);
+                    return;
+                }
+                // Telekinesis catches what the hand marks (a thing, or a creature's part).
+                if self.melee.tk_on {
+                    if let Some((actor, part)) = self.melee.tk_marked[i] {
+                        self.tk_catch_body(i, actor, part);
+                    } else if let Glove::Hover(id) = self.hands.as_ref().unwrap()[i].glove {
+                        self.tk_catch(i, id);
+                    }
+                    return;
+                }
                 // A locked gravity-glove target is handled by the gloves.
                 match self.hands.as_ref().unwrap()[i].glove {
                     Glove::Hover(id) => {
@@ -3444,12 +3544,19 @@ impl Rig {
         // hand anywhere along it. Drawn from a holster or caught (`snap`), a gun or a rigged
         // weapon goes into the hand by its grip whatever.
         let rigged = gun || (authored(d.grip_rot).is_some() && matches!(d.kind, OBJ_THROWABLE | OBJ_MELEE | OBJ_BOW));
-        let hold = self.handle_of(&d, i, On::Grip).and_then(|h| match h.take(local.0, local.1) {
+        // A melee weapon the game describes goes in by the handle the hand takes, or is held where
+        // it is off its handles ([`melee`]).
+        let melee_at = (d.kind == OBJ_MELEE && self.melee.weapons.contains_key(&id)).then(|| self.take_melee(id, i, snap));
+        let by_joint = melee_at.is_some();
+        let hold = self.handle_of(&d, i, On::Grip).filter(|_| melee_at.is_none()).and_then(|h| match h.take(local.0, local.1) {
             Some(hold) => Some(hold),
             None if snap && rigged => Some((h.at, h.rot)),
             None => None,
         });
-        let (attach, on) = if let Some(hold) = hold {
+        let (attach, on) = if let Some((attach, on, at)) = melee_at {
+            drawn = at;
+            (attach, on)
+        } else if let Some(hold) = hold {
             if gun {
                 (Attach::Gun, On::Grip)
             } else {
@@ -3498,7 +3605,8 @@ impl Rig {
         self.out_of_bowl(id);
         let o = self.objects.get_mut(&id).unwrap();
         o.attach = attach;
-        o.blend = Some((pos, rot, self.now, pos.distance(to)));
+        // (A melee weapon isn't eased in: its joint pulls it into the hand.)
+        o.blend = (!by_joint).then_some((pos, rot, self.now, pos.distance(to)));
         if let Holder::Holstered(slot) = o.holder {
             o.home_slot = Some(slot);
         }
@@ -3514,8 +3622,9 @@ impl Rig {
         // (One on the game's constraints stays where the game has it: the game pulls it to the hand.)
         self.physics.set_kinematic(o.body, o.desc.flags & OBJF_CONSTRAINED != 0);
         self.physics.set_gravity(o.body, 1.0);
-        self.physics.set_angular_damping(o.body, 0.2);
-        self.physics.set_groups(o.collider, groups_held(i));
+        let collider = o.collider;
+        self.air_drag(id);
+        self.physics.set_groups(collider, groups_held(i));
         let h = &mut self.hands.as_mut().unwrap()[i];
         h.holding = Some(id);
         h.on = on;
@@ -3541,6 +3650,26 @@ impl Rig {
         let (collider, gun) = (o.collider, o.desc.kind == OBJ_WEAPON);
         let palm = self.hands.as_ref().unwrap()[i].target.0;
         let other_on = self.hands.as_ref().unwrap()[other].on;
+        // A melee weapon the game describes: the second hand goes onto the handle it takes, as the
+        // first does ([`Rig::take_melee`]), or holds on where it is drawn on it off its handles; the
+        // first keeps it (the hold's two hands are the same either way round).
+        if o.desc.kind == OBJ_MELEE && self.melee.weapons.contains_key(&id) {
+            let (hp, hq) = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
+            let drawn = (oq.inverse() * (hp - op), (oq.inverse() * hq).normalize());
+            let (at, on) = match self.melee.handle_near(id, drawn.0, melee::ON_HANDLE * self.map.world_per_meter) {
+                Some((k, p)) => (self.onto_handle(id, k, p, drawn, i, true), On::Grip),
+                None => (drawn, On::Free),
+            };
+            let reach = if on == On::Grip { Vec3::ZERO } else { self.reach_of(i, (op, oq), at) };
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            h.support = Some(Support { id, at: at.0, rot: at.1, on, reach });
+            h.glove = Glove::Idle;
+            h.euro.reset();
+            let c = h.collider;
+            self.physics.set_groups(c, groups_none());
+            self.emit(Cue::Grab, Some(i), Some(id), palm, 0.7);
+            return;
+        }
         if other_on != On::Grip
             && let Some(hold) = self.handle_hold(i, id, On::Grip)
         {
@@ -3656,6 +3785,15 @@ impl Rig {
         let s = &inp.settings.interaction;
         let (palm, _) = self.hands.as_ref().unwrap()[i].target;
         let palm_t = self.hands.as_ref().unwrap()[i].grip_t.0;
+        // A hand holding the world lets go of it; one holding a thing by telekinesis throws or
+        // drops it.
+        if self.melee.climbs[i].take().is_some() {
+            return;
+        }
+        if self.melee.tk[i].is_some() {
+            self.tk_release(i);
+            return;
+        }
         // Support grip / handle / pin / glove lock end with the grip.
         {
             let h = &mut self.hands.as_mut().unwrap()[i];
@@ -3726,11 +3864,13 @@ impl Rig {
             self.emit(Cue::Release, Some(i), None, palm, 0.4);
             return;
         }
-        // Let go of while it's stuck in something: it stays in.
+        // Let go of while it's stuck in something: it stays in (and the hands meet it now).
         if self.objects[&id].embed.is_some() {
             let o = self.objects.get_mut(&id).unwrap();
             o.holder = Holder::Free;
             o.free_since = self.now;
+            let collider = o.collider;
+            self.physics.set_groups(collider, groups_free());
             self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
             return;
         }
@@ -3866,6 +4006,10 @@ impl Rig {
                     return;
                 }
             }
+        }
+        // A melee weapon leaves as it was moving, or thrown (`melee`).
+        if desc.kind == OBJ_MELEE && self.release_melee(i, id, inp) {
+            return;
         }
         // Throw (or drop) with the hand's motion at its peak before the release.
         let rel = self.hands.as_ref().unwrap()[i].history.release(self.now);
@@ -4339,6 +4483,7 @@ impl Rig {
         let Some(o) = self.objects.get_mut(&id) else { return };
         o.holder = Holder::Stowed(slot);
         o.embed = None;
+        o.through.clear();
         let (body, collider) = (o.body, o.collider);
         self.physics.set_kinematic(body, true);
         self.physics.set_groups(collider, groups_none());
@@ -5292,6 +5437,12 @@ impl Rig {
             Some(pp) => compose(inverse(pp), (pos, rot)),
             None => (pos, rot),
         };
+        // In one of the game's creatures: it rides with the part it went into.
+        if let Some((&part, _)) = self.proxies.iter().find(|(_, p)| p.1 == into)
+            && let Some(frame) = self.part_frame(part.0, part.1)
+        {
+            self.in_creatures.insert(id, (part, compose(inverse(frame), (pos, rot))));
+        }
         let o = self.objects.get_mut(&id).unwrap();
         o.holder = Holder::Stuck { parent, rel };
         if let Some(t) = o.throw.as_mut() {
@@ -5678,6 +5829,12 @@ impl Rig {
                 self.let_go_creature(i, None);
                 continue;
             };
+            // The creature broke free of this hold (the game's say): the hand's forced off.
+            if self.bodies.get(&hold.actor).is_some_and(|b| b.let_go == hold.serial) {
+                tracing::info!("rig: creature {:#x} breaks free of the {} hand", hold.actor, if i == 0 { "left" } else { "right" });
+                self.let_go_creature(i, None);
+                continue;
+            }
             let both = self.hands.as_ref().unwrap()[i ^ 1].creature.is_some_and(|c| c.actor == hold.actor);
             let now = self.now;
             let h = &mut self.hands.as_mut().unwrap()[i];
@@ -5741,6 +5898,11 @@ impl Rig {
         Some((*id, d, n))
     }
 
+    /// Whether a ray from `origin` along `dir` (world) meets object `id` within `max`.
+    pub fn ray_meets(&self, origin: Vec3, dir: Vec3, max: f32, id: u32) -> bool {
+        self.objects.get(&id).is_some_and(|o| self.physics.ray_meets(o.collider, origin, dir, max))
+    }
+
     pub fn world_hit(&self, origin: Vec3, dir: Vec3, max: f32) -> Option<physics::WorldHit> {
         self.physics.world_hit(origin, dir, max)
     }
@@ -5759,16 +5921,55 @@ impl Rig {
     fn embed_parent(&self, into: embed::Into) -> Option<(Vec3, Quat)> {
         match into {
             embed::Into::World => Some((Vec3::ZERO, Quat::IDENTITY)),
-            embed::Into::Actor { id, part } => self.actor_parts.get(&(id, part)).map(|&(a, b, _)| embed::part_frame(a, b)),
+            // (Turned as the part's bone is, when the game says: a blade in it turns with it.)
+            embed::Into::Actor { id, part } => self.part_frame(id, part),
             embed::Into::Object { id } => self.obj_pose(id),
         }
     }
 
-    /// A held object chopped or stabbed into something (the combat's): it stays in there.
+    /// The combat's: object `r.object` (held, or thrown and flying) went into `r.into` and stays
+    /// in, held there by its penetration joint. One already in a creature that goes on into
+    /// another (run through one and into the next) is in both, with a joint in each: the next
+    /// rides along its way, resisting it and hurt by it as the first is.
     pub fn embed(&mut self, r: &embed::Request) {
         let Some(o) = self.objects.get(&r.object) else { return };
-        let Holder::Held(hand) = o.holder else { return };
-        if o.embed.is_some() {
+        // (Held, or thrown: let go of, it's free.)
+        let hand = match o.holder {
+            Holder::Held(hand) => Some(hand),
+            Holder::Free => None,
+            _ => return,
+        };
+        if let Some(first) = o.embed {
+            let other = |into: embed::Into| matches!((into, r.into), (embed::Into::Actor { id: a, .. }, embed::Into::Actor { id: b, .. }) if a == b);
+            if !matches!(r.into, embed::Into::Actor { .. }) || other(first.into) || o.through.iter().any(|e| other(e.into)) {
+                return;
+            }
+            let (Some(parent), Some(now), Some(first_parent)) = (self.embed_parent(r.into), self.embedded_pose(&first), self.embed_parent(first.into)) else { return };
+            let next = embed::Embedded {
+                into: r.into,
+                at: inverse(parent).0 + parent.1.inverse() * r.point,
+                rel: compose(inverse(parent), now),
+                axis: parent.1.inverse() * (first_parent.1 * first.axis),
+                depth: 0.0,
+                max_depth: r.max_depth,
+                dampers: r.dampers,
+                slide_axis: Vec3::ZERO,
+                slid: 0.0,
+                slide_from: 0.0,
+                slide_max: 0.0,
+                wounding: r.wounding,
+                deepest: 0.0,
+                wounded: false,
+                skewered: false,
+                rock: r.rock,
+                tilt: Quat::IDENTITY,
+            };
+            self.objects.get_mut(&r.object).unwrap().through.push(next);
+            self.debug.embeds += 1;
+            tracing::info!("rig: {:#x} runs on into {:?}", r.object, r.into);
+            if r.wounding.kind != DMG_SLASH {
+                self.emit(Cue::KnifeStick, hand, Some(r.object), r.point, 1.0);
+            }
             return;
         }
         let Some(parent) = self.embed_parent(r.into) else { return };
@@ -5778,22 +5979,49 @@ impl Rig {
         let surface = (r.point - q * r.sample, q);
         let rel = compose(inverse(parent), surface);
         let axis = parent.1.inverse() * r.dir;
-        let pos = surface.0 + r.dir * r.depth;
-        let (body, collider) = (o.body, o.collider);
+        let pos = surface.0 + r.dir * r.depth * self.map.world_per_meter;
+        let body = o.body;
         let at = inverse(parent).0 + parent.1.inverse() * r.point;
-        self.objects.get_mut(&r.object).unwrap().embed = Some(embed::Embedded { into: r.into, at, rel, axis, depth: r.depth, max_depth: r.max_depth });
+        let slide_axis = r.slide.map_or(Vec3::ZERO, |(s, ..)| parent.1.inverse() * s);
+        self.objects.get_mut(&r.object).unwrap().embed = Some(embed::Embedded {
+            into: r.into,
+            at,
+            rel,
+            axis,
+            depth: r.depth,
+            max_depth: r.max_depth,
+            dampers: r.dampers,
+            slide_axis,
+            slid: 0.0,
+            slide_from: r.slide.map_or(0.0, |s| s.1),
+            slide_max: r.slide.map_or(0.0, |s| s.2),
+            wounding: r.wounding,
+            deepest: r.depth,
+            wounded: false,
+            skewered: false,
+            rock: r.rock,
+            tilt: Quat::IDENTITY,
+        });
+        // It keeps meeting what it met before (the world, loose things, the hands once it's let
+        // go of): the blade passes only through the creature it's in, and a kinematic body
+        // meets no creature's.
         self.physics.set_kinematic(body, true);
-        self.physics.set_groups(collider, groups_none());
         self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
         self.physics.set_pose(body, pos, q);
         self.debug.embeds += 1;
-        self.emit(Cue::KnifeStick, Some(hand), Some(r.object), r.point, 1.0);
+        tracing::info!("rig: {:#x} goes into {:?}, {:.3} m", r.object, r.into, r.depth);
+        // (An edge's cut, 3 mm in, is heard as its hit; a point or an axe that stays in thuds in.)
+        if r.wounding.kind != DMG_SLASH || r.slide.is_none() {
+            self.emit(Cue::KnifeStick, hand, Some(r.object), r.point, 1.0);
+        }
+        // A cut goes in at once: its wound's told with the hit (a slash's deep damage at any depth).
+        self.embed_wound(r.object);
     }
 
-    /// Out of what it was stuck in: free to move again (in the hand, or falling).
+    /// Out of everything it was stuck in: free to move again (in the hand, or falling).
     fn unembed(&mut self, id: u32) {
         let Some(o) = self.objects.get_mut(&id) else { return };
-        o.embed = None;
+        let was: Vec<embed::Embedded> = o.embed.take().into_iter().chain(o.through.drain(..)).collect();
         let (body, collider, holder) = (o.body, o.collider, o.holder);
         self.physics.set_kinematic(body, false);
         self.physics.set_velocity(body, Vec3::ZERO, Vec3::ZERO);
@@ -5801,82 +6029,279 @@ impl Rig {
             Holder::Held(hand) => self.physics.set_groups(collider, groups_held(hand)),
             _ => self.free_body(id, groups_free()),
         }
+        for e in was {
+            self.pulled_out(id, holder, &e);
+        }
     }
 
-    /// Where it is while stuck: at the surface, `depth` in.
+    /// Out of a creature: the game is told (the exit, its blood spurt), with the way it came out.
+    fn pulled_out(&mut self, id: u32, holder: Holder, e: &embed::Embedded) {
+        let embed::Into::Actor { id: actor, part } = e.into else { return };
+        let (point, out) = self.embed_parent(e.into).map_or((Vec3::ZERO, Vec3::ZERO), |p| (p.0 + p.1 * e.at, -(p.1 * e.axis)));
+        let hand = if let Holder::Held(h) = holder { h as u32 } else { 2 };
+        tracing::info!("rig: {id:#x} comes out of creature {actor:#x} part {part}, {:.3} m deep at most", e.deepest);
+        self.embed_events.push(CombatEvent { kind: CE_PULLED_OUT, actor, part: part as u32, object: id, what: e.wounding.kind, hand, depth: e.deepest, blade: e.wounding.blade, point: point.to_array(), dir: out.to_array(), ..Default::default() });
+    }
+
+    /// Where it is while stuck: at the surface, `depth` in, slid `slid` along its cut, rocked
+    /// about where it went in.
     fn embedded_pose(&self, e: &embed::Embedded) -> Option<(Vec3, Quat)> {
         let parent = self.embed_parent(e.into)?;
         let surface = compose(parent, e.rel);
-        Some((surface.0 + parent.1 * e.axis * e.depth, surface.1))
+        let w = self.map.world_per_meter;
+        let p = surface.0 + parent.1 * (e.axis * e.depth + e.slide_axis * e.slid) * w;
+        let entry = parent.0 + parent.1 * e.at;
+        let tilt = (parent.1 * e.tilt * parent.1.inverse()).normalize();
+        Some((entry + tilt * (p - entry), (tilt * surface.1).normalize()))
     }
 
-    /// A held object stuck in something, the hand at `target`: false once it's out.
-    fn hold_embedded(&mut self, id: u32, hand: usize, target: (Vec3, Quat), dt: f32) -> bool {
+    /// A blade in creatures, as deep as it goes in each: its going in is told once it's past its
+    /// deep depth (a cut's at once), its point coming out the far side once it's through (deep
+    /// damage and skewer damage, once each).
+    fn embed_wound(&mut self, id: u32) {
+        let Some(o) = self.objects.get_mut(&id) else { return };
+        let hand = if let Holder::Held(h) = o.holder { h as u32 } else { 2 };
+        let mut told = Vec::new();
+        for e in o.embed.iter_mut().chain(o.through.iter_mut()) {
+            let embed::Into::Actor { id: actor, part } = e.into else { continue };
+            e.deepest = e.deepest.max(e.depth);
+            // (A cut's is as soon as it's in at all; a point's once it's past its deep depth.)
+            if !e.wounded && e.wounding.damage > 0.0 && e.deepest > 0.0 && e.deepest >= e.wounding.deep {
+                e.wounded = true;
+                told.push((*e, actor, part, 0, e.wounding.damage));
+            }
+            if !e.skewered && e.wounding.skewer > 0.0 && e.wounding.through > 0.0 && e.deepest >= e.wounding.through {
+                e.skewered = true;
+                told.push((*e, actor, part, CEF_SKEWER, e.wounding.skewer));
+            }
+        }
+        for (e, actor, part, flags, damage) in told {
+            let (point, dir) = self.embed_parent(e.into).map_or((Vec3::ZERO, Vec3::ZERO), |p| (p.0 + p.1 * e.at, p.1 * e.axis));
+            tracing::info!("rig: {id:#x} {} creature {actor:#x} part {part}: {damage:.1} at {:.3} m deep", if flags & CEF_SKEWER != 0 { "through" } else { "into" }, e.deepest);
+            self.embed_events.push(CombatEvent {
+                kind: CE_WOUND,
+                flags: flags | CEF_PENETRATED,
+                actor,
+                part: part as u32,
+                object: id,
+                what: e.wounding.kind,
+                hand,
+                damage,
+                depth: e.deepest,
+                blade: e.wounding.blade,
+                point: point.to_array(),
+                dir: dir.to_array(),
+                ..Default::default()
+            });
+        }
+    }
+
+    /// What a blade stuck in it pulls a creature's part or a loose thing by: force `pull` (N, world)
+    /// at `at` this step, from the hand's joint through the penetration joint. The part takes
+    /// the speed that force gives its mass in a step (the game adds it, its own muscles pulling
+    /// back); a loose thing, its impulse.
+    fn embed_pull(&mut self, into: embed::Into, at: Vec3, pull: Vec3, dt: f32) {
+        let f = pull.length();
+        if f < 1.0 {
+            return;
+        }
+        let dir = pull / f;
+        let w = self.map.world_per_meter;
+        match into {
+            embed::Into::Actor { id: actor, part } => {
+                // (A game that doesn't say its parts' masses and speeds: a part of standard weight,
+                // still.)
+                let p = self.bodies.get(&actor).and_then(|b| b.parts.get(part)).copied().unwrap_or_default();
+                let mass = if p.mass > 0.0 { p.mass } else { embed::PART_MASS };
+                let speed = (p.vel.dot(dir) / w).max(0.0) + f * dt / mass;
+                self.drags.push(GamePush { id: actor, part: part as u32 + 1, point: at.extend(1.0).to_array(), normal: dir.extend(speed.min(PUSH_MAX)).to_array(), ..Default::default() });
+            }
+            embed::Into::Object { id: thing } => {
+                if let Some(t) = self.objects.get(&thing) {
+                    let body = t.body;
+                    self.physics.apply_impulse(body, dir * (f * dt).min(DRAG_IMPULSE_MAX), at);
+                }
+            }
+            embed::Into::World => {}
+        }
+    }
+
+    /// A held object stuck in something, the hand at `target`: still held in it, out of it, or
+    /// let go of (pulled an arm's length off where it's held fast).
+    fn hold_embedded(&mut self, id: u32, hand: usize, target: (Vec3, Quat), dt: f32) -> Stuck {
         let o = &self.objects[&id];
-        let Some(e) = o.embed else { return false };
+        let Some(e) = o.embed else { return Stuck::Out };
         let Some(parent) = self.embed_parent(e.into) else {
             self.unembed(id);
-            return false;
+            return Stuck::Out;
         };
-        let Some(now) = self.embedded_pose(&e) else { return false };
+        // (A blade passes only through what it's in.)
+        if matches!(e.into, embed::Into::Object { .. }) {
+            self.physics.set_groups(o.collider, physics::groups_stuck_in_thing(Some(hand)));
+        }
+        let o = &self.objects[&id];
+        let Some(now) = self.embedded_pose(&e) else { return Stuck::Out };
         let pivot = match o.attach {
             Attach::Gun => v3(o.desc.grip),
             Attach::Fixed(p, q) => inverse((p, q)).0,
         };
+        let w = self.map.world_per_meter;
         let axis = parent.1 * e.axis;
+        let slide_w = parent.1 * e.slide_axis;
         let d = (target.0 + target.1 * pivot) - (now.0 + now.1 * pivot);
-        let along = d.dot(axis);
-        let across = (d - axis * along).length();
-        // In a creature, what the blade can't follow (across its way in, or out faster than it
-        // slides) drags the creature by where it went in.
-        let strain = d - axis * along.clamp(-embed::SLIDE_SPEED * dt, embed::SLIDE_SPEED * dt);
-        if let embed::Into::Actor { id: actor, part } = e.into
-            && strain.length() > 0.005
-        {
-            let entry = parent.0 + parent.1 * e.at;
-            let speed = (strain.length() * embed::DRAG_RATE).min(PUSH_MAX);
-            self.drags.push(GamePush { id: actor, part: part as u32 + 1, point: entry.extend(1.0).to_array(), normal: strain.normalize().extend(speed).to_array(), ..Default::default() });
+        // Held fast with its grip further than an arm's length from the shoulder, the hand lets go
+        // and it stays in (the stuck rule): it's never torn out sideways.
+        let grip = now.0 + now.1 * pivot;
+        if self.stuck_off(grip, true) {
+            tracing::info!("rig: {id:#x} stuck in, {:.2} m from the shoulders: hand {hand} lets go", grip.distance(self.shoulders()) / w);
+            return Stuck::LetGo;
         }
-        // In a loose thing, the same, on the thing itself: what its point there lacks of the pull.
-        if let embed::Into::Object { id: thing } = e.into
-            && strain.length() > 0.005
-            && let Some(t) = self.objects.get(&thing)
-        {
-            let entry = parent.0 + parent.1 * e.at;
-            let dir = strain.normalize();
-            let want = (strain.length() * embed::DRAG_RATE).min(PUSH_MAX);
-            let (body, mass) = (t.body, t.desc.mass.max(0.05));
-            let lacking = want - self.physics.velocity(body).0.dot(dir);
-            if lacking > 0.0 {
-                self.physics.apply_impulse(body, dir * (lacking * mass).min(DRAG_IMPULSE_MAX), entry);
+        let along = d.dot(axis);
+        let slide = if slide_w != Vec3::ZERO { d.dot(slide_w) } else { 0.0 };
+        // (How far the hand leads it, as for a weapon held free: what its point presses on the
+        // next body with.)
+        self.objects.get_mut(&id).unwrap().lag = d;
+        // The hand's joint pulls it (the player's hold; both hands' when the other's on it too),
+        // against the dampers of everything it's in.
+        let two = self.two_handed_melee(id);
+        let strength = self.melee.hold_strength.max(0.05) * if two { 2.0 } else { 1.0 };
+        let (spring, max_force) = (physics::HOLD_SPRING * strength, physics::HOLD_MAX_FORCE * strength);
+        let through = self.objects[&id].through.clone();
+        let mut all = e;
+        for t in &through {
+            for k in 0..3 {
+                all.dampers[k] += t.dampers[k];
             }
         }
-        match embed::step(e.depth, e.max_depth, along, across, dt) {
+        let step = embed::step(&all, along / w, slide / w, spring, max_force, true, dt);
+        let moved = match step {
+            embed::Step::Stay(depth, slid) => (axis * (depth - e.depth) + slide_w * (slid - e.slid)) * w,
+            embed::Step::Out => d,
+        };
+        // What it can't follow pulls what it's in by where it went in, with the hand's force (the
+        // blade is jointed to the part: the hold's pull goes on into it), shared by everything it's
+        // in.
+        let pull = ((d - moved) / w * spring).clamp_length_max(max_force) / (1 + through.len()) as f32;
+        for t in std::iter::once(&e).chain(through.iter()) {
+            if let Some(p) = self.embed_parent(t.into) {
+                self.embed_pull(t.into, p.0 + p.1 * t.at, pull, dt);
+            }
+        }
+        match step {
             embed::Step::Out => {
                 self.unembed(id);
                 self.emit(Cue::Release, Some(hand), Some(id), now.0, 0.8);
-                false
+                Stuck::Out
             }
-            embed::Step::Stay(depth) => {
+            embed::Step::Stay(depth, slid) => {
+                // A pulse in the hand every centimetre it goes in or comes out, and every two it
+                // slides (0.9 a centimetre in, 0.8 each 2 cm along).
+                let went = (depth / 0.01).floor() != (e.depth / 0.01).floor();
+                if went || (slid / 0.02).floor() != (e.slid / 0.02).floor() {
+                    self.emit(Cue::Penetrate, Some(hand), Some(id), now.0, if went { 0.9 } else { 0.8 });
+                }
+                // It rocks on where it went in as the hand turns it, up to its limit at this depth;
+                // past that, and about its way in (it can't turn there), the hold's turning drive
+                // turns the part with it.
+                let base = (parent.1 * e.rel.1).normalize();
+                let want = (target.1 * base.inverse()).normalize();
+                let (swing, twist) = embed::swing_twist(want, axis);
+                let limit = embed::Embedded { depth, ..e }.rock_limit();
+                let tilt = embed::clamp_turn(swing, limit);
+                let excess = (swing * tilt.inverse()).normalize();
+                let turn = physics::scaled_axis(twist) + physics::scaled_axis(excess);
+                let joint = physics::Joint::one_hand(Vec3::ZERO, strength);
+                let torque = (turn * joint.ang_spring).clamp_length_max(joint.max_torque);
+                if let embed::Into::Actor { id: actor, part } = e.into
+                    && torque.length() > 0.5
+                    && let Some(&(a, b, _)) = self.actor_parts.get(&(actor, part))
+                {
+                    // (As a force at the end of the part furthest from where it's held.)
+                    let entry = parent.0 + parent.1 * e.at;
+                    let end = if a.distance(entry) > b.distance(entry) { a } else { b };
+                    let r = (end - entry) / w;
+                    if r.length_squared() > 1e-4 {
+                        let force = torque.cross(r) / r.length_squared();
+                        self.embed_pull(e.into, end, force, dt);
+                    }
+                }
+                let delta = depth - e.depth;
                 let o = self.objects.get_mut(&id).unwrap();
                 if let Some(e) = o.embed.as_mut() {
                     e.depth = depth;
+                    e.slid = slid;
+                    e.tilt = (parent.1.inverse() * tilt * parent.1).normalize();
                 }
-                let body = o.body;
-                let surface = compose(parent, e.rel);
-                self.physics.move_kinematic(body, surface.0 + axis * depth, surface.1);
-                true
+                // What it's run on into rides along: in or out with it, and out of it once it's
+                // pulled back past where it went in.
+                let mut out = Vec::new();
+                o.through.retain_mut(|t| {
+                    t.depth = (t.depth + delta).min(t.max_depth);
+                    let gone = t.depth < -embed::EXIT;
+                    if gone {
+                        out.push(*t);
+                    }
+                    !gone
+                });
+                let (body, holder) = (o.body, o.holder);
+                for t in out {
+                    self.pulled_out(id, holder, &t);
+                }
+                if let Some(pose) = self.objects[&id].embed.and_then(|e| self.embedded_pose(&e)) {
+                    self.physics.move_kinematic(body, pose.0, pose.1);
+                }
+                self.embed_wound(id);
+                Stuck::Held
             }
         }
     }
 
-    /// A let-go object stuck in something: it rides with it; if that's gone, it falls.
-    fn rest_embedded(&mut self, id: u32) {
+    /// A stuck object with no hand on it: it rides with what it's in, its own weight carrying it
+    /// along its way in against its free damper: one pointing down
+    /// sinks on in, one pointing up slides back out.
+    fn rest_embedded(&mut self, id: u32, dt: f32) {
         let Some(e) = self.objects[&id].embed else { return };
-        match self.embedded_pose(&e) {
-            Some((p, q)) => self.physics.move_kinematic(self.objects[&id].body, p, q),
+        let Some(parent) = self.embed_parent(e.into) else {
+            self.unembed(id);
+            return;
+        };
+        // (A blade passes only through what it's in.)
+        if matches!(e.into, embed::Into::Object { .. }) {
+            self.physics.set_groups(self.objects[&id].collider, physics::groups_stuck_in_thing(None));
+        }
+        let axis = parent.1 * e.axis;
+        let weight = embed::GRAVITY * self.objects[&id].desc.mass.max(0.05);
+        let through = self.objects[&id].through.clone();
+        let damper = through.iter().fold(e.dampers[2], |d, t| d + t.dampers[2]).max(1.0);
+        let along = weight.dot(axis) / damper * dt;
+        if e.depth + along < -embed::EXIT && along < 0.0 {
+            self.unembed(id);
+            return;
+        }
+        let depth = (e.depth + along).min(e.max_depth);
+        let delta = depth - e.depth;
+        let o = self.objects.get_mut(&id).unwrap();
+        if let Some(e) = o.embed.as_mut() {
+            e.depth = depth;
+        }
+        let mut out = Vec::new();
+        o.through.retain_mut(|t| {
+            t.depth = (t.depth + delta).min(t.max_depth);
+            let gone = t.depth < -embed::EXIT;
+            if gone {
+                out.push(*t);
+            }
+            !gone
+        });
+        let (body, holder) = (o.body, o.holder);
+        for t in out {
+            self.pulled_out(id, holder, &t);
+        }
+        match self.objects[&id].embed.and_then(|e| self.embedded_pose(&e)) {
+            Some((p, q)) => self.physics.move_kinematic(body, p, q),
             None => self.unembed(id),
         }
+        self.embed_wound(id);
     }
 
     fn set_glove(&mut self, i: usize, g: Glove) {
@@ -5910,6 +6335,9 @@ impl Rig {
                                 self.bow_target(*id, hand, inverse((p, q)).0, alone, inp)
                             } else if let Some(t) = self.arrow_target(*id, hand, alone) {
                                 t
+                            } else if self.objects[id].desc.kind == OBJ_MELEE && self.melee.weapons.contains_key(id) {
+                                // (A melee weapon's two hands each pull on it: [`Rig::hold_melee`].)
+                                alone
                             } else {
                                 self.two_handed(*id, hand, inverse((p, q)).0, alone, dt)
                             }
@@ -5946,8 +6374,23 @@ impl Rig {
                         continue;
                     }
                     // Stuck in something: it stays, sliding along the way in as the hand pushes
-                    // and pulls, until it's pulled out.
-                    if self.objects[id].embed.is_some() && self.hold_embedded(*id, hand, target, dt) {
+                    // and pulls, until it's pulled out (or the hand's pulled off it).
+                    if self.objects[id].embed.is_some() {
+                        match self.hold_embedded(*id, hand, target, dt) {
+                            Stuck::Held => continue,
+                            Stuck::LetGo => {
+                                pulled_off.push(hand);
+                                continue;
+                            }
+                            Stuck::Out => {}
+                        }
+                    }
+                    // A melee weapon is held on a hand's joint of limited strength, keeping its
+                    // weight.
+                    if self.objects[id].desc.kind == OBJ_MELEE {
+                        if !self.hold_melee(*id, hand, target, inp, dt) {
+                            pulled_off.push(hand);
+                        }
                         continue;
                     }
                     let o = &self.objects[id];
@@ -6056,10 +6499,20 @@ impl Rig {
                         self.set_glove(hand, Glove::Idle);
                     }
                 }
-                Holder::Free if self.objects[id].embed.is_some() => self.rest_embedded(*id),
+                Holder::Free if self.objects[id].embed.is_some() => self.rest_embedded(*id, dt),
                 Holder::Free => {
                     let o = &self.objects[id];
-                    if o.hands_off_until > 0.0 && self.now > o.hands_off_until {
+                    // (A weapon let go of: once its grip's clear of the palms.)
+                    let clear = || {
+                        let (p, q) = self.physics.pose(o.body);
+                        let grip = match o.attach {
+                            Attach::Fixed(ap, aq) => p + q * inverse((ap, aq)).0,
+                            Attach::Gun => p + q * v3(o.desc.grip),
+                        };
+                        let r = melee::UNGRAB_RADIUS * self.map.world_per_meter;
+                        !self.melee.weapons.contains_key(id) || self.hands.as_ref().is_none_or(|hs| hs.iter().all(|h| h.target.0.distance(grip) > r))
+                    };
+                    if o.hands_off_until > 0.0 && self.now > o.hands_off_until && clear() {
                         self.physics.set_groups(o.collider, physics::groups_free_of(&o.desc));
                         self.objects.get_mut(id).unwrap().hands_off_until = 0.0;
                     }
@@ -6078,11 +6531,37 @@ impl Rig {
                     {
                         let (body, collider) = (o.body, o.collider);
                         self.physics.set_kinematic(body, true);
-                        self.physics.set_groups(collider, if constrained { physics::groups_panel() } else if self.bowls.contains_key(id) { physics::groups_game_bowl() } else { groups_game_prop() });
+                        // (A creature's weapon is solid to the hands and what they hold: it blocks
+                        // and is pushed, rather than being gone through like a loose prop.)
+                        let groups = if constrained {
+                            physics::groups_panel()
+                        } else if self.bowls.contains_key(id) {
+                            physics::groups_game_bowl()
+                        } else if self.creature_item(*id) {
+                            physics::groups_actor()
+                        } else {
+                            groups_game_prop()
+                        };
+                        self.physics.set_groups(collider, groups);
                         self.physics.move_kinematic(body, p, q);
                     }
                 }
                 // A knife in a loose object rides with it; if that's gone, it falls.
+                // A knife in one of the game's creatures rides with the part it's in; if that's gone,
+                // it falls.
+                Holder::Stuck { parent: 0, .. } if self.in_creatures.contains_key(id) => {
+                    let ((actor, part), rel) = self.in_creatures[id];
+                    match self.part_frame(actor, part) {
+                        Some(frame) => {
+                            let (p, q) = compose(frame, rel);
+                            self.physics.move_kinematic(self.objects[id].body, p, q);
+                        }
+                        None => {
+                            self.in_creatures.remove(id);
+                            self.free_body(*id, groups_free());
+                        }
+                    }
+                }
                 Holder::Stuck { parent, rel } if parent != 0 => match self.obj_pose(parent) {
                     Some(pp) => {
                         let (p, q) = compose(pp, rel);
@@ -6098,6 +6577,9 @@ impl Rig {
         for hand in pulled_off {
             self.release(hand, inp, zones);
         }
+        let objects = &self.objects;
+        self.melee.held.retain(|id, _| objects.get(id).is_some_and(|o| matches!(o.holder, Holder::Held(_))));
+        self.in_creatures.retain(|id, _| objects.get(id).is_some_and(|o| matches!(o.holder, Holder::Stuck { .. })));
         // The player's body, for the doors to stop on: from just under the head down past the hips.
         let body = {
             let head = v3(inp.frame.hmd.pos);
@@ -6110,7 +6592,15 @@ impl Rig {
         let now = self.now;
         let hands = self.hands.as_mut().unwrap();
         let holding = [hands[0].holding, hands[1].holding];
+        let climbs = self.melee.climbs;
         for (i, h) in hands.iter_mut().enumerate() {
+            // Holding the world to climb: it stays where it took hold.
+            if let Some((p, q)) = climbs[i] {
+                self.physics.set_pose(h.body, p, q);
+                self.physics.set_velocity(h.body, Vec3::ZERO, Vec3::ZERO);
+                h.reach_from = None;
+                continue;
+            }
             // (A thumb or index lifted off the controls stands up only a little: its capsule stays
             // straight, which would only catch on what the hand rests against.)
             let fingers = rustvr_ik::FingerInput::from_hand(&inp.frame.hands[i], inp.frame.fingers[i]);
@@ -6572,7 +7062,7 @@ impl Rig {
             }
             // (A hand on a door or a lever too: its trigger, squeezed with the grip, would use what
             // the eyes are on, the game's Activate on the lever it's already pulling.)
-            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.creature.is_some() || h.valve.is_some();
+            out.hand_busy[i] = h.holding.is_some() || h.support.is_some() || h.handle.is_some() || h.pin.is_some() || h.barrels.is_some() || h.creature.is_some() || h.valve.is_some() || self.melee.tk[i].is_some() || self.melee.climbs[i].is_some();
             out.holds[i] = match h.holding.and_then(|id| self.objects.get(&id)) {
                 Some(o) if matches!(o.attach, Attach::Gun) => rustvr_ik::HoldShape::PistolGrip,
                 Some(o) if o.desc.kind == OBJ_WEAPON => rustvr_ik::HoldShape::Foregrip,
@@ -6596,8 +7086,12 @@ impl Rig {
             if let Glove::Flight(id) = h.glove {
                 out.pulled[i] = self.obj_pose(id).map(|(p, _)| map.inv_point(p));
             }
-            // (A hand on a person still has the trigger's use: touch someone's shoulder to talk.)
-            out.hand_targeting[i] = !matches!(h.hover, Hover::None | Hover::Creature(..)) || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
+            // (A hand on a person still has the trigger's use: touch someone's shoulder to talk. So
+            // has a hand by the other hand's weapon: its spell fills the blade, imbuing it.)
+            let others = matches!(h.hover, Hover::Object(id) | Hover::Foregrip(id) | Hover::Handle(id) if hands[i ^ 1].holding == Some(id));
+            let near = !(matches!(h.hover, Hover::None | Hover::Creature(..)) || others);
+            out.hand_targeting[i] = near || matches!(h.glove, Glove::Hover(_) | Glove::Locked(_) | Glove::Flight(_));
+            out.hand_glove_hovers[i] = !near && matches!(h.glove, Glove::Hover(_));
         }
         // Primary gun: the firing hand's, else any held gun.
         let gun_in = |hand: usize| hands[hand].holding.filter(|id| self.objects.get(id).is_some_and(|o| matches!(o.attach, Attach::Gun)));
@@ -6697,6 +7191,23 @@ impl Rig {
         let o = self.objects.get(&id)?;
         let firing = h.holding == Some(id) && matches!(o.attach, Attach::Gun);
         let mut g = rustvr_avatar::Grasp { fingers: if firing { rustvr_avatar::grasp::ALL_FINGERS & !(1 << 1) } else { rustvr_avatar::grasp::ALL_FINGERS }, ..Default::default() };
+        // A melee weapon's hand closes round the handle it's on (its blade half-swording, its
+        // pommel), not its main grip.
+        if o.desc.kind == OBJ_MELEE {
+            let at = match (h.holding, h.support) {
+                (Some(_), _) => match o.attach {
+                    Attach::Fixed(p, q) => Some(inverse((p, q)).0),
+                    _ => None,
+                },
+                (None, Some(sup)) => Some(sup.at),
+                _ => None,
+            };
+            if let Some((handle, _)) = at.and_then(|at| self.melee_handle(id, at)) {
+                let (op, oq) = self.physics.pose(o.body);
+                g.solids.push(rustvr_avatar::Solid::Capsule { a: op + oq * v3(handle.a), b: op + oq * v3(handle.b), radius: handle.radius * self.map.world_per_meter });
+                return Some(((id, on), g));
+            }
+        }
         match self.handle_of(&o.desc, i, on).filter(|h| h.grasped) {
             Some(handle) => {
                 let (op, oq) = self.physics.pose(o.body);
@@ -6772,6 +7283,9 @@ impl Rig {
                 Holder::InWeapon(_) => flags |= OS_IN_WEAPON,
                 Holder::Pulled { .. } => flags |= OS_PULLED,
                 Holder::Stuck { .. } => flags |= OS_STUCK,
+                Holder::Gone if self.breaking.broken.contains(id) => flags |= OS_BROKEN,
+                // (A melee weapon in flight: thrown, as a throwable's says.)
+                Holder::Free if self.melee.thrown.contains_key(id) => flags |= OS_THROWN,
                 Holder::Stowed(_) => flags |= OS_STOWED,
                 Holder::Nocked { .. } => flags |= OS_IN_WEAPON,
                 Holder::InBowl { grinder: false, .. } => flags |= OS_IN_RECEPTACLE,
@@ -6897,6 +7411,9 @@ impl Rig {
     /// it meets the body with, before the body stops it).
     pub fn swing_pose(&self, id: u32) -> Option<(Vec3, Quat)> {
         let o = self.objects.get(&id)?;
+        if let (Holder::Held(_), None, Some(swing)) = (o.holder, o.embed, self.melee_swing(id)) {
+            return Some(swing);
+        }
         match (o.holder, o.aim, o.embed) {
             (Holder::Held(_), Some(aim), None) => Some(aim),
             _ => self.obj_pose(id),

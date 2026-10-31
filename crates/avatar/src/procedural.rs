@@ -175,7 +175,7 @@ pub fn mannequin() -> Source {
 
     let meshes = [("body", body, BODY), ("joints", joints, JOINTS), ("hands", hands, HANDS)]
         .into_iter()
-        .map(|(name, m, tint)| SourceMesh { name: name.into(), vertices: m.vertices, indices: m.indices, texture: None, tint, material: None, depth_slack: 0.0, centres: Vec::new() })
+        .map(|(name, m, tint)| SourceMesh { name: name.into(), vertices: m.vertices, indices: m.indices, texture: None, tint, material: None, depth_slack: 0.0, centres: Vec::new(), shape: None })
         .collect();
     Source { bones, meshes, copies: Vec::new() }
 }
