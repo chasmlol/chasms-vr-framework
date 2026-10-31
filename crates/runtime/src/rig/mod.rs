@@ -43,9 +43,9 @@ pub mod weapon;
 pub mod zones;
 
 use glam::{EulerRot, Mat3, Quat, Vec3};
-use rapier3d::prelude::{ColliderHandle, RigidBodyHandle};
+use rapier3d::prelude::{ColliderHandle, InteractionGroups, RigidBodyHandle};
 use rustvr_protocol::*;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::backend::HmdFrame;
 use crate::settings::{BodySlot, GrenadeArming, Settings};
@@ -800,6 +800,8 @@ pub struct Rig {
     objects: BTreeMap<u32, Obj>,
     /// The creatures' body parts this frame (world), what a blade stuck in one rides with.
     actor_parts: HashMap<(u32, usize), (Vec3, Vec3, f32)>,
+    /// The creatures a weapon carried on through last step (their parts' groups to put back).
+    cut_passed: HashSet<u32>,
     /// Those parts in the physics: kinematic capsules following them (half length, radius), that
     /// the hands and what they hold meet ([`Rig::follow_actors`]).
     proxies: HashMap<(u32, usize), (RigidBodyHandle, ColliderHandle, f32, f32)>,
@@ -914,6 +916,7 @@ impl Default for Rig {
             next_spawn: SPAWN_BASE,
             game_poses: HashMap::new(),
             actor_parts: HashMap::new(),
+            cut_passed: HashSet::new(),
             proxies: HashMap::new(),
             drags: Vec::new(),
             bodies: HashMap::new(),
@@ -2294,6 +2297,16 @@ impl Rig {
                 }
             }
         }
+        // A weapon carrying on through a cut it made passes the creature's body (and meets it again
+        // once it's clear of it).
+        self.end_cuts();
+        let passing: HashSet<u32> = self.melee.cutting.values().copied().collect();
+        let regroup: Vec<(ColliderHandle, InteractionGroups)> =
+            self.proxies.iter().filter(|&(&(actor, _), _)| passing.contains(&actor) || self.cut_passed.contains(&actor)).map(|(&(actor, _), &(_, c, ..))| (c, self.actor_groups(actor))).collect();
+        for (c, g) in regroup {
+            self.physics.set_groups(c, g);
+        }
+        self.cut_passed = passing;
     }
 
     /// What the hands, what they hold and loose things push the game's creatures by: each part

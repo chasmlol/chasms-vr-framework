@@ -56,7 +56,8 @@ pub fn biteable(material: u32) -> bool {
     matches!(material, MAT_FLESH | MAT_LEATHER | MAT_WOOD | MAT_EARTH)
 }
 
-/// One capsule of a creature's body: from `a` to `b`, `radius` thick.
+/// One capsule of a creature's body: from `a` (the end it hangs from: a limb's joint) to `b`,
+/// `radius` thick.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
 pub struct ActorPart {
@@ -284,8 +285,11 @@ pub const CEF_POWER: u32 = 1 << 3;
 pub const CEF_PARRY: u32 = 1 << 4;
 /// From behind the creature.
 pub const CEF_BACK: u32 = 1 << 5;
-/// An edge that went in fast enough and square enough to cut through the part (a limb's
-/// dismemberment): the game cuts it off if it can be.
+/// A blow that went in fast enough, and square enough at a joint, to cut through it (a limb's
+/// dismemberment): the event's `part` is the one it takes off (the part hit, or the one
+/// beside it whose joint it crossed: a forearm cut at the wrist takes the hand), and the game cuts
+/// it off, and what hangs from it, at its joint. The cut kills. The blade doesn't stay in: it
+/// carries on through.
 pub const CEF_SEVER: u32 = 1 << 6;
 /// A stab made by pushing slowly (a pressure stab).
 pub const CEF_PRESSURE: u32 = 1 << 7;

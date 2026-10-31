@@ -204,8 +204,25 @@ pub struct Wound {
     pub part: usize,
     pub at: V3,
     pub normal: V3,
-    pub kind: u32,
+    pub look: Look,
     pub size: f32,
+    /// How strongly it shows (0..1), and when it was made (a burn glows as it cools).
+    pub strength: f32,
+    pub since: f64,
+}
+
+/// A mark's look, as its wound masks paint them: on flesh a cut, a stab or a bruise (red, its
+/// blood, with the wound's own look); a burn where the blade was filled with fire; on armour a blow
+/// that went through marks it as on flesh, and one that didn't scratches it (an edge) or scuffs it
+/// (a blunt one): only the mask's wear channel, no blood.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Look {
+    Cut,
+    Stab,
+    Bruise,
+    Burn,
+    Scratch,
+    Scuff,
 }
 
 pub struct Person {
@@ -1031,23 +1048,70 @@ impl Dummies {
         true
     }
 
-    /// A wound on person `k`'s part `part` where the hit landed (world): a cut, a stab or a bruise,
-    /// as big as the hit was hard (0.1 to 0.18 m, a stab 0.06 to 0.12).
-    pub fn wound(&mut self, k: usize, part: usize, point: V3, kind: u32, intensity: f32) {
+    /// A mark on person `k`'s part `part` where a blow landed (world), of damage kind `kind`, for what
+    /// the part is (flesh, or the armour over it): as big and as strong as the blow was hard
+    /// (`intensity`, 0..1: from the mark's smallest and weakest to its largest and strongest), or at
+    /// the size and full strength of a blow that went in (`went_in`). A blow that did no damage
+    /// (`damaging` false) leaves nothing on flesh and a scratch or a scuff on armour; one with a
+    /// fire-filled blade burns.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wound(&mut self, k: usize, part: usize, point: V3, kind: u32, intensity: f32, damaging: bool, went_in: bool, fire: bool) {
+        let time = self.time;
         let p = &mut self.people[k];
         let Some(q) = p.parts.get(part) else { return };
+        let armour = matches!(q.material, MAT_LEATHER | MAT_CHAINMAIL | MAT_PLATE);
+        let i = intensity.clamp(0.0, 1.0);
+        let lerp = |lo: f32, hi: f32| lo + (hi - lo) * i;
+        // (size, strength) by its mask: a cut 0.1..0.18 (gone in: 0.18), a stab 0.06..0.12
+        // (0.15), a bruise 0.1..0.18 at 0.1..0.5 on flesh, a dent 0.1..0.16 on mail and plate.
+        let (look, size, strength) = match (kind, damaging, armour) {
+            (DMG_PIERCE, true, _) => (Look::Stab, if went_in { 0.15 } else { lerp(0.06, 0.12) }, if went_in { 1.0 } else { i }),
+            (DMG_BLUNT | DMG_PUNCH, true, false) => (Look::Bruise, lerp(0.1, 0.18), lerp(0.1, 0.5)),
+            (DMG_BLUNT | DMG_PUNCH, true, true) if q.material == MAT_LEATHER => (Look::Bruise, lerp(0.06, 0.12), i),
+            (DMG_BLUNT | DMG_PUNCH, true, true) => (Look::Scuff, lerp(0.1, 0.16), i),
+            (_, true, _) => (Look::Cut, if went_in { 0.18 } else { lerp(0.1, 0.18) }, if went_in { 1.0 } else { i }),
+            (_, false, false) => return,
+            (DMG_BLUNT | DMG_PUNCH, false, true) => (Look::Scuff, lerp(0.1, 0.16), i),
+            (DMG_PIERCE, false, true) => (Look::Scratch, lerp(0.06, 0.12), i),
+            (_, false, true) => (Look::Scratch, lerp(0.1, 0.18), i),
+        };
+        let look = if fire && damaging { Look::Burn } else { look };
         let (pos, rot) = from_pose(self.world.bodies[q.body].position());
         let local = rot.inverse() * (point - pos);
         let axis_t = ((local - q.a).dot(q.b - q.a) / (q.b - q.a).length_squared().max(1e-6)).clamp(0.0, 1.0);
         let on = q.a.lerp(q.b, axis_t);
         let normal = (local - on).normalize_or(V3::Z);
         let at = on + normal * q.radius;
-        let (lo, hi) = if kind == DMG_PIERCE { (0.06, 0.12) } else { (0.1, 0.18) };
-        let size = lo + (hi - lo) * intensity.clamp(0.0, 1.0);
-        p.wounds.push(Wound { part, at, normal, kind, size });
-        if p.wounds.len() > 24 {
+        p.wounds.push(Wound { part, at, normal, look, size, strength, since: time });
+        // (At most 100, the oldest reused.)
+        if p.wounds.len() > 100 {
             p.wounds.remove(0);
         }
+    }
+
+    /// Where a line from `from` (world) along `dir` comes out of person `k`'s part `part` again: a
+    /// point run through it, out the far side.
+    pub fn exit_point(&self, k: usize, part: usize, from: V3, dir: V3) -> Option<V3> {
+        let (a, b, r) = self.capsule(k, part);
+        let dir = dir.normalize_or_zero();
+        let inside = |p: V3| {
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared().max(1e-9)).clamp(0.0, 1.0);
+            p.distance(a + ab * t) < r
+        };
+        // Into it first (the blow met its surface), then on until it's out.
+        let mut d = 0.0;
+        let mut was_in = false;
+        while d < 1.0 {
+            let p = from + dir * d;
+            if inside(p) {
+                was_in = true;
+            } else if was_in {
+                return Some(p);
+            }
+            d += 0.005;
+        }
+        None
     }
 
     /// The people as the game's creatures, every part a capsule where it is now.
@@ -1166,6 +1230,17 @@ impl Dummies {
         self.people.iter().position(|p| p.id == id)
     }
 
+    /// A part's own colour: its armour's, or skin, or the dummies' canvas.
+    fn part_tint(part: &Part) -> [f32; 3] {
+        match part.material {
+            MAT_LEATHER => [0.45, 0.3, 0.18],
+            MAT_CHAINMAIL => [0.55, 0.57, 0.6],
+            MAT_PLATE => [0.78, 0.8, 0.84],
+            _ if part.kind == PART_HEAD || part.kind == PART_HAND => [0.86, 0.68, 0.55],
+            _ => [0.77, 0.66, 0.38],
+        }
+    }
+
     /// Every part as a box round its capsule (the range's unit cube scaled), with its colour, its
     /// wounds and its eyes: (model, tint).
     pub fn draws(&self) -> Vec<(Mat4, [f32; 4])> {
@@ -1176,13 +1251,8 @@ impl Dummies {
                 let (a, b) = (pos + rot * part.a, pos + rot * part.b);
                 let along = Quat::from_rotation_arc(V3::Y, (b - a).normalize_or(rot * V3::Y));
                 let size = V3::new(2.0 * part.radius, (b - a).length() + 2.0 * part.radius, 2.0 * part.radius);
-                let tint = match part.material {
-                    MAT_LEATHER => [0.45, 0.3, 0.18, 1.0],
-                    MAT_CHAINMAIL => [0.55, 0.57, 0.6, 1.0],
-                    MAT_PLATE => [0.78, 0.8, 0.84, 1.0],
-                    _ if part.kind == PART_HEAD || part.kind == PART_HAND => [0.86, 0.68, 0.55, 1.0],
-                    _ => [0.77, 0.66, 0.38, 1.0],
-                };
+                let t = Self::part_tint(part);
+                let tint = [t[0], t[1], t[2], 1.0];
                 // Paler as it bleeds out; grey dead; charring as it burns, and glowing hot.
                 let k = if p.alive { 0.75 + 0.25 * (p.health / rustvr_melee::body::HEALTH).clamp(0.0, 1.0) } else { 0.6 };
                 let char = p.burning.map_or(0.0, |t| ((self.time - t) / 10.0).clamp(0.0, 0.85) as f32);
@@ -1201,18 +1271,26 @@ impl Dummies {
                     }
                 }
             }
-            // Its wounds: dark red on the part where it was cut or stabbed, purple where bruised
-            // (a red and a blue channel: blood and the wound's look).
+            // Its marks (red its blood, the rest the wound's look), as strong as they were made over
+            // what's there: dark red cuts and stabs, purple bruises, charred burns glowing as they
+            // cool (their glow gone over 5 s), and on armour bright scratches and dull scuffs.
             for w in &p.wounds {
                 let part = &p.parts[w.part];
                 let (pos, rot) = from_pose(self.world.bodies[part.body].position());
                 let at = pos + rot * (w.at + w.normal * 0.004);
                 let turn = rot * Quat::from_rotation_arc(V3::Z, w.normal);
-                let (shape, tint) = match w.kind {
-                    DMG_SLASH => (V3::new(0.012, w.size, 0.004), [0.45, 0.03, 0.03, 1.0]),
-                    DMG_PIERCE => (V3::new(w.size * 0.3, w.size * 0.3, 0.004), [0.3, 0.01, 0.01, 1.0]),
-                    _ => (V3::new(w.size * 0.6, w.size * 0.6, 0.003), [0.35, 0.15, 0.35, 1.0]),
+                let base = Self::part_tint(part);
+                let glow = (1.0 - (self.time - w.since) / 5.0).clamp(0.0, 1.0) as f32;
+                let (shape, colour) = match w.look {
+                    Look::Cut => (V3::new(0.012, w.size, 0.004), [0.45, 0.03, 0.03]),
+                    Look::Stab => (V3::new(w.size * 0.3, w.size * 0.3, 0.004), [0.3, 0.01, 0.01]),
+                    Look::Bruise => (V3::new(w.size * 0.6, w.size * 0.6, 0.003), [0.35, 0.15, 0.35]),
+                    Look::Burn => (V3::new(w.size * 0.4, w.size, 0.004), [0.08 + 0.9 * glow, 0.05 + 0.3 * glow, 0.03]),
+                    Look::Scratch => (V3::new(0.006, w.size, 0.002), base.map(|c| (c + 0.25).min(1.0))),
+                    Look::Scuff => (V3::new(w.size * 0.5, w.size * 0.5, 0.002), base.map(|c| c * 0.6)),
                 };
+                let s = w.strength.clamp(0.0, 1.0);
+                let tint = [base[0] + (colour[0] - base[0]) * s, base[1] + (colour[1] - base[1]) * s, base[2] + (colour[2] - base[2]) * s, 1.0];
                 out.push((Mat4::from_scale_rotation_translation(shape, turn, at), tint));
             }
         }

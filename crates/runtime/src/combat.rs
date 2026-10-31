@@ -409,6 +409,10 @@ pub struct Combat {
     pub debug: CombatDebug,
     /// Blades that went in and stay in, this frame (for the rig).
     pub embeds: Vec<embed::Request>,
+    /// Weapons that cut a limb off this frame, and whose: they carry on through it (for the rig).
+    pub cuts: Vec<(u32, u32)>,
+    /// When each damager (weapon, blade) last cut something off.
+    sliced: HashMap<(u32, usize), f64>,
 }
 
 impl Default for Combat {
@@ -438,6 +442,8 @@ impl Default for Combat {
             casting: Default::default(),
             debug: CombatDebug::default(),
             embeds: Vec::new(),
+            cuts: Vec::new(),
+            sliced: HashMap::new(),
         }
     }
 }
@@ -1081,13 +1087,27 @@ impl Combat {
                 deg(dir, along)
             );
         }
-        let judged = judged?;
+        let mut judged = judged?;
         self.hit_until.insert((body.actor.id, object), inp.now + rustvr_melee::HIT_DELAY);
+        // Just after it cut something off, the damager doesn't go in: it carries on through.
+        if self.sliced.get(&(object, blade)).is_some_and(|&t| inp.now - t < rustvr_melee::SLICE_NO_PENETRATION) {
+            judged.flags &= !CEF_PENETRATED;
+            judged.depth = 0.0;
+        }
         let mut flags = judged.flags | if two { CEF_TWO_HANDED } else { 0 } | if thrown { CEF_THROWN } else { 0 };
-        // An edge that went in fast and square enough cuts through: the game cuts off what it can.
-        let limb = (Vec3::from_array(body.part.b) - Vec3::from_array(body.part.a)).normalize_or_zero();
-        if body.part.kind != PART_TORSO && rustvr_melee::severs(b, &judged, tier, limb, edge, 0.0) {
-            flags |= CEF_SEVER;
+        // Gone in fast and square enough at a joint, it cuts through: the part it takes off (the one
+        // hit, or the one beside it whose joint it crossed) is the one told, and the game cuts it
+        // off. It doesn't stay in: it carries on at the speed it met the limb at.
+        let mut part = body.part;
+        let parts: Vec<(Vec3, Vec3, f32, u32)> = body.actor.parts[..(body.actor.count as usize).min(MAX_ACTOR_PARTS)].iter().map(|p| (Vec3::from_array(p.a), Vec3::from_array(p.b), p.radius, p.kind)).collect();
+        let forward = if b.kind == DMG_PIERCE { along } else { edge };
+        let up = if b.kind == DMG_PIERCE { edge.reject_from(along).normalize_or_zero() } else { along };
+        if let Some(cut) = rustvr_melee::sever_part(b, &judged, tier, &parts, body.index, point, forward, up) {
+            flags = (flags | CEF_SEVER) & !CEF_PENETRATED;
+            judged.flags &= !CEF_PENETRATED;
+            part = &body.actor.parts[cut];
+            self.sliced.insert((object, blade), inp.now);
+            self.cuts.push((object, body.actor.id));
         }
         let spell = self.imbued(object).map_or(0, |i| i.spell);
         if spell != 0 {
@@ -1097,7 +1117,7 @@ impl Combat {
             kind: CE_HIT,
             flags,
             actor: body.actor.id,
-            part: body.part.game_part,
+            part: part.game_part,
             object,
             what: judged.kind,
             hand: hand as u32,

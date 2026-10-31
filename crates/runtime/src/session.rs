@@ -1160,9 +1160,12 @@ impl Session {
             for p in &self.gore.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
-            // Blades that went in and stay in.
+            // Blades that went in and stay in, and ones that cut a limb off and carry on through.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);
+            }
+            for (object, actor) in std::mem::take(&mut self.combat.cuts) {
+                self.rig.cut_through(object, actor);
             }
             // What blades stuck in creatures did (gone in deep, out the far side, pulled out), the
             // part as the game numbers it.

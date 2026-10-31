@@ -206,25 +206,109 @@ pub fn judge(b: &MeleeBlade, c: &Contact) -> Option<Judged> {
 /// A bad angle's blunt damage (a sword's, 0.5).
 pub const BAD_ANGLE_DAMAGE: f32 = 0.5;
 
-/// Whether a cut that went in severs the limb it's in, as the melee judges it:
-/// the damager cuts limbs off ([`MeleeBlade::dismember`]), the hit
-/// is faster than that times the weapon's tier factor (2.5 / 1.5 / 1 / 0.9 / 0.8 / 0.8 for tiers
-/// 0..5), within `SLICE_BAND` of the joint, and the swing square enough to the limb (the blade's
-/// cutting way within its horizontal limit of square: |cos| < the horizontal angle
-/// 35 / 90).
-pub fn severs(b: &MeleeBlade, j: &Judged, tier: u32, limb_axis: Vec3, edge: Vec3, from_joint: f32) -> bool {
-    if b.dismember <= 0.0 || j.flags & CEF_PENETRATED == 0 || j.kind != DMG_SLASH {
-        return false;
+/// Where a part of a human comes off: its cut lies `height` metres along its way from its joint,
+/// and that way takes `adjust` of its parent's (0 its own, 1 its parent's). `None`: it never comes
+/// off (the torso; a thigh). The protocol's kinds with their parents' tell the parts apart: an arm
+/// hanging from the torso is an upper arm, from an arm a forearm; a leg from the torso a thigh,
+/// from a leg a shin. A head comes off by its neck: the neck is cut 2.8 cm up from its base and
+/// the head goes, and a creature's head part here starts at the neck.
+pub fn slicing(kind: u32, parent: Option<u32>) -> Option<(f32, f32)> {
+    match (kind, parent) {
+        (PART_HEAD, _) => Some((0.028, 0.0)),
+        (PART_ARM, Some(PART_TORSO)) => Some((0.0, 0.35)),
+        (PART_ARM, _) | (PART_HAND, _) => Some((0.0, 0.5)),
+        (PART_LEG, Some(PART_LEG)) => Some((0.0, 0.5)),
+        // 3 cm up the shin from the ankle, square to the shin.
+        (PART_FOOT, _) => Some((-0.03, 1.0)),
+        _ => None,
     }
-    let factor = [2.5, 1.5, 1.0, 0.9, 0.8, 0.8][(tier as usize).min(5)];
-    if j.speed <= b.dismember * factor {
-        return false;
-    }
-    from_joint <= SLICE_BAND && limb_axis.normalize_or_zero().dot(edge.normalize_or_zero()).abs() < 35.0 / 90.0
 }
 
-/// How near a severable joint (metres) a cut must land to sever it.
-pub const SLICE_BAND: f32 = 0.04;
+/// The part each of a creature's parts hangs from (`parts`: each capsule's ends, radius and kind;
+/// `a` the end it hangs from): the part nearest its joint of those a part of its kind can hang from
+/// (a head, an arm or a leg from the torso; a forearm from an arm, a hand from an arm, a shin from a
+/// leg, a foot from a leg).
+pub fn parents(parts: &[(Vec3, Vec3, f32, u32)]) -> Vec<Option<usize>> {
+    parts
+        .iter()
+        .enumerate()
+        .map(|(i, &(a, _, _, kind))| {
+            let from: &[u32] = match kind {
+                PART_HEAD | PART_TAIL => &[PART_TORSO],
+                PART_ARM => &[PART_TORSO, PART_ARM],
+                PART_HAND => &[PART_ARM],
+                PART_LEG => &[PART_TORSO, PART_LEG],
+                PART_FOOT => &[PART_LEG],
+                _ => &[],
+            };
+            parts
+                .iter()
+                .enumerate()
+                .filter(|&(j, p)| j != i && from.contains(&p.3))
+                .map(|(j, &(pa, pb, ..))| (j, a.distance(nearest_on(pa, pb, a))))
+                .min_by(|x, y| x.1.total_cmp(&y.1))
+                .map(|(j, _)| j)
+        })
+        .collect()
+}
+
+/// The point of segment `a`..`b` nearest `p`.
+fn nearest_on(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
+    let ab = b - a;
+    let t = if ab.length_squared() > 1e-9 { ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+    a + ab * t
+}
+
+/// Where part `i`'s joint is. A part that carries its parent's line on (a forearm, a hand, a shin, a
+/// foot, the head on the spine) meets it halfway between its `a` and its parent's `b` (a game's
+/// capsules may stop short of the joint, or run on past it to cover what's drawn there); one at its
+/// parent's side (an arm, a leg on the torso), and one with no parent, at its `a`.
+fn joint_of(parts: &[(Vec3, Vec3, f32, u32)], i: usize, parent: Option<usize>) -> Vec3 {
+    let (a, _, _, kind) = parts[i];
+    match parent.map(|p| (parts[p].1, parts[p].3)) {
+        Some((pb, pk)) if matches!((kind, pk), (PART_ARM | PART_HAND, PART_ARM) | (PART_LEG | PART_FOOT, PART_LEG) | (PART_HEAD, PART_TORSO)) => (a + pb) * 0.5,
+        _ => a,
+    }
+}
+
+/// Which part a cut that went in takes off, as the melee decides it:
+/// the damager cuts limbs off ([`MeleeBlade::dismember`]), faster than that
+/// times its factor at the weapon's tier ([`MeleeBlade::dismember_tiers`]), and the cut fits a part
+/// that comes off ([`slicing`]): the part hit (`hit`), else its parent, else one of its children.
+/// It fits within [`SLICE_WIDTH`] of the part's cut along its way, and the way square enough both to
+/// the damager's cutting way (`forward`: an edge's facing, a point's way in) and to its length
+/// (`up`), each within its horizontal / vertical angle of square
+/// ([`MeleeBlade::dismember_angles`]; their cosines are compared with the angle over 90).
+#[allow(clippy::too_many_arguments)]
+pub fn sever_part(b: &MeleeBlade, j: &Judged, tier: u32, parts: &[(Vec3, Vec3, f32, u32)], hit: usize, point: Vec3, forward: Vec3, up: Vec3) -> Option<usize> {
+    if b.dismember <= 0.0 || j.flags & CEF_PENETRATED == 0 || hit >= parts.len() {
+        return None;
+    }
+    let tiers = if b.dismember_tiers == [0.0; 6] { [2.5, 1.5, 1.0, 0.9, 0.8, 0.8] } else { b.dismember_tiers };
+    if j.speed <= b.dismember * tiers[(tier as usize).min(5)] {
+        return None;
+    }
+    let [h, v] = if b.dismember_angles == [0.0; 2] { [35.0, 90.0] } else { b.dismember_angles };
+    let parent = parents(parts);
+    let fits = |i: usize| -> bool {
+        let Some((height, adjust)) = slicing(parts[i].3, parent[i].map(|p| parts[p].3)) else { return false };
+        let way = |k: usize| (parts[k].1 - parts[k].0).normalize_or_zero();
+        let dir = way(i).lerp(parent[i].map_or(way(i), way), adjust);
+        let at = joint_of(parts, i, parent[i]) + dir * height;
+        (point - at).dot(dir.normalize_or_zero()).abs() < SLICE_WIDTH && dir.dot(up).abs() < v / 90.0 && dir.dot(forward).abs() < h / 90.0
+    };
+    if fits(hit) {
+        return Some(hit);
+    }
+    if let Some(p) = parent[hit].filter(|&p| fits(p)) {
+        return Some(p);
+    }
+    (0..parts.len()).find(|&c| parent[c] == Some(hit) && fits(c))
+}
+
+/// How near a part's cut (metres, along its way) a blow must land to take it off (0.04 on every
+/// part).
+pub const SLICE_WIDTH: f32 = 0.04;
 /// What a severed piece flies off with: its speed halved, plus 3 m/s along the limb (3.5 a head).
 pub const SLICE_KEEP: f32 = 0.5;
 pub const SLICE_PUSH: f32 = 3.0;

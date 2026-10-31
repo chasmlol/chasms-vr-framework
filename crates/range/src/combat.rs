@@ -87,8 +87,8 @@ pub fn hit(people: &mut crate::arena::People, ev: &CombatEvent, weapons: &MeleeW
         }
     }
     let intensity = rustvr_melee::intensity(ev.speed);
+    d.wound(k, part, point, ev.what, intensity, ev.damage > 0.0, ev.flags & CEF_PENETRATED != 0, fire);
     if ev.damage > 0.0 {
-        d.wound(k, part, point, ev.what, intensity);
         out.push(Bled { point, dir, strength: intensity });
     }
     tracing::info!(
@@ -123,6 +123,13 @@ pub fn wound(people: &mut crate::arena::People, ev: &CombatEvent) {
     };
     let damage = ev.damage * mult;
     d.hurt(k, damage, point);
+    // Run through: the point's way out is a stab's wound too (a skewer's exit, 0.15 at full
+    // strength).
+    if ev.flags & CEF_SKEWER != 0
+        && let Some(out) = d.exit_point(k, part, point, Vec3::from_array(ev.dir))
+    {
+        d.wound(k, part, out, DMG_PIERCE, 1.0, true, true, false);
+    }
     let now = people.dummies.time;
     if let Some(brain) = people.brain_of(k) {
         brain.hurt(damage / rustvr_melee::body::HEALTH, now);

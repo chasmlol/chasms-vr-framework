@@ -85,18 +85,23 @@ pub struct MeleeRig {
     pub tk_on: bool,
     /// Weapons thrown and still flying or tumbling, by id.
     pub thrown: std::collections::HashMap<u32, Thrown>,
+    /// Weapons that cut a limb off, carrying on through the creature (its id) until they're clear
+    /// of it (see [`Rig::cut_through`]).
+    pub cutting: std::collections::HashMap<u32, u32>,
 }
 
 /// A thrown weapon: the hand that threw it, when, (flying point first) its point's way (weapon
 /// space) and how fast it's turned along its flight, and this step's sweep: where it was before the
 /// physics stepped, and where it would have gone had nothing stopped it (what it hit is judged at
-/// the speed it met it, as the melee judges a contact before the physics resolves it).
+/// the speed it met it, before the physics resolves the contact), at the speed it went then
+/// (linear, angular).
 #[derive(Clone, Copy, Debug)]
 pub struct Thrown {
     pub hand: usize,
     pub since: f64,
     pub flying: Option<(Vec3, f32)>,
     pub sweep: Option<((Vec3, Quat), (Vec3, Quat))>,
+    pub vel: (Vec3, Vec3),
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -457,7 +462,7 @@ impl Rig {
         let point = point_of(&w);
         let off = (q * point).angle_between(v.normalize_or(q * point)).to_degrees();
         let flying = (w.flags & MW_FLIES != 0 && off <= w.fly_angle).then_some((point, if w.fly_rate > 0.0 { w.fly_rate } else { 3.0 }));
-        self.melee.thrown.insert(id, Thrown { hand: i, since: self.now, flying, sweep: None });
+        self.melee.thrown.insert(id, Thrown { hand: i, since: self.now, flying, sweep: None, vel: (Vec3::ZERO, Vec3::ZERO) });
         tracing::info!(
             "rig: {id:#x} thrown at {:.1} m/s (the hand {hand_speed:.1}){}",
             v.length() / self.map.world_per_meter,
@@ -500,7 +505,9 @@ impl Rig {
                 }
             }
             let to = (p + v * dt, (Quat::from_scaled_axis(ang * dt) * q).normalize());
-            self.melee.thrown.get_mut(&id).unwrap().sweep = Some(((p, q), to));
+            let t = self.melee.thrown.get_mut(&id).unwrap();
+            t.sweep = Some(((p, q), to));
+            t.vel = (v, ang);
         }
     }
 
@@ -512,6 +519,53 @@ impl Rig {
     /// The weapons thrown and still flying or tumbling, and the hand that threw each.
     pub fn thrown_melee(&self) -> Vec<(u32, usize)> {
         self.melee.thrown.iter().map(|(&id, t)| (id, t.hand)).collect()
+    }
+
+    /// Weapon `object` just cut a limb off creature `actor` (the combat's): it carries on through
+    /// (the speed it met the limb at put back, and nothing of the body holds it), passing the
+    /// creature's body until it's clear of it. Held, its hand's hold carries it on; thrown, it flies
+    /// on as it was.
+    pub fn cut_through(&mut self, object: u32, actor: u32) {
+        let Some(o) = self.objects.get(&object) else { return };
+        if o.embed.is_some() {
+            return;
+        }
+        let body = o.body;
+        if let Some(&Thrown { vel: (v, ang), .. }) = self.melee.thrown.get(&object) {
+            self.physics.set_velocity(body, v, ang);
+        }
+        self.melee.cutting.insert(object, actor);
+    }
+
+    /// The groups creature `actor`'s parts collide with: a creature's own, but not a weapon carrying
+    /// on through a cut it made (the hand's held things, or loose ones, while one's thrown).
+    pub(super) fn actor_groups(&self, actor: u32) -> rapier3d::prelude::InteractionGroups {
+        let mut g = physics::groups_actor();
+        for (&id, _) in self.melee.cutting.iter().filter(|&(_, &a)| a == actor) {
+            g.filter &= !match self.objects.get(&id).map(|o| o.holder) {
+                Some(Holder::Held(hand)) => physics::G_HELD[hand],
+                _ => physics::G_OBJECT,
+            };
+        }
+        g
+    }
+
+    /// Weapons carrying on through a cut, once clear of the creature (none of its parts meets them)
+    /// or stuck in something, or gone: they meet it again.
+    pub(super) fn end_cuts(&mut self) {
+        let done: Vec<u32> = self
+            .melee
+            .cutting
+            .iter()
+            .filter(|&(&id, &actor)| {
+                let Some(o) = self.objects.get(&id) else { return true };
+                o.embed.is_some() || !self.proxies.iter().any(|(&(a, _), &(_, proxy, ..))| a == actor && self.physics.overlap(o.collider, proxy).is_some())
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        for id in done {
+            self.melee.cutting.remove(&id);
+        }
     }
 }
 

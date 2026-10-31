@@ -235,7 +235,7 @@ impl Rig {
         if let Some(w) = self.melee.weapons.get(&tk.id).copied() {
             let point = super::melee::point_of(&w);
             let rate = if w.fly_rate > 0.0 { w.fly_rate } else { 3.0 };
-            self.melee.thrown.insert(tk.id, super::melee::Thrown { hand: i, since: self.now, flying: Some((point, rate)), sweep: None });
+            self.melee.thrown.insert(tk.id, super::melee::Thrown { hand: i, since: self.now, flying: Some((point, rate)), sweep: None, vel: (Vec3::ZERO, Vec3::ZERO) });
         }
         tracing::info!("rig: hand {i} throws {:#x} by telekinesis", tk.id);
         let palm = self.hands.as_ref().unwrap()[i].target.0;

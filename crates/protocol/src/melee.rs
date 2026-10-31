@@ -119,6 +119,28 @@ pub struct MeleeBlade {
     /// slash, a dagger's weaker one, an axe's; a stab, a fine point's; a mace's
     /// blunt, a pommel's lighter one...). 0: its kind's own.
     pub modifier: u32,
+    /// Cutting a limb off: how far off square the limb's way may be to its cutting way and to its
+    /// length (degrees; zeros: a sword's 35, 90), and `dismember`'s multiplier at each of the
+    /// weapon's tiers 0..5 (zeros: a one-handed blade's 2.5, 1.5, 1, 0.9, 0.8, 0.8).
+    pub dismember_angles: [f32; 2],
+    pub dismember_tiers: [f32; 6],
+    /// Stuck in something, it rocks on where it went in: up to `rock[1]` degrees while it's in
+    /// less than `rock[0]` metres, stiffening to rigid there (a sword's 0.1 m and 30, a dagger's
+    /// point 0.03 and 30, an axe's 0.12 and 30). An angle of 0 with a depth: rigid at once. Zeros:
+    /// its kind's own.
+    pub rock: [f32; 2],
+    /// At a bad angle (with [`DMGF_BLUNT_BAD`]): the table its blunt blow is judged by and its
+    /// damage (a sword's light blunt 0.5, a dagger's very light 0.5, an axe's blunt 2). 0: a light
+    /// blunt's, 0.5.
+    pub bad_modifier: u32,
+    pub bad_damage: f32,
+    /// How it shoves a body that isn't standing (down, or dead): `push[0]` (an
+    /// acceleration per m/s of the blow) for `push[1]` seconds: a mace's 105
+    /// for 0.15, a shield's 400. Zeros: none.
+    pub push: [f32; 2],
+    /// Its effects' speeds (m/s): as loud and bright as the blow between these
+    /// (a sword's 0.25 to 15, a mace's 6 to 16). Zeros: 0.25 to 15.
+    pub intensity: [f32; 2],
 }
 
 // ---- weapons ------------------------------------------------------------------------------------
@@ -329,8 +351,8 @@ pub const OFF_MELEE_END: usize = OFF_RT_MELEE + size_of::<RtMelee>();
 
 const _: () = {
     assert!(size_of::<MeleeHandle>() == 64);
-    assert!(size_of::<MeleeBlade>() == 128);
-    assert!(size_of::<MeleeWeapon>() == 64 + 64 * MAX_HANDLES + 128 * MAX_BLADES);
+    assert!(size_of::<MeleeBlade>() == 192);
+    assert!(size_of::<MeleeWeapon>() == 64 + 64 * MAX_HANDLES + 192 * MAX_BLADES);
     assert!(size_of::<ActorItem>() == 48);
     assert!(size_of::<MeleeRules>() == 64);
     assert!(size_of::<RtMelee>() == 128);
