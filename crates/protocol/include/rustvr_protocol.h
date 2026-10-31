@@ -2112,6 +2112,18 @@
 #define RVR_RIDE_LEATHER (1 << 7)
 
 /**
+ * Seated in the game's furniture (a chair, a bench, a stool), not on a mount: the body sits on
+ * [`Ride::seat`] with its feet on [`Ride::floor`].
+ */
+#define RVR_SEAT_SEATED (1 << 0)
+
+/**
+ * Sitting down or getting up: the game's own animation is putting the player in the seat or taking
+ * them out of it (it moves the view in ways they don't, as getting on or off a mount does).
+ */
+#define RVR_SEAT_MOVING (1 << 1)
+
+/**
  * The runtime is riding: `gait`, `pace` and `steer` are the rider's.
  */
 #define RVR_RR_RIDING (1 << 0)

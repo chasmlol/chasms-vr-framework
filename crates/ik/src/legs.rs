@@ -329,9 +329,15 @@ pub fn solve_saddle_leg(p: &BodyParams, skel: &Skeleton, hip: Vec3, saddle: &cra
     let up = (saddle.seat.rot * UP).normalize_or(UP);
     let fwd = (saddle.seat.rot * Vec3::Z).normalize_or(Vec3::Z);
     let out = (saddle.seat.rot * Vec3::X) * if side == 0 { -1.0 } else { 1.0 };
-    let [knee_at, ankle_at, toes_at] = match saddle.legs {
-        Some(l) => l[side],
-        None => {
+    let [knee_at, ankle_at, toes_at] = match (saddle.legs, saddle.floor) {
+        (Some(l), _) => l[side],
+        // On a chair: the knee a thigh ahead of the hip, the foot on the floor under it.
+        (None, Some(floor)) => {
+            let knee = hip + fwd * a + out * (0.1 * skel.scale);
+            let ankle = (knee + fwd * (0.05 * skel.scale)).with_y(floor + skel.ankle_height);
+            [knee, ankle, ankle + fwd * skel.toe_forward]
+        }
+        (None, None) => {
             let ankle = hip + out * (0.12 * skel.scale) + fwd * (0.1 * skel.scale) - up * ((a + b) * 0.9);
             [hip + fwd * a + out * (0.15 * skel.scale), ankle, ankle + fwd * skel.toe_forward]
         }
@@ -389,5 +395,22 @@ mod tests {
         let standing = s.ankle_height + (s.thigh + s.shin) * 0.998;
         let (lo, hi) = hip_height_range(&p, &s, Vec3::new(0.0, standing, 0.0), &foot, 0.0);
         assert!(lo < 0.5 && hi > standing, "{lo} {hi}");
+    }
+
+    #[test]
+    fn on_a_chair_the_feet_are_on_the_floor() {
+        let p = BodyParams::default();
+        let s = Skeleton::new(&p, Calibration::default());
+        // A seat 45 cm over the floor, facing +Z; the left hip joint over it.
+        let seat = crate::Pose { pos: Vec3::new(0.0, 0.45, 0.0), rot: Quat::IDENTITY };
+        let saddle = crate::Saddle { seat, legs: None, floor: Some(0.0) };
+        let hip = Vec3::new(-0.1, 0.45 + s.sit_hip_height, 0.0);
+        let leg = solve_saddle_leg(&p, &s, hip, &saddle, 0);
+        assert!(leg.knee.z > hip.z + s.thigh * 0.8, "the thigh along the seat: {:?}", leg.knee);
+        assert!((leg.ankle.y - s.ankle_height).abs() < 0.03, "the foot on the floor: {:?}", leg.ankle);
+        assert!(leg.toes.z > leg.ankle.z, "the toes ahead");
+        // Hung from a saddle instead, the foot is off the floor.
+        let hung = solve_saddle_leg(&p, &s, hip, &crate::Saddle { floor: None, ..saddle }, 0);
+        assert!(hung.knee.y < leg.knee.y, "{:?} {:?}", hung.knee, leg.knee);
     }
 }

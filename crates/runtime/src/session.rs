@@ -1498,22 +1498,25 @@ impl Session {
         Ok(true)
     }
 
-    /// Riding: the seat the game has its rider in (with its legs), for the body to sit in.
+    /// Riding: the seat the game has its rider in (with its legs), for the body to sit in; or the
+    /// furniture's seat it has the player in, its feet on the floor.
     fn saddle(&self) -> Option<rustvr_ik::Saddle> {
         let r = &self.ride.riding;
         if !r.mounted() {
-            return None;
+            let (seat, floor) = self.ride.seated()?;
+            return Some(rustvr_ik::Saddle { seat: rustvr_ik::Pose { pos: Vec3::from_array(seat.pos), rot: quat(seat.rot) }, legs: None, floor: Some(floor) });
         }
         let v = |p: [f32; 4]| Vec3::new(p[0], p[1], p[2]);
         Some(rustvr_ik::Saddle {
             seat: rustvr_ik::Pose { pos: Vec3::from_array(r.seat.pos), rot: quat(r.seat.rot) },
             legs: (r.flags & RIDE_LEGS != 0).then(|| [0, 1].map(|i| [v(r.knees[i]), v(r.ankles[i]), v(r.toes[i])])),
+            floor: None,
         })
     }
 
     /// The vignette (eased in while the stick moves you, the arms swim you or you turn smoothly, or
     /// the mount you ride turns or gallops) and the fade when the head pushes into the game's walls (or while the
-    /// game's animation puts you on a mount or takes you off).
+    /// game's animation puts you on a mount or takes you off, or sits you down in a seat or gets you up).
     fn update_comfort(&mut self, frame: &HmdFrame, out: &crate::mechanics::MechOutput, menu: bool) {
         let c = &self.settings.current.comfort;
         let dt = frame.dt.max(1e-4);
@@ -1558,10 +1561,16 @@ impl Session {
         }
         // Getting on a mount or off it, the game's animation moves the view as the player doesn't:
         // dark until it's done, and a moment after (the view settles in the saddle, or on foot).
+        // Sitting down in a seat and getting up from it, the same.
         let now = frame.display_time_ns as f64 * 1e-9;
-        if rs.fade_on_off && ride.moving_on_or_off() {
+        let sitting = self.ride.sitting & SEAT_MOVING != 0;
+        if rs.fade_on_off && (ride.moving_on_or_off() || sitting) {
             if now >= self.ride_fade_until {
-                tracing::info!("runtime: riding: the view fades while the game's animation gets the rider {}", if ride.flags & RIDE_GETTING_ON != 0 { "on" } else { "off" });
+                if sitting {
+                    tracing::info!("runtime: the view fades while the game's animation sits the player down or gets them up");
+                } else {
+                    tracing::info!("runtime: riding: the view fades while the game's animation gets the rider {}", if ride.flags & RIDE_GETTING_ON != 0 { "on" } else { "off" });
+                }
             }
             self.ride_fade_until = now + RIDE_FADE_AFTER;
         }

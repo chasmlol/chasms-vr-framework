@@ -288,6 +288,7 @@ impl PlayerBody {
         self.solver.ride(inp.saddle.map(|s| rustvr_ik::Saddle {
             seat: rustvr_ik::Pose { pos: s.seat.pos - down, rot: s.seat.rot },
             legs: s.legs.map(|l| l.map(|leg| leg.map(|p| p - down))),
+            floor: s.floor.map(|y| y - down.y),
         }));
         let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows, swim: inp.swim });
         for j in out.joints.iter_mut().chain(out.hand_targets.iter_mut()) {

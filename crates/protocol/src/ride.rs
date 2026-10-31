@@ -1,5 +1,6 @@
 //! Riding: a mount the player rides (a horse, or whatever creature the game lets a player get on),
-//! and the mounts near the player they could get on.
+//! and the mounts near the player they could get on; and the seat the player sits in (a chair, a
+//! bench: [`Ride::seat`]).
 //!
 //! The game stays the source of truth for the mount: its model and animations, its speeds and how
 //! fast it turns, its rules on whose mount it is (getting on someone else's can be a crime),
@@ -10,7 +11,9 @@
 //!   saddle is (a hand takes hold of it to get on), and the mount the player rides: where the game
 //!   seats the rider (the hips, the knees and the feet, as its own riding animation has them, so
 //!   they move with the gait), where the reins are, the gait it's going at and how many it has, and
-//!   whether the rider is getting on or off.
+//!   whether the rider is getting on or off. Or the game's furniture the player sits in: its seat
+//!   and the floor before it, and whether they're sitting down or getting up ([`SEAT_SEATED`],
+//!   [`SEAT_MOVING`]).
 //! * [`RtRide`] (runtime -> game, every runtime frame): what the rider does with it: the gait asked
 //!   for and how much of its pace, the steering, getting on (which mount) and getting off. The
 //!   adapter gives these to the game as its own controls (its mount's own acceleration, turning and
@@ -71,6 +74,13 @@ pub const RIDE_BITS: u32 = 1 << 5;
 pub const RIDE_NECK: u32 = 1 << 6;
 /// The reins' leather is given ([`Riding::reins_leather`]): they're drawn in the game's own.
 pub const RIDE_LEATHER: u32 = 1 << 7;
+
+/// Seated in the game's furniture (a chair, a bench, a stool), not on a mount: the body sits on
+/// [`Ride::seat`] with its feet on [`Ride::floor`].
+pub const SEAT_SEATED: u32 = 1 << 0;
+/// Sitting down or getting up: the game's own animation is putting the player in the seat or taking
+/// them out of it (it moves the view in ways they don't, as getting on or off a mount does).
+pub const SEAT_MOVING: u32 = 1 << 1;
 
 /// A cross-section of a mount's neck or head (tracking space): an ellipse round the top of it.
 #[repr(C)]
@@ -169,7 +179,14 @@ pub struct Ride {
     pub count: u32,
     /// The game frame it's from.
     pub frame: u64,
-    pub _pad: [u32; 12],
+    /// In the game's furniture (`SEAT_*`; 0: not).
+    pub sitting: u32,
+    /// The floor before the seat (tracking space's height; `SEAT_SEATED`): the feet are on it.
+    pub floor: f32,
+    pub _pad: [u32; 2],
+    /// The seat (tracking space; `SEAT_SEATED`): the point the player sits on, turned as they sit
+    /// (+Z the way they face, +Y up). The hip joints are a sitting body's height over it.
+    pub seat: Pose,
     /// The mount the player rides (`riding.flags` 0: none).
     pub riding: Riding,
     pub mounts: [Mount; MAX_MOUNTS],
@@ -182,6 +199,11 @@ impl Default for Ride {
 }
 
 impl Ride {
+    /// Seated in furniture: the seat and the floor before it.
+    pub fn seated(&self) -> Option<(Pose, f32)> {
+        (self.sitting & SEAT_SEATED != 0).then_some((self.seat, self.floor))
+    }
+
     pub fn mounts(&self) -> &[Mount] {
         &self.mounts[..(self.count as usize).min(MAX_MOUNTS)]
     }

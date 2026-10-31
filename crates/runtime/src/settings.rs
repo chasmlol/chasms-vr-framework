@@ -42,8 +42,8 @@ pub struct Riding {
     pub turn_step: f32,
     /// Darken the edges of the view while the mount turns or gallops (0 = off).
     pub vignette: f32,
-    /// Fade out while the game's own animation puts you in the saddle or takes you down (it moves
-    /// the view in ways you don't).
+    /// Fade out while the game's own animation puts you in the saddle or takes you down, or sits you
+    /// in a seat or gets you up (it moves the view in ways you don't).
     pub fade_on_off: bool,
     /// How far the reins are pulled back from where they were taken before they slow the mount
     /// (metres): hands resting on the reins drift, and don't slow it. (Steering is finer.)

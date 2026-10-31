@@ -64,7 +64,7 @@ impl BodySolver {
         if saddle.is_none() && self.saddle.is_some() {
             self.state = None;
         }
-        self.saddle = saddle.filter(|s| s.seat.pos.is_finite() && s.seat.rot.is_finite() && s.legs.is_none_or(|l| l.iter().flatten().all(|v| v.is_finite())));
+        self.saddle = saddle.filter(|s| s.seat.pos.is_finite() && s.seat.rot.is_finite() && s.legs.is_none_or(|l| l.iter().flatten().all(|v| v.is_finite())) && s.floor.is_none_or(f32::is_finite));
     }
 
     pub fn calibration(&self) -> Calibration {

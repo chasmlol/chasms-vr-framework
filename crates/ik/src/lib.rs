@@ -123,8 +123,11 @@ pub struct Saddle {
     /// up): the hip joints are a sitting body's height over it.
     pub seat: Pose,
     /// Where the rider's knee, ankle and ball of the foot go (astride the mount), [left, right];
-    /// None: the legs hang from the seat.
+    /// None: the legs hang from the seat, or stand on `floor`.
     pub legs: Option<[[Vec3; 3]; 2]>,
+    /// A seat on a floor (a chair, a bench: its height, in the space `seat` is in): with no `legs`,
+    /// the thighs lie along the seat and the feet are set on the floor before it.
+    pub floor: Option<f32>,
 }
 
 /// The two measurements the body is scaled from.
