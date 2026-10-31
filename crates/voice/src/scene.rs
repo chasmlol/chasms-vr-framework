@@ -462,23 +462,6 @@ impl Game for Scene {
         self.link.push_voice_line(&VoiceLine::new(VL_STOP, 0, 0, 0, "", ""));
     }
 
-    /// The streamed voice the game is playing now: the loudest 20 ms of its last half second (none
-    /// while nothing is; unknown, None, for lines that aren't streamed).
-    fn playing_level(&self) -> Option<f32> {
-        self.stream.as_ref()?;
-        let mut sent = self.sent.lock().unwrap();
-        let played = self.played(&mut sent) as usize;
-        let to = played.min(sent.voice.len());
-        let window = (sent.rate / 50).max(1) as usize;
-        let from = to.saturating_sub((sent.rate / 2) as usize);
-        Some(
-            sent.voice[from..to]
-                .chunks(window)
-                .map(|w| (w.iter().map(|&s| (s as f32 / 32768.0).powi(2)).sum::<f32>() / w.len() as f32).sqrt())
-                .fold(0.0, f32::max),
-        )
-    }
-
     /// The streamed line is still being said: not all of it played, or more to come, while the
     /// game goes on playing it.
     fn still_speaking(&self) -> bool {
@@ -487,7 +470,7 @@ impl Game for Scene {
         }
         let mut sent = self.sent.lock().unwrap();
         let played = self.played(&mut sent);
-        !sent.voice.is_empty() && (played < sent.voice.len() as u64 || !sent.ended) && sent.moved.is_some_and(|m| m.elapsed() < STILL)
+        sent.samples > 0 && (played < sent.samples || !sent.ended) && sent.moved.is_some_and(|m| m.elapsed() < STILL)
     }
 
     /// Deaf while the game says so (a menu, the game paused or loading), or not ready yet.

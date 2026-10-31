@@ -47,13 +47,12 @@ const HOLD: f32 = 2.5;
 /// The game not taking the voice for this long, the line is given up (seconds).
 const STUCK: Duration = Duration::from_secs(3);
 
-/// What the streamed line has sent the game, to tell the mic's hearing of their voice through the
-/// player's speakers from the player's own (`Game::playing_level`): its voice as sent, whether it's
-/// ended, and the game's count of it played (and when that last moved on).
+/// What the streamed line has sent the game, to tell m8 the game's still saying it
+/// (`Game::still_speaking`): its samples sent, whether it's ended, and the game's count of them
+/// played (and when that last moved on).
 #[derive(Default)]
 pub struct Sent {
-    pub rate: u32,
-    pub voice: Vec<i16>,
+    pub samples: u64,
     pub ended: bool,
     pub played: u64,
     pub moved: Option<Instant>,
@@ -261,7 +260,7 @@ fn send(link: &Link, transcriber: &Transcriber, stops: &AtomicU64, l: &mut Line,
     let pcm: Vec<i16> = l.limiter.run(&loud, rate).iter().map(|x| (x.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
     if !l.started {
         l.started = true;
-        *sent.lock().unwrap() = Sent { rate, moved: Some(Instant::now()), ..Default::default() };
+        *sent.lock().unwrap() = Sent { moved: Some(Instant::now()), ..Default::default() };
         link.begin_voice_stream(l.id, rate);
         let mut start = VoiceLine::new(VL_STREAM, l.speaker, l.id, 0, &s.how, "");
         start.at = rate;
@@ -281,7 +280,7 @@ fn send(link: &Link, transcriber: &Transcriber, stops: &AtomicU64, l: &mut Line,
         return;
     }
     l.sent += cut as u64;
-    sent.lock().unwrap().voice.extend(&pcm);
+    sent.lock().unwrap().samples += cut as u64;
     l.context.extend(&s.pending[..cut]);
     let keep = ((CONTEXT * rate as f32) as usize / hop * hop).min(l.context.len() / hop * hop);
     l.context.drain(..l.context.len() - keep);

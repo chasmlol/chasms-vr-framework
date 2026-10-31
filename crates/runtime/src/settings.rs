@@ -46,8 +46,7 @@ pub struct Voice {
     /// Lines said as their notes say ("[sneering]"): Breeze's guidance, a quarter more of the voice
     /// server's work.
     pub act_out: bool,
-    /// Talking over someone cuts them off (their own voice through the headset's speakers, beside
-    /// its mic, told apart from the player's: it's only as loud as the game plays it).
+    /// Talking over someone cuts them off: any speech the mic hears while they talk.
     pub barge_in: bool,
     /// A pause this long (seconds) ends what you're saying.
     pub pause: f32,

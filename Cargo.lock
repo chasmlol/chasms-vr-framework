@@ -1363,7 +1363,7 @@ dependencies = [
 [[package]]
 name = "m8"
 version = "0.1.0"
-source = "git+https://github.com/chasmlol/m8?branch=rustvr#625ab448948d5b59276c0f976867b1047763993d"
+source = "git+https://github.com/chasmlol/m8?branch=rustvr#d8be843a7e9688ff104891bfc7039c51de832b5a"
 dependencies = [
  "anyhow",
  "cpal",

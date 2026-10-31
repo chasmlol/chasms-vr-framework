@@ -520,7 +520,7 @@ fn voice(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
     rects.push(("voice:act_out".into(), r.rect));
     let r = ui.checkbox(&mut v.stream, "Their voice streams as it's made (off: a few words at a time, each made whole first)");
     rects.push(("voice:stream".into(), r.rect));
-    let r = ui.checkbox(&mut v.barge_in, "Talk over them to cut them off (their voice through the headset is told apart from yours)");
+    let r = ui.checkbox(&mut v.barge_in, "Talk over them to cut them off");
     rects.push(("voice:barge_in".into(), r.rect));
     slider(ui, "A pause this long ends what you're saying", &mut v.pause, 0.15, 1.0, " s", 2);
 }
