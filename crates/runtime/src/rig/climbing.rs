@@ -88,7 +88,23 @@ impl Rig {
                 self.melee.climbs[i] = None;
             }
         }
-        if self.melee.climbs.iter().all(|c| c.is_none()) || inp.paused {
+        // A weapon stuck fast in the world and held holds the body up as a grip on the world does
+        // (the body is driven to the hand on something static: an axe in a wall to climb by).
+        let hands = self.hands.as_ref().unwrap();
+        let stuck: [Option<Vec3>; 2] = std::array::from_fn(|i| {
+            if !self.melee.climb_allowed || self.melee.climbs[i].is_some() {
+                return None;
+            }
+            let o = self.objects.get(&hands[i].holding?)?;
+            o.embed.filter(|e| e.into == super::embed::Into::World)?;
+            let (p, q) = self.physics.pose(o.body);
+            match o.attach {
+                super::Attach::Fixed(ap, aq) => Some(p + q * super::inverse((ap, aq)).0),
+                super::Attach::Gun => None,
+            }
+        });
+        let grips: [Option<Vec3>; 2] = std::array::from_fn(|i| self.melee.climbs[i].map(|c| c.0).or(stuck[i]));
+        if grips.iter().all(|c| c.is_none()) || inp.paused {
             self.melee.climb = Vec3::ZERO;
             self.melee.climb_v = Vec3::ZERO;
             self.melee.climb_seen = Vec3::ZERO;
@@ -105,14 +121,14 @@ impl Rig {
         }
         let mut f = Vec3::new(0.0, -CLIMB_BODY * super::GRAVITY, 0.0);
         for i in 0..2 {
-            let Some((g, _)) = self.melee.climbs[i] else { continue };
+            let Some(g) = grips[i] else { continue };
             // The hand stays at the grip: the body goes the way that brings the controller back
             // to it.
             let err = (g - hands[i].target.0) / w;
             f += (CLIMB_SPRING * err - CLIMB_DAMPER * v).clamp_length_max(CLIMB_MAX_FORCE);
         }
         v += f / CLIMB_BODY * dt;
-        tracing::debug!("rig: climbing: seen {seen:.2}, force {f:.0}, now {v:.2}, the controllers {:.2?} from the grips", (0..2).filter_map(|i| self.melee.climbs[i].map(|(g, _)| (hands[i].target.0 - g) / w)).collect::<Vec<_>>());
+        tracing::debug!("rig: climbing: seen {seen:.2}, force {f:.0}, now {v:.2}, the controllers {:.2?} from the grips", (0..2).filter_map(|i| grips[i].map(|g| (hands[i].target.0 - g) / w)).collect::<Vec<_>>());
         self.melee.climb_v = v;
         self.melee.climb = v * w;
     }

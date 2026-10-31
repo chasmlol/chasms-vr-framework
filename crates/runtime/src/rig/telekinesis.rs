@@ -248,10 +248,10 @@ impl Rig {
         self.set_glove(i, Glove::Idle);
         if let Some(o) = self.objects.get(&tk.id).filter(|o| o.holder == Holder::Free) {
             let body = o.body;
+            let collider = o.collider;
             self.physics.set_gravity(body, 1.0);
-            self.physics.set_linear_damping(body, 0.0);
-            self.physics.set_angular_damping(body, 0.2);
-            self.physics.set_groups(o.collider, groups_free());
+            self.air_drag(tk.id);
+            self.physics.set_groups(collider, groups_free());
         }
         Some(tk)
     }
@@ -285,6 +285,7 @@ impl Rig {
                 ang_spring: TK_TURN_SPRING,
                 ang_damper: TK_TURN_DAMPER,
                 max_torque: TK_MAX_TORQUE,
+                twist_axis: None,
             }
             .in_units(w);
             self.physics.joint(body, point, (hq * tk.turn).normalize(), dt, &joint);

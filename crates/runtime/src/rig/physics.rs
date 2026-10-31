@@ -732,6 +732,13 @@ impl Physics {
         let free_v = (mass * v + dt * k * to + dt * c * j.target_vel) / (mass + c * dt + k * dt * dt);
         let force = (mass * (free_v - v) / dt).clamp_length_max(j.max_force);
         let v_next = v + force * dt / mass;
+        // The hold pulls at the point held, so the weight and the hold's own pull turn the body
+        // about it (the drive is on the grip): the weight at the centre of mass, less what the
+        // grip's acceleration takes, is a torque about the grip. A heavy head sags, and trails a
+        // grip that moves fast.
+        let rb = &self.world.bodies[b];
+        let gravity = from_v(self.world.gravity) * rb.gravity_scale();
+        let weight = (com - pivot_now).cross((gravity - (v_next - v) / dt) * mass);
         // Turning: the same about the point held, against the body's inertia about the way it
         // must turn (a long weapon's head far out is hard to swing round).
         let dq = (target_rot * rot_c.inverse()).normalize();
@@ -739,9 +746,9 @@ impl Physics {
         let axis = (angle + (j.target_ang - w) * dt).normalize_or(V3::Y);
         let inertia = self.body_inertia_about(b, pivot_now, axis).max(1e-4);
         let (ka, ca) = (j.ang_spring, j.ang_damper);
-        let free_w = (inertia * w + dt * ka * angle + dt * ca * j.target_ang) / (inertia + ca * dt + ka * dt * dt);
-        let torque = (inertia * (free_w - w) / dt).clamp_length_max(j.max_torque);
-        let w_next = (w + torque * dt / inertia).clamp_length_max(60.0);
+        let free_w = (inertia * w + dt * ka * angle + dt * ca * j.target_ang + dt * weight) / (inertia + ca * dt + ka * dt * dt);
+        let torque = j.turning(inertia * (free_w - w) / dt - weight);
+        let w_next = (w + (torque + weight) * dt / inertia).clamp_length_max(60.0);
         // 20 m/s is beyond any real hand; it only guards against tracking glitches.
         let v_next = v_next.clamp_length_max(20.0) + carry_v;
         let w_next = w_next + carry_w;
@@ -973,12 +980,28 @@ pub struct Joint {
     pub ang_spring: f32,
     pub ang_damper: f32,
     pub max_torque: f32,
+    /// A `WYZ` drive (a light handle's): the turning about the handle's line (world, unit) and
+    /// across it are driven and capped apart, each to `max_torque`. None: one cap on the whole turn
+    /// (its `Slerp`).
+    pub twist_axis: Option<V3>,
 }
 
 impl Joint {
+    /// The turning drive's torque `t` as the hand can give it: no more than its cap, about the
+    /// handle and across it apart with a `WYZ` drive.
+    pub fn turning(&self, t: V3) -> V3 {
+        match self.twist_axis {
+            Some(axis) => {
+                let twist = axis * t.dot(axis);
+                twist.clamp_length_max(self.max_torque) + (t - twist).clamp_length_max(self.max_torque)
+            }
+            None => t.clamp_length_max(self.max_torque),
+        }
+    }
+
     /// One hand on a weapon's handle (the player's: 5000 N/m, 100 N s/m, at most 3000 N; turning
     /// 1000 N m/rad, 50, at most 250 N m, times a light or heavy handle's 1.1 and 0.9), times the
-    /// hand's strength.
+    /// hand's strength (its dampers by half of it past 1).
     pub fn one_hand(pivot: V3, strength: f32) -> Joint {
         Joint {
             pivot,
@@ -987,11 +1010,12 @@ impl Joint {
             target_vel: V3::ZERO,
             target_ang: V3::ZERO,
             spring: HOLD_SPRING * strength,
-            damper: HOLD_DAMPER * strength.max(1.0).sqrt(),
+            damper: HOLD_DAMPER * (strength * 0.5).max(1.0),
             max_force: HOLD_MAX_FORCE * strength,
             ang_spring: HOLD_TURN_SPRING * HANDLE_TURN_SPRING * strength,
-            ang_damper: HOLD_TURN_DAMPER * HANDLE_TURN_DAMPER * strength.max(1.0).sqrt(),
+            ang_damper: HOLD_TURN_DAMPER * HANDLE_TURN_DAMPER * (strength * 0.5).max(1.0),
             max_torque: HOLD_MAX_TORQUE * strength,
+            twist_axis: None,
         }
     }
 
@@ -999,23 +1023,6 @@ impl Joint {
     /// with the unit, a torque and a turning spring with its square).
     pub fn in_units(self, w: f32) -> Joint {
         Joint { max_force: self.max_force * w, ang_spring: self.ang_spring * w * w, ang_damper: self.ang_damper * w * w, max_torque: self.max_torque * w * w, ..self }
-    }
-
-    /// Both hands on it, `apart` metres apart along it: each hand's spring and force are doubled
-    /// (spring x2, damper x1) and one of them gets twice the turning
-    /// (spring and damper x2). The two hands' pulls a distance apart also turn it,
-    /// as stiffly as k d^2 / 2 and as hard as F d / 2 (the leverage two hands have).
-    pub fn two_hands(self, apart: f32) -> Joint {
-        let spring = self.spring * 2.0;
-        let max_force = self.max_force * 2.0;
-        Joint {
-            spring,
-            max_force,
-            ang_spring: self.ang_spring * 2.0 + spring * apart * apart * 0.5,
-            ang_damper: self.ang_damper * 2.0 + self.damper * apart * apart * 0.5,
-            max_torque: self.max_torque * 2.0 + max_force * apart * 0.5,
-            ..self
-        }
     }
 }
 

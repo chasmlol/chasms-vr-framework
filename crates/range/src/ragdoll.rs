@@ -1038,7 +1038,8 @@ impl Dummies {
         let joint_at = pos + rot * q.a;
         let out = (rot * (q.b - q.a)).normalize_or(blade_dir);
         let push = if q.kind == PART_HEAD { rustvr_melee::SLICE_PUSH_HEAD } else { rustvr_melee::SLICE_PUSH };
-        let v = from_v(rb.linvel()) * rustvr_melee::SLICE_KEEP + (out + blade_dir * 0.5).normalize_or(out) * push;
+        let _ = blade_dir;
+        let v = from_v(rb.linvel()) * rustvr_melee::SLICE_KEEP + out * push;
         rb.set_linvel(to_v(v), true);
         let radius = q.radius;
         // What a cut-off hand held goes with it (still in its fist).

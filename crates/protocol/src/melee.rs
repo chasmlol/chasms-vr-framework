@@ -44,6 +44,23 @@ pub const HANDLE_REVERSIBLE: u32 = 1 << 2;
 /// On the blade itself (half-swording): its edges never cut the hand that holds it there.
 pub const HANDLE_BLADE: u32 = 1 << 3;
 
+/// What a handle is: how strongly a hand holds and turns the weapon by it ([`MeleeHandle::kind`]).
+/// A one-handed weapon's grip (its turn driven about the handle and across it apart, each to its
+/// cap).
+pub const GRIP_LIGHT: u32 = 0;
+/// A long or two-handed weapon's grip (one cap on the whole turn).
+pub const GRIP_HEAVY: u32 = 1;
+/// A very heavy one's (x0.6 on everything).
+pub const GRIP_SUPER_HEAVY: u32 = 2;
+/// A second hand's place (a pommel, a ricasso): it never takes the turning when both hands hold it.
+pub const GRIP_SUPPORTING: u32 = 3;
+/// The blade, held to half-sword (turned less, damped more).
+pub const GRIP_HALF_SWORD: u32 = 4;
+/// A shield's grip.
+pub const GRIP_SHIELD: u32 = 5;
+/// A throwing knife's.
+pub const GRIP_THROWING_KNIFE: u32 = 6;
+
 /// Where a hand holds a weapon: the line `a`..`b` (object space) the fist closes round, `radius`
 /// thick, and how it fits the hand.
 #[repr(C)]
@@ -62,7 +79,12 @@ pub struct MeleeHandle {
     pub strength: f32,
     /// How hard a loosened hand must pull to slide along it (N; 0: the runtime's own).
     pub slide_force: f32,
-    pub _pad: [u32; 2],
+    /// What kind of handle it is (`GRIP_*`).
+    pub kind: u32,
+    /// Where a hand sliding off its ends goes on to: the handle past its `b` (its index + 1) in the
+    /// low byte, past its `a` in the next; 0: none, the hand stops at the end. A sword's grip goes
+    /// on over the guard onto its blade.
+    pub links: u32,
 }
 
 // ---- blades -------------------------------------------------------------------------------------
@@ -186,7 +208,10 @@ pub struct MeleeWeapon {
     pub fly_rate: f32,
     /// A throw's speed times this (1 on every weapon; 0: 1).
     pub throw_mult: f32,
-    pub _pad: [u32; 4],
+    /// Its air drag, linear and angular (a sword's 1 and 0.05, a
+    /// dagger's, a spear's and a shield's 0.4; zeros: 1 and 0.05).
+    pub drag: [f32; 2],
+    pub _pad: [u32; 2],
     pub handle: [MeleeHandle; MAX_HANDLES],
     pub blade: [MeleeBlade; MAX_BLADES],
 }

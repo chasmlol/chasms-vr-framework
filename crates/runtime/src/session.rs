@@ -1155,7 +1155,8 @@ impl Session {
             }
             // Gore: the blood the hits and the stumps spill, the limbs the game says were cut off.
             let gore_events = self.gore.read(&self.link);
-            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, combat: &self.combat, now, dt: world_dt, paused: rig_paused || menu_mode };
+            let stuck_events = self.rig.embed_events.clone();
+            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, stuck_events: &stuck_events, combat: &self.combat, now, dt: world_dt, paused: rig_paused || menu_mode };
             self.gore.update(&mut self.rig, &gore_input, &gore_events);
             for p in &self.gore.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);

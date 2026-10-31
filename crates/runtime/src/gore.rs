@@ -44,6 +44,10 @@ pub const MAX_RUNNERS: usize = 96;
 pub const PROBES: usize = 160;
 /// Splats kept on the body and on each held thing.
 const MAX_BODY_SPLATS: usize = 20;
+/// A blade stuck in a body is bloodied a mark each this far it goes in (metres).
+const BLADE_MARK: f32 = 0.06;
+/// How long a neck a blade came out of bleeds (s).
+const NECK_BLEEDS: f64 = 6.0;
 const MAX_HELD_SPLATS: usize = 28;
 
 const GRAVITY: f32 = 9.81;
@@ -89,6 +93,9 @@ pub struct GoreInput<'a> {
     pub joints: &'a [Pose; JOINT_COUNT],
     /// This frame's hits (`CE_HIT`), and the combat they came from (the creatures, the blades).
     pub hits: &'a [CombatEvent],
+    /// What the blades stuck in creatures did this frame (`CE_PULLED_OUT`: a neck bleeds as the
+    /// blade comes out).
+    pub stuck_events: &'a [CombatEvent],
     pub combat: &'a crate::combat::Combat,
     pub now: f64,
     pub dt: f32,
@@ -234,6 +241,9 @@ pub struct Gore {
     stumps: HashMap<(u32, u32), StumpTime>,
     body_splats: Vec<(usize, Splat)>,
     held_splats: HashMap<u32, Vec<Splat>>,
+    /// How far each blade stuck in a creature has been painted, by (weapon, creature): the depth
+    /// of its last mark.
+    painted: HashMap<(u32, u32), f32>,
     held_drip: HashMap<u32, f64>,
     /// Each held thing's blade in its own space (its edge's line, from the combat while it's held),
     /// and its poses the last two frames (for how hard it's flicked).
@@ -271,6 +281,7 @@ impl Default for Gore {
             stumps: HashMap::new(),
             body_splats: Vec::new(),
             held_splats: HashMap::new(),
+            painted: HashMap::new(),
             held_drip: HashMap::new(),
             held_blade: HashMap::new(),
             held_poses: HashMap::new(),
@@ -397,6 +408,10 @@ impl Gore {
         for hit in inp.hits.iter().filter(|e| e.kind == CE_HIT) {
             self.wound(rig, inp, hit);
         }
+        for out in inp.stuck_events.iter().filter(|e| e.kind == CE_PULLED_OUT) {
+            self.neck_bleeds(inp, out);
+        }
+        self.blades_in(rig, inp);
         if inp.paused {
             self.build(rig, inp);
             return;
@@ -444,11 +459,10 @@ impl Gore {
         self.spray(at, out, 28.0, (1.5, 4.5), (0.0015, 0.0045), n, n, ev.blood, vel * 0.3);
         self.spray(at, -out, 35.0, (0.8, 2.5), (0.0015, 0.004), n / 3, n / 3, ev.blood, vel * 0.3);
         if ev.object != 0 {
-            // (Half the part's speed, and pushed off the cut; the blade's way
-            // carries it on, a head a little up.)
-            let push = Vec3::from_array(ev.push).normalize_or_zero() * ev.push_speed.clamp(0.0, 8.0) * 0.18;
-            let lift = if ev.limb & 0xFF == LIMB_HEAD { Vec3::Y * 0.6 } else { Vec3::ZERO };
-            let kick = (vel * 0.5 + out * 1.2 + push + lift).clamp_length_max(3.5);
+            // (Half the part's speed, and pushed off along the limb at 3 m/s, a head 3.5:
+            // `rustvr_melee::SLICE_KEEP`, `SLICE_PUSH`.)
+            let push = if ev.limb & 0xFF == LIMB_HEAD { rustvr_melee::SLICE_PUSH_HEAD } else { rustvr_melee::SLICE_PUSH };
+            let kick = vel * rustvr_melee::SLICE_KEEP + out * push;
             self.pieces.push(Piece {
                 object: ev.object,
                 cap: Vec3::from_array(ev.cap),
@@ -528,8 +542,8 @@ impl Gore {
             self.wounds.push(Wound { actor: ev.actor, part: i, at: inv * (point - fp), out: inv * out, blood, born: inp.now, until: inp.now + 3.0 + 6.0 * k as f64, rate: 20.0 + 50.0 * k });
         }
         // On the blade, as far as it went in (a stab its point, a cut along its edge); a fist's
-        // knuckles.
-        if glancing || !self.liquid(blood) {
+        // knuckles. (Only off flesh, or where it went in: armour it stopped on leaves it clean.)
+        if glancing || !self.liquid(blood) || (ev.material != MAT_FLESH && ev.flags & CEF_PENETRATED == 0) {
             return;
         }
         self.splat_blood = blood;
@@ -565,12 +579,9 @@ impl Gore {
                 let (s, _) = crate::combat::closest_segments(a, b, point, point);
                 let len = a.distance(b).max(1e-3);
                 if kind == DMG_PIERCE {
-                    // From the point back as deep as it went.
-                    let back = (a - b).normalize_or_zero();
-                    let n = ((depth / 0.025) as usize).clamp(1, 6);
-                    for j in 0..n {
-                        add(b + back * (j as f32 * 0.025), 0.03);
-                    }
+                    // At the point (what goes in after, as it goes in: `blades_in`).
+                    let _ = depth;
+                    add(b, 0.03);
                 } else {
                     // Along the edge as far as the body it went through, either side of where it
                     // met (a blade is bloodied as far as it went in), but only on the
@@ -589,6 +600,64 @@ impl Gore {
             }
             None => add(point, 0.03),
         }
+    }
+
+    /// Blades stuck in creatures bloodied as far as they've gone in: a mark each 6 cm of the deepest
+    /// they've reached, back from where they went in (the blood covers just what went in).
+    fn blades_in(&mut self, rig: &Rig, inp: &GoreInput) {
+        let stuck = rig.stuck_blades();
+        self.painted.retain(|k, _| stuck.iter().any(|s| (s.0, s.1) == *k));
+        for (object, actor, deepest, entry, way) in stuck {
+            let Some(blood) = self.body(actor).map(|b| b.blood) else { continue };
+            if blood == u32::MAX || !self.liquid(blood) {
+                continue;
+            }
+            let done = *self.painted.get(&(object, actor)).unwrap_or(&0.0);
+            let mut next = done + BLADE_MARK;
+            if next > deepest {
+                continue;
+            }
+            self.splat_blood = blood;
+            let w = inp.map.world_per_meter;
+            let list = self.held_splats.entry(object).or_default();
+            while next <= deepest {
+                if list.len() >= MAX_HELD_SPLATS
+                    && let Some(i) = list.iter().enumerate().min_by(|a, b| a.1.radius.total_cmp(&b.1.radius)).map(|(i, _)| i)
+                {
+                    list.remove(i);
+                }
+                // (Both faces: it's painted either side of the blade.)
+                let side = way.any_orthonormal_vector();
+                for s in [1.0, -1.0] {
+                    list.push(Splat::new(entry - way * next * w, side * s, 0.03, inp.now));
+                }
+                next += BLADE_MARK;
+            }
+            self.painted.insert((object, actor), next - BLADE_MARK);
+        }
+    }
+
+    /// A blade come out of a creature's neck leaves it bleeding there (a deep wound's bleeding, the
+    /// neck's alone).
+    fn neck_bleeds(&mut self, inp: &GoreInput, ev: &CombatEvent) {
+        let Some(blood) = self.body(ev.actor).map(|b| b.blood) else { return };
+        if blood == u32::MAX || !self.liquid(blood) {
+            return;
+        }
+        let Some((a, i)) = inp.combat.actors().iter().find(|a| a.id == ev.actor).and_then(|a| a.parts[..(a.count as usize).min(MAX_ACTOR_PARTS)].iter().position(|p| p.game_part == ev.part).map(|i| (a, i))) else { return };
+        let p = &a.parts[i];
+        let (pa, pb) = (Vec3::from_array(p.a), Vec3::from_array(p.b));
+        let point = Vec3::from_array(ev.point);
+        if !crate::rig::creatures::on_throat(p.kind, pa, pb, point) {
+            return;
+        }
+        let (fp, fq) = crate::rig::embed::part_frame(pa, pb);
+        let out = Vec3::from_array(ev.dir).normalize_or(Vec3::Y);
+        let inv = fq.inverse();
+        if self.wounds.len() >= 48 {
+            self.wounds.remove(0);
+        }
+        self.wounds.push(Wound { actor: ev.actor, part: i, at: inv * (point - fp), out: inv * out, blood, born: inp.now, until: inp.now + NECK_BLEEDS, rate: 70.0 });
     }
 
     fn splat_body(&mut self, inp: &GoreInput, joint: usize, at_tracking: Vec3, radius: f32, normal_world: Vec3, now: f64) {

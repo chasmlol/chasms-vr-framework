@@ -1258,6 +1258,44 @@
 #define RVR_HANDLE_BLADE (1 << 3)
 
 /**
+ * What a handle is: how strongly a hand holds and turns the
+ * weapon by it ([`MeleeHandle::kind`]). A one-handed weapon's grip (a light handle: its turn
+ * driven about the handle and across it apart, each to its cap).
+ */
+#define RVR_GRIP_LIGHT 0
+
+/**
+ * A long or two-handed weapon's grip (one cap on the whole turn).
+ */
+#define RVR_GRIP_HEAVY 1
+
+/**
+ * A very heavy one's (x0.6 on everything).
+ */
+#define RVR_GRIP_SUPER_HEAVY 2
+
+/**
+ * A second hand's place (a pommel, a ricasso): it never takes the
+ * turning when both hands hold it.
+ */
+#define RVR_GRIP_SUPPORTING 3
+
+/**
+ * The blade, held to half-sword (turned less, damped more).
+ */
+#define RVR_GRIP_HALF_SWORD 4
+
+/**
+ * A shield's grip.
+ */
+#define RVR_GRIP_SHIELD 5
+
+/**
+ * A throwing knife's.
+ */
+#define RVR_GRIP_THROWING_KNIFE 6
+
+/**
  * A pierce damager that also stabs by being pushed in slowly (a pressure stab).
  */
 #define RVR_DMGF_PRESSURE (1 << 3)

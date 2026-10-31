@@ -125,6 +125,14 @@ fn handle(a: Vec3, b: Vec3, radius: f32, flags: u32, rot: Quat) -> MeleeHandle {
     MeleeHandle { a: a.to_array(), radius, b: b.to_array(), flags, rot: rot.to_array(), ..Default::default() }
 }
 
+/// A handle of grip kind `kind` (`GRIP_*`), and the handles a hand sliding off its `b` end and its
+/// `a` end goes on to.
+fn kind_of(mut h: MeleeHandle, kind: u32, past_b: Option<usize>, past_a: Option<usize>) -> MeleeHandle {
+    h.kind = kind;
+    h.links = past_b.map_or(0, |n| n as u32 + 1) | past_a.map_or(0, |n| n as u32 + 1) << 8;
+    h
+}
+
 /// The fist round a handle along `axis` (little finger to thumb), the back of the hand to `back`.
 fn fist(axis: Vec3, back: Vec3) -> Quat {
     rustvr_guns::fist(axis, back)
@@ -193,9 +201,9 @@ pub fn sword() -> Arm {
     let melee = melee(
         0,
         &[
-            handle(Vec3::new(0.0, 0.0, -0.11), Vec3::new(0.0, 0.0, -0.012), 0.014, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip),
-            handle(Vec3::new(0.0, 0.0, -0.135), Vec3::new(0.0, 0.0, -0.11), 0.022, HANDLE_REVERSIBLE, grip),
-            handle(Vec3::new(0.0, 0.0, 0.25), Vec3::new(0.0, 0.0, 0.6), 0.02, HANDLE_BLADE | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip),
+            kind_of(handle(Vec3::new(0.0, 0.0, -0.11), Vec3::new(0.0, 0.0, -0.012), 0.014, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip), GRIP_LIGHT, Some(2), None),
+            kind_of(handle(Vec3::new(0.0, 0.0, -0.135), Vec3::new(0.0, 0.0, -0.11), 0.022, HANDLE_REVERSIBLE, grip), GRIP_SUPPORTING, None, None),
+            kind_of(handle(Vec3::new(0.0, 0.0, 0.25), Vec3::new(0.0, 0.0, 0.6), 0.02, HANDLE_BLADE | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip), GRIP_HALF_SWORD, None, Some(0)),
         ],
         &[
             sliding(blade(SWORD_SLASH, Vec3::new(0.0, 0.0, 0.03), Vec3::new(0.0, 0.0, 0.79), 0.025, Vec3::X, 0.01), 0.63),
@@ -228,7 +236,9 @@ pub fn dagger() -> Arm {
         Vec3::new(0.0, 0.0, 0.02),
     );
     // (A dagger flies point first thrown within 145 degrees of it: almost always.)
-    let melee = flies(melee, 145.0, 3.0);
+    let mut melee = flies(melee, 145.0, 3.0);
+    // (The dagger's drag is 0.4.)
+    melee.drag = [0.4, 0.05];
     Arm { thing, melee }
 }
 
@@ -245,8 +255,8 @@ pub fn longsword() -> Arm {
     let melee = melee(
         0,
         &[
-            handle(Vec3::new(0.0, 0.0, -0.25), Vec3::new(0.0, 0.0, -0.014), 0.015, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip),
-            handle(Vec3::new(0.0, 0.0, 0.3), Vec3::new(0.0, 0.0, 0.75), 0.02, HANDLE_BLADE | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip),
+            kind_of(handle(Vec3::new(0.0, 0.0, -0.25), Vec3::new(0.0, 0.0, -0.014), 0.015, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip), GRIP_HEAVY, Some(1), None),
+            kind_of(handle(Vec3::new(0.0, 0.0, 0.3), Vec3::new(0.0, 0.0, 0.75), 0.02, HANDLE_BLADE | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip), GRIP_HALF_SWORD, None, Some(0)),
         ],
         &[
             sliding(blade(SWORD_SLASH, Vec3::new(0.0, 0.0, 0.04), Vec3::new(0.0, 0.0, 0.92), 0.027, Vec3::X, 0.015), 0.85),
@@ -312,7 +322,7 @@ pub fn spear() -> Arm {
     let slash = Dmg { tier: 1.3, ..SWORD_SLASH_2H };
     let mut melee = melee(
         0,
-        &[handle(Vec3::new(0.0, 0.0, -1.45), Vec3::new(0.0, 0.0, 0.2), 0.014, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip)],
+        &[kind_of(handle(Vec3::new(0.0, 0.0, -1.45), Vec3::new(0.0, 0.0, 0.2), 0.014, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip), GRIP_HEAVY, None, None)],
         &[
             blade(pierce, Vec3::new(0.0, 0.0, 0.42), Vec3::new(0.0, 0.0, 0.5), 0.012, Vec3::ZERO, 0.35),
             blade(slash, Vec3::new(0.0, 0.0, 0.27), Vec3::new(0.0, 0.0, 0.44), 0.02, Vec3::X, 0.02),
@@ -323,7 +333,9 @@ pub fn spear() -> Arm {
     // (`SpearBladed` is tier 4.)
     melee.tier = 4;
     // (A spear flies point first thrown within 60 degrees of it.)
-    let melee = flies(melee, 60.0, 3.0);
+    let mut melee = flies(melee, 60.0, 3.0);
+    // (The spear's drag is 0.4.)
+    melee.drag = [0.4, 0.05];
     Arm { thing, melee }
 }
 
@@ -344,10 +356,13 @@ pub fn shield() -> Arm {
     let thing = thing("kit_shield", "Round shield", vec![m], 3.0, [Vec3::new(0.0, -0.06, -0.047), Vec3::new(0.0, 0.06, -0.047)], 0.014, grip, (Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2), 0.06));
     let melee = melee(
         MW_SHIELD,
-        &[handle(Vec3::new(0.0, -0.06, -0.047), Vec3::new(0.0, 0.06, -0.047), 0.014, HANDLE_MAIN, grip)],
+        &[kind_of(handle(Vec3::new(0.0, -0.06, -0.047), Vec3::new(0.0, 0.06, -0.047), 0.014, HANDLE_MAIN, grip), GRIP_SHIELD, None, None)],
         &[blade(SHIELD, Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.03), 0.3, Vec3::ZERO, 0.0)],
         Vec3::ZERO,
     );
+    // (The round shield's drag is 0.4.)
+    let mut melee = melee;
+    melee.drag = [0.4, 0.05];
     Arm { thing, melee }
 }
 
@@ -362,7 +377,7 @@ pub fn staff() -> Arm {
     let thing = thing("kit_staff", "Staff", vec![m], 1.5, [Vec3::new(0.0, 0.0, -0.8), Vec3::new(0.0, 0.0, 0.8)], 0.016, grip, (flat(), 0.02));
     let melee = melee(
         MW_STAFF,
-        &[handle(Vec3::new(0.0, 0.0, -0.8), Vec3::new(0.0, 0.0, 0.8), 0.016, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip)],
+        &[kind_of(handle(Vec3::new(0.0, 0.0, -0.8), Vec3::new(0.0, 0.0, 0.8), 0.016, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip), GRIP_HEAVY, None, None)],
         &[blade(HANDLE_HEAVY, Vec3::new(0.0, 0.0, 0.8), Vec3::new(0.0, 0.0, 0.9), 0.025, Vec3::ZERO, 0.0), blade(HANDLE_HEAVY, Vec3::new(0.0, 0.0, -0.9), Vec3::new(0.0, 0.0, -0.8), 0.025, Vec3::ZERO, 0.0)],
         Vec3::ZERO,
     );
@@ -380,7 +395,7 @@ pub fn maul() -> Arm {
     let thing = thing("kit_maul", "Maul", vec![m], 8.0, [Vec3::new(0.0, 0.0, -0.72), Vec3::new(0.0, 0.0, 0.2)], 0.018, grip, (flat(), 0.06));
     let melee = melee(
         0,
-        &[handle(Vec3::new(0.0, 0.0, -0.72), Vec3::new(0.0, 0.0, 0.2), 0.018, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip)],
+        &[kind_of(handle(Vec3::new(0.0, 0.0, -0.72), Vec3::new(0.0, 0.0, 0.2), 0.018, HANDLE_MAIN | HANDLE_SLIDE | HANDLE_REVERSIBLE, grip), GRIP_HEAVY, None, None)],
         &[blade(MACE_2H, Vec3::new(-0.13, 0.0, 0.36), Vec3::new(0.13, 0.0, 0.36), 0.065, Vec3::ZERO, 0.0), blade(HANDLE_HEAVY, Vec3::new(0.0, 0.0, -0.75), Vec3::new(0.0, 0.0, -0.7), 0.025, Vec3::ZERO, 0.0)],
         Vec3::new(0.0, 0.0, 0.28),
     );

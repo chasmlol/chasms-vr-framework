@@ -1839,6 +1839,18 @@ impl Rig {
     }
 
     /// A loose dynamic body again: gravity, normal damping, colliding with everything.
+    /// Thing `id`'s air drag, as its game says: a melee weapon's own (or [`melee::DRAG`]), else the
+    /// rig's light one.
+    pub(super) fn air_drag(&mut self, id: u32) {
+        let Some(o) = self.objects.get(&id) else { return };
+        let (linear, angular) = match self.melee.weapons.get(&id) {
+            Some(w) if w.drag != [0.0; 2] => (w.drag[0], w.drag[1]),
+            Some(_) => (melee::DRAG.0, melee::DRAG.1),
+            None => (0.05, 0.2),
+        };
+        self.physics.set_damping(o.body, linear, angular);
+    }
+
     fn free_body(&mut self, id: u32, groups: rapier3d::prelude::InteractionGroups) {
         self.out_of_bowl(id);
         let Some(o) = self.objects.get_mut(&id) else { return };
@@ -1847,7 +1859,8 @@ impl Rig {
         o.blend = None;
         self.physics.set_kinematic(o.body, false);
         self.physics.set_gravity(o.body, 1.0);
-        self.physics.set_angular_damping(o.body, 0.2);
+        self.air_drag(id);
+        let Some(o) = self.objects.get(&id) else { return };
         // (A sheet lets the hands through, whatever else is free.)
         let groups = if o.desc.flags & OBJF_SHEET != 0 { physics::groups_sheet() } else { groups };
         self.physics.set_groups(o.collider, groups);
@@ -1976,6 +1989,7 @@ impl Rig {
         }
         self.frame_index = inp.frame.index;
         self.eye_height = if inp.eye_height > 1.0 { inp.eye_height } else { 1.7 };
+        self.melee.hold_strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05);
         self.feedback.clear();
         self.pocket_events.clear();
         let dt = inp.dt.clamp(1e-4, 0.05);
@@ -3557,8 +3571,9 @@ impl Rig {
         // (One on the game's constraints stays where the game has it: the game pulls it to the hand.)
         self.physics.set_kinematic(o.body, o.desc.flags & OBJF_CONSTRAINED != 0);
         self.physics.set_gravity(o.body, 1.0);
-        self.physics.set_angular_damping(o.body, 0.2);
-        self.physics.set_groups(o.collider, groups_held(i));
+        let collider = o.collider;
+        self.air_drag(id);
+        self.physics.set_groups(collider, groups_held(i));
         let h = &mut self.hands.as_mut().unwrap()[i];
         h.holding = Some(id);
         h.on = on;
@@ -3584,6 +3599,23 @@ impl Rig {
         let (collider, gun) = (o.collider, o.desc.kind == OBJ_WEAPON);
         let palm = self.hands.as_ref().unwrap()[i].target.0;
         let other_on = self.hands.as_ref().unwrap()[other].on;
+        // A melee weapon the game describes: the second hand holds on where it is drawn on it, on
+        // a handle or not (nothing snaps); the first keeps it (the hold's two hands are the same either
+        // way round).
+        if o.desc.kind == OBJ_MELEE && self.melee.weapons.contains_key(&id) {
+            let (hp, hq) = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
+            let at = (oq.inverse() * (hp - op), (oq.inverse() * hq).normalize());
+            let on = if self.melee_handle(id, at.0).is_some() { On::Grip } else { On::Free };
+            let reach = self.reach_of(i, (op, oq), at);
+            let h = &mut self.hands.as_mut().unwrap()[i];
+            h.support = Some(Support { id, at: at.0, rot: at.1, on, reach });
+            h.glove = Glove::Idle;
+            h.euro.reset();
+            let c = h.collider;
+            self.physics.set_groups(c, groups_none());
+            self.emit(Cue::Grab, Some(i), Some(id), palm, 0.7);
+            return;
+        }
         if other_on != On::Grip
             && let Some(hold) = self.handle_hold(i, id, On::Grip)
         {
@@ -6051,8 +6083,8 @@ impl Rig {
         let slide = if slide_w != Vec3::ZERO { d.dot(slide_w) } else { 0.0 };
         // The hand's joint pulls it (the player's hold; both hands' when the other's on it too),
         // against the dampers of everything it's in.
-        let two = self.hands.as_ref().unwrap()[hand ^ 1].support.is_some_and(|s| s.id == id);
-        let strength = self.melee.strength.max(0.05) * if two { 2.0 } else { 1.0 };
+        let two = self.two_handed_melee(id);
+        let strength = self.melee.hold_strength.max(0.05) * if two { 2.0 } else { 1.0 };
         let (spring, max_force) = (physics::HOLD_SPRING * strength, physics::HOLD_MAX_FORCE * strength);
         let through = self.objects[&id].through.clone();
         let mut all = e;
@@ -6219,6 +6251,9 @@ impl Rig {
                                 self.bow_target(*id, hand, inverse((p, q)).0, alone, inp)
                             } else if let Some(t) = self.arrow_target(*id, hand, alone) {
                                 t
+                            } else if self.objects[id].desc.kind == OBJ_MELEE && self.melee.weapons.contains_key(id) {
+                                // (A melee weapon's two hands each pull on it: [`Rig::hold_melee`].)
+                                alone
                             } else {
                                 self.two_handed(*id, hand, inverse((p, q)).0, alone, dt)
                             }
@@ -6383,7 +6418,17 @@ impl Rig {
                 Holder::Free if self.objects[id].embed.is_some() => self.rest_embedded(*id, dt),
                 Holder::Free => {
                     let o = &self.objects[id];
-                    if o.hands_off_until > 0.0 && self.now > o.hands_off_until {
+                    // (A weapon let go of: once its grip's clear of the palms.)
+                    let clear = || {
+                        let (p, q) = self.physics.pose(o.body);
+                        let grip = match o.attach {
+                            Attach::Fixed(ap, aq) => p + q * inverse((ap, aq)).0,
+                            Attach::Gun => p + q * v3(o.desc.grip),
+                        };
+                        let r = melee::UNGRAB_RADIUS * self.map.world_per_meter;
+                        !self.melee.weapons.contains_key(id) || self.hands.as_ref().is_none_or(|hs| hs.iter().all(|h| h.target.0.distance(grip) > r))
+                    };
+                    if o.hands_off_until > 0.0 && self.now > o.hands_off_until && clear() {
                         self.physics.set_groups(o.collider, physics::groups_free_of(&o.desc));
                         self.objects.get_mut(id).unwrap().hands_off_until = 0.0;
                     }
@@ -7046,6 +7091,23 @@ impl Rig {
         let o = self.objects.get(&id)?;
         let firing = h.holding == Some(id) && matches!(o.attach, Attach::Gun);
         let mut g = rustvr_avatar::Grasp { fingers: if firing { rustvr_avatar::grasp::ALL_FINGERS & !(1 << 1) } else { rustvr_avatar::grasp::ALL_FINGERS }, ..Default::default() };
+        // A melee weapon's hand closes round the handle it's on (its blade half-swording, its
+        // pommel), not its main grip.
+        if o.desc.kind == OBJ_MELEE {
+            let at = match (h.holding, h.support) {
+                (Some(_), _) => match o.attach {
+                    Attach::Fixed(p, q) => Some(inverse((p, q)).0),
+                    _ => None,
+                },
+                (None, Some(sup)) => Some(sup.at),
+                _ => None,
+            };
+            if let Some((handle, _)) = at.and_then(|at| self.melee_handle(id, at)) {
+                let (op, oq) = self.physics.pose(o.body);
+                g.solids.push(rustvr_avatar::Solid::Capsule { a: op + oq * v3(handle.a), b: op + oq * v3(handle.b), radius: handle.radius * self.map.world_per_meter });
+                return Some(((id, on), g));
+            }
+        }
         match self.handle_of(&o.desc, i, on).filter(|h| h.grasped) {
             Some(handle) => {
                 let (op, oq) = self.physics.pose(o.body);

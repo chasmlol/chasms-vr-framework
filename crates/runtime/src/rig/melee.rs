@@ -32,6 +32,12 @@ use super::{Attach, Holder, On, Rig, compose, inverse, v3};
 /// height, times 1.2): a held weapon stopped by something or stuck in it with its grip further off
 /// than that is let go (the stuck rule).
 pub const REACH_OF_HEIGHT: f32 = 0.5 * 1.2;
+/// After a weapon's let go of, the hands go through it until this long (s) and then until its grip
+/// is this far from both palms (metres).
+pub const UNGRAB_DELAY: f64 = 0.25;
+pub const UNGRAB_RADIUS: f32 = 0.13;
+/// A melee weapon's air drag where its game gives none (linear 1, angular 0.05).
+pub const DRAG: (f32, f32) = (1.0, 0.05);
 /// A grip this far from the shoulders lets go whatever holds it.
 pub const STRETCH_SNAP: f32 = 6.0;
 /// The trigger slides a hand along its handle past this, with the friction going from
@@ -62,9 +68,10 @@ pub fn debug_melee() -> bool {
 pub struct MeleeRig {
     /// The game's weapons' handles and damagers ([`MeleeWeapons`]), by id.
     pub weapons: std::collections::HashMap<u32, MeleeWeapon>,
-    /// How strong the player's hands are against the standard player (the game's own number, times the
-    /// stamina left).
+    /// How strong the player's hands are against the standard player's (1; the game's own number,
+    /// times the stamina left), and with the player's own setting too (this frame's).
     pub strength: f32,
+    pub hold_strength: f32,
     /// Each held weapon: where its target was last frame (tracking space: the controller's own
     /// motion, without the walk), and where it goes this step if nothing stops it.
     pub held: std::collections::HashMap<u32, Held>,
@@ -116,10 +123,14 @@ pub struct Held {
     pub slide: Option<(Vec3, f32)>,
 }
 
+/// A hand sliding along weapon `id`'s handle `handle`, along the line `line` (weapon space): the
+/// handle's own, or, crossing from the end of one onto the handle it goes on to (over a sword's
+/// guard onto its blade), from that end to the far end of the next.
 #[derive(Clone, Copy, Debug)]
 pub struct Slide {
     pub id: u32,
     pub handle: usize,
+    pub line: (Vec3, Vec3),
 }
 
 impl MeleeRig {
@@ -145,6 +156,37 @@ impl MeleeRig {
     }
 }
 
+/// A handle's hold by kind (`GRIP_*`): its position spring and damper multipliers, its rotation
+/// spring and damper multipliers, its two-handed rotation ones, whether its turning drive is `WYZ`
+/// (about the handle and across it apart: a light handle's), and whether it takes the turning when
+/// both hands hold it (not a supporting hand's).
+#[derive(Clone, Copy, Debug)]
+pub struct GripData {
+    pub pos: [f32; 2],
+    pub rot: [f32; 2],
+    pub rot2: [f32; 2],
+    pub wyz: bool,
+    pub turns: bool,
+}
+
+pub fn grip_data(kind: u32) -> GripData {
+    let light = GripData { pos: [1.0, 1.0], rot: [1.1, 0.9], rot2: [1.0, 1.0], wyz: true, turns: true };
+    match kind {
+        GRIP_HEAVY => GripData { wyz: false, ..light },
+        GRIP_SUPER_HEAVY => GripData { pos: [0.6, 0.6], rot: [0.6, 0.6], rot2: [0.6, 0.6], wyz: false, turns: true },
+        GRIP_SUPPORTING => GripData { rot: [1.0, 1.0], wyz: false, turns: false, ..light },
+        GRIP_HALF_SWORD => GripData { rot: [0.9, 1.1], rot2: [1.1, 0.9], wyz: false, ..light },
+        GRIP_SHIELD => GripData { rot: [1.0, 1.0], wyz: false, ..light },
+        GRIP_THROWING_KNIFE => GripData { rot: [0.8, 1.0], ..light },
+        _ => light,
+    }
+}
+
+/// A hand gripping a weapon off its handles (the grip multipliers): its linear spring and damper
+/// x0.5 and its force at most 2000 N (of 3000: x2/3); its turning spring and damper x0.1 and at most
+/// 100 N m (of 250: x0.4).
+pub const GRIP_OFF: (f32, f32, f32, f32) = (0.5, 2.0 / 3.0, 0.1, 0.4);
+
 /// The point of the segment `a`..`b` nearest `p`.
 pub fn on_line(a: Vec3, b: Vec3, p: Vec3) -> Vec3 {
     let ab = b - a;
@@ -165,8 +207,102 @@ impl Rig {
 
     /// The handle a hand on weapon `id` at `at` (its grip point, weapon space) is on, if any.
     pub(super) fn melee_handle(&self, id: u32, at: Vec3) -> Option<(MeleeHandle, Vec3)> {
-        let (k, p) = self.melee.handle_near(id, at, ON_HANDLE)?;
+        let (k, p) = self.melee.handle_near(id, at, ON_HANDLE * self.map.world_per_meter)?;
         Some((self.melee.weapons[&id].handle[k], p))
+    }
+
+    /// How the hands hold weapon `id` (the player's hand joints), held by hand `hand` at `pivot`
+    /// (weapon space) and maybe the other hand too, as one joint at the pivot: each hand's linear
+    /// drive (a hand away from the pivot also turns it, as stiffly as its spring times its distance
+    /// squared and as hard as its force times the distance) and the turning drive of the hand that
+    /// takes the turning. A hand on a handle holds by that handle's kind (`GRIP_*`); off its
+    /// handles, it only grips it (the grip multipliers, x0.5 and x0.1). Both hands on handles is
+    /// two-handed: each hand's linear drive doubled (and its
+    /// damping x1.5 on one handle), the turning on one hand only (the dominant side's, unless it's
+    /// on a supporting handle), twice its one-hand value; on one handle with the grips facing
+    /// opposite ways (a staff held hand over hand), a fifth of it.
+    /// Also the share of its turning stiffness that's the other hand's pull (its leverage).
+    pub(super) fn melee_joint(&self, id: u32, hand: usize, pivot: Vec3, strength: f32, dominant: usize) -> (Joint, f32) {
+        let w = self.map.world_per_meter;
+        let main = self.melee.handle_near(id, pivot, ON_HANDLE * w);
+        let other = self.hands.as_ref().unwrap()[hand ^ 1].support.filter(|s| s.id == id);
+        let second = other.and_then(|s| self.melee.handle_near(id, s.at, ON_HANDLE * w).map(|(k, _)| (k, s)));
+        let weapon = self.melee.weapons.get(&id);
+        let kind_of = |k: usize| weapon.map_or(GRIP_LIGHT, |wp| wp.handle[k].kind);
+        // Strength scales the springs and the caps, the dampers by half of it past 1.
+        let damp = (strength * 0.5).max(1.0);
+        let lin = |k: f32, c: f32, f: f32| (physics::HOLD_SPRING * k * strength, physics::HOLD_DAMPER * c * damp, physics::HOLD_MAX_FORCE * f * strength);
+        let turn = |k: f32, c: f32, t: f32| (physics::HOLD_TURN_SPRING * k * strength, physics::HOLD_TURN_DAMPER * c * damp, physics::HOLD_MAX_TORQUE * t * strength);
+        // (linear drive, its place (weapon space), turning drive, its twist axis (weapon space)).
+        let mut hands: Vec<((f32, f32, f32), Vec3, Option<((f32, f32, f32), Option<Vec3>)>)> = Vec::new();
+        let axis_of = |k: usize| weapon.map(|wp| (v3(wp.handle[k].b) - v3(wp.handle[k].a)).normalize_or_zero());
+        match (main, second) {
+            (Some((km, _)), Some((ks, s))) => {
+                let same = km == ks;
+                let (dm, ds) = (grip_data(kind_of(km)), grip_data(kind_of(ks)));
+                let c2 = if same { 1.5 } else { 1.0 };
+                hands.push((lin(2.0 * dm.pos[0], c2 * dm.pos[1], 2.0), pivot, None));
+                hands.push((lin(2.0 * ds.pos[0], c2 * ds.pos[1], 2.0), s.at, None));
+                // Which hand turns it: the dominant side's, unless only the other is on a handle
+                // that turns it (a pommel or a ricasso is a supporting hand's).
+                let mine = match (dm.turns, ds.turns) {
+                    (true, false) => true,
+                    (false, true) => false,
+                    _ => hand == dominant,
+                };
+                let (k, d) = if mine { (km, dm) } else { (ks, ds) };
+                let drive = if same {
+                    // Hand over hand on one handle: a fifth of one hand's; else twice it, as WYZ.
+                    let held_at = self.objects.get(&id).and_then(|o| match o.attach {
+                        super::Attach::Fixed(p, q) => Some(inverse((p, q)).1),
+                        _ => None,
+                    });
+                    let ax = axis_of(k).unwrap_or(Vec3::Z);
+                    let opposite = held_at.is_some_and(|q| (q * Vec3::Z).dot(ax) * (s.rot * Vec3::Z).dot(ax) < 0.0);
+                    if opposite { (turn(0.2 * d.rot[0], 0.2 * d.rot[1], 0.2), None) } else { (turn(2.0 * d.rot[0], 2.0 * d.rot[1], 2.0), axis_of(k)) }
+                } else {
+                    (turn(2.0 * d.rot[0] * d.rot2[0], 2.0 * d.rot[1] * d.rot2[1], 2.0 * d.rot2[0]), if d.wyz { axis_of(k) } else { None })
+                };
+                hands[if mine { 0 } else { 1 }].2 = Some(drive);
+            }
+            _ => {
+                // Each hand on its own: by its handle's kind, or gripping it off its handles.
+                let one = |on: Option<usize>| match on {
+                    Some(k) => {
+                        let d = grip_data(kind_of(k));
+                        (lin(d.pos[0], d.pos[1], 1.0), Some((turn(d.rot[0], d.rot[1], 1.0), if d.wyz { axis_of(k) } else { None })))
+                    }
+                    None => (lin(GRIP_OFF.0, GRIP_OFF.0, GRIP_OFF.1), Some((turn(GRIP_OFF.2, GRIP_OFF.2, GRIP_OFF.3), None))),
+                };
+                let (l, t) = one(main.map(|(k, _)| k));
+                hands.push((l, pivot, t));
+                if let Some(s) = other {
+                    let (l, t) = one(self.melee.handle_near(id, s.at, ON_HANDLE * w).map(|(k, _)| k));
+                    hands.push((l, s.at, t));
+                }
+            }
+        }
+        let (pos, rot) = self.objects.get(&id).map_or((Vec3::ZERO, Quat::IDENTITY), |o| self.physics.pose(o.body));
+        let mut joint = Joint { spring: 0.0, damper: 0.0, max_force: 0.0, ang_spring: 0.0, ang_damper: 0.0, max_torque: 0.0, twist_axis: None, ..Joint::one_hand(pivot, strength) };
+        let mut lever = 0.0;
+        for ((k, c, f), at, drive) in hands {
+            let d = at.distance(pivot) / w;
+            joint.spring += k;
+            joint.damper += c;
+            joint.max_force += f;
+            joint.ang_spring += k * d * d;
+            joint.ang_damper += c * d * d;
+            joint.max_torque += f * d;
+            lever += k * d * d;
+            if let Some(((ka, ca, t), axis)) = drive {
+                joint.ang_spring += ka;
+                joint.ang_damper += ca;
+                joint.max_torque += t;
+                joint.twist_axis = axis.map(|a| (rot * a).normalize_or_zero()).filter(|a| *a != Vec3::ZERO);
+            }
+        }
+        let _ = pos;
+        (joint, if joint.ang_spring > 0.0 { lever / joint.ang_spring } else { 0.0 })
     }
 
     /// Weapon `id` in hand `hand`, which would have it at `target`: on the hand's joint (both
@@ -205,11 +341,25 @@ impl Rig {
         };
         held.target_prev = Some(t_now);
         let strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05);
-        let mut joint = Joint::one_hand(pivot, strength);
-        // The other hand on it too: both hands' joint, with the leverage of their hold apart.
-        if let Some(sup) = self.hands.as_ref().unwrap()[hand ^ 1].support.filter(|s| s.id == id) {
-            joint = joint.two_hands(sup.at.distance(pivot) / w);
-        }
+        let (joint, lever) = self.melee_joint(id, hand, pivot, strength, inp.settings.dominant());
+        // The other hand on it pulls its own hold towards its controller: the turn it would have
+        // (its hold lying towards that hand, about this one's) shares the target with this hand's
+        // own, by how much of the turning is its pull (no filtering: the hands pull as they are).
+        let target = match self.hands.as_ref().unwrap()[hand ^ 1].support.filter(|s| s.id == id) {
+            Some(sup) if lever > 0.0 => {
+                let (cp, cq) = self.hands.as_ref().unwrap()[hand ^ 1].target;
+                let pivot_w = target.0 + target.1 * pivot;
+                let cur = (target.1 * (sup.at - pivot)).normalize_or_zero();
+                let want = (cp + cq * sup.reach - pivot_w).normalize_or_zero();
+                if cur == Vec3::ZERO || want == Vec3::ZERO {
+                    target
+                } else {
+                    let rot = target.1.slerp((Quat::from_rotation_arc(cur, want) * target.1).normalize(), lever).normalize();
+                    (pivot_w - rot * pivot, rot)
+                }
+            }
+            _ => target,
+        };
         // Sliding through the hand, the weapon's way along the handle is its own.
         let mut target_vel = map.vel(tv);
         if let Some((axis, v)) = self.melee.held.get(&id).and_then(|h| h.slide) {
@@ -260,8 +410,17 @@ impl Rig {
             }
         };
         let w = self.map.world_per_meter;
-        let handle = self.melee.handle_near(id, at.0, ON_HANDLE * w).map(|(k, _)| (k, self.melee.weapons[&id]));
-        let Some((k, weapon)) = handle.filter(|(k, wpn)| trigger >= SLIDE_FROM && wpn.handle[*k].flags & HANDLE_SLIDE != 0) else {
+        // Sliding on: the line it's on (a handle's, or the way across onto the next); starting: the
+        // handle it holds. Only one hand slides along a handle at a time.
+        let going = self.melee.slides[i].filter(|s| s.id == id && trigger >= SLIDE_FROM);
+        let start = || {
+            let (k, _) = self.melee.handle_near(id, at.0, ON_HANDLE * w)?;
+            let h = self.melee.weapons[&id].handle[k];
+            Some(Slide { id, handle: k, line: (v3(h.a), v3(h.b)) })
+        };
+        let slide = going.or_else(|| start().filter(|s| trigger >= SLIDE_FROM && self.melee.weapons[&id].handle[s.handle].flags & HANDLE_SLIDE != 0));
+        let other_on = self.melee.slides[i ^ 1].is_some_and(|o| o.id == id && slide.is_some_and(|s| s.handle == o.handle));
+        let Some(slide) = slide.filter(|_| !other_on) else {
             self.melee.slides[i] = None;
             if let Some(held) = self.melee.held.get_mut(&id) {
                 held.slide = None;
@@ -269,11 +428,12 @@ impl Rig {
             return;
         };
         if self.melee.slides[i].is_none() {
-            tracing::info!("rig: hand {i} slides along handle {k} of {id:#x}");
+            tracing::info!("rig: hand {i} slides along handle {} of {id:#x}", slide.handle);
         }
-        self.melee.slides[i] = Some(Slide { id, handle: k });
-        let handle = weapon.handle[k];
-        let (a, b) = (v3(handle.a), v3(handle.b));
+        self.melee.slides[i] = Some(slide);
+        let weapon = self.melee.weapons[&id];
+        let k = slide.handle;
+        let (a, b) = slide.line;
         let len = a.distance(b).max(1e-4);
         let dir = (b - a) / len;
         let Some((op, oq)) = self.obj_pose(id) else { return };
@@ -287,25 +447,40 @@ impl Rig {
         let v_item = (v + wv.cross(point - com)).dot(axis);
         let v_ctrl = self.hands.as_ref().unwrap()[i].target_vel.dot(axis);
         // The damper drags it after the hand, its weight pulls it (implicitly, so it's steady at
-        // any friction): m (v' - v) = dt (c (v_ctrl - v') + m g_along).
+        // any friction): m (v' - v) = dt (c (v_ctrl - v') + m g_along). With the other hand on it
+        // too, that hand keeps it where it is (its own joint): this one only moves along it.
         let squeeze = ((trigger - SLIDE_FROM) / (1.0 - SLIDE_FROM)).clamp(0.0, 1.0);
         let damper = SLIDE_DAMPER_MAX + (SLIDE_DAMPER_MIN - SLIDE_DAMPER_MAX) * squeeze;
-        let g_along = -9.81 * w * axis.y;
-        let v_next = (mass * v_item + dt * (damper * v_ctrl + mass * g_along)) / (mass + damper * dt);
+        let both = self.hands.as_ref().unwrap().iter().filter(|h| h.holding == Some(id) || h.support.is_some_and(|s| s.id == id)).count() == 2;
+        let g_along = if both { 0.0 } else { -9.81 * w * axis.y };
+        let v_next = if both { v_item } else { (mass * v_item + dt * (damper * v_ctrl + mass * g_along)) / (mass + damper * dt) };
         // The hold moves through the fist by what the hand moved past the weapon.
         let now = (at.0 - a).dot(dir);
         let mut along = now + (v_ctrl - v_next) * dt;
-        // At the ends: on to the handle that continues it (the blade, for half-swording), or held
-        // there (the joint's spring back along the handle).
+        // At the ends: on to the handle that continues it (the handle's links: a sword's grip on over
+        // its guard onto the blade, for half-swording), across the way between them, or held there
+        // (the joint's spring back along the handle). Without links, a handle that starts where
+        // this one ends (within [`HANDLE_HOP`]) continues it.
         let mut stopped = false;
         if along <= 0.0 || along >= len {
-            let end = if along <= 0.0 { a } else { b };
-            let near = HANDLE_HOP * w + 0.02 * w;
-            let next = weapon.handles().iter().enumerate().find(|(n, hh)| *n != k && (v3(hh.a).distance(end) < near || v3(hh.b).distance(end) < near));
+            let up = along >= len;
+            let end = if up { b } else { a };
+            let h = weapon.handle[k];
+            let link = if up { h.links & 0xFF } else { (h.links >> 8) & 0xFF };
+            let next = (link > 0).then(|| link as usize - 1).filter(|&n| n < weapon.handles().len() && n != k).or_else(|| {
+                weapon.handles().iter().enumerate().find(|(n, hh)| *n != k && (v3(hh.a).distance(end) < HANDLE_HOP * w || v3(hh.b).distance(end) < HANDLE_HOP * w)).map(|(n, _)| n)
+            });
             match next {
-                Some((n, _)) => {
-                    tracing::info!("rig: hand {i} slides from handle {k} onto handle {n} of {id:#x}");
-                    self.melee.slides[i] = Some(Slide { id, handle: n });
+                Some(n) => {
+                    tracing::info!("rig: hand {i} slides from handle {k} on to handle {n} of {id:#x}");
+                    let nh = weapon.handle[n];
+                    let far = if v3(nh.a).distance(end) > v3(nh.b).distance(end) { v3(nh.a) } else { v3(nh.b) };
+                    self.melee.slides[i] = Some(Slide { id, handle: n, line: (end, far) });
+                    // (On along the new line from where it's got to past the end.)
+                    along = (along - if up { len } else { 0.0 }).abs();
+                    let moved = end + (far - end).normalize_or_zero() * along - at.0;
+                    self.slide_hold(i, id, holding, (at.0 + moved, at.1));
+                    return;
                 }
                 None => {
                     along = along.clamp(0.0, len);
@@ -320,10 +495,21 @@ impl Rig {
         if moved.length() < 1e-6 {
             return;
         }
-        let new_at = (at.0 + moved, at.1);
+        // A buzz in the hand as it runs, the stronger the faster.
+        let speed = moved.length() / w / dt.max(1e-4);
+        self.slide_hold(i, id, holding, (at.0 + moved, at.1));
+        if speed > 0.05 {
+            self.melee_slide_felt(i, id, speed);
+        }
+    }
+
+    /// Hand `i`'s hold on weapon `id` moved along it to `new_at` (weapon space): the weapon moves
+    /// through the holding hand (its hold shifts, and the drawn hand with it), or a second hand
+    /// moves along it.
+    fn slide_hold(&mut self, i: usize, id: u32, holding: bool, new_at: (Vec3, Quat)) {
         if holding {
-            // The weapon moves through the hand: its hold (the weapon in the controller's frame)
-            // shifts, and the drawn hand with it.
+            let Some(Attach::Fixed(p, q)) = self.objects.get(&id).map(|o| o.attach) else { return };
+            let moved = new_at.0 - inverse((p, q)).0;
             let rel = inverse(new_at);
             self.objects.get_mut(&id).unwrap().attach = Attach::Fixed(rel.0, rel.1);
             if let Some(hold) = self.hands.as_mut().unwrap()[i].hold.as_mut() {
@@ -331,11 +517,6 @@ impl Rig {
             }
         } else if let Some(s) = self.hands.as_mut().unwrap()[i].support.as_mut() {
             s.at = new_at.0;
-        }
-        // A buzz in the hand as it runs, the stronger the faster.
-        let speed = moved.length() / w / dt.max(1e-4);
-        if speed > 0.05 {
-            self.melee_slide_felt(i, id, speed);
         }
     }
 
@@ -354,23 +535,27 @@ impl Rig {
         let rel = compose(inverse((palm, grip_rot)), (pos, rot));
         let hand = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
         let drawn = compose(inverse((pos, rot)), hand);
-        let on = if self.melee_handle(id, drawn.0).is_some() { On::Grip } else { On::Free };
+        let on = if self.melee.handle_near(id, drawn.0, ON_HANDLE * self.map.world_per_meter).is_some() { On::Grip } else { On::Free };
         (Attach::Fixed(rel.0, rel.1), on, Some(drawn))
     }
 }
 
 impl Rig {
-    /// Both hands on weapon `id`.
+    /// Both hands on weapon `id`'s handles (a hand gripping it off its handles doesn't make it
+    /// two-handed).
     pub fn two_handed_melee(&self, id: u32) -> bool {
         let Some(hands) = self.hands.as_ref() else { return false };
-        hands.iter().any(|h| h.holding == Some(id)) && hands.iter().any(|h| h.supporting() == Some(id))
+        let w = self.map.world_per_meter;
+        let on_handle = |at: Vec3| self.melee.handle_near(id, at, ON_HANDLE * w).is_some();
+        let held = hands.iter().any(|h| h.holding == Some(id)) && self.objects.get(&id).is_some_and(|o| matches!(o.attach, Attach::Fixed(p, q) if on_handle(inverse((p, q)).0)));
+        held && hands.iter().any(|h| h.support.is_some_and(|s| s.id == id && on_handle(s.at)))
     }
 
     /// How far weapon `id`'s hold is behind where its hand would have it (world), and the most its
     /// hand's joint pulls with (N): the push a pressed blade has.
     pub fn melee_pull(&self, id: u32) -> Option<(Vec3, f32, f32)> {
         let o = self.objects.get(&id)?;
-        let strength = self.melee.strength.max(0.05) * if self.two_handed_melee(id) { 2.0 } else { 1.0 };
+        let strength = self.melee.hold_strength.max(0.05) * if self.two_handed_melee(id) { 2.0 } else { 1.0 };
         Some((o.lag / self.map.world_per_meter, physics::HOLD_SPRING * strength, physics::HOLD_MAX_FORCE * strength))
     }
 
@@ -382,6 +567,21 @@ impl Rig {
     /// Thing `id` is stuck in something.
     pub fn embedded(&self, id: u32) -> bool {
         self.objects.get(&id).is_some_and(|o| o.embed.is_some())
+    }
+
+    /// The blades stuck in creatures: (weapon, creature, the deepest it's gone in (metres), where on
+    /// it it went in and its way in (weapon space)).
+    pub fn stuck_blades(&self) -> Vec<(u32, u32, f32, Vec3, Vec3)> {
+        let mut out = Vec::new();
+        for (&id, o) in &self.objects {
+            for e in o.embed.iter().chain(o.through.iter()) {
+                if let super::embed::Into::Actor { id: actor, .. } = e.into {
+                    let back = inverse(e.rel);
+                    out.push((id, actor, e.deepest, back.0 + back.1 * e.at, (e.rel.1.inverse() * e.axis).normalize_or_zero()));
+                }
+            }
+        }
+        out
     }
 
     /// Whether object `id` is stuck in creature `actor` (in it first, or run on into it).
@@ -458,8 +658,10 @@ impl Rig {
         let thrown = hand_speed > THROW_SPEED;
         let (v, ang) = self.physics.velocity(body);
         let v = if thrown { v * THROW_MULT * if w.throw_mult > 0.0 { w.throw_mult } else { 1.0 } } else { v };
-        self.free_body(id, super::groups_held(i)); // no hand contact for a moment
-        self.objects.get_mut(&id).unwrap().hands_off_until = self.now + if thrown { 0.2 } else { 0.1 };
+        // No hand contact until it's clear of the hand that let it go (checked after a quarter
+        // second, a 0.13 m sphere at the grip).
+        self.free_body(id, super::groups_held(i));
+        self.objects.get_mut(&id).unwrap().hands_off_until = self.now + UNGRAB_DELAY;
         self.physics.set_velocity(body, v, ang);
         let (palm, _) = self.hands.as_ref().unwrap()[i].target;
         if !thrown {

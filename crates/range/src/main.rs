@@ -817,7 +817,8 @@ impl Game {
         }
         for h in happened {
             if let ragdoll::Happened::Severed { id, part, at, out, radius } = h {
-                let ev = GoreEvent { kind: GE_SEVER, actor: id, limb: ragdoll::limb_of(part), at: at.to_array(), radius, out: out.to_array(), blood: 0, strength: 1.0, push_speed: rustvr_melee::SLICE_PUSH, push: out.to_array(), ..Default::default() };
+                let push_speed = if part == crate::anim::HEAD { rustvr_melee::SLICE_PUSH_HEAD } else { rustvr_melee::SLICE_PUSH };
+                let ev = GoreEvent { kind: GE_SEVER, actor: id, limb: ragdoll::limb_of(part), at: at.to_array(), radius, out: out.to_array(), blood: 0, strength: 1.0, push_speed, push: out.to_array(), ..Default::default() };
                 self.adapter.push_gore_event(&ev);
             }
         }
