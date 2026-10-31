@@ -97,6 +97,10 @@ pub struct MeleeRig {
     /// creature's part each open hand marks.
     pub tk: [Option<super::telekinesis::Tk>; 2],
     pub tk_on: bool,
+    /// How far it reaches (m; 0: `telekinesis::TK_REACH`), and whether it takes things only, not
+    /// creatures (the game's say).
+    pub tk_reach: f32,
+    pub tk_things_only: bool,
     pub tk_marked: [Option<(u32, usize)>; 2],
     /// The thing each hand last held, and when it let go of it (for telekinesis's choosing).
     pub tk_last_held: [Option<(u32, f64)>; 2],

@@ -105,6 +105,18 @@ impl Rig {
         self.melee.tk_on
     }
 
+    /// How far telekinesis reaches (m; 0: [`TK_REACH`]), and whether it takes creatures (the game's
+    /// say: Oblivion's own takes things only).
+    pub fn set_telekinesis_limits(&mut self, reach: f32, bodies: bool) {
+        self.melee.tk_reach = reach.max(0.0);
+        self.melee.tk_things_only = !bodies;
+    }
+
+    /// How far telekinesis reaches now (m).
+    fn tk_reach(&self) -> f32 {
+        if self.melee.tk_reach > 0.0 { self.melee.tk_reach } else { TK_REACH }
+    }
+
     /// The shoulder hand `i` reaches from (world), below the eyes and out to its side, as the gloves
     /// have it.
     fn tk_shoulder(&self, i: usize, head: (Vec3, Quat)) -> Vec3 {
@@ -137,6 +149,9 @@ impl Rig {
         if !within(ray) || !within(from - head.0) {
             return None;
         }
+        if self.melee.tk_things_only {
+            return None;
+        }
         let mut best: Option<((u32, usize), f32)> = None;
         for (&(actor, part), &(a, b, radius)) in &self.actor_parts {
             if !self.bodies.get(&actor).is_some_and(|bd| bd.grabbable()) {
@@ -145,7 +160,7 @@ impl Rig {
             let p = super::creatures::surface(a, b, radius, from + ray * (from.distance((a + b) * 0.5))).0;
             let to = p - from;
             let along = to.dot(ray);
-            if along <= 0.0 || along > TK_REACH * w || (to - ray * along).length() > TK_SPHERE * w || !within(p - head.0) {
+            if along <= 0.0 || along > self.tk_reach() * w || (to - ray * along).length() > TK_SPHERE * w || !within(p - head.0) {
                 continue;
             }
             let angle = (p - from).angle_between(ranked).to_degrees() + if Some((actor, part)) == current { 0.0 } else { TK_STICKY };
@@ -178,7 +193,7 @@ impl Rig {
             let (p, _) = self.physics.pose(o.body);
             let to = p - from;
             let along = to.dot(ray);
-            if along <= 0.0 || along > TK_REACH * w || (to - ray * along).length() > TK_SPHERE * w || !within(p - head.0) {
+            if along <= 0.0 || along > self.tk_reach() * w || (to - ray * along).length() > TK_SPHERE * w || !within(p - head.0) {
                 continue;
             }
             if !self.physics.reachable(head.0, p) {

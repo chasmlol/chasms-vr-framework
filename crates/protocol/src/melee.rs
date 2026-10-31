@@ -316,6 +316,9 @@ pub const RULES_TELEKINESIS: u32 = 1 << 6;
 /// and slowing time goes on the dominant hand's B. Without it, the movement stick's click is the
 /// game's and slowing time the off hand's stick click.
 pub const RULES_KICK: u32 = 1 << 7;
+/// Telekinesis takes things only, not creatures (Oblivion's own Telekinesis: it moves what lies
+/// about, and no one).
+pub const RULES_TK_THINGS: u32 = 1 << 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -337,7 +340,9 @@ pub struct MeleeRules {
     pub slow_scale: f32,
     pub focus_time: f32,
     pub focus_refill: f32,
-    pub _pad: [u32; 7],
+    /// How far telekinesis reaches (metres; 0: the runtime's own): the game's own spell's range.
+    pub tk_reach: f32,
+    pub _pad: [u32; 6],
 }
 
 // ---- the player's side --------------------------------------------------------------------------

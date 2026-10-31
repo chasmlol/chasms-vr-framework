@@ -1179,6 +1179,7 @@ impl Session {
             if tk != self.rig.telekinesis_on() {
                 self.rig.set_telekinesis(tk);
             }
+            self.rig.set_telekinesis_limits(rules.tk_reach, rules.flags & RULES_TK_THINGS == 0);
             let game_strength = if self.combat.rules.strength > 0.0 { self.combat.rules.strength } else { 1.0 };
             self.rig.set_melee_strength(game_strength * self.powers.strength());
             self.combat.imbues = self.powers.imbues.keys().filter_map(|&id| self.powers.imbue_of(id).map(|i| (id, i))).collect();
