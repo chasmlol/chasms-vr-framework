@@ -628,12 +628,13 @@ fn display(ui: &mut egui::Ui, s: &mut Settings, status: &Status) {
     slider(ui, "Menu size", &mut s.ui.menu_size, 1.0, 5.0, " m", 2);
     ui.separator();
     ui.label("Desktop view (the window on your monitor, for recording)");
+    ui.label(egui::RichText::new("(Its looks, its effects and its bob are in the Studio tab.)").weak());
     ui.horizontal(|ui| {
         ui.label("Game picture from the");
         ui.radio_value(&mut s.spectator.eye, crate::settings::Eye::Left, "left eye");
         ui.radio_value(&mut s.spectator.eye, crate::settings::Eye::Right, "right eye (your aiming eye)");
     });
-    ui.label(egui::RichText::new("(Its field of view, its bob and its effects are in the Studio tab.)").weak());
+    slider(ui, "Desktop field of view", &mut s.spectator.fov, 60.0, 140.0, " deg", 0);
     slider(ui, "Desktop camera smoothing", &mut s.spectator.smoothing, 0.0, 0.4, " s", 2);
     slider(ui, "Desktop camera lag at most", &mut s.spectator.max_lag, 0.0, 20.0, " deg", 0);
     ui.checkbox(&mut s.spectator.roll_lock, "Keep the desktop view's horizon level");
