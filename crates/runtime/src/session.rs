@@ -1076,6 +1076,7 @@ impl Session {
             let rules = &self.combat.rules;
             let climbing = if rules.flags & RULES_SAYS_CLIMB != 0 { rules.flags & RULES_CLIMB != 0 } else { self.settings.current.melee.climbing };
             self.rig.set_climbing_allowed(climbing);
+            self.rig.set_melee_buttons(rules.flags & RULES_KICK != 0);
             let tk = if rules.flags & RULES_SAYS_TELEKINESIS != 0 { rules.flags & RULES_TELEKINESIS != 0 } else { self.settings.current.melee.telekinesis };
             if tk != self.rig.telekinesis_on() {
                 self.rig.set_telekinesis(tk);
@@ -1168,6 +1169,7 @@ impl Session {
                 });
                 let mut rt = self.powers.report(held);
                 rt.climb = self.rig.climb_velocity().to_array();
+                rt.jump = self.rig.take_climb_jump().unwrap_or(Vec3::ZERO).to_array();
                 if self.rig.climbing() {
                     rt.flags |= RTM_CLIMBING;
                 }

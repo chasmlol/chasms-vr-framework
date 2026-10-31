@@ -17,13 +17,19 @@ use glam::{Quat, Vec3};
 
 use super::Rig;
 
-/// The player's joint on a static grip (N/m, N s/m, N a hand), the body it holds (kg), and how far
-/// the controller may be from the hand holding before it lets go (m: an arm's length).
+/// The player's joint on a static grip (N/m, N s/m, N a hand) and the body it holds (kg). (The hand
+/// lets go of it held further from the shoulders than the player reaches: the stuck rule.)
 pub const CLIMB_SPRING: f32 = 5000.0;
 pub const CLIMB_DAMPER: f32 = 300.0;
 pub const CLIMB_MAX_FORCE: f32 = 2000.0;
 pub const CLIMB_BODY: f32 = 70.0;
-pub const CLIMB_STRETCH: f32 = 0.75;
+/// The jump (the player's jump force 0.3, a velocity change each 90th of a second eased out over
+/// 0.6 s), and the climb jump's shares: up x1, eased to none as the body's own climb nears 20 m/s,
+/// and along the gaze x0.3.
+pub const JUMP_FORCE: f32 = 0.3;
+pub const JUMP_CLIMB_UP: f32 = 1.0;
+pub const JUMP_CLIMB_MAX_SPEED: f32 = 20.0;
+pub const JUMP_CLIMB_ALONG: f32 = 0.3;
 /// How long the game's moving of the player is averaged over to see whether it held the body back
 /// (s).
 const CLIMB_SEEN: f32 = 0.1;
@@ -79,15 +85,30 @@ impl Rig {
         if moved.length() < 20.0 {
             self.melee.climb_seen += (moved - self.melee.climb_seen) * (dt / CLIMB_SEEN).min(1.0);
         }
-        let hands = self.hands.as_ref().unwrap();
+        // Held further from the shoulders than the player reaches (the stuck rule on a climbing
+        // link), or 6 m off: the hand lets go.
         for i in 0..2 {
             if let Some((g, _)) = self.melee.climbs[i]
-                && g.distance(hands[i].target.0) > CLIMB_STRETCH * w
+                && self.stuck_off(g, true)
             {
                 tracing::info!("rig: hand {i} lets go of the world, stretched");
                 self.melee.climbs[i] = None;
             }
         }
+        // With the melee buttons, the dominant stick's click jumps off: the hands let go and the
+        // body leaves with the climb jump (its jump force 0.3: up by x1 eased out as the body's own
+        // climb nears 20 m/s, along the gaze x0.3).
+        let dom = inp.settings.dominant();
+        let click = inp.frame.hands[dom].buttons & rustvr_protocol::CTRL_STICK_CLICK != 0;
+        if self.melee.melee_buttons && click && !self.melee.jump_click_was && self.melee.climbs.iter().any(|c| c.is_some()) {
+            let gaze = (inp.map.rot(super::q4(inp.frame.hmd.rot)) * Vec3::Z).normalize_or(Vec3::Z);
+            let up = JUMP_FORCE * JUMP_CLIMB_UP * (1.0 - (self.melee.climb_v.y / JUMP_CLIMB_MAX_SPEED).clamp(0.0, 1.0));
+            let force = Vec3::new(gaze.x * JUMP_FORCE * JUMP_CLIMB_ALONG, up, gaze.z * JUMP_FORCE * JUMP_CLIMB_ALONG);
+            self.melee.climbs = [None; 2];
+            self.melee.jump = Some(force * w);
+            tracing::info!("rig: a climb jump, {force:.2}");
+        }
+        self.melee.jump_click_was = click;
         // A weapon stuck fast in the world and held holds the body up as a grip on the world does
         // (the body is driven to the hand on something static: an axe in a wall to climb by).
         let hands = self.hands.as_ref().unwrap();

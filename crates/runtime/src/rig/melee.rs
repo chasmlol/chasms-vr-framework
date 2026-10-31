@@ -95,11 +95,18 @@ pub struct MeleeRig {
     pub tk: [Option<super::telekinesis::Tk>; 2],
     pub tk_on: bool,
     pub tk_marked: [Option<(u32, usize)>; 2],
+    /// The thing each hand last held, and when it let go of it (for telekinesis's choosing).
+    pub tk_last_held: [Option<(u32, f64)>; 2],
     /// Weapons thrown and still flying or tumbling, by id.
     pub thrown: std::collections::HashMap<u32, Thrown>,
     /// Weapons that cut a limb off, carrying on through the creature (its id) until they're clear
     /// of it (see [`Rig::cut_through`]).
     pub cutting: std::collections::HashMap<u32, u32>,
+    /// The melee buttons (the game's say): the dominant stick's click jumps off what the hands climb;
+    /// the jump made this frame, for the game; the stick's click last frame.
+    pub melee_buttons: bool,
+    pub jump: Option<Vec3>,
+    pub jump_click_was: bool,
 }
 
 /// A thrown weapon: the hand that threw it, when, (flying point first) its point's way (weapon
@@ -645,6 +652,16 @@ impl Rig {
     pub fn climbing(&self) -> bool {
         self.melee.climbs.iter().any(|c| c.is_some())
     }
+
+    /// With the melee buttons or not (the game's say).
+    pub fn set_melee_buttons(&mut self, on: bool) {
+        self.melee.melee_buttons = on;
+    }
+
+    /// A jump off what the hands climbed, made this frame (see [`RtMelee::jump`]).
+    pub fn take_climb_jump(&mut self) -> Option<Vec3> {
+        self.melee.jump.take()
+    }
 }
 
 impl Rig {
@@ -652,6 +669,7 @@ impl Rig {
     /// thrown (the hand faster than [`THROW_SPEED`] in the world's time) twice as fast. False: not
     /// a melee weapon of the game's.
     pub(super) fn release_melee(&mut self, i: usize, id: u32, inp: &super::RigInput) -> bool {
+        self.melee.tk_last_held[i] = Some((id, self.now));
         let Some(w) = self.melee.weapons.get(&id).copied() else { return false };
         let body = self.objects[&id].body;
         // (The hand's speed in the world's time: in slowed time a throw is that much faster.)

@@ -57,6 +57,10 @@ use hits::{HitWhat, ObjBox, Surface};
 use render::{Draw, Mesh, Renderer};
 use std::collections::HashMap;
 
+/// The jump with the melee buttons (a force of 0.3, a velocity change each 90th
+/// of a second, eased to none over 0.6 s).
+const B_JUMP_FORCE: f32 = 0.3;
+const B_JUMP_TIME: f32 = 0.6;
 const STAND_EYE: f32 = 1.7;
 /// A broken thing is put back whole this long after (s).
 const BROKEN_FOR: f64 = 8.0;
@@ -103,6 +107,10 @@ struct Game {
     time: f64,
     feet: Vec3,
     vel_y: f32,
+    /// A jump under way (with the melee buttons): its force (a velocity change each 90th of a
+    /// second), how much of its 0.6 s is left, and the horizontal speed it gave the body.
+    jump: Option<(Vec3, f32)>,
+    jump_h: Vec3,
     /// The hands were climbing last frame (`RtMelee`).
     climbed: bool,
     crouched: bool,
@@ -332,6 +340,8 @@ impl Game {
             time: 0.0,
             feet: Vec3::ZERO,
             vel_y: 0.0,
+            jump: None,
+            jump_h: Vec3::ZERO,
             climbed: false,
             crouched: false,
             eye_h: STAND_EYE,
@@ -537,22 +547,42 @@ impl Game {
         self.feet.z = self.feet.z.clamp(content::ROOM_MIN.z, content::ROOM_MAX.z);
         // Jump and gravity, down to the floor (or the block's top) under the feet.
         let floor = arenas::floor_under(self.feet, 0.25);
-        // (With the melee buttons in its melee areas, the dominant stick's click jumps:
-        // its B slows time.)
+        // (With the melee buttons in its melee areas, the dominant stick's click jumps
+        // (its B slows time), with its force eased out over 0.6 s; off a climb, the
+        // runtime's climb jump.)
         let jump = if self.melee { pressed(presses, Action::Crouch) } else { held(it, Action::Jump) };
         if jump && !self.jump_was_held && self.feet.y <= floor && !climbing {
-            self.vel_y = 4.0;
+            if self.melee {
+                self.jump = Some((Vec3::new(0.0, B_JUMP_FORCE, 0.0), B_JUMP_TIME));
+            } else {
+                self.vel_y = 4.0;
+            }
             self.stats[rs::JUMPS] += 1;
+        }
+        let off_climb = Vec3::from_array(self.rt_melee.jump);
+        if off_climb != Vec3::ZERO {
+            self.jump = Some((off_climb, B_JUMP_TIME));
+            self.stats[rs::JUMPS] += 1;
+        }
+        if let Some((force, left)) = self.jump {
+            // (A change each 90th of a second, at the frame's rate.)
+            let dv = force * (left / B_JUMP_TIME) * dt * 90.0;
+            self.vel_y += dv.y;
+            self.jump_h += dv.with_y(0.0);
+            let left = left - dt;
+            self.jump = (left > 0.0).then_some((force, left));
         }
         self.jump_was_held = jump;
         if !climbing {
             self.vel_y -= 9.81 * dt;
         }
         self.feet.y = (self.feet.y + self.vel_y * dt).max(floor);
-        if self.feet.y <= floor {
+        self.feet += self.jump_h * dt;
+        if self.feet.y <= floor && self.jump.is_none() {
             self.vel_y = 0.0;
+            self.jump_h = Vec3::ZERO;
         }
-        if pressed(presses, Action::Crouch) {
+        if pressed(presses, Action::Crouch) && !self.melee {
             self.crouched = !self.crouched;
         }
         let target_eye = if self.crouched { CROUCH_EYE } else { STAND_EYE };

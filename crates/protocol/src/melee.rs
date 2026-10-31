@@ -381,7 +381,11 @@ pub struct RtMelee {
     pub imbue: [Imbue; 2],
     /// Filled weapons out of the hands (thrown, stuck in something, dropped), the fullest first.
     pub loose_imbues: [Imbue; 2],
-    pub _pad: [u32; 4],
+    /// A jump off what the hands climb, this frame (with the melee buttons, [`RULES_KICK`]): the
+    /// jump force (world, the world's units a second: a velocity change each 90th of a second at
+    /// first, eased to none over 0.6 s by the game, as its `Locomotion.Jump`); zeros: none.
+    pub jump: [f32; 3],
+    pub _pad: u32,
 }
 
 impl RtMelee {

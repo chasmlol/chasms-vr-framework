@@ -37,6 +37,10 @@ pub const TK_PALM: f32 = 0.35;
 pub const TK_ARM: f32 = 0.65;
 pub const TK_LOOK: f32 = 0.3;
 pub const TK_STICKY: f32 = 3.0;
+/// For this long after a hand held a thing (s), every other thing ranks this much worse (degrees):
+/// the one just thrown is the one to catch again.
+pub const TK_RECENT: f64 = 5.0;
+pub const TK_RECENT_PENALTY: f32 = 10.0;
 /// The hold: its spring, damper and most force (N/m, N s/m, N), turning (N m/rad, N m s/rad, N m),
 /// and the drag on the thing held, moving and turning.
 pub const TK_SPRING: f32 = 100.0;
@@ -164,8 +168,10 @@ impl Rig {
             return None;
         }
         let mut best: Option<(u32, f32)> = None;
+        // (Telekinesis takes any thing a hand can: held, it weighs nothing.)
+        let recent = self.melee.tk_last_held[i].filter(|&(_, t)| self.now - t < TK_RECENT).map(|(id, _)| id);
         for (id, o) in &self.objects {
-            let pullable = o.desc.flags & OBJF_PULLABLE != 0 || (o.desc.flags & OBJF_GRABBABLE != 0 && o.desc.mass <= 8.0);
+            let pullable = o.desc.flags & (OBJF_PULLABLE | OBJF_GRABBABLE) != 0;
             if !pullable || o.holder != Holder::Free || o.desc.flags & OBJF_CONSTRAINED != 0 {
                 continue;
             }
@@ -178,7 +184,9 @@ impl Rig {
             if !self.physics.reachable(head.0, p) {
                 continue;
             }
-            let angle = (p - from).angle_between(ranked).to_degrees() + if Some(*id) == current { 0.0 } else { TK_STICKY };
+            let angle = (p - from).angle_between(ranked).to_degrees()
+                + if Some(*id) == current { 0.0 } else { TK_STICKY }
+                + if recent.is_some_and(|r| r != *id) { TK_RECENT_PENALTY } else { 0.0 };
             if best.is_none_or(|b| angle < b.1) {
                 best = Some((*id, angle));
             }
