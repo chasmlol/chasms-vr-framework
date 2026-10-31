@@ -19,7 +19,7 @@ use rustvr_protocol::link::Link;
 use rustvr_protocol::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Speech to text is asked again once this much more voice has come (seconds).
@@ -46,6 +46,18 @@ const MARKED_PAUSE: f32 = 0.05;
 const HOLD: f32 = 2.5;
 /// The game not taking the voice for this long, the line is given up (seconds).
 const STUCK: Duration = Duration::from_secs(3);
+
+/// What the streamed line has sent the game, to tell the mic's hearing of their voice through the
+/// player's speakers from the player's own (`Game::playing_level`): its voice as sent, whether it's
+/// ended, and the game's count of it played (and when that last moved on).
+#[derive(Default)]
+pub struct Sent {
+    pub rate: u32,
+    pub voice: Vec<i16>,
+    pub ended: bool,
+    pub played: u64,
+    pub moved: Option<Instant>,
+}
 
 /// What the scene hears from m8, for the streamed line, in order.
 pub enum Piece {
@@ -103,7 +115,7 @@ impl Sentence {
 /// Runs the streamed lines (the scene's thread for them): each piece with the stops' count when it
 /// came. What came before a stop is dropped, but for a sentence's words: m8 stops the line the
 /// game is still saying as the next one's first voice comes, after that sentence was begun.
-pub fn run(link: Arc<Link>, transcriber: Transcriber, stops: Arc<AtomicU64>, pieces: Receiver<(Piece, u64)>) {
+pub fn run(link: Arc<Link>, transcriber: Transcriber, stops: Arc<AtomicU64>, sent: Arc<Mutex<Sent>>, pieces: Receiver<(Piece, u64)>) {
     // (numbered on from the clock, as the files are: no two runs share a number)
     let mut next = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) % 1_000_000) as u32 * 1000 + 500;
     let mut line: Option<Line> = None;
@@ -145,14 +157,14 @@ pub fn run(link: Arc<Link>, transcriber: Transcriber, stops: Arc<AtomicU64>, pie
                 s.made += samples.len();
                 s.pending.extend(&samples);
                 if (s.pending.len() - s.tried.min(s.pending.len())) as f32 >= STEP * rate as f32 {
-                    send(&link, &transcriber, &stops, l, false, speed);
+                    send(&link, &transcriber, &stops, l, false, speed, &sent);
                 }
             }
             Piece::SentenceEnd => {
                 if let Some(measured) = l.sentence.as_ref().and_then(|s| s.speed(l.rate)) {
                     speed = 0.5 * speed + 0.5 * measured;
                 }
-                send(&link, &transcriber, &stops, l, true, speed);
+                send(&link, &transcriber, &stops, l, true, speed, &sent);
                 l.sentence = None;
             }
             Piece::LineEnd => {
@@ -160,6 +172,7 @@ pub fn run(link: Arc<Link>, transcriber: Transcriber, stops: Arc<AtomicU64>, pie
                     let mut end = VoiceLine::new(VL_END, l.speaker, l.id, 0, "", "");
                     end.at = l.sent as u32;
                     link.push_voice_line(&end);
+                    sent.lock().unwrap().ended = true;
                 }
             }
             Piece::Sentence { .. } => {}
@@ -199,7 +212,7 @@ fn cut_at(words: &[Word], context: usize, pending: usize, rate: u32, at_pause: b
 
 /// Sends what's sure of the sentence's voice (`last`: all of it) and its mouth; `speed`, the voice
 /// server's lately (this sentence's, once there's enough of it to tell).
-fn send(link: &Link, transcriber: &Transcriber, stops: &AtomicU64, l: &mut Line, last: bool, speed: f32) {
+fn send(link: &Link, transcriber: &Transcriber, stops: &AtomicU64, l: &mut Line, last: bool, speed: f32, sent: &Mutex<Sent>) {
     let rate = l.rate;
     let Some(s) = l.sentence.as_mut() else { return };
     if rate == 0 || s.pending.is_empty() || l.given_up {
@@ -248,6 +261,7 @@ fn send(link: &Link, transcriber: &Transcriber, stops: &AtomicU64, l: &mut Line,
     let pcm: Vec<i16> = l.limiter.run(&loud, rate).iter().map(|x| (x.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
     if !l.started {
         l.started = true;
+        *sent.lock().unwrap() = Sent { rate, moved: Some(Instant::now()), ..Default::default() };
         link.begin_voice_stream(l.id, rate);
         let mut start = VoiceLine::new(VL_STREAM, l.speaker, l.id, 0, &s.how, "");
         start.at = rate;
@@ -267,6 +281,7 @@ fn send(link: &Link, transcriber: &Transcriber, stops: &AtomicU64, l: &mut Line,
         return;
     }
     l.sent += cut as u64;
+    sent.lock().unwrap().voice.extend(&pcm);
     l.context.extend(&s.pending[..cut]);
     let keep = ((CONTEXT * rate as f32) as usize / hop * hop).min(l.context.len() / hop * hop);
     l.context.drain(..l.context.len() - keep);

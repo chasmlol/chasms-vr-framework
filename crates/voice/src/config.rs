@@ -91,7 +91,7 @@ pub struct Rustvr {
 
 impl Default for Rustvr {
     fn default() -> Self {
-        Rustvr { mic: String::new(), volume: 2.5, act_out: true, barge_in: false, pause: 0.3, stream: true }
+        Rustvr { mic: String::new(), volume: 2.5, act_out: true, barge_in: true, pause: 0.3, stream: true }
     }
 }
 
@@ -189,7 +189,8 @@ mod tests {
         let cfg: VoiceConfig = toml::from_str(DEFAULT).unwrap();
         let m8 = cfg.m8(dir.clone(), &rv);
         assert_eq!(m8.mic.device.as_deref(), Some("USB Mic"));
-        assert!(m8.mate.voice_instruct && !m8.mic.barge_in && m8.mic.mute_while_speaking);
+        // (talking over them on by default: their voice through the speakers is told apart)
+        assert!(m8.mate.voice_instruct && m8.mic.barge_in && !m8.mic.mute_while_speaking);
         assert_eq!(Rustvr::load(&dir.join("none.toml")), Rustvr::default());
         let _ = std::fs::remove_dir_all(&dir);
     }

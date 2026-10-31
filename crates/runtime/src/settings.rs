@@ -46,8 +46,8 @@ pub struct Voice {
     /// Lines said as their notes say ("[sneering]"): Breeze's guidance, a quarter more of the voice
     /// server's work.
     pub act_out: bool,
-    /// Talking over someone cuts them off. For headphones: a headset's speakers are beside its
-    /// mic, and they'd be heard as you.
+    /// Talking over someone cuts them off (their own voice through the headset's speakers, beside
+    /// its mic, told apart from the player's: it's only as loud as the game plays it).
     pub barge_in: bool,
     /// A pause this long (seconds) ends what you're saying.
     pub pause: f32,
@@ -58,7 +58,7 @@ pub struct Voice {
 
 impl Default for Voice {
     fn default() -> Self {
-        Voice { enabled: false, mic: String::new(), volume: 2.5, act_out: true, barge_in: false, pause: 0.3, stream: true }
+        Voice { enabled: false, mic: String::new(), volume: 2.5, act_out: true, barge_in: true, pause: 0.3, stream: true }
     }
 }
 

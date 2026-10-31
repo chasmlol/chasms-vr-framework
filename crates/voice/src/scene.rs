@@ -23,6 +23,8 @@ use std::time::Instant;
 pub(crate) const LIPS_FPS: u32 = VOICE_STREAM_FPS;
 /// A sentence's files are kept this many lines, then deleted (the game has long played them).
 const LINES_KEPT: u32 = 32;
+/// A streamed line the game hasn't played on for this long isn't being said (it stopped it).
+const STILL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// m8's id for a speaker: the game's, as hex.
 pub fn speaker_id(id: u32) -> String {
@@ -194,18 +196,21 @@ pub struct Scene {
     levels: Mutex<HashMap<PathBuf, Option<f32>>>,
     /// The player's volume for the characters' voices (an `f32`'s bits), as RustVR's settings have it.
     volume: AtomicU32,
-    /// Lines streamed as they're made, to [`crate::stream`]'s thread (None: a clause at a time).
+    /// Lines streamed as they're made, to [`crate::stream`]'s thread (None: a clause at a time),
+    /// and what it's sent the game.
     stream: Option<Mutex<Sender<(Piece, u64)>>>,
+    sent: Arc<Mutex<crate::stream::Sent>>,
 }
 
 impl Scene {
     pub fn new(link: Arc<Link>, first: VoiceScene, template: m8::site::PromptFile, transcriber: Transcriber, streamed: bool) -> Arc<Scene> {
         let (jobs, queue) = mpsc::channel::<Job>();
         let stops = Arc::new(AtomicU64::new(0));
+        let sent = Arc::new(Mutex::new(crate::stream::Sent::default()));
         let stream = streamed.then(|| {
             let (pieces, taken) = mpsc::channel::<(Piece, u64)>();
-            let (link, transcriber, stops) = (link.clone(), transcriber.clone(), stops.clone());
-            std::thread::spawn(move || crate::stream::run(link, transcriber, stops, taken));
+            let (link, transcriber, stops, sent) = (link.clone(), transcriber.clone(), stops.clone(), sent.clone());
+            std::thread::spawn(move || crate::stream::run(link, transcriber, stops, sent, taken));
             Mutex::new(pieces)
         });
         let playing_until = Arc::new(Mutex::new(Instant::now()));
@@ -268,6 +273,7 @@ impl Scene {
             levels: Mutex::new(HashMap::new()),
             volume: AtomicU32::new(1.0f32.to_bits()),
             stream,
+            sent,
         })
     }
 
@@ -450,9 +456,38 @@ impl Game for Scene {
     /// sentence being gathered: a new line's first sound stops the old line's, and that sentence
     /// is the new line's; one the player talked over is never ended, and the next replaces it.)
     fn stop_audio(&self) {
+        *self.sent.lock().unwrap() = Default::default();
         self.stops.fetch_add(1, Ordering::SeqCst);
         self.fresh.store(true, Ordering::SeqCst);
         self.link.push_voice_line(&VoiceLine::new(VL_STOP, 0, 0, 0, "", ""));
+    }
+
+    /// The streamed voice the game is playing now: the loudest 20 ms of its last half second (none
+    /// while nothing is; unknown, None, for lines that aren't streamed).
+    fn playing_level(&self) -> Option<f32> {
+        self.stream.as_ref()?;
+        let mut sent = self.sent.lock().unwrap();
+        let played = self.played(&mut sent) as usize;
+        let to = played.min(sent.voice.len());
+        let window = (sent.rate / 50).max(1) as usize;
+        let from = to.saturating_sub((sent.rate / 2) as usize);
+        Some(
+            sent.voice[from..to]
+                .chunks(window)
+                .map(|w| (w.iter().map(|&s| (s as f32 / 32768.0).powi(2)).sum::<f32>() / w.len() as f32).sqrt())
+                .fold(0.0, f32::max),
+        )
+    }
+
+    /// The streamed line is still being said: not all of it played, or more to come, while the
+    /// game goes on playing it.
+    fn still_speaking(&self) -> bool {
+        if self.stream.is_none() {
+            return false;
+        }
+        let mut sent = self.sent.lock().unwrap();
+        let played = self.played(&mut sent);
+        !sent.voice.is_empty() && (played < sent.voice.len() as u64 || !sent.ended) && sent.moved.is_some_and(|m| m.elapsed() < STILL)
     }
 
     /// Deaf while the game says so (a menu, the game paused or loading), or not ready yet.
@@ -474,6 +509,16 @@ impl Game for Scene {
 }
 
 impl Scene {
+    /// How much of the streamed line the game has played (the latest, and when it last moved on).
+    fn played(&self, sent: &mut crate::stream::Sent) -> u64 {
+        let (_, _, played) = self.link.voice_stream_progress();
+        if played != sent.played {
+            sent.played = played;
+            sent.moved = Some(Instant::now());
+        }
+        played
+    }
+
     /// A piece for the streamed line, if lines are streamed (with the stops' count now).
     fn streams(&self, piece: impl FnOnce() -> Piece) -> bool {
         let Some(stream) = &self.stream else { return false };
