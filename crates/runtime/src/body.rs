@@ -38,6 +38,8 @@ pub struct BodyInput<'a> {
     pub locomotion: Vec3,
     /// The player is swimming in the game's water: the body floats.
     pub swim: Option<rustvr_ik::Swimming>,
+    /// A kick under way: where it has each foot's ankle (tracking space; [`crate::kick`]).
+    pub kicks: [Option<Vec3>; 2],
     /// Standing head height as measured in tracking space (0: not known yet, or the game is
     /// crouching: the body keeps the size it had).
     pub eye_height: f32,
@@ -313,7 +315,7 @@ impl PlayerBody {
             seat: rustvr_ik::Pose { pos: s.seat.pos - down, rot: s.seat.rot },
             legs: s.legs.map(|l| l.map(|leg| leg.map(|p| p - down))),
         }));
-        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows, shoulders, swim: inp.swim });
+        let mut out = self.solver.solve(&TrackedInput { dt: f.dt.clamp(1e-4, 0.1), head: ik((head.0 - down, head.1)), grips, locomotion: inp.locomotion, seated: false, elbows, shoulders, swim: inp.swim, kicks: inp.kicks.map(|k| k.map(|a| a - down)) });
         for j in out.joints.iter_mut().chain(out.hand_targets.iter_mut()) {
             j.pos += down;
         }
@@ -813,6 +815,7 @@ mod tests {
                 finger_give: [[0.0; 5]; 2],
                 locomotion: Vec3::ZERO,
                 swim: None,
+                kicks: [None; 2],
                 eye_height: 1.7,
                 floor: 0.0,
                 saddle: None,
@@ -851,6 +854,7 @@ mod tests {
                     finger_give: [[0.0; 5]; 2],
                     locomotion: Vec3::ZERO,
                     swim: None,
+                    kicks: [None; 2],
                     eye_height: 1.7 + floor,
                     floor,
                     saddle: None,
@@ -893,7 +897,7 @@ mod tests {
         let grips = [Some(grip_for(Side::Left, -0.78)), Some(grip_for(Side::Right, 0.78))];
         let mut out = None;
         for _ in 0..120 {
-            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], shoulders: [None; 2], swim: None }));
+            out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], shoulders: [None; 2], swim: None, kicks: [None; 2] }));
         }
         let out = out.unwrap();
         for j in [Joint::LeftUpperArm, Joint::LeftLowerArm, Joint::RightUpperArm, Joint::RightLowerArm, Joint::LeftHand, Joint::RightHand, Joint::Hips, Joint::Chest] {

@@ -136,7 +136,7 @@ fn hold(armory: &physical::Armory, d: &ObjectDesc, gun: Mat4, slide: f32, trigge
     let head = IkPose { pos: EYE, rot: Quat::IDENTITY };
     let mut out = None;
     for _ in 0..120 {
-        out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips: ik_grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], shoulders: [None; 2], swim: None }));
+        out = Some(solver.solve(&TrackedInput { dt: 1.0 / 90.0, head, grips: ik_grips, locomotion: Vec3::ZERO, seated: false, elbows: [None; 2], shoulders: [None; 2], swim: None, kicks: [None; 2] }));
     }
     let out = out.unwrap();
     let mut fs = [FingerSolver::new(), FingerSolver::new()];

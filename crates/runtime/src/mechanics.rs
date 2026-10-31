@@ -175,15 +175,21 @@ const LONG_PRESS: f64 = 0.45;
 /// How long a lone stick click waits for the other stick (both together: the framework view).
 const STICK_CHORD: f64 = 0.12;
 /// The head's upright height (metres over the real floor): heights a worn headset's at, sat or
-/// stood (not on a desk); still within this for this long (s), it's worn; held more than this
-/// higher for this long (s), it's upright there now, reached at this speed (m/s).
+/// stood (not on a desk); still within this for this long (s), it's worn; held higher for this
+/// long (s), it's upright there now, reached at this speed (m/s).
 const UPRIGHT_LOW: f32 = 0.9;
 const UPRIGHT_HIGH: f32 = 2.3;
 const UPRIGHT_STILL: f32 = 0.05;
 const UPRIGHT_SETTLE: f32 = 1.5;
-const UPRIGHT_RISE: f32 = 0.03;
 const UPRIGHT_HOLD: f32 = 1.0;
 const UPRIGHT_SPEED: f32 = 0.1;
+/// A slouch (lower than upright by under half a crouch) settles in at this speed (m/s).
+const UPRIGHT_SETTLE_SPEED: f32 = 0.002;
+/// Where a nod turns the head (its frame: x right, y up, z forward), metres: the top of the neck,
+/// under and behind the eyes. The head's height is measured there, as if the head were held level:
+/// looking down lowers the eyes 10 cm or more, but it isn't a crouch (nor, measured there, does it
+/// lift the head's height and its upright with it).
+const NECK: Vec3 = Vec3::new(0.0, -0.11, -0.08);
 
 impl Btn {
     fn update(&mut self, d: bool, now: f64) {
@@ -365,8 +371,8 @@ pub struct Mechanics {
     /// recentre takes the head's height as it is.
     upright_settled: bool,
     upright_still: f32,
-    upright_above: f32,
-    upright_min: f32,
+    /// The head's heights over the last [`UPRIGHT_HOLD`] seconds (when, how high).
+    upright_window: std::collections::VecDeque<(f64, f32)>,
     recalibrate: bool,
     phys_crouch: bool,
     crouch_by_phys: bool,
@@ -418,8 +424,7 @@ impl Default for Mechanics {
             stand_h: 0.0,
             upright_settled: false,
             upright_still: 0.0,
-            upright_above: 0.0,
-            upright_min: f32::MAX,
+            upright_window: Default::default(),
             recalibrate: false,
             phys_crouch: false,
             crouch_by_phys: false,
@@ -821,23 +826,7 @@ impl Mechanics {
         out.intents.move_xy = move_xy.to_array();
 
         // Turning: firing-hand stick X (on a mount it steers the mount, which turns the view).
-        let tx = if inp.riding { 0.0 } else { deadzone(dc.stick[0], 0.25) };
-        match c.comfort.turn_mode {
-            TurnMode::Snap => {
-                if tx.abs() > 0.75 && now > self.snap_cooldown {
-                    self.turn_total = wrap(self.turn_total + c.comfort.snap_angle.to_radians() * tx.signum());
-                    self.snap_cooldown = now + 0.5;
-                }
-                if tx.abs() < 0.25 {
-                    self.snap_cooldown = self.snap_cooldown.min(now);
-                }
-            }
-            TurnMode::Smooth => {
-                if tx != 0.0 {
-                    self.turn_total = wrap(self.turn_total + c.comfort.smooth_turn_speed.to_radians() * tx * inp.dt);
-                }
-            }
-        }
+        self.turn(c, if inp.riding { 0.0 } else { dc.stick[0] }, now, inp.dt);
         out.tracking.turn_total = self.turn_total;
 
         // Firing-hand stick Y: next / previous weapon.
@@ -933,42 +922,51 @@ impl Mechanics {
             // view's height is the head's over it (`upright_offset`), and ducking a good way under
             // it crouches. Until the headset's been still at a likely height a while (worn: not on
             // the desk, nor being put on), it follows the head. Then, held higher a second or more
-            // (stood up), it rises to there over a moment; a moment higher (a stretch, on tiptoe, a
-            // tracking glitch) doesn't count. Lower, it settles: a slouch soon, a crouch hardly at
-            // all. A recentre takes the head's height as it is.
-            let h = hmd_pos.y;
+            // (stood up, after sitting), it rises to there over a moment (to the lowest it was in
+            // that second: a moment higher, a stretch, on tiptoe, a tracking glitch, doesn't
+            // count). Lower by a slouch (under half a crouch), it settles there slowly; lower than
+            // that (a crouch, made however slowly, or held), it stays. A recentre takes the head's
+            // height as it is.
+            let h = (hmd_pos + hmd_rot * NECK).y - NECK.y;
             let dt = inp.dt;
+            let thr = c.input.stealth_crouch_amount.clamp(0.05, 0.4);
             let likely = (UPRIGHT_LOW..UPRIGHT_HIGH).contains(&h);
             if std::mem::take(&mut self.recalibrate) && likely {
                 self.stand_h = h;
                 self.upright_settled = true;
-                self.upright_above = 0.0;
-                self.upright_min = f32::MAX;
+                self.upright_window.clear();
             }
             if !self.upright_settled {
                 self.upright_still = if likely && (h - self.stand_h).abs() < UPRIGHT_STILL { self.upright_still + dt } else { 0.0 };
                 self.stand_h = if self.stand_h == 0.0 { h } else { self.stand_h + (h - self.stand_h) * (dt / 0.25).min(1.0) };
                 self.upright_settled = self.upright_still >= UPRIGHT_SETTLE;
-            } else if h > self.stand_h + UPRIGHT_RISE {
-                self.upright_above += dt;
-                self.upright_min = self.upright_min.min(h);
-                if self.upright_above >= UPRIGHT_HOLD {
-                    self.stand_h = (self.stand_h + UPRIGHT_SPEED * dt).min(self.upright_min);
-                }
             } else {
-                self.upright_above = 0.0;
-                self.upright_min = f32::MAX;
-                if h < self.stand_h {
-                    // slouching or re-calibration
-                    self.stand_h -= if h > self.stand_h - 0.12 { 0.02 } else { 0.004 } * dt;
+                // The head's lowest over the last second: held higher than upright that long, it's
+                // upright there now.
+                self.upright_window.push_back((now, h));
+                while self.upright_window.front().is_some_and(|(t, _)| now - t > UPRIGHT_HOLD as f64) {
+                    self.upright_window.pop_front();
+                }
+                let held = self.upright_window.front().is_some_and(|(t, _)| now - t >= UPRIGHT_HOLD as f64 * 0.9);
+                let low = self.upright_window.iter().fold(f32::MAX, |m, (_, h)| m.min(*h));
+                if held && low > self.stand_h {
+                    self.stand_h = (self.stand_h + UPRIGHT_SPEED * dt).min(low);
+                } else if h < self.stand_h && self.stand_h - h < thr * 0.5 && !self.phys_crouch {
+                    // slouching
+                    self.stand_h = (self.stand_h - UPRIGHT_SETTLE_SPEED * dt).max(h);
                 }
             }
             let was = self.phys_crouch;
-            let thr = c.input.crouch_threshold.max(0.1);
-            if !self.phys_crouch && h < self.stand_h - thr {
-                self.phys_crouch = true;
-            } else if self.phys_crouch && h > self.stand_h - thr + 0.06 {
+            // (Not while the headset's still being put on: upright isn't known yet.)
+            if !self.upright_settled {
                 self.phys_crouch = false;
+            } else if !self.phys_crouch && h < self.stand_h - thr {
+                self.phys_crouch = true;
+            } else if self.phys_crouch && h > self.stand_h - thr + (thr * 0.5).min(0.06) {
+                self.phys_crouch = false;
+            }
+            if self.phys_crouch != was {
+                tracing::info!("physical crouch: {} (the head {:.2} m under upright, {:.2} m)", if self.phys_crouch { "crouched" } else { "stood up" }, self.stand_h - h, self.stand_h);
             }
             // (Leaning down on a mount's neck isn't sneaking. Swimming, a head ducked is a face put
             // into the water, not a crouch. Nor could a crouch be kept in step there: a swimmer's
@@ -987,13 +985,19 @@ impl Mechanics {
                     self.crouch_pending = -1;
                 }
             }
-            // The real head already went down: don't lower the view a second time by the game's crouch.
-            let comp = if c.input.physical_crouch && !c.comfort.seated && game_crouched && self.phys_crouch {
+            // The real head already went down: don't lower the view a second time by the game's crouch
+            // (by as much as it says its eye went down: a game that doesn't say does that itself).
+            // Only for a crouch the real one made: crouching for real in the stick's, the view goes
+            // lower still, never jumping back up.
+            let comp = if c.input.physical_crouch && !c.comfort.seated && game_crouched && self.phys_crouch && self.crouch_by_phys && eye_above_feet > 0.3 {
                 (self.stand_eye - eye_above_feet).max(0.0)
             } else {
                 0.0
             };
             out.tracking.height_comp = comp;
+            if c.input.physical_crouch && !c.comfort.seated && self.phys_crouch {
+                out.intents.crouch = (self.stand_h - h).max(0.0);
+            }
             self.debug.stand_h = self.stand_h;
             self.debug.phys_crouch = self.phys_crouch;
             self.debug.game_crouched = game_crouched;
@@ -1278,7 +1282,30 @@ impl Mechanics {
         self.haptic(dom, 0.04, 150.0, 0.7);
     }
 
-    /// Menus on the panel: the stick and buttons navigate, the laser drives the cursor.
+    /// The view turned by the turning stick's X (`x`, before its dead zone): a step for each flick,
+    /// or smoothly, as the comfort settings say.
+    fn turn(&mut self, c: &Settings, x: f32, now: f64, dt: f32) {
+        let tx = deadzone(x, 0.25);
+        match c.comfort.turn_mode {
+            TurnMode::Snap => {
+                if tx.abs() > 0.75 && now > self.snap_cooldown {
+                    self.turn_total = wrap(self.turn_total + c.comfort.snap_angle.to_radians() * tx.signum());
+                    self.snap_cooldown = now + 0.5;
+                }
+                if tx.abs() < 0.25 {
+                    self.snap_cooldown = self.snap_cooldown.min(now);
+                }
+            }
+            TurnMode::Smooth => {
+                if tx != 0.0 {
+                    self.turn_total = wrap(self.turn_total + c.comfort.smooth_turn_speed.to_radians() * tx * dt);
+                }
+            }
+        }
+    }
+
+    /// Menus on the panel: the stick and buttons navigate, the laser drives the cursor. In one the
+    /// player can turn in (a conversation, [`GS_MENU_TURNS`]) the stick's left and right turn them.
     fn menu_controls(&mut self, inp: &MechInput, out: &mut MechOutput) {
         let f = inp.frame;
         let dom = inp.settings.dominant();
@@ -1286,6 +1313,7 @@ impl Mechanics {
         out.intents.flags |= INT_MENU_MODE;
         out.intents.move_xy = [deadzone(f.hands[off].stick[0], 0.3), deadzone(f.hands[off].stick[1], 0.3)];
         let (sx, sy) = (f.hands[dom].stick[0], f.hands[dom].stick[1]);
+        let turns = !inp.runtime_menu && inp.game.is_some_and(|g| g.flags & GS_MENU_TURNS != 0);
         let mut held = 0u64;
         if sy > 0.6 {
             held |= Action::MenuUp.bit();
@@ -1293,11 +1321,16 @@ impl Mechanics {
         if sy < -0.6 {
             held |= Action::MenuDown.bit();
         }
-        if sx < -0.6 {
-            held |= Action::MenuLeft.bit();
-        }
-        if sx > 0.6 {
-            held |= Action::MenuRight.bit();
+        if turns {
+            self.turn(inp.settings, sx, inp.now, inp.dt);
+            out.tracking.turn_total = self.turn_total;
+        } else {
+            if sx < -0.6 {
+                held |= Action::MenuLeft.bit();
+            }
+            if sx > 0.6 {
+                held |= Action::MenuRight.bit();
+            }
         }
         if !inp.runtime_menu {
             // A on either hand accepts; so does a trigger pull (the natural "continue").
@@ -1613,7 +1646,8 @@ mod tests {
         let mut f = standing();
         let mut g = game();
         let mut t = 0.0;
-        for _ in 0..10 {
+        // Stood still a moment: upright is learned.
+        for _ in 0..180 {
             t += 1.0 / 90.0;
             run(&mut m, &f, &g, &s, t);
         }
@@ -1626,13 +1660,68 @@ mod tests {
         g.eye_above_feet = 1.1;
         t += 1.0 / 90.0;
         let out = run(&mut m, &f, &g, &s, t);
-        // Standing eye height was learned as ~1.75 m (it adapts from 1.8 toward the game's 1.7).
-        assert!((0.6..0.7).contains(&out.tracking.height_comp), "{}", out.tracking.height_comp);
+        // Standing eye height was learned as the game's 1.7 m.
+        assert!((out.tracking.height_comp - 0.6).abs() < 0.02, "{}", out.tracking.height_comp);
         // Standing up again toggles back.
         f.hmd.pos[1] = 1.7;
         t += 1.0;
         let out = run(&mut m, &f, &g, &s, t);
         assert_eq!(out.intents.presses[Action::Crouch as usize], 2);
+    }
+
+    #[test]
+    fn sat_when_it_started_then_stood_up_upright_is_standing() {
+        let (mut m, s, g) = (Mechanics::default(), Settings::default(), game());
+        let mut f = standing();
+        let mut t = 0.0;
+        let mut step = |m: &mut Mechanics, f: &HmdFrame, secs: f64| {
+            for _ in 0..(secs * 90.0) as usize {
+                t += 1.0 / 90.0;
+                run(m, f, &g, &s, t);
+            }
+        };
+        f.hmd.pos[1] = 1.3;
+        step(&mut m, &f, 2.0);
+        assert!((m.debug.stand_h - 1.3).abs() < 0.01, "sat: {}", m.debug.stand_h);
+        f.hmd.pos[1] = 1.7;
+        step(&mut m, &f, 6.0);
+        assert!((m.debug.stand_h - 1.7).abs() < 0.01, "stood: {}", m.debug.stand_h);
+        assert!(!m.debug.phys_crouch);
+    }
+
+    #[test]
+    fn crouching_for_real_in_a_stick_crouch_keeps_it() {
+        let (mut m, s) = (Mechanics::default(), Settings::default());
+        let dom = s.dominant();
+        let (mut f, mut g) = (standing(), game());
+        let mut t = 0.0;
+        let mut step = |m: &mut Mechanics, f: &HmdFrame, g: &GameState, secs: f64| {
+            let mut out = MechOutput::default();
+            for _ in 0..(secs * 90.0) as usize {
+                t += 1.0 / 90.0;
+                out = run(m, f, g, &s, t);
+            }
+            out
+        };
+        let crouches = |o: &MechOutput| o.intents.presses[Action::Crouch as usize];
+        step(&mut m, &f, &g, 2.0);
+        // The stick: one crouch, and the game crouches.
+        f.hands[dom].buttons |= CTRL_STICK_CLICK;
+        step(&mut m, &f, &g, 0.05);
+        f.hands[dom].buttons = 0;
+        let o = step(&mut m, &f, &g, 0.3);
+        assert_eq!(crouches(&o), 1, "the stick crouches");
+        g.flags |= GS_CROUCHED;
+        g.eye_above_feet = 1.1;
+        // Crouching for real in it, and standing up again: nothing pressed, the game stays crouched.
+        f.hmd.pos[1] = 1.5;
+        let o = step(&mut m, &f, &g, 1.0);
+        assert!(m.debug.phys_crouch && crouches(&o) == 1, "crouched for real: no press");
+        // (Nor the view lifted back up by the game's crouch: it goes lower still.)
+        assert_eq!(o.tracking.height_comp, 0.0);
+        f.hmd.pos[1] = 1.7;
+        let o = step(&mut m, &f, &g, 1.0);
+        assert!(!m.debug.phys_crouch && crouches(&o) == 1, "stood up: still the stick's crouch");
     }
 
     #[test]
@@ -1652,6 +1741,49 @@ mod tests {
         f.hands[1].stick = [1.0, 0.0];
         run(&mut m, &f, &game(), &s, t + 0.02);
         assert!((m.turn_total - 2.0 * s.comfort.snap_angle.to_radians()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_conversation_turns_with_the_stick_other_menus_take_it() {
+        let menu = |m: &mut Mechanics, f: &HmdFrame, g: &GameState, s: &Settings, t: f64| {
+            m.update(&MechInput {
+                frame: f,
+                game: Some(g),
+                settings: s,
+                now: t,
+                dt: 1.0 / 90.0,
+                menu_mode: true,
+                runtime_menu: false,
+                cursor: None,
+                aux_aspect: 1.0,
+                rumble: None,
+                rig: None,
+                spell_hands: [false; 2],
+                game_shots: 0,
+                held_kicks: &[],
+                riding: false,
+                sculpting: [false; 2],
+            })
+        };
+        let s = Settings::default();
+        let mut f = standing();
+        f.hands[s.dominant()].stick = [1.0, 0.0];
+        let mut g = game();
+        g.flags |= GS_MENU;
+        // (any other menu: the stick's right is the menu's)
+        let mut m = Mechanics::default();
+        let out = menu(&mut m, &f, &g, &s, 0.0);
+        assert_eq!((m.turn_total, out.intents.held & Action::MenuRight.bit() != 0), (0.0, true));
+        // (a conversation: a step, once for the flick, and the menu doesn't get it)
+        g.flags |= GS_MENU_TURNS;
+        let mut m = Mechanics::default();
+        let mut out = menu(&mut m, &f, &g, &s, 0.0);
+        for i in 1..20 {
+            out = menu(&mut m, &f, &g, &s, i as f64 / 90.0);
+        }
+        assert!((m.turn_total - s.comfort.snap_angle.to_radians()).abs() < 1e-4, "{}", m.turn_total);
+        assert_eq!(out.tracking.turn_total, m.turn_total);
+        assert_eq!(out.intents.held & Action::MenuRight.bit(), 0);
     }
 
     #[test]

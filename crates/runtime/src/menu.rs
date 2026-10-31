@@ -18,6 +18,7 @@ const PIXELS_PER_POINT: f32 = 2.0;
 enum Tab {
     Comfort,
     Hands,
+    Voice,
     Body,
     Controls,
     Weapon,
@@ -185,6 +186,7 @@ impl RuntimeMenu {
                         (Tab::Help, "Help"),
                         (Tab::Comfort, "Comfort"),
                         (Tab::Hands, "Hands"),
+                        (Tab::Voice, "Voice"),
                         (Tab::Body, "Body"),
                         (Tab::Controls, "Controls"),
                         (Tab::Weapon, "Weapon"),
@@ -203,6 +205,7 @@ impl RuntimeMenu {
                     match tab {
                     Tab::Comfort => comfort(ui, s, &mut rects),
                     Tab::Hands => hands(ui, s, &mut rects),
+                    Tab::Voice => voice(ui, s, &mut rects),
                     Tab::Body => measure = body(ui, s, status, &mut rects),
                     Tab::Help => help(ui),
                     Tab::Controls => controls(ui, s),
@@ -295,7 +298,13 @@ fn comfort(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::R
     }
     ui.checkbox(&mut s.input.physical_crouch, "Duck to crouch");
     if s.input.physical_crouch {
-        slider(ui, "Crouch depth", &mut s.input.crouch_threshold, 0.15, 0.7, " m", 2);
+        // (Wide, and no number box beside it: a laser drags a number box to its end, and clicked it
+        // wants typing.)
+        ui.scope(|ui| {
+            ui.spacing_mut().slider_width = 260.0;
+            let cm = s.input.stealth_crouch_amount * 100.0;
+            ui.add(egui::Slider::new(&mut s.input.stealth_crouch_amount, 0.05..=0.4).show_value(false).text(format!("Stealth crouch amount: {cm:.0} cm")));
+        });
     }
     slider(ui, "Height offset", &mut s.comfort.height_offset, -0.5, 0.5, " m", 2);
     ui.checkbox(&mut s.comfort.camera_anims, "Follow scripted camera (ladders, cut-scenes)");
@@ -538,6 +547,33 @@ fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
         ui.checkbox(&mut s.sound.shots, "Gunshot sounds");
         ui.checkbox(&mut s.sound.game_sounds, "The game's own sounds (off: RustVR's)");
     }
+}
+
+/// Talking to the game's characters out loud (`crate::voice`).
+fn voice(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rect)>) {
+    let v = &mut s.voice;
+    let r = ui.checkbox(&mut v.enabled, "Talk to the game's characters out loud");
+    rects.push(("voice:on".into(), r.rect));
+    let r = ui.checkbox(&mut v.commands, "Simple voice commands: say a menu's words to pick them, \"what have you got for sale\" to trade (Windows' own speech recognition, no AI)");
+    rects.push(("voice:commands".into(), r.rect));
+    ui.label("Look at someone a few steps away and talk. The servers and the LLM are in voice.toml, beside settings.toml.");
+    ui.separator();
+    ui.label("Microphone");
+    let r = ui.selectable_value(&mut v.mic, String::new(), "The headset's own (Virtual Desktop), else the default");
+    rects.push(("voice:mic:default".into(), r.rect));
+    for name in crate::voice::microphones() {
+        let r = ui.selectable_value(&mut v.mic, name.clone(), name.as_str());
+        rects.push((format!("voice:mic:{name}"), r.rect));
+    }
+    ui.separator();
+    slider(ui, "Their voices' volume (1: as loud as the game's own)", &mut v.volume, 0.25, 4.0, "x", 2);
+    let r = ui.checkbox(&mut v.act_out, "They act out how a line is said (a quarter more of the voice server's work)");
+    rects.push(("voice:act_out".into(), r.rect));
+    let r = ui.checkbox(&mut v.stream, "Their voice streams as it's made (off: a few words at a time, each made whole first)");
+    rects.push(("voice:stream".into(), r.rect));
+    let r = ui.checkbox(&mut v.barge_in, "Talk over them to cut them off");
+    rects.push(("voice:barge_in".into(), r.rect));
+    slider(ui, "A pause this long ends what you're saying", &mut v.pause, 0.15, 1.0, " s", 2);
 }
 
 fn controls(ui: &mut egui::Ui, s: &mut Settings) {

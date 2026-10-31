@@ -31,6 +31,8 @@ pub struct Settings {
     pub riding: Riding,
     pub holsters: Holsters,
     pub desktop_bob: DesktopBob,
+    pub melee: Melee,
+    pub voice: Voice,
 }
 
 /// The desktop view's bob while the player moves by the stick or the game (`crate::view_bob`), so a
@@ -64,6 +66,81 @@ pub enum BobMode {
     /// The game's own first-person bob, when its adapter gives one (`rustvr_protocol::ViewBob`);
     /// the runtime's where it doesn't.
     Game,
+}
+
+/// Physical melee (`crate::rig::melee`, `crate::combat`, `docs/MELEE.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Melee {
+    /// The hands' strength on a weapon (1: the standard): their joint's spring and the most force
+    /// and torque it gives. Times the game's own number for the player.
+    pub strength: f32,
+    /// Swinging costs stamina, and a tired player's hands are weaker (a game's own stamina,
+    /// Oblivion's Fatigue, takes over when it gives one).
+    pub stamina: bool,
+    /// Seconds of hard swinging a full stamina lasts, and seconds it takes to come back.
+    pub stamina_time: f32,
+    pub stamina_refill: f32,
+    /// Slowing time on the focus meter.
+    pub slow_time: bool,
+    /// Telekinesis (point an open hand, grip, and the thing floats held off it, pulled in or
+    /// pushed away) in place of the gravity gloves, for a game that doesn't say (off: the gloves
+    /// stay what a game gets unless it asks).
+    pub telekinesis: bool,
+    /// Climbing by the hands: a grip on the world holds the player there.
+    pub climbing: bool,
+    /// Easy dismemberment: a cutting edge that goes into a limb or the neck takes it off, however
+    /// fast and wherever on it (without it a cut must be fast, 12 m/s for a sword, land within 4 cm
+    /// of a joint and meet it square, and that proved too hard to land in play). A stab still sticks.
+    pub easy_dismemberment: bool,
+}
+
+impl Default for Melee {
+    fn default() -> Self {
+        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true }
+    }
+}
+
+/// Talking to the game's characters out loud: the voice plugin (`crate::voice`), with the
+/// servers and the LLM its own `voice.toml` names. Off unless the player turns it on. The plugin
+/// reads these from this file too (the volume as it changes; the rest as it starts, and the
+/// runtime starts it again when they change).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Voice {
+    pub enabled: bool,
+    /// The microphone: the input device with this name; empty, the headset's own (Virtual
+    /// Desktop's), else the system's default.
+    pub mic: String,
+    /// The characters' voices against the game's own (1: as loud as its voices for them).
+    pub volume: f32,
+    /// Lines said as their notes say ("[sneering]"): Breeze's guidance, a quarter more of the voice
+    /// server's work.
+    pub act_out: bool,
+    /// Talking over someone cuts them off: any speech the mic hears while they talk.
+    pub barge_in: bool,
+    /// A pause this long (seconds) ends what you're saying.
+    pub pause: f32,
+    /// Their voice goes to the game as it's made, with its mouth (off: a sentence's clause at a
+    /// time, each made whole first).
+    pub stream: bool,
+    /// Simple voice commands with the system's own speech recognition, no servers or AI: a menu's
+    /// words said pick them (a dialogue's topic, "Goodbye"), "what have you got for sale" to
+    /// someone opens their trade (the game's adapter listens: `RT_VOICE_COMMANDS`).
+    pub commands: bool,
+}
+
+impl Default for Voice {
+    fn default() -> Self {
+        Voice { enabled: false, mic: String::new(), volume: 2.5, act_out: true, barge_in: true, pause: 0.3, stream: true, commands: true }
+    }
+}
+
+impl Voice {
+    /// What the plugin takes as it starts: a change starts it again.
+    pub fn plugin_key(&self) -> String {
+        format!("{}|{}|{}|{:.2}|{}", self.mic, self.act_out, self.barge_in, self.pause, self.stream)
+    }
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.
@@ -586,10 +663,11 @@ pub struct Input {
     pub ability_flicks: bool,
     /// Flick speed (m/s) that counts.
     pub flick_speed: f32,
-    /// Ducking in real life crouches in the game.
+    /// Ducking in real life crouches in the game (its sneak, where it has one).
     pub physical_crouch: bool,
-    /// Metres below the calibrated standing height that count as crouching.
-    pub crouch_threshold: f32,
+    /// Metres below the calibrated standing height that count as crouching (a slight crouch by
+    /// default; 0.05 to 0.4).
+    pub stealth_crouch_amount: f32,
     /// In a game's water, the arms swim (strokes push the player); the stick swims either way.
     pub arm_swimming: bool,
     /// How fast a stroke carries the swimmer: 2 is twice as fast (1: as designed).
@@ -919,7 +997,7 @@ impl Default for Input {
             ability_flicks: true,
             flick_speed: 2.0,
             physical_crouch: true,
-            crouch_threshold: 0.35,
+            stealth_crouch_amount: 0.08,
             arm_swimming: true,
             swim_ease: 1.0,
         }

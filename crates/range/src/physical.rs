@@ -429,7 +429,12 @@ impl Armory {
         ];
         for (k, (name, at, half, mass, color)) in props.into_iter().enumerate() {
             let id = PROP_BASE + k as u32;
-            descs.push(prop(id, name, at, half, mass));
+            let mut d = prop(id, name, at, half, mass);
+            // Bottles, boxes, crates and barrels break; cans don't.
+            if name != "can" {
+                d.flags |= OBJF_BREAKABLE;
+            }
+            descs.push(d);
             kinds.insert(id, Kind::Prop { color });
         }
         // The valves on the board, their axles out of it towards you.
@@ -582,9 +587,13 @@ impl Armory {
         }
     }
 
-    /// The ids of every object of a kind (`OBJ_*`).
-    pub fn ids_of_kind(&self, kind: u32) -> Vec<u32> {
-        self.table.descs[..(self.table.count as usize).min(MAX_OBJECTS)].iter().filter(|d| d.id != 0 && d.kind == kind).map(|d| d.id).collect()
+    /// The colour and size (half extents) a prop is drawn at, for its pieces when it breaks.
+    pub fn prop_look(&self, id: u32) -> Option<([f32; 4], Vec3)> {
+        let d = self.descs.get(&id)?;
+        match self.kinds.get(&id)? {
+            Kind::Prop { color } => Some((*color, Vec3::from_array(d.half_extents))),
+            _ => Some(([0.6, 0.6, 0.6, 1.0], Vec3::from_array(d.half_extents).max(Vec3::splat(0.03)))),
+        }
     }
 
     pub fn desc(&self, id: u32) -> Option<&ObjectDesc> {
@@ -743,16 +752,20 @@ impl Armory {
 
     /// Draw items for every object the range draws (not the ones the runtime does). `triggers`:
     /// each controller's trigger (a held gun's trigger follows its hand's).
-    pub fn draws(&self, v: &View, weapons: &[&Weapon], triggers: [f32; 2]) -> Vec<DrawItem> {
+    pub fn draws(&self, v: &View, weapons: &[&Weapon], triggers: [f32; 2], skip: &dyn Fn(&ObjectState) -> bool, glow_of: &dyn Fn(u32) -> f32) -> Vec<DrawItem> {
         let mut out = Vec::new();
         for s in self.states() {
             let Some(kind) = self.kinds.get(&s.desc) else { continue };
-            if self.descs.get(&s.desc).is_some_and(|d| d.flags & OBJF_RUNTIME_DRAWS != 0) {
+            if skip(s) {
+                continue;
+            }
+            if self.descs.get(&s.desc).is_some_and(|d| d.flags & OBJF_RUNTIME_DRAWS != 0) || s.flags & OS_BROKEN != 0 {
                 continue;
             }
             let (p, q) = Self::world_pose(s, v);
             let model = Mat4::from_rotation_translation(q, p);
-            let glow = if s.flags & OS_HOVERED != 0 { 0.25 } else { 0.0 };
+            // (Hovered, or a blade filled with a spell: it glows.)
+            let glow = if s.flags & OS_HOVERED != 0 { 0.25 } else { 0.0f32 }.max(glow_of(s.id));
             match *kind {
                 Kind::Weapon(i) => {
                     let w = &weapons[i];

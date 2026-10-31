@@ -26,6 +26,15 @@ pub fn groups_free() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
 }
 
+/// An object stuck in a loose thing, held by `hand` or let go of: it meets the world (and, let go
+/// of, the hands), not the things (the one it's in would fight it out).
+pub fn groups_stuck_in_thing(hand: Option<usize>) -> InteractionGroups {
+    match hand {
+        Some(h) => InteractionGroups::new(G_HELD[h], G_WORLD, InteractionTestMode::And),
+        None => InteractionGroups::new(G_OBJECT, G_WORLD | G_HAND[0] | G_HAND[1], InteractionTestMode::And),
+    }
+}
+
 /// A sheet ([`rustvr_protocol::OBJF_SHEET`]) lying free: as any free object, but the hands and
 /// their fingers go through it. A fingertip on its face touches it ([`super::sheet`]); pushed, a
 /// page on a table would only be squeezed between the hand and the table.
@@ -337,6 +346,12 @@ impl Physics {
         Some((from_v(ct.point2), from_v(ct.normal1), ct.dist))
     }
 
+    /// Where collider `c` is now (world), from its body as it is.
+    pub fn collider_world_pose(&self, c: ColliderHandle) -> Option<(V3, Q)> {
+        let p = self.collider_pose(self.world.colliders.get(c)?);
+        Some((from_v(p.translation), Q::from_xyzw(p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w)))
+    }
+
     /// Where a collider is, from its body as it is now (its own position may wait for the next step
     /// to catch up with a shape or a pose just set).
     fn collider_pose(&self, col: &Collider) -> rapier3d::math::Pose {
@@ -600,6 +615,10 @@ impl Physics {
         self.world.bodies[b].set_dominance_group(if yielding { -1 } else { 0 });
     }
 
+    pub fn set_linear_damping(&mut self, b: RigidBodyHandle, d: f32) {
+        self.world.bodies[b].set_linear_damping(d);
+    }
+
     pub fn set_angular_damping(&mut self, b: RigidBodyHandle, d: f32) {
         self.world.bodies[b].set_angular_damping(d);
     }
@@ -682,6 +701,79 @@ impl Physics {
         (carry_v, carry_w)
     }
 
+    /// Body `b`'s inertia (kg m^2) about `point` (world, as it lies now): its own about its centre
+    /// of mass, and the parallel axis's.
+    pub fn body_inertia_tensor_about(&self, b: RigidBodyHandle, point: V3) -> glam::Mat3 {
+        let rb = &self.world.bodies[b];
+        let mp = &rb.mass_properties().local_mprops;
+        let (_, rot) = from_pose(rb.position());
+        let frame = glam::Mat3::from_quat((rot * from_q(mp.principal_inertia_local_frame)).normalize());
+        let about_com = frame * glam::Mat3::from_diagonal(from_v(mp.principal_inertia())) * frame.transpose();
+        let r = from_v(rb.center_of_mass()) - point;
+        let outer = glam::Mat3::from_cols(r * r.x, r * r.y, r * r.z);
+        about_com + (glam::Mat3::from_diagonal(V3::splat(r.length_squared())) - outer) * rb.mass()
+    }
+
+    /// Holds a body as a hand holds a melee weapon ([`Joint`]): a spring and a
+    /// damper from the controller to the point held, no stronger than a hand, solved implicitly so
+    /// the stiff spring stays steady at the frame rate. The body keeps its mass and gravity: a light
+    /// one keeps up, a heavy one lags behind a fast swing and swings on past a stop, and what it
+    /// meets stops it. Returns the carry's share of the velocity set (as [`Physics::track`]) and
+    /// where the body goes this step if nothing stops it (the swing a blow is judged by).
+    pub fn joint(&mut self, b: RigidBodyHandle, target_pos: V3, target_rot: Q, dt: f32, j: &Joint) -> ((V3, V3), (V3, Q)) {
+        let dt = dt.max(1e-4);
+        let (pos, rot) = self.pose(b);
+        let (pos_c, rot_c) = j.carry.unwrap_or((pos, rot));
+        let pivot_now = pos + rot * j.pivot;
+        let pivot_c = pos_c + rot_c * j.pivot;
+        let carry_v = (pivot_c - pivot_now) / dt;
+        let carry_w = scaled_axis((rot_c * rot.inverse()).normalize()) / dt;
+        let rb = &self.world.bodies[b];
+        let mass = rb.mass().max(0.05);
+        let com = from_v(rb.center_of_mass());
+        let w_now = from_v(rb.angvel());
+        let (was_v, was_w) = j.carried;
+        // The point held, and the turn, against the player (what the carry gave them aside).
+        let v = from_v(rb.linvel()) + w_now.cross(pivot_now - com) - was_v;
+        let w = w_now - was_w;
+        // The spring pulls the point held onto where the controller has it at the end of the step:
+        // m (v' - v) = dt (k (x - v' dt) + c (vt - v')), the force no more than the hand's.
+        let to = target_pos + target_rot * j.pivot - pivot_c;
+        let k = j.spring;
+        let c = j.damper;
+        let free_v = (mass * v + dt * k * to + dt * c * j.target_vel) / (mass + c * dt + k * dt * dt);
+        let force = (mass * (free_v - v) / dt).clamp_length_max(j.max_force);
+        let v_next = v + force * dt / mass;
+        // The hold pulls at the point held, so the weight and the hold's own pull turn the body
+        // about it (the drive is on the grip): the weight at the centre of mass, less what the
+        // grip's acceleration takes, is a torque about the grip. A heavy head sags, and trails a
+        // grip that moves fast.
+        let rb = &self.world.bodies[b];
+        let gravity = from_v(self.world.gravity) * rb.gravity_scale();
+        let weight = (com - pivot_now).cross((gravity - (v_next - v) / dt) * mass);
+        // Turning: the same about the point held, against the body's inertia about it each way
+        // round (a long weapon's head far out is hard to swing round, but it twists about its own
+        // handle easily: taken as one number for every way, the weight swinging it round would
+        // spin it about its handle as if that were as hard to turn, and it flew off the hand).
+        let dq = (target_rot * rot_c.inverse()).normalize();
+        let angle = scaled_axis(dq);
+        let inertia = self.body_inertia_tensor_about(b, pivot_now) + glam::Mat3::from_diagonal(V3::splat(1e-6));
+        let (ka, ca) = (j.ang_spring, j.ang_damper);
+        let drive = glam::Mat3::from_diagonal(V3::splat(ca * dt + ka * dt * dt));
+        let free_w = (inertia + drive).inverse() * (inertia * w + dt * (ka * angle + ca * j.target_ang + weight));
+        let torque = j.turning(inertia * (free_w - w) / dt - weight);
+        let w_next = (w + inertia.inverse() * (torque + weight) * dt).clamp_length_max(60.0);
+        // 20 m/s is beyond any real hand; it only guards against tracking glitches.
+        let v_next = v_next.clamp_length_max(20.0) + carry_v;
+        let w_next = w_next + carry_w;
+        let rot_next = (Q::from_scaled_axis(w_next * dt) * rot).normalize();
+        let rb = &mut self.world.bodies[b];
+        let com_next = pivot_now + v_next * dt + rot_next * (from_v(rb.local_center_of_mass()) - j.pivot);
+        rb.set_linvel(to_v((com_next - com) / dt), true);
+        rb.set_angvel(to_v(w_next), true);
+        ((carry_v, carry_w), (pivot_now + v_next * dt - rot_next * j.pivot, rot_next))
+    }
+
     /// Collider `c`, where it is now, overlaps the static world.
     pub fn in_world(&self, c: ColliderHandle) -> bool {
         let Some(col) = self.world.colliders.get(c) else { return false };
@@ -726,6 +818,12 @@ impl Physics {
         len < 1e-4 || self.ray_world(from, d, len).is_none()
     }
 
+    /// The point of the static world nearest `p`, within `max`.
+    pub fn nearest_world(&self, p: V3, max: f32) -> Option<V3> {
+        let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD, InteractionTestMode::And));
+        self.world.project_point(to_v(p), max, true, filter).map(|(_, proj)| from_v(proj.point))
+    }
+
     /// First static-world hit along a ray, as a distance.
     pub fn ray_world(&self, origin: V3, dir: V3, max: f32) -> Option<f32> {
         let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
@@ -739,6 +837,13 @@ impl Physics {
         let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
         let filter = QueryFilter::default().groups(InteractionGroups::new(Group::ALL, G_WORLD | G_OBJECT, InteractionTestMode::And)).exclude_collider(skip);
         self.world.cast_ray_and_get_normal(&ray, max, true, filter).map(|(c, hit)| (hit.time_of_impact, c, from_v(hit.normal)))
+    }
+
+    /// Whether a ray from `origin` along `dir` meets collider `c` within `max`.
+    pub fn ray_meets(&self, c: ColliderHandle, origin: V3, dir: V3, max: f32) -> bool {
+        let Some(col) = self.world.colliders.get(c) else { return false };
+        let ray = Ray::new(to_v(origin), to_v(dir.normalize_or_zero()));
+        col.shape().cast_ray(&self.collider_pose(col), &ray, max, true).is_some()
     }
 
     /// First static-world hit along a ray: how far, its surface, and what it's made of.
@@ -868,6 +973,83 @@ pub struct Drive {
     pub ang_gain: f32,
     pub max_ang_accel: f32,
 }
+
+/// How [`Physics::joint`] holds a body: the joint from the controller to the point a hand holds a
+/// weapon by: its spring, damper and the most force and torque it gives, the same whatever the
+/// weapon weighs.
+#[derive(Clone, Copy, Debug)]
+pub struct Joint {
+    /// The point held (body space).
+    pub pivot: V3,
+    /// As [`Drive::carry`] and [`Drive::carried`].
+    pub carry: Option<(V3, Q)>,
+    pub carried: (V3, V3),
+    /// How the controller moves (world, m/s) and turns (rad/s): the damper works on the body's
+    /// motion against it, so a steady swing carries no lag.
+    pub target_vel: V3,
+    pub target_ang: V3,
+    pub spring: f32,
+    pub damper: f32,
+    pub max_force: f32,
+    pub ang_spring: f32,
+    pub ang_damper: f32,
+    pub max_torque: f32,
+    /// A `WYZ` drive (a light handle's): the turning about the handle's line (world, unit) and
+    /// across it are driven and capped apart, each to `max_torque`. None: one cap on the whole turn
+    /// (its `Slerp`).
+    pub twist_axis: Option<V3>,
+}
+
+impl Joint {
+    /// The turning drive's torque `t` as the hand can give it: no more than its cap, about the
+    /// handle and across it apart with a `WYZ` drive.
+    pub fn turning(&self, t: V3) -> V3 {
+        match self.twist_axis {
+            Some(axis) => {
+                let twist = axis * t.dot(axis);
+                twist.clamp_length_max(self.max_torque) + (t - twist).clamp_length_max(self.max_torque)
+            }
+            None => t.clamp_length_max(self.max_torque),
+        }
+    }
+
+    /// One hand on a weapon's handle (the player's: 5000 N/m, 100 N s/m, at most 3000 N; turning
+    /// 1000 N m/rad, 50, at most 250 N m, times a light or heavy handle's 1.1 and 0.9), times the
+    /// hand's strength (its dampers by half of it past 1).
+    pub fn one_hand(pivot: V3, strength: f32) -> Joint {
+        Joint {
+            pivot,
+            carry: None,
+            carried: (V3::ZERO, V3::ZERO),
+            target_vel: V3::ZERO,
+            target_ang: V3::ZERO,
+            spring: HOLD_SPRING * strength,
+            damper: HOLD_DAMPER * (strength * 0.5).max(1.0),
+            max_force: HOLD_MAX_FORCE * strength,
+            ang_spring: HOLD_TURN_SPRING * HANDLE_TURN_SPRING * strength,
+            ang_damper: HOLD_TURN_DAMPER * HANDLE_TURN_DAMPER * (strength * 0.5).max(1.0),
+            max_torque: HOLD_MAX_TORQUE * strength,
+            twist_axis: None,
+        }
+    }
+
+    /// In a world of `w` units a metre (a spring and a damper are the same per unit; a force grows
+    /// with the unit, a torque and a turning spring with its square).
+    pub fn in_units(self, w: f32) -> Joint {
+        Joint { max_force: self.max_force * w, ang_spring: self.ang_spring * w * w, ang_damper: self.ang_damper * w * w, max_torque: self.max_torque * w * w, ..self }
+    }
+}
+
+/// The player's hold (its position spring, damper and most force, its turning spring, damper and
+/// most torque) and the light and heavy handles' turning multipliers (spring 1.1, damper 0.9).
+pub const HOLD_SPRING: f32 = 5000.0;
+pub const HOLD_DAMPER: f32 = 100.0;
+pub const HOLD_MAX_FORCE: f32 = 3000.0;
+pub const HOLD_TURN_SPRING: f32 = 1000.0;
+pub const HOLD_TURN_DAMPER: f32 = 50.0;
+pub const HOLD_MAX_TORQUE: f32 = 250.0;
+pub const HANDLE_TURN_SPRING: f32 = 1.1;
+pub const HANDLE_TURN_DAMPER: f32 = 0.9;
 
 impl Drive {
     /// Straight there in a step, however hard that is.

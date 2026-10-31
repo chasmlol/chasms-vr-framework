@@ -47,11 +47,13 @@
 //! | [`OFF_POCKETS`] .. [`OFF_POCKETS_END`] | the creatures' pockets and what the hands do in them: see [`pockets`] | both | seqlock, ring |
 //! | [`OFF_STATIONS`], [`OFF_CARDS`] | [`Receptacles`]: bowls the hands make things in (see [`stations`]); [`Cards`]: cards made of a game's own interface (see [`cards`]) | adapter -> runtime | seqlock |
 //! | [`OFF_FACE_SCULPT`] | [`FaceSculpt`]: the face as the hands shape it (see [`avatar`]) | runtime -> adapter | seqlock |
+//! | [`OFF_MELEE_WEAPONS`] .. [`OFF_RT_MELEE`] | [`MeleeWeapons`], [`ActorItems`], [`MeleeRules`] (adapter -> runtime), [`RtMelee`] (runtime -> adapter): melee (see [`melee`]) | both | seqlock |
+//! | [`OFF_VOICE_SCENE`] .. [`OFF_VOICE_STREAM`] | [`VoiceScene`], [`VoiceEvents`] (adapter -> voice plugin), [`VoiceLines`], [`VoiceStream`] (voice plugin -> adapter): talking to the game's characters (see [`voice`]) | | seqlock, rings |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
 //! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, the
-//! inventory with the body's slots, the creatures' pockets, the bowls, the cards and the face the
-//! hands shape (a new one goes after the last).
+//! inventory with the body's slots, the creatures' pockets, the bowls, the cards, the face the
+//! hands shape, the melee and the voice (a new one goes after the last).
 //! Every region is listed in address order in `LAYOUT`, which the build checks: none overlaps the
 //! next, and all lie inside [`MAPPING_BYTES`].
 //!
@@ -85,6 +87,7 @@ pub mod inventory;
 pub mod items;
 pub mod stations;
 pub mod cards;
+pub mod melee;
 pub mod sound;
 pub mod world;
 pub mod lighting;
@@ -92,6 +95,7 @@ pub mod magic;
 pub mod player;
 pub mod ride;
 pub mod pockets;
+pub mod voice;
 
 pub use archery::*;
 pub use avatar::*;
@@ -103,6 +107,7 @@ pub use inventory::*;
 pub use items::*;
 pub use stations::*;
 pub use cards::*;
+pub use melee::*;
 pub use sound::*;
 pub use world::*;
 pub use lighting::*;
@@ -110,11 +115,14 @@ pub use magic::*;
 pub use player::*;
 pub use ride::*;
 pub use pockets::*;
+pub use voice::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 15;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v15";
-pub const MAPPING_BYTES: usize = 0x0053_0000;
+pub const VERSION: u32 = 17;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v17";
+/// (Grew by 64 KB in v16: the melee's regions after the face the hands shape; by 64 KB more in v17:
+/// the voice's after the melee's.)
+pub const MAPPING_BYTES: usize = 0x0055_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;
@@ -423,6 +431,9 @@ pub const RT_DASHBOARD: u32 = 1 << 5;
 /// The runtime draws the player's body and hands over the game's picture (the game shouldn't draw
 /// its own first-person hands or arms).
 pub const RT_DRAWS_BODY: u32 = 1 << 6;
+/// The player has simple voice commands on: the adapter listens for its game's own phrases (a
+/// menu's words, "what have you got for sale") with the system's speech recognition, no servers.
+pub const RT_VOICE_COMMANDS: u32 = 1 << 7;
 
 /// How the adapter maps tracking space into the game world. The mapping itself lives in the
 /// adapter SDK because it must use the game's *current* anchor every game frame.
@@ -496,7 +507,10 @@ pub struct Intents {
     /// Scrolling the game's menu (the dominant stick): notches a second, up positive, as a mouse
     /// wheel turns.
     pub scroll: f32,
-    pub _pad2: f32,
+    /// How far the player is crouched in real life, while their ducking crouches the game (metres
+    /// under their standing height; 0 not crouched so, or with physical crouching off): a game may
+    /// slow its crouched walk less the less they crouch.
+    pub crouch: f32,
     /// Swimming by the arms, while [`INT_SWIM`]: the velocity the strokes give the player
     /// (tracking space, metres a second; scaled by [`WaterState::swim_speed`], up to a few times it:
     /// the strokes are made as strong as the game's swimmer, and stronger still). The adapter
@@ -759,6 +773,9 @@ pub const GS_MIRROR: u32 = 1 << 12;
 /// The player has no body in the game yet (a title screen in the world, before a character is
 /// made or loaded): the runtime draws the hands alone.
 pub const GS_HANDS_ONLY: u32 = 1 << 13;
+/// The open menu is one the player can turn in (a conversation, its pieces with the speaker in the
+/// world): the turning stick's left and right turn them as out of a menu, not the menu's.
+pub const GS_MENU_TURNS: u32 = 1 << 14;
 
 /// Linear-light colours.
 #[repr(C)]
@@ -1011,6 +1028,24 @@ pub const EV_MIRROR_CAST: u32 = 7;
 /// The game's effect for the mirror's summons `a` ([`MirrorView::summons`]) reached its moment:
 /// the glass appears (or goes) now, as a summoned creature appears at its effect's "Hit".
 pub const EV_MIRROR_HIT: u32 = 8;
+/// One of the game's creatures cries out (a grunt as it's hit, a shout as it swings, its last
+/// breath), for a game with no voices of its own: `a`'s low byte which (`VOICE_*`), and above it a
+/// number the game keeps for the creature speaking (0: none); f0..f2 where (world), f3 how loud
+/// (0..1). A creature has one voice: its new line cuts off the one it was saying, and
+/// [`VOICE_HUSH`] stops it.
+pub const EV_VOICE: u32 = 9;
+pub const VOICE_HUSH: u32 = 0;
+pub const VOICE_HURT: u32 = 1;
+pub const VOICE_ATTACK: u32 = 2;
+pub const VOICE_DEATH: u32 = 3;
+/// Dying slowly (killed by a stab).
+pub const VOICE_DEATH_LONG: u32 = 4;
+/// Choking for breath (a throat cut or stabbed, or strangled).
+pub const VOICE_BREATHLESS: u32 = 5;
+/// A scream as it falls, until it lands ([`VOICE_HUSH`]).
+pub const VOICE_FALLING: u32 = 6;
+/// Struggling in a hold.
+pub const VOICE_GRAPPLED: u32 = 7;
 
 pub const HAPTIC_LEFT: u32 = 0;
 pub const HAPTIC_RIGHT: u32 = 1;
@@ -1101,6 +1136,14 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_STATIONS, size_of::<Receptacles>()),
     (OFF_CARDS, size_of::<Cards>()),
     (OFF_FACE_SCULPT, size_of::<FaceSculpt>()),
+    (OFF_MELEE_WEAPONS, size_of::<MeleeWeapons>()),
+    (OFF_ACTOR_ITEMS, size_of::<ActorItems>()),
+    (OFF_MELEE_RULES, size_of::<MeleeRules>()),
+    (OFF_RT_MELEE, size_of::<RtMelee>()),
+    (OFF_VOICE_SCENE, size_of::<VoiceScene>()),
+    (OFF_VOICE_EVENTS, size_of::<VoiceEvents>()),
+    (OFF_VOICE_LINES, size_of::<VoiceLines>()),
+    (OFF_VOICE_STREAM, size_of::<VoiceStream>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

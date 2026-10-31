@@ -38,7 +38,7 @@ headset ◀─ OpenXR ─┐
                    │    session.rs          the frame loop
                    │    scenario.rs         scripted end-to-end tests
                    │
-                   │  shared memory "Local\RustVR_v15" (crates/protocol)
+                   │  shared memory "Local\RustVR_v17" (crates/protocol)
                    │  + D3D11 shared textures (NT handles, keyed mutex) + named events
                    │
                    │  game process
@@ -208,7 +208,7 @@ works in tracking space:
 | Movement | Head- or off-hand-relative stick, sprint toggle, snap (30°) or smooth (120°/s) turning, weapon switch on the stick |
 | Roomscale | While the stick is idle, the game body walks after the head (starts at 20 cm, stops at 5 cm). The view stays put because the adapter absorbs the motion |
 | Up against things | A game's body is often wider than the player's (Oblivion's is 30 cm round), so it stops the view well short of a table. The game's adapter, which knows its body and its world, tells the mapper how far the view stands ahead of the body each frame (`set_lead`). Oblivion's gives it whatever of the step asked the body didn't go: up to a table until the player's front is at it, otherwise a head's breadth from a wall, and inside its body for what isn't the world's (a door, someone). Walking, the view moves on; following, the head's way from the body shortens instead |
-| Physical crouch | Standing height is calibrated as you play; ducking 35 cm crouches the game, and the view stays at your real head height |
+| Physical crouch | Standing height is calibrated as you play (and held while you crouch); crouching a little (8 cm by default, the Comfort tab's "Stealth crouch amount") crouches the game, its sneak, and the view stays at your real head height (crouching for real in a crouch from the stick takes the view lower still: no jump back up) |
 | Height | Your upright head height (standing, or sat up in a chair) is the game's eye height, whenever the view was recentred: the runtime keeps that height (it follows the head until the headset is worn and still; held higher a second it rises there, lower it settles slowly; a recentre takes it as it is) and takes the recentre's own height back off (`height_offset`). The body is drawn from the same height, so it stands on the game's floor |
 | Manual reload (default) | Titanfall 2 VR style: firing-hand A ejects the magazine, the off hand grabs a fresh one at the hip or chest (squeeze), seats it in the well (8 cm), then racks the charging handle (pull it back 5 cm). Letting go drops the magazine. The game gets one Reload press, at the rack. Intent flags let the game hide the empty magazine and show the one in your hand |
 | Slap reload | The simpler option, and the fallback for guns without a magazine well: the off hand goes into the well (12 cm), then a squeeze or an upward slap faster than 0.9 m/s reloads |
@@ -425,6 +425,21 @@ again, counted in the page's state with where on the card it came down; the hand
 meanwhile, nothing). Oblivion's alchemy bench leaves
 a note of the game's scroll this way, in its handwriting, listing what the player can make and the
 steps of the recipe touched.
+
+## 6f. Melee
+
+Melee is physical (`docs/MELEE.md`). The runtime holds a game's melee weapons on a hand joint (their weight their own, two hands and leverage, hands sliding along
+handles; a hand near a handle goes onto it at the grip it's made for, as a gun's grip locks on),
+judges every contact by the impact's speed and angles against each damager and the damage tables
+by damage type, material and tier, keeps blades stuck in what they went into (rocking, sliding
+and running through), cuts limbs off at the body's joints, kicks with untracked feet, and does the
+extras: throwing, telekinesis (on things and on bodies), slowed time, imbuing,
+breakable things, climbing by the hands and the climb jump, and an optional stamina. A game may ask
+for the melee buttons (`RULES_KICK`). The game describes its weapons (`MeleeWeapons`), lists what its creatures
+hold (`ActorItems`), says its rules (`MeleeRules`), and is told the hits (`CombatEvent`) and the
+player's side (`RtMelee`); its creatures, their health and their brains are its own. The test
+range plays it all: ragdoll fighters with their pins, balance, reactions and brains,
+a bench of dummies in armour, a melee rack, a block to climb.
 
 ## 7. Adapters
 

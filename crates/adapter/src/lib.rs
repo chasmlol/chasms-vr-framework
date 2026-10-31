@@ -549,6 +549,49 @@ impl Adapter {
         }
     }
 
+    /// The melee weapons' handles and damagers, with the game's numbers (see [`MeleeWeapons`]):
+    /// when they change.
+    pub fn write_melee_weapons(&self, table: &MeleeWeapons) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_melee_weapons(table);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What the game's creatures hold (see [`ActorItems`]): every frame, with the actors.
+    pub fn write_actor_items(&self, items: &ActorItems) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_actor_items(items);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The game's rules for the player's melee (see [`MeleeRules`]): when they change.
+    pub fn write_melee_rules(&self, rules: &MeleeRules) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_melee_rules(rules);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The player's melee side this frame (see [`RtMelee`]): how fast the game's time should run,
+    /// the arms' climbing, stamina spent, imbuing.
+    pub fn read_rt_melee(&self, out: &mut RtMelee) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_rt_melee_into(out),
+            _ => false,
+        }
+    }
+
     /// The bowls the hands make things in (see [`Receptacles`]): when they change.
     pub fn write_receptacles(&self, table: &Receptacles) -> bool {
         match &self.link {
@@ -624,6 +667,65 @@ impl Adapter {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Who's around to be talked to and who's listening ([`VoiceScene`], see
+    /// [`rustvr_protocol::voice`]): whenever it changes, while the voice plugin runs.
+    pub fn write_voice_scene(&self, scene: &VoiceScene) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_voice_scene(scene);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Something for the characters' memory ([`VoiceEvent`]): a save, a load, a happening.
+    pub fn push_voice_event(&self, event: &VoiceEvent) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.push_voice_event(event);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The voice plugin's lines after the `read` first ([`VoiceLine`]).
+    pub fn read_voice_lines(&self, read: &mut u64) -> Vec<VoiceLine> {
+        match &self.link {
+            Some(l) if self.connected => l.read_voice_lines(read),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The voice plugin is running (the player has Voice on).
+    pub fn voice_alive(&self) -> bool {
+        matches!(&self.link, Some(l) if self.connected && l.voice_alive())
+    }
+
+    /// How many lines the plugin has written (where to start reading after connecting).
+    pub fn voice_lines_written(&self) -> u64 {
+        self.link.as_ref().map_or(0, |l| l.voice_lines_written())
+    }
+
+    /// The streamed line `line`'s voice and mouth since what was taken ([`VoiceStream`]).
+    pub fn take_voice_stream(&self, line: u32, samples: &mut Vec<i16>, frames: &mut Vec<[f32; 16]>) {
+        if let Some(l) = &self.link
+            && self.connected
+        {
+            l.take_voice_stream(line, samples, frames);
+        }
+    }
+
+    /// How much of the streamed line `line` the game has played (samples).
+    pub fn set_voice_stream_played(&self, line: u32, played: u64) {
+        if let Some(l) = &self.link
+            && self.connected
+        {
+            l.set_voice_stream_played(line, played);
         }
     }
 
