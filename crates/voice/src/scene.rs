@@ -404,7 +404,7 @@ impl Game for Scene {
     }
 
     fn audio(&self, _speaker: &str, samples: &[f32], rate: u32) {
-        if self.streams(|| Piece::Audio(samples.to_vec(), rate)) {
+        if self.streams(|| Piece::Audio(samples.to_vec(), rate, Instant::now())) {
             return;
         }
         let mut voicing = self.voicing.lock().unwrap();
