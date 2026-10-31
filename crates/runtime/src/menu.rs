@@ -272,9 +272,10 @@ fn comfort(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::R
     if c.roomscale {
         slider(ui, "Max distance from body", &mut c.roomscale_limit, 0.2, 1.5, " m", 2);
     }
-    ui.checkbox(&mut s.input.physical_crouch, "Duck to crouch");
+    ui.checkbox(&mut s.input.physical_crouch, "Duck to crouch (lean over or crouch to sneak)");
     if s.input.physical_crouch {
-        slider(ui, "Crouch depth", &mut s.input.crouch_threshold, 0.15, 0.7, " m", 2);
+        ui.add(egui::Slider::new(&mut s.input.stealth_crouch_amount, 0.0..=1.0).text("Stealth crouch amount").custom_formatter(|v, _| crate::stealth::describe(v as f32)));
+        ui.checkbox(&mut s.input.stealth_buzz, "Buzz going in and out of it");
     }
     slider(ui, "Height offset", &mut s.comfort.height_offset, -0.5, 0.5, " m", 2);
     ui.checkbox(&mut s.comfort.camera_anims, "Follow scripted camera (ladders, cut-scenes)");
@@ -376,7 +377,7 @@ fn help(ui: &mut egui::Ui) {
         ("Right stick left / right", "snap turn"),
         ("Right stick down / click", "crouch"),
         ("A or X, empty hand", "jump"),
-        ("Duck for real", "crouch"),
+        ("Lean over or duck for real", "crouch / sneak"),
         ("Menu button", "pause, and this menu"),
     ]);
     section(ui, "Riding", &[
