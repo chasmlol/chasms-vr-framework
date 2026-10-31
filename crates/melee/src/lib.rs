@@ -287,25 +287,30 @@ fn joint_of(parts: &[(Vec3, Vec3, f32, u32)], i: usize, parent: Option<usize>) -
     }
 }
 
-/// Which part a cut that went in takes off, as the melee decides it:
-/// the damager cuts limbs off ([`MeleeBlade::dismember`]), faster than that
-/// times its factor at the weapon's tier ([`MeleeBlade::dismember_tiers`]), and the cut fits a part
-/// that comes off ([`slicing`]): the part hit (`hit`), else its parent, else one of its children.
-/// It fits within [`SLICE_WIDTH`] of the part's cut along its way, and the way square enough both to
-/// the damager's cutting way (`forward`: an edge's facing, a point's way in) and to its length
-/// (`up`), each within its horizontal / vertical angle of square
+/// Which part a cut that went in takes off: the damager cuts limbs off ([`MeleeBlade::dismember`]),
+/// faster than that times its factor at the weapon's tier ([`MeleeBlade::dismember_tiers`]), and
+/// the cut fits a part that comes off ([`slicing`]): the part hit (`hit`), else its parent, else
+/// one of its children. It fits within [`SLICE_WIDTH`] of the part's cut along its way, and the way
+/// square enough both to the damager's cutting way (`forward`: an edge's facing, a point's way in)
+/// and to its length (`up`), each within its horizontal / vertical angle of square
 /// ([`MeleeBlade::dismember_angles`]; their cosines are compared with the angle over 90).
+/// With easy dismemberment (`easy`) the speed doesn't matter and the part hit comes off wherever
+/// the cut went into it, if it's a part that comes off (its parent and children are still cut only
+/// at their joints).
 #[allow(clippy::too_many_arguments)]
-pub fn sever_part(b: &MeleeBlade, j: &Judged, tier: u32, parts: &[(Vec3, Vec3, f32, u32)], hit: usize, point: Vec3, forward: Vec3, up: Vec3) -> Option<usize> {
+pub fn sever_part(b: &MeleeBlade, j: &Judged, tier: u32, parts: &[(Vec3, Vec3, f32, u32)], hit: usize, point: Vec3, forward: Vec3, up: Vec3, easy: bool) -> Option<usize> {
     if b.dismember <= 0.0 || j.flags & CEF_PENETRATED == 0 || hit >= parts.len() {
         return None;
     }
     let tiers = if b.dismember_tiers == [0.0; 6] { [2.5, 1.5, 1.0, 0.9, 0.8, 0.8] } else { b.dismember_tiers };
-    if j.speed <= b.dismember * tiers[(tier as usize).min(5)] {
+    if !easy && j.speed <= b.dismember * tiers[(tier as usize).min(5)] {
         return None;
     }
     let [h, v] = if b.dismember_angles == [0.0; 2] { [35.0, 90.0] } else { b.dismember_angles };
     let parent = parents(parts);
+    if easy && slicing(parts[hit].3, parent[hit].map(|p| parts[p].3)).is_some() {
+        return Some(hit);
+    }
     let fits = |i: usize| -> bool {
         let Some((height, adjust)) = slicing(parts[i].3, parent[i].map(|p| parts[p].3)) else { return false };
         let way = |k: usize| (parts[k].1 - parts[k].0).normalize_or_zero();

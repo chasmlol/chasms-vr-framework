@@ -539,6 +539,8 @@ pub struct CombatInput<'a> {
     pub player: &'a [(Vec3, Vec3, f32, u32)],
     /// A foot kicking now ([`crate::kick`]): which, its ankle and toes (world), and the kick's way.
     pub kick: Option<(usize, Vec3, Vec3, Vec3)>,
+    /// Easy dismemberment (the settings'): a cutting edge that goes into a limb takes it off.
+    pub easy_dismemberment: bool,
 }
 
 /// A damager's hit on a body part: whose, which part (its index, kind and radius), where, how
@@ -1267,7 +1269,7 @@ impl Combat {
         let parts: Vec<(Vec3, Vec3, f32, u32)> = body.actor.parts[..(body.actor.count as usize).min(MAX_ACTOR_PARTS)].iter().map(|p| (Vec3::from_array(p.a), Vec3::from_array(p.b), p.radius, p.kind)).collect();
         let forward = if b.kind == DMG_PIERCE { along } else { edge };
         let up = if b.kind == DMG_PIERCE { edge.reject_from(along).normalize_or_zero() } else { along };
-        if let Some(cut) = rustvr_melee::sever_part(b, &judged, tier, &parts, body.index, point, forward, up) {
+        if let Some(cut) = rustvr_melee::sever_part(b, &judged, tier, &parts, body.index, point, forward, up, inp.easy_dismemberment) {
             flags = (flags | CEF_SEVER) & !CEF_PENETRATED;
             judged.flags &= !CEF_PENETRATED;
             part = &body.actor.parts[cut];

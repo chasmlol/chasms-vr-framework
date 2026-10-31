@@ -1151,6 +1151,7 @@ impl Session {
                 paused: rig_paused || menu_mode,
                 player: &player,
                 kick,
+                easy_dismemberment: self.settings.current.melee.easy_dismemberment,
             });
             if self.combat.kicked {
                 self.foot_kicks.met(now);

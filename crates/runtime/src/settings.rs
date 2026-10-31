@@ -53,11 +53,15 @@ pub struct Melee {
     pub telekinesis: bool,
     /// Climbing by the hands: a grip on the world holds the player there.
     pub climbing: bool,
+    /// Easy dismemberment: a cutting edge that goes into a limb or the neck takes it off, however
+    /// fast and wherever on it (without it a cut must be fast, 12 m/s for a sword, land within 4 cm
+    /// of a joint and meet it square, and that proved too hard to land in play). A stab still sticks.
+    pub easy_dismemberment: bool,
 }
 
 impl Default for Melee {
     fn default() -> Self {
-        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true }
+        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true }
     }
 }
 

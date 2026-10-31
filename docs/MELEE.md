@@ -140,7 +140,10 @@ and body rules, shared by the runtime and the range.
   hand and a shin at their joints, a foot 3 cm up the shin, the head by its neck 2.8 cm up it; a
   thigh, the torso never). The event names the part taken off (`CEF_SEVER`); the game cuts it off,
   and it kills. The blade carries on through: it passes the creature until it's clear of it, and
-  doesn't go in again for a second.
+  doesn't go in again for a second. With easy dismemberment (the `easy_dismemberment`
+  setting, on unless it's turned off) neither the speed nor the place matters: a cutting edge that
+  goes into a part that comes off takes it off (its parent and children still only at their
+  joints), a stab never (see the calls).
 * **Knockouts.** A blunt hit to the head past the knockout speed of its row knocks the creature out,
   as the tables say (see the calls).
 * **Impact feedback.** A hit's sound is picked by what hit what (a blade, a mace or a fist against
@@ -296,7 +299,8 @@ and body rules, shared by the runtime and the range.
 ## Settings and the game's say
 
 `settings.toml`'s `[melee]`: `strength` (1: the standard player), `stamina` (off), `stamina_time` (12 s),
-`stamina_refill` (6 s), `slow_time` (on), `telekinesis` (off), `climbing` (on). A game's
+`stamina_refill` (6 s), `slow_time` (on), `telekinesis` (off), `climbing` (on), `easy_dismemberment`
+(on). A game's
 `MeleeRules` override slowing time, climbing and telekinesis when they say (`RULES_SAYS_*`), turn on
 the melee buttons (`RULES_KICK`: the movement stick kicks, slowing time on the dominant B, the climb
 jump on the dominant stick), give their own slowing (`slow_scale`, `focus_time`, `focus_refill`),
@@ -317,6 +321,7 @@ The choices that need a reason, and why:
 | Creature pins | joint drives | implicit drives on each part's mass and inertia | explicit drives on light hand parts blew up |
 | A stuck blade's pull on the body | the joint's force on the part's rigidbody | the hand's force as the speed it gives the part's mass in a step, for the game to add (at most 4 m/s) | the protocol pushes by speed |
 | A blade's way between its samples | its colliders, the whole blade | points 6 to 8 cm apart along it | a sweep of points, as close as a hand's thickness |
+| Dismemberment | strict: 12 m/s for a sword, within 4 cm of a joint, square to it (easy dismemberment an option, off by default) | easy dismemberment on by default, for cutting edges only: a stab still sticks | the strict cut proved too hard to land in play, and the user wants limbs coming off; easy dismemberment for stabs too would let a stab into an arm or a face cut it off |
 | Knockouts | the tables carry knockout speeds nothing uses | a blunt head hit past them knocks out | the user asked for knockouts; the speeds are in the tables |
 | Choking | a hand choke hurts nothing | 5 a second | a choke can kill |
 | Wrenching a weapon away | NPCs never let go to a pull | pulled 0.95 m from its holder's chest for 0.25 s, it lets go | the user asked for grab-and-wrench disarms |
