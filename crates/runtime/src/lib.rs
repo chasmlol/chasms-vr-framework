@@ -37,7 +37,6 @@ pub mod targets;
 pub mod warp;
 pub mod locomotion;
 pub mod pacing;
-pub mod stealth;
 
 /// Wraps an angle to (-pi, pi].
 pub fn wrap_angle(a: f32) -> f32 {

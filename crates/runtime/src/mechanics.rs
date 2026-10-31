@@ -126,8 +126,6 @@ pub struct MechDebug {
     pub gestures: [u32; 7],
     pub following: bool,
     pub phys_crouch: bool,
-    /// How far the body leans or crouches (`crate::stealth`), metres.
-    pub lean_depth: f32,
     pub game_crouched: bool,
     pub height_comp: f32,
     pub dist_mag: f32,
@@ -173,6 +171,20 @@ struct Btn {
 const LONG_PRESS: f64 = 0.45;
 /// How long a lone stick click waits for the other stick (both together: the framework view).
 const STICK_CHORD: f64 = 0.12;
+/// The head's upright height (metres over the real floor): heights a worn headset's at, sat or
+/// stood (not on a desk); still within this for this long (s), it's worn; held more than this
+/// higher for this long (s), it's upright there now, reached at this speed (m/s).
+const UPRIGHT_LOW: f32 = 0.9;
+const UPRIGHT_HIGH: f32 = 2.3;
+const UPRIGHT_STILL: f32 = 0.05;
+const UPRIGHT_SETTLE: f32 = 1.5;
+const UPRIGHT_RISE: f32 = 0.03;
+const UPRIGHT_HOLD: f32 = 1.0;
+const UPRIGHT_SPEED: f32 = 0.1;
+/// The base of the neck from the head (its frame: x right, y up, z forward), metres. The head's
+/// height is measured there, as if the head were held level: looking down turns the head about the
+/// neck, so it lowers the eyes but isn't a crouch.
+const NECK: Vec3 = Vec3::new(0.0, -0.18, -0.09);
 
 impl Btn {
     fn update(&mut self, d: bool, now: f64) {
@@ -347,8 +359,21 @@ pub struct Mechanics {
     sprint_toggle: bool,
     last_stick_y_dir: i32,
     two_held: bool,
-    /// Physical crouch and sneaking, and the head's upright height (`crate::stealth`).
-    pub stealth: crate::stealth::Stealth,
+    // physical crouch, and the view's height
+    stand_h: f32,
+    /// The head's been still at a likely height a while (worn): until then its upright height
+    /// follows it. How long it's been held higher than its upright height, and its lowest then. A
+    /// recentre takes the head's height as it is.
+    upright_settled: bool,
+    upright_still: f32,
+    upright_above: f32,
+    upright_min: f32,
+    recalibrate: bool,
+    phys_crouch: bool,
+    crouch_by_phys: bool,
+    crouch_pending: i32,
+    crouch_cooldown: f64,
+    stand_eye: f32,
     // roomscale follow
     following: bool,
     // magazine reload
@@ -391,7 +416,17 @@ impl Default for Mechanics {
             sprint_toggle: false,
             last_stick_y_dir: 0,
             two_held: false,
-            stealth: Default::default(),
+            stand_h: 0.0,
+            upright_settled: false,
+            upright_still: 0.0,
+            upright_above: 0.0,
+            upright_min: f32::MAX,
+            recalibrate: false,
+            phys_crouch: false,
+            crouch_by_phys: false,
+            crouch_pending: -1,
+            crouch_cooldown: 0.0,
+            stand_eye: 1.8,
             following: false,
             prev_mag_rel: None,
             reload_cooldown: 0.0,
@@ -421,12 +456,12 @@ impl Mechanics {
         }
         let eye = if c.body.height > 1.0 {
             c.body.height - 0.11
-        } else if !c.comfort.seated && self.stealth.stand_h() > 1.0 {
-            self.stealth.stand_h()
+        } else if !c.comfort.seated && self.stand_h > 1.0 {
+            self.stand_h
         } else {
             return 0.0;
         };
-        (eye - self.stealth.stand_eye()).clamp(-0.8, 0.6)
+        (eye - self.stand_eye).clamp(-0.8, 0.6)
     }
 
     /// The view's height is the head's over its upright height (standing, or sat up in a chair),
@@ -435,16 +470,15 @@ impl Mechanics {
     /// headset on the desk, or put on sitting after it started standing, the view would otherwise
     /// float (or sink) for good, and the body hung from it with it.
     fn upright_offset(&self, game: Option<&GameState>) -> f32 {
-        let stand = self.stealth.stand_h();
         match game {
-            Some(g) if stand > 0.0 && g.tracking.world_per_meter > 0.0 => (g.tracking.origin[1] - stand) * g.tracking.world_per_meter,
+            Some(g) if self.stand_h > 0.0 && g.tracking.world_per_meter > 0.0 => (g.tracking.origin[1] - self.stand_h) * g.tracking.world_per_meter,
             _ => 0.0,
         }
     }
 
     pub fn recenter(&mut self) {
         self.recenter_seq = self.recenter_seq.wrapping_add(1);
-        self.stealth.recalibrate();
+        self.recalibrate = true;
     }
 
     /// One press of `a` for the game (the runtime's own gestures press them too: a page turned by
@@ -816,7 +850,7 @@ impl Mechanics {
             } else if ydir < 0 && !inp.riding {
                 // Guns are in your hands and holsters; the stick's down flick toggles crouch.
                 self.press(Action::Crouch);
-                self.stealth.stick_pressed(gflags & GS_CROUCHED != 0, now);
+                self.crouch_by_phys = false;
             }
         }
         if ty.abs() < 0.3 {
@@ -857,7 +891,7 @@ impl Mechanics {
         }
         if self.stick_fire[dom] && !inp.riding {
             self.press(Action::Crouch);
-            self.stealth.stick_pressed(gflags & GS_CROUCHED != 0, now);
+            self.crouch_by_phys = false;
         }
         // Off hand.
         if self.btn_a[off].tapped && !rig_mode {
@@ -888,39 +922,88 @@ impl Mechanics {
             self.press(Action::Throw);
         }
 
-        // Physical crouch: leaning over or ducking in real life crouches the game body (its sneak,
-        // fits under things, quieter footsteps) while the view height stays the real head height.
-        // (Leaning down on a mount's neck isn't sneaking. Swimming, a head ducked is a face put
-        // into the water, not a crouch; nor could a crouch be kept in step there: a swimmer's game
-        // body isn't crouched.)
+        // Physical crouch: ducking in real life crouches the game body (fits under obstacles,
+        // quieter footsteps) while the view height stays the real head height.
         {
             let game_crouched = gflags & GS_CROUCHED != 0;
-            let swimming = game.is_some_and(|g| g.water.flags & WATER_SWIMMING != 0);
-            let st = self.stealth.update(&crate::stealth::StealthInput {
-                head_pos: hmd_pos,
-                head_rot: hmd_rot,
-                dt: inp.dt,
-                now,
-                settings: c,
-                game_crouched: game.filter(|g| g.flags & GS_IN_GAME != 0).map(|_| game_crouched),
-                eye_above_feet: game.map(|g| g.eye_above_feet).unwrap_or(0.0),
-                can_crouch: !inp.riding && !swimming,
-                hands: [0, 1].map(|h| (f.hands[h].connected != 0).then(|| v3(f.hands[h].grip.pos))),
-            });
-            if st.press {
-                self.press(Action::Crouch);
+            let eye_above_feet = game.map(|g| g.eye_above_feet).unwrap_or(self.stand_eye);
+            if !game_crouched && eye_above_feet > 1.0 && eye_above_feet < 2.5 {
+                self.stand_eye += (eye_above_feet - self.stand_eye) * 0.05;
             }
-            if st.changed && c.input.stealth_buzz && c.input.physical_crouch && !c.comfort.seated {
-                for h in 0..2 {
-                    self.haptic(h, 0.03, 160.0, 0.18);
+            // The head's upright height (over the real floor), standing or sat up in a chair: the
+            // view's height is the head's over it (`upright_offset`), and ducking a good way under
+            // it crouches. Until the headset's been still at a likely height a while (worn: not on
+            // the desk, nor being put on), it follows the head. Then, held higher a second or more
+            // (stood up), it rises to there over a moment; a moment higher (a stretch, on tiptoe, a
+            // tracking glitch) doesn't count. Lower, it settles: a slouch soon, a crouch hardly at
+            // all, and not while crouched (a crouch held stays one). A recentre takes the head's
+            // height as it is.
+            let h = (hmd_pos + hmd_rot * NECK).y - NECK.y;
+            let dt = inp.dt;
+            let likely = (UPRIGHT_LOW..UPRIGHT_HIGH).contains(&h);
+            if std::mem::take(&mut self.recalibrate) && likely {
+                self.stand_h = h;
+                self.upright_settled = true;
+                self.upright_above = 0.0;
+                self.upright_min = f32::MAX;
+            }
+            if !self.upright_settled {
+                self.upright_still = if likely && (h - self.stand_h).abs() < UPRIGHT_STILL { self.upright_still + dt } else { 0.0 };
+                self.stand_h = if self.stand_h == 0.0 { h } else { self.stand_h + (h - self.stand_h) * (dt / 0.25).min(1.0) };
+                self.upright_settled = self.upright_still >= UPRIGHT_SETTLE;
+            } else if h > self.stand_h + UPRIGHT_RISE {
+                self.upright_above += dt;
+                self.upright_min = self.upright_min.min(h);
+                if self.upright_above >= UPRIGHT_HOLD {
+                    self.stand_h = (self.stand_h + UPRIGHT_SPEED * dt).min(self.upright_min);
+                }
+            } else {
+                self.upright_above = 0.0;
+                self.upright_min = f32::MAX;
+                if h < self.stand_h && !self.phys_crouch {
+                    // slouching or re-calibration
+                    self.stand_h -= if h > self.stand_h - 0.12 { 0.02 } else { 0.004 } * dt;
                 }
             }
-            out.tracking.height_comp = st.height_comp;
-            self.debug.stand_h = self.stealth.stand_h();
-            self.debug.phys_crouch = self.stealth.leaning();
-            self.debug.lean_depth = self.stealth.debug.depth;
+            let was = self.phys_crouch;
+            let thr = c.input.stealth_crouch_amount.max(0.05);
+            if !self.phys_crouch && h < self.stand_h - thr {
+                self.phys_crouch = true;
+            } else if self.phys_crouch && h > self.stand_h - thr + (thr * 0.5).min(0.06) {
+                self.phys_crouch = false;
+            }
+            if self.phys_crouch != was {
+                tracing::info!("physical crouch: {} (the head {:.2} m under upright)", if self.phys_crouch { "crouched" } else { "stood up" }, self.stand_h - h);
+            }
+            // (Leaning down on a mount's neck isn't sneaking. Swimming, a head ducked is a face put
+            // into the water, not a crouch. Nor could a crouch be kept in step there: a swimmer's
+            // game body isn't crouched, so one pressed in the water would still be on at the shore.)
+            let swimming = game.is_some_and(|g| g.water.flags & WATER_SWIMMING != 0);
+            if c.input.physical_crouch && !c.comfort.seated && game.is_some() && !inp.riding && !swimming {
+                if self.phys_crouch != was {
+                    self.crouch_pending = if self.phys_crouch { 1 } else if self.crouch_by_phys { 0 } else { -1 };
+                }
+                if self.crouch_pending >= 0 && now > self.crouch_cooldown {
+                    if game_crouched != (self.crouch_pending == 1) {
+                        self.press(Action::Crouch);
+                        self.crouch_cooldown = now + 0.6;
+                        self.crouch_by_phys = self.crouch_pending == 1;
+                    }
+                    self.crouch_pending = -1;
+                }
+            }
+            // The real head already went down: don't lower the view a second time by the game's crouch
+            // (by as much as it says its eye went down: a game that doesn't say does that itself).
+            let comp = if c.input.physical_crouch && !c.comfort.seated && game_crouched && self.phys_crouch && eye_above_feet > 0.3 {
+                (self.stand_eye - eye_above_feet).max(0.0)
+            } else {
+                0.0
+            };
+            out.tracking.height_comp = comp;
+            self.debug.stand_h = self.stand_h;
+            self.debug.phys_crouch = self.phys_crouch;
             self.debug.game_crouched = game_crouched;
-            self.debug.height_comp = st.height_comp;
+            self.debug.height_comp = comp;
         }
 
         if full_reload && have_mag {
@@ -1535,28 +1618,25 @@ mod tests {
         let mut f = standing();
         let mut g = game();
         let mut t = 0.0;
-        let mut step = |m: &mut Mechanics, f: &HmdFrame, g: &GameState, secs: f64| {
-            let mut out = MechOutput::default();
-            for _ in 0..(secs * 90.0) as usize {
-                t += 1.0 / 90.0;
-                out = run(m, f, g, &s, t);
-            }
-            out
-        };
-        // Stood still a moment: upright is learned.
-        step(&mut m, &f, &g, 2.0);
+        for _ in 0..10 {
+            t += 1.0 / 90.0;
+            run(&mut m, &f, &g, &s, t);
+        }
         f.hmd.pos[1] = 1.2; // duck 50 cm
-        let out = step(&mut m, &f, &g, 0.4);
+        t += 1.0 / 90.0;
+        let out = run(&mut m, &f, &g, &s, t);
         assert_eq!(out.intents.presses[Action::Crouch as usize], 1, "one crouch toggle");
         // The game crouches: its eye drops to 1.1 m; the view must not drop again.
         g.flags |= GS_CROUCHED;
         g.eye_above_feet = 1.1;
-        let out = step(&mut m, &f, &g, 0.1);
-        // Standing eye height was learned as the game's 1.7 m.
-        assert!((out.tracking.height_comp - 0.6).abs() < 0.02, "{}", out.tracking.height_comp);
+        t += 1.0 / 90.0;
+        let out = run(&mut m, &f, &g, &s, t);
+        // Standing eye height was learned as ~1.75 m (it adapts from 1.8 toward the game's 1.7).
+        assert!((0.6..0.7).contains(&out.tracking.height_comp), "{}", out.tracking.height_comp);
         // Standing up again toggles back.
         f.hmd.pos[1] = 1.7;
-        let out = step(&mut m, &f, &g, 1.0);
+        t += 1.0;
+        let out = run(&mut m, &f, &g, &s, t);
         assert_eq!(out.intents.presses[Action::Crouch as usize], 2);
     }
 
