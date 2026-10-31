@@ -1528,7 +1528,10 @@ impl Session {
         let framework_shown = self.mech.framework_view && self.rig_active_last;
         self.pacing.cpu(ms(t_rig, t_end), framework_shown);
         if let Some(line) = self.pacing.report(now) {
-            tracing::info!("runtime: {line}");
+            // (With its video memory: past its budget, what a frame uses is copied in and out of
+            // the system's memory, and every GPU command waits on it.)
+            let video = self.gpu.video_memory().map(|(used, budget)| format!("; video memory {used} of {budget} MB{}", if used > budget { " (over its budget)" } else { "" }));
+            tracing::info!("runtime: {line}{}", video.unwrap_or_default());
         }
         let budget = 1500.0 / self.backend.refresh_hz().max(30.0);
         if ms(t_rig, t_end) > budget && now - self.slow_logged > 1.0 {
