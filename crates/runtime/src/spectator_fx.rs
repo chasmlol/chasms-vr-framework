@@ -28,7 +28,8 @@
 //! - *depth of field* at half size, focused where the player looks, aims, or at what they hold
 //!   up close;
 //! - *the lens and the film*, in one pass: fisheye, colour fringes, sharpening, glow, exposure,
-//!   contrast, white balance, a grade and a LUT, vignette, grain, letterbox.
+//!   contrast, white balance, a grade and a LUT, vignette, grain. (No letterbox: the player doesn't
+//!   want black bars over the picture.)
 //!
 //! **The flat HUD**: the game's own HUD, from its own picture of it, where a flat player has it at
 //! the screen's edges (its pieces anchored to the side they're nearest, sized by the game's text),
@@ -51,7 +52,7 @@ use crate::compositor::{Background, Compositor, Layers, projection, view_matrix}
 use crate::mechanics::WeaponPose;
 use crate::rig::feedback::{Cue, Feedback};
 use crate::rig::{RigOutput, WorldMap};
-use crate::settings::{Grade, Letterbox, Look, Settings, Studio};
+use crate::settings::{Grade, Look, Settings, Studio};
 
 /// A jump of the world in one picture beyond its steady turn and walk: a turn (radians), a move
 /// across (metres) or up and down. Below these it's the walk and turn carried on.
@@ -76,9 +77,9 @@ pub fn look(l: Look, keep: &Studio) -> Studio {
         Look::Clean | Look::Custom => Studio { look: l, ..clean },
         // A film's: 24 frames at a 180 degree shutter (the blur of motion a cinema audience
         // expects), a 90 degree lens (a flat game's, narrower than the headset's, which leaves
-        // room to widen at a run), a shallow focus that's pulled to what's looked at, 2.39:1
-        // anamorphic bars, highlights that bloom into a warm halo as film's do, fine grain, and the
-        // blockbuster's teal shadows and warm skin. The camera sways a little, as an operator's.
+        // room to widen at a run), a shallow focus that's pulled to what's looked at, highlights
+        // that bloom into a warm halo as film's do, fine grain, and the blockbuster's teal shadows
+        // and warm skin. The camera sways a little, as an operator's.
         Look::Cinematic => Studio {
             motion_blur: true,
             shutter: 180.0,
@@ -101,7 +102,6 @@ pub fn look(l: Look, keep: &Studio) -> Studio {
             glow: 0.35,
             grain: 0.12,
             sharpen: 0.15,
-            letterbox: Letterbox::Scope,
             contrast: 1.1,
             saturation: 0.95,
             temperature: 0.1,
@@ -113,8 +113,7 @@ pub fn look(l: Look, keep: &Studio) -> Studio {
         // fisheye, worn on the chest (it turns after the body, a little down, swaying with it), a
         // slow shutter's smear at 30 frames (a small sensor exposes long), everything in focus (a
         // tiny sensor behind a wide lens), the cheap optics' fringes and dark corners, hard in-camera
-        // sharpening, sensor noise, and a cold, flat, desaturated colour. No letterbox: it's
-        // footage, not a film.
+        // sharpening, sensor noise, and a cold, flat, desaturated colour.
         Look::HyperReal => Studio {
             motion_blur: true,
             shutter: 300.0,
@@ -142,7 +141,7 @@ pub fn look(l: Look, keep: &Studio) -> Studio {
             ..clean
         },
         // An action film's: every shot and blow felt in the camera, the view widening hard at a
-        // run, a 1/60 shutter's crisp blur at 30 frames, 2:1, punchy contrast and colour.
+        // run, a 1/60 shutter's crisp blur at 30 frames, punchy contrast and colour.
         Look::Action => Studio {
             motion_blur: true,
             shutter: 180.0,
@@ -164,7 +163,6 @@ pub fn look(l: Look, keep: &Studio) -> Studio {
             glow: 0.25,
             grain: 0.05,
             sharpen: 0.3,
-            letterbox: Letterbox::Univisium,
             contrast: 1.2,
             saturation: 1.15,
             temperature: 0.05,
@@ -172,7 +170,7 @@ pub fn look(l: Look, keep: &Studio) -> Studio {
             grade_mix: 0.4,
             ..clean
         },
-        // Old film stock: 4:3, a soft lens with fringes and heavy dark corners, a strong glow,
+        // Old film stock: a soft lens with fringes and heavy dark corners, a strong glow,
         // coarse grain, a gentle sway, and a faded warm print.
         Look::Vintage => Studio {
             motion_blur: true,
@@ -194,7 +192,6 @@ pub fn look(l: Look, keep: &Studio) -> Studio {
             vignette: 0.6,
             glow: 0.5,
             grain: 0.5,
-            letterbox: Letterbox::Academy,
             exposure: 0.1,
             contrast: 0.9,
             saturation: 0.6,
@@ -217,7 +214,6 @@ fn draws_effects(s: &Studio, lut: bool) -> bool {
         || s.glow > 0.001
         || s.grain > 0.001
         || s.sharpen > 0.001
-        || s.letterbox != Letterbox::Off
         || s.exposure.abs() > 0.001
         || (s.contrast - 1.0).abs() > 0.001
         || (s.saturation - 1.0).abs() > 0.001
@@ -225,34 +221,6 @@ fn draws_effects(s: &Studio, lut: bool) -> bool {
         || s.tint.abs() > 0.001
         || (s.grade != Grade::None && s.grade_mix > 0.001)
         || (lut && s.lut_mix > 0.001)
-}
-
-/// The picture's shape inside the letterbox (width / height), if it has bars.
-fn letterbox_aspect(l: Letterbox) -> Option<f32> {
-    match l {
-        Letterbox::Off => None,
-        Letterbox::Scope => Some(2.39),
-        Letterbox::Univisium => Some(2.0),
-        Letterbox::Flat => Some(1.85),
-        Letterbox::Academy => Some(4.0 / 3.0),
-    }
-}
-
-/// The part of a `w` x `h` window the picture fills inside its letterbox (u0, v0, u1, v1): bars
-/// above and below for a wider shape, at the sides for a narrower one.
-pub fn frame_box(l: Letterbox, w: u32, h: u32) -> [f32; 4] {
-    let window = w as f32 / h.max(1) as f32;
-    match letterbox_aspect(l) {
-        Some(a) if a > window => {
-            let k = window / a;
-            [0.0, 0.5 - k * 0.5, 1.0, 0.5 + k * 0.5]
-        }
-        Some(a) if a < window => {
-            let k = a / window;
-            [0.5 - k * 0.5, 0.0, 0.5 + k * 0.5, 1.0]
-        }
-        _ => [0.0, 0.0, 1.0, 1.0],
-    }
 }
 
 // ---- the camera ---------------------------------------------------------------------------------
@@ -492,7 +460,7 @@ pub struct FlatPiece {
 const FLAT_TEXT: f32 = 0.0375;
 
 /// The game's HUD laid out as a flat player has it, in `area` of the window (pixels: x0, y0, x1,
-/// y1, inside any letterbox): each of its pieces (but those it hides, the crosshair, as the hands
+/// y1): each of its pieces (but those it hides, the crosshair, as the hands
 /// aim, and a held thing's card, which floats over the thing) anchored to the side of the screen
 /// it's nearest, or its middle, as far from that side as the game has it, at the size the game's
 /// text has on a flat screen (`size` times). Without pieces, the whole HUD over the middle,
@@ -576,7 +544,6 @@ cbuffer Fx : register(b0) {
     float4 film;            // x grain, y seconds, z glow, w 1: glow
     float4 colour;          // x exposure, y contrast, z saturation, w the LUT's share
     float4 white;           // xyz white balance, w the grade's share
-    float4 frame_box;       // the picture inside the letterbox (uv)
     float4 grade;           // x which grade, y the LUT's size, z the dissolve's share
 };
 cbuffer Piece : register(b1) {
@@ -883,7 +850,6 @@ float3 lut(float3 e) {
 }
 float4 PSFinal(VOut i) : SV_Target {
     float2 uv = i.uv;
-    if (any(uv < frame_box.xy) || any(uv > frame_box.zw)) return float4(0, 0, 0, 1);
     // The lens: from the middle (the right edge at 1) out, bent towards a fisheye's (equal angles
     // at equal distances) keeping the corners where they were.
     float aspect = size.x * size.w;
@@ -1018,7 +984,6 @@ struct FxCb {
     film: [f32; 4],
     colour: [f32; 4],
     white: [f32; 4],
-    frame_box: [f32; 4],
     grade: [f32; 4],
 }
 
@@ -1692,9 +1657,8 @@ impl Stage {
             && let Some(h) = hud
             && let Some(srv) = h.tex.srv.as_ref()
         {
-            let area = frame_box(if f.effects { s.letterbox } else { Letterbox::Off }, f.window.width, f.window.height);
             let (w, hh) = (f.window.width as f32, f.window.height as f32);
-            f.hud = flat_layout(h.layout, h.aspect, [area[0] * w, area[1] * hh, area[2] * w, area[3] * hh], s.flat_hud_size);
+            f.hud = flat_layout(h.layout, h.aspect, [0.0, 0.0, w, hh], s.flat_hud_size);
             f.hud_additive = h.layout.flags & HUDL_ADDITIVE != 0;
             let pieces = &f.hud;
             layers.world_panels.retain(|p| !is_flat_piece(p.srv, &p.uv, srv, pieces));
@@ -1993,7 +1957,6 @@ fn effects(gpu: &Gpu, kit: &Kit, t: &Targets, f: &Frame, prev: Option<Prev>, lut
     let wb = wb / wb.dot(Vec3::new(0.2126, 0.7152, 0.0722)).max(0.1);
     cb.colour = [2f32.powf(s.exposure), s.contrast.max(0.1), s.saturation.max(0.0), if lut.is_some() { s.lut_mix.clamp(0.0, 1.0) } else { 0.0 }];
     cb.white = [wb.x, wb.y, wb.z, s.grade_mix.clamp(0.0, 1.0)];
-    cb.frame_box = frame_box(s.letterbox, t.width, t.height);
     let grade = match s.grade {
         Grade::None => 0.0,
         Grade::TealOrange => 1.0,
@@ -2137,14 +2100,6 @@ pub fn panel(ui: &mut egui::Ui, s: &mut Settings) {
     slider(ui, "Glow", &mut st.glow, 0.0, 1.5, "", 2);
     slider(ui, "Grain", &mut st.grain, 0.0, 1.0, "", 2);
     slider(ui, "Sharpen", &mut st.sharpen, 0.0, 1.0, "", 2);
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Letterbox");
-        ui.radio_value(&mut st.letterbox, Letterbox::Off, "none");
-        ui.radio_value(&mut st.letterbox, Letterbox::Scope, "2.39:1");
-        ui.radio_value(&mut st.letterbox, Letterbox::Univisium, "2:1");
-        ui.radio_value(&mut st.letterbox, Letterbox::Flat, "1.85:1");
-        ui.radio_value(&mut st.letterbox, Letterbox::Academy, "4:3");
-    });
     ui.separator();
     ui.label("Colour");
     slider(ui, "Exposure", &mut st.exposure, -2.0, 2.0, " stops", 2);
@@ -2269,15 +2224,6 @@ mod tests {
     }
 
     #[test]
-    fn letterbox_bars_are_above_and_below_or_at_the_sides() {
-        let b = frame_box(Letterbox::Scope, 1920, 1080);
-        assert!((b[3] - b[1] - (16.0 / 9.0) / 2.39).abs() < 1e-4 && b[0] == 0.0, "{b:?}");
-        let b = frame_box(Letterbox::Academy, 1920, 1080);
-        assert!((b[2] - b[0] - (4.0 / 3.0) / (16.0 / 9.0)).abs() < 1e-4 && b[1] == 0.0, "{b:?}");
-        assert_eq!(frame_box(Letterbox::Off, 1920, 1080), [0.0, 0.0, 1.0, 1.0]);
-    }
-
-    #[test]
     fn the_flat_hud_keeps_its_pieces_by_their_sides_at_a_flat_games_size() {
         // A tall eye's HUD (as Oblivion draws it for a headset), its text a 36th of its height.
         let mut l = HudLayout::new(
@@ -2311,7 +2257,7 @@ mod tests {
     fn the_looks_keep_the_viewers_options_and_a_hand_change_makes_it_custom() {
         let mut keep = Studio { flat_hud: true, smooth_snaps: false, ..Studio::default() };
         let c = look(Look::Cinematic, &keep);
-        assert!(c.flat_hud && !c.smooth_snaps && c.motion_blur && c.letterbox == Letterbox::Scope);
+        assert!(c.flat_hud && !c.smooth_snaps && c.motion_blur && c.dof);
         assert!(draws_effects(&c, false));
         keep.look = Look::Clean;
         assert!(!draws_effects(&look(Look::Clean, &keep), false), "the clean look draws nothing over the picture");

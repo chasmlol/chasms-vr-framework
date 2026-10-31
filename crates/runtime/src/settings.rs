@@ -250,7 +250,7 @@ pub struct Studio {
     /// how far towards a fisheye's it bends (0..1: the middle magnified, the edges as wide as
     /// ever). `chromatic`: colour fringes towards the edges. `vignette`: the corners darkened.
     /// `glow`: highlights blooming into a soft halo as film's do. `grain`: film grain. `sharpen`:
-    /// contrast-adaptive sharpening. `letterbox`: black bars to a film's shape.
+    /// contrast-adaptive sharpening. (No letterbox: the player doesn't want black bars.)
     pub lens_fov: f32,
     pub fisheye: f32,
     pub chromatic: f32,
@@ -258,7 +258,6 @@ pub struct Studio {
     pub glow: f32,
     pub grain: f32,
     pub sharpen: f32,
-    pub letterbox: Letterbox,
     /// The colour, over the game's own (its grading stays). `exposure` in stops; `contrast` and
     /// `saturation` 1 as the game has them; `temperature` and `tint` -1..1 (warmer, greener).
     /// `grade`: one of the studio's own grades, `grade_mix` of the way; `lut`: a `.cube` file's
@@ -283,32 +282,17 @@ pub struct Studio {
 pub enum Look {
     /// The game's picture as it is: no effects.
     Clean,
-    /// A film's: 24 frames at a 180 degree shutter, a shallow focus, 2.39:1, warm and graded.
+    /// A film's: 24 frames at a 180 degree shutter, a shallow focus, warm and graded.
     Cinematic,
     /// A body camera's footage: a wide lens bent towards a fisheye, worn on the chest, a hard
     /// sharpness and a cold, flat colour.
     HyperReal,
     /// An action film's: every hit and shot felt, the view widening at a run, punchy colour.
     Action,
-    /// Old film stock: heavy grain, a soft glow, faded warm colour, 4:3.
+    /// Old film stock: heavy grain, a soft glow, faded warm colour.
     Vintage,
     /// Anything else (set by hand).
     Custom,
-}
-
-/// Black bars to a film's shape (none for a shape wider than the window's).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Letterbox {
-    Off,
-    /// 2.39:1, anamorphic widescreen.
-    Scope,
-    /// 2:1.
-    Univisium,
-    /// 1.85:1, flat widescreen.
-    Flat,
-    /// 4:3, pillarboxed in a wide window.
-    Academy,
 }
 
 /// The studio's own colour grades (`crate::spectator_fx`'s shader has how each is made).
@@ -362,7 +346,6 @@ impl Default for Studio {
             glow: 0.0,
             grain: 0.0,
             sharpen: 0.0,
-            letterbox: Letterbox::Off,
             exposure: 0.0,
             contrast: 1.0,
             saturation: 1.0,
