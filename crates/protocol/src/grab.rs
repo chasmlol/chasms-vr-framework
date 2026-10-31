@@ -51,7 +51,10 @@ pub struct ActorBody {
     pub flags: u32, // BODY_*
     /// The whole body's mass (kg).
     pub mass: f32,
-    pub _pad: u32,
+    /// A hold on it the creature broke free of: that grab's
+    /// [`CreatureGrab::serial`], and the hand lets go of it, with no throw. 0: none. (One a frame:
+    /// a game freeing it of both hands names the other next frame.)
+    pub let_go: u32,
     pub parts: [PartBody; MAX_ACTOR_PARTS],
 }
 

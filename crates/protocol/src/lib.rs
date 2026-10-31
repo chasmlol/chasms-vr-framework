@@ -979,12 +979,23 @@ pub const EV_MIRROR_CAST: u32 = 7;
 /// the glass appears (or goes) now, as a summoned creature appears at its effect's "Hit".
 pub const EV_MIRROR_HIT: u32 = 8;
 /// One of the game's creatures cries out (a grunt as it's hit, a shout as it swings, its last
-/// breath), for a game with no voices of its own: `a` which (`VOICE_*`), f0..f2 where (world), f3
-/// how loud (0..1).
+/// breath), for a game with no voices of its own: `a`'s low byte which (`VOICE_*`), and above it a
+/// number the game keeps for the creature speaking (0: none); f0..f2 where (world), f3 how loud
+/// (0..1). A creature has one voice: its new line cuts off the one it was saying, and
+/// [`VOICE_HUSH`] stops it.
 pub const EV_VOICE: u32 = 9;
+pub const VOICE_HUSH: u32 = 0;
 pub const VOICE_HURT: u32 = 1;
 pub const VOICE_ATTACK: u32 = 2;
 pub const VOICE_DEATH: u32 = 3;
+/// Dying slowly (killed by a stab).
+pub const VOICE_DEATH_LONG: u32 = 4;
+/// Choking for breath (a throat cut or stabbed, or strangled).
+pub const VOICE_BREATHLESS: u32 = 5;
+/// A scream as it falls, until it lands ([`VOICE_HUSH`]).
+pub const VOICE_FALLING: u32 = 6;
+/// Struggling in a hold.
+pub const VOICE_GRAPPLED: u32 = 7;
 
 pub const HAPTIC_LEFT: u32 = 0;
 pub const HAPTIC_RIGHT: u32 = 1;

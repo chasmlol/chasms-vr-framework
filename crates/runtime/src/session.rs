@@ -609,11 +609,32 @@ impl Session {
                 // The game's mirror spell, and its effect's moment.
                 EV_MIRROR_CAST => self.mirror.cast(),
                 EV_MIRROR_HIT => self.mirror.hit(ev.a),
-                // A creature's voice the game has none of its own for: the runtime's grunt there.
+                // A creature's voice the game has none of its own for: the runtime's line there, on
+                // that creature's one voice.
                 EV_VOICE => {
-                    if let (Some(map), true) = (self.map_now, self.settings.current.sound.enabled) {
-                        let fb = feedback::Feedback { cue: feedback::Cue::Grunt, hand: None, object: None, pos: map.inv_point(Vec3::new(ev.f[0], ev.f[1], ev.f[2])), intensity: ev.f[3].clamp(0.1, 1.0) };
-                        self.play_cue(&fb);
+                    if let (Some(map), true, Some(a)) = (self.map_now, self.settings.current.sound.enabled, &self.audio) {
+                        use rustvr_audio::Event as E;
+                        let speaker = (ev.a >> 8) as u64;
+                        let event = match ev.a & 0xff {
+                            VOICE_HUSH => None,
+                            VOICE_ATTACK => Some(E::Shout),
+                            VOICE_DEATH => Some(E::Death),
+                            VOICE_DEATH_LONG => Some(E::DeathLong),
+                            VOICE_BREATHLESS => Some(E::Gasp),
+                            VOICE_FALLING => Some(E::Scream),
+                            VOICE_GRAPPLED => Some(E::Struggle),
+                            _ => Some(E::Grunt),
+                        };
+                        let (pos, loud) = (map.inv_point(Vec3::new(ev.f[0], ev.f[1], ev.f[2])), ev.f[3].clamp(0.1, 1.0));
+                        match event {
+                            None if speaker != 0 => a.hush(speaker),
+                            None => {}
+                            Some(e) if speaker != 0 => a.play_voice(e, e.fallback(), pos, loud, speaker),
+                            Some(e) => a.play_event(e, rustvr_audio::SetKey::NONE, e.fallback(), pos, loud),
+                        }
+                        if event.is_some() {
+                            self.sounds_played += 1;
+                        }
                     }
                 }
                 _ => {}
@@ -2627,7 +2648,6 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audi
         C::HitBlunt => (E::Melee, S::Melee),
         C::Clash => (E::Clash, S::Clash),
         C::Chop => (E::Chop, S::Chop),
-        C::Grunt => (E::Grunt, S::Grunt),
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

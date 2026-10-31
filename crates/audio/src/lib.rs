@@ -93,12 +93,20 @@ pub enum Sound {
     Clash,
     /// A blade biting into wood: a hollow knock.
     Chop,
-    /// A creature's grunt (a game with no voices of its own asks for it).
+    /// A creature's grunt (a game with no voices of its own asks for it), and its other lines: a
+    /// shout as it swings, its last breath, a long dying moan, a choked gasp for breath, a scream
+    /// as it falls, the strain of struggling in a hold.
     Grunt,
+    Shout,
+    LastBreath,
+    DeathMoan,
+    Gasp,
+    Scream,
+    Struggle,
 }
 
 impl Sound {
-    pub const ALL: [Sound; 29] = [
+    pub const ALL: [Sound; 35] = [
         Sound::Grab,
         Sound::Release,
         Sound::HolsterIn,
@@ -128,6 +136,12 @@ impl Sound {
         Sound::Clash,
         Sound::Chop,
         Sound::Grunt,
+        Sound::Shout,
+        Sound::LastBreath,
+        Sound::DeathMoan,
+        Sound::Gasp,
+        Sound::Scream,
+        Sound::Struggle,
     ];
 }
 
@@ -185,16 +199,22 @@ pub enum Event {
     Bite,
     Gulp,
     /// Melee: an edge cutting, a point stabbing, metal clashing, a blade biting wood, a creature
-    /// grunting (`docs/MELEE.md`).
+    /// grunting (`docs/MELEE.md`), and its other lines (see [`Sound::Shout`]).
     HitCut,
     HitStab,
     Clash,
     Chop,
     Grunt,
+    Shout,
+    Death,
+    DeathLong,
+    Gasp,
+    Scream,
+    Struggle,
 }
 
 impl Event {
-    pub const COUNT: usize = 39;
+    pub const COUNT: usize = 45;
     pub const ALL: [Event; Event::COUNT] = [
         Event::Grab,
         Event::Release,
@@ -235,6 +255,12 @@ impl Event {
         Event::Clash,
         Event::Chop,
         Event::Grunt,
+        Event::Shout,
+        Event::Death,
+        Event::DeathLong,
+        Event::Gasp,
+        Event::Scream,
+        Event::Struggle,
     ];
 
     /// Its key in `sounds.toml`.
@@ -279,6 +305,12 @@ impl Event {
             Event::Clash => "clash",
             Event::Chop => "chop",
             Event::Grunt => "grunt",
+            Event::Shout => "shout",
+            Event::Death => "death",
+            Event::DeathLong => "death_long",
+            Event::Gasp => "gasp",
+            Event::Scream => "scream",
+            Event::Struggle => "struggle",
         }
     }
 
@@ -324,6 +356,12 @@ impl Event {
             Event::Clash => Sound::Clash,
             Event::Chop => Sound::Chop,
             Event::Grunt => Sound::Grunt,
+            Event::Shout => Sound::Shout,
+            Event::Death => Sound::LastBreath,
+            Event::DeathLong => Sound::DeathMoan,
+            Event::Gasp => Sound::Gasp,
+            Event::Scream => Sound::Scream,
+            Event::Struggle => Sound::Struggle,
             Event::FireTail | Event::Casing | Event::Bite | Event::Gulp => return None,
         })
     }
@@ -358,7 +396,9 @@ impl Event {
             Event::Bite | Event::Gulp => 0.25,
             Event::HitCut | Event::HitStab | Event::Chop => 0.42,
             Event::Clash => 0.5,
-            Event::Grunt => 0.4,
+            Event::Grunt | Event::Death | Event::DeathLong | Event::Struggle => 0.4,
+            Event::Gasp => 0.35,
+            Event::Shout | Event::Scream => 0.5,
         }
     }
 }
@@ -410,8 +450,10 @@ pub struct LoopId(u64);
 /// What the game thread asks of the mixer.
 pub(crate) enum Command {
     Play { sound: Sound, pos: Vec3, intensity: f32 },
-    /// A pack event, or `fallback` if the pack (for this set, or at all) has none.
-    Event { event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32 },
+    /// A pack event, or `fallback` if the pack (for this set, or at all) has none; a speaker's
+    /// line (see [`Audio::play_voice`]) first cuts off the one it was saying.
+    Event { event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32, speaker: Option<u64> },
+    Hush { speaker: u64 },
     StartLoop { id: u64, sound: Sound, event: Option<Event>, pos: Vec3 },
     MoveLoop { id: u64, pos: Vec3 },
     StopLoop { id: u64 },
@@ -536,7 +578,19 @@ impl Audio {
     /// pack's defaults), at a tracking-space position; or `fallback`, synthesised, if the pack
     /// has none (or no pack is loaded). `intensity` works as for [`Audio::play`].
     pub fn play_event(&self, event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32) {
-        self.send(Command::Event { event, set, fallback, pos, intensity: clean(intensity) });
+        self.send(Command::Event { event, set, fallback, pos, intensity: clean(intensity), speaker: None });
+    }
+
+    /// A line of `speaker`'s voice (a creature's, any number its caller keeps for it): `event` as
+    /// [`Audio::play_event`] plays it, with the pack's defaults. A speaker has one voice: its new
+    /// line cuts off the one it was saying.
+    pub fn play_voice(&self, event: Event, fallback: Option<Sound>, pos: Vec3, intensity: f32, speaker: u64) {
+        self.send(Command::Event { event, set: SetKey::NONE, fallback, pos, intensity: clean(intensity), speaker: Some(speaker) });
+    }
+
+    /// Stops what `speaker` is saying (a fall's scream on landing), fading it out.
+    pub fn hush(&self, speaker: u64) {
+        self.send(Command::Hush { speaker });
     }
 
     /// Loads the sound pack in `dir` (its `sounds.toml`) on a background thread, replacing the
@@ -651,7 +705,7 @@ impl Audio {
     fn send(&self, command: Command) {
         let pos = match command {
             Command::Play { pos, .. } | Command::Event { pos, .. } | Command::StartLoop { pos, .. } | Command::MoveLoop { pos, .. } => pos,
-            Command::StopLoop { .. } => Vec3::ZERO,
+            Command::StopLoop { .. } | Command::Hush { .. } => Vec3::ZERO,
         };
         if !pos.is_finite() {
             tracing::debug!(?pos, "ignored a sound at a broken position");
@@ -659,7 +713,7 @@ impl Audio {
         }
         // While nothing is mixing (no device yet, or it was lost) a sound would only play late,
         // so drop it. Stops still go through, so a loop can't outlive a device reconnect.
-        let stop = matches!(command, Command::StopLoop { .. });
+        let stop = matches!(command, Command::StopLoop { .. } | Command::Hush { .. });
         if !stop && !self.shared.live.load(Ordering::Acquire) {
             return;
         }

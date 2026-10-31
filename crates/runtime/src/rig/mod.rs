@@ -5770,6 +5770,12 @@ impl Rig {
                 self.let_go_creature(i, None);
                 continue;
             };
+            // The creature broke free of this hold (the game's say): the hand's forced off.
+            if self.bodies.get(&hold.actor).is_some_and(|b| b.let_go == hold.serial) {
+                tracing::info!("rig: creature {:#x} breaks free of the {} hand", hold.actor, if i == 0 { "left" } else { "right" });
+                self.let_go_creature(i, None);
+                continue;
+            }
             let both = self.hands.as_ref().unwrap()[i ^ 1].creature.is_some_and(|c| c.actor == hold.actor);
             let now = self.now;
             let h = &mut self.hands.as_mut().unwrap()[i];

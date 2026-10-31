@@ -137,13 +137,12 @@ pub enum Cue {
     Penetrate,
     /// Melee hits, heard by what met what (`crate::combat`; their pulses are the combat's own): an
     /// edge cutting flesh, a point going in, a blunt blow, metal on metal (blades, armour), a blade
-    /// biting wood; and a creature's grunt.
+    /// biting wood.
     HitCut,
     HitStab,
     HitBlunt,
     Clash,
     Chop,
-    Grunt,
 }
 
 impl Cue {
@@ -228,7 +227,6 @@ impl Cue {
             Cue::HitBlunt => "melee",
             Cue::Clash => "clash",
             Cue::Chop => "chop",
-            Cue::Grunt => "grunt",
         }
     }
 }
@@ -347,8 +345,8 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         Cue::Slide => (0.015, 180.0 + 120.0 * i, (0.08 + 0.3 * i).min(0.4)),
         // (Its intensity is its strength.)
         Cue::Penetrate => (0.01, 160.0, 1.0),
-        // (The combat feels its hits itself; a grunt isn't felt.)
-        Cue::HitCut | Cue::HitStab | Cue::HitBlunt | Cue::Clash | Cue::Chop | Cue::Grunt => return None,
+        // (The combat feels its hits itself.)
+        Cue::HitCut | Cue::HitStab | Cue::HitBlunt | Cue::Clash | Cue::Chop => return None,
     })
 
 }

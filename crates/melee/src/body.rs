@@ -85,9 +85,10 @@ impl Part {
         !matches!(self, Part::Torso)
     }
 
-    /// The hit-reaction table's harsher rows are for these parts.
+    /// The hit-reaction table's harsher rows are for these (the head and the legs, not the neck or
+    /// the feet).
     pub fn head_or_legs(self) -> bool {
-        matches!(self, Part::Head | Part::Neck | Part::Leg | Part::Foot)
+        matches!(self, Part::Head | Part::Leg)
     }
 }
 
@@ -128,12 +129,27 @@ pub enum Doing {
     AttackingAirborne,
 }
 
-/// The push table for the Medium and Hard humans (Hard's is Medium's);
-/// `heavy`: the armoured ones' (`MediumHeavy`, `HardHeavy`), a step tougher.
-pub fn reaction(level: u32, part: Part, doing: Doing, heavy: bool) -> Reaction {
+/// Whose push table: Hard's is Medium's; the armoured
+/// ones' (`MediumHeavy`, `HardHeavy`) a step tougher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Table {
+    Easy,
+    Medium,
+    MediumHeavy,
+    HardHeavy,
+}
+
+/// What a hit's push level does to a creature, by the push table: the part it landed on (`left`:
+/// on the creature's left side), what it was doing, whose table.
+pub fn reaction(level: u32, part: Part, left: bool, doing: Doing, table: Table) -> Reaction {
     use Doing::*;
     use Reaction::*;
-    let hl = part.head_or_legs();
+    // (Easy's level 2 harsher row lists the head, the neck and the right leg only: the left leg
+    // takes the plain row there.)
+    let hl = match (table, level) {
+        (Table::Easy, 2) => matches!(part, Part::Head | Part::Neck) || (part == Part::Leg && !left),
+        _ => part.head_or_legs(),
+    };
     let hands = part == Part::Hand;
     let r = match (level.min(4), hl) {
         (0, _) => match doing {
@@ -161,7 +177,9 @@ pub fn reaction(level: u32, part: Part, doing: Doing, heavy: bool) -> Reaction {
             Combat | Attacking => Full,
             _ => Destabilize,
         },
+        // (Easy is knocked down by it standing idle.)
         (3, false) => match doing {
+            Idle if table == Table::Easy => Destabilize,
             Combat => Medium,
             AttackingAirborne => Destabilize,
             _ => Full,
@@ -172,17 +190,19 @@ pub fn reaction(level: u32, part: Part, doing: Doing, heavy: bool) -> Reaction {
         },
         _ => Destabilize,
     };
-    if !heavy {
+    if matches!(table, Table::Easy | Table::Medium) {
         return r;
     }
-    // The armoured: L1 and L2 while reeling only light; L2 on the body medium idle, light in an
-    // attack; L2 on the head or legs full idle and reeling, medium fighting, down only airborne.
+    // The armoured: L1 and L2 while reeling only light; L2 on the body medium idle and fully
+    // reeling, light in an attack; L2 on the head or legs full idle and reeling, medium fighting,
+    // down only airborne; HardHeavy's L3 on the head or legs full while reeling.
     match (level.min(4), hl, doing) {
         (1 | 2, false, Staggered) => Light,
-        (2, false, Idle) => Medium,
+        (2, false, Idle | FullyStaggered) => Medium,
         (2, false, Attacking) => Light,
         (2, true, Idle | Staggered | FullyStaggered) => Full,
         (2, true, Combat | Attacking) => Medium,
+        (3, true, Staggered) if table == Table::HardHeavy => Full,
         _ => r,
     }
 }

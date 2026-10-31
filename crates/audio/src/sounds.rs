@@ -161,6 +161,12 @@ fn design(sound: Sound, index: usize, rate: f32) -> Variation {
         Sound::Clash => clash(&mut v),
         Sound::Chop => chop(&mut v),
         Sound::Grunt => grunt(&mut v),
+        Sound::Shout => shout(&mut v),
+        Sound::LastBreath => last_breath(&mut v),
+        Sound::DeathMoan => death_moan(&mut v),
+        Sound::Gasp => gasp(&mut v),
+        Sound::Scream => scream(&mut v),
+        Sound::Struggle => struggle(&mut v),
     }
 }
 
@@ -205,7 +211,7 @@ fn clash(v: &mut Vary) -> Variation {
     }
     let mut hard = v.buf();
     hard.noise(0.0, v.amp(1.0), Noise::band(v.hz(6000.0), 0.8), Env::new(0.0002, 0.0, 0.006));
-    for (freq, decay, level) in [(1170.0, 0.6, 0.6), (1830.0, 0.45, 0.5), (2610.0, 0.38, 0.4), (3480.0, 0.3, 0.3), (4720.0, 0.22, 0.25), (6150.0, 0.15, 0.15)] {
+    for (freq, decay, level) in [(1170.0, 0.5, 0.6), (1830.0, 0.4, 0.5), (2610.0, 0.38, 0.4), (3480.0, 0.3, 0.3), (4720.0, 0.22, 0.25), (6150.0, 0.15, 0.15)] {
         hard.mode(0.0, v.partial(freq), v.s(decay), v.amp(level));
     }
     Variation::from_layers(soft.finish(0.32), hard.finish(0.45), Vec::new(), false)
@@ -237,6 +243,79 @@ fn grunt(v: &mut Vary) -> Variation {
         b.tone(0.0, v.amp(level * 0.45), f0 * k, f0 * k * 0.82, 0.25, env);
     }
     b.noise(0.0, v.amp(0.25), Noise::band(v.hz(700.0), 0.6), Env::new(0.01, 0.05, v.s(0.15)));
+    Variation::single(b.finish(0.4))
+}
+
+/// A man's vowels, as the formants (centre, width, level) that weight a voice's harmonics: "ah"
+/// open, "oh" round, "nn" closed through the nose.
+const AH: [(f32, f32, f32); 3] = [(730.0, 160.0, 1.0), (1090.0, 200.0, 0.6), (2440.0, 300.0, 0.25)];
+const OH: [(f32, f32, f32); 3] = [(570.0, 140.0, 1.0), (840.0, 180.0, 0.55), (2410.0, 300.0, 0.15)];
+const NN: [(f32, f32, f32); 2] = [(260.0, 120.0, 1.0), (2300.0, 400.0, 0.12)];
+
+/// A voiced sound: twelve harmonics of a pitch gliding from `from` to `to` over `glide`, each as
+/// loud as the vowel's formants make it (and a little of each, so it never thins to nothing).
+fn voiced(b: &mut Buf, v: &mut Vary, at: f32, from: f32, to: f32, glide: f32, vowel: &[(f32, f32, f32)], level: f32, env: Env) {
+    for k in 1..=12 {
+        let f = from * k as f32;
+        let w: f32 = vowel.iter().map(|&(c, width, l)| l * (-((f - c) / width).powi(2)).exp()).sum::<f32>() + 0.06 / k as f32;
+        b.tone(at, v.amp(level * w), f, to * k as f32, glide, env);
+    }
+}
+
+/// A shout as it swings ("hah!"): a breath's onset, then an open vowel pitched up and falling.
+fn shout(v: &mut Vary) -> Variation {
+    let mut b = v.buf();
+    b.noise(0.0, v.amp(0.4), Noise::band(v.hz(1500.0), 0.7), Env::new(0.01, 0.02, v.s(0.02)));
+    voiced(&mut b, v, 0.02, v.hz(180.0), v.hz(150.0), v.s(0.25), &AH, 0.5, Env::new(0.02, v.s(0.12), v.s(0.05)));
+    b.noise(0.02, v.amp(0.2), Noise::band(v.hz(2600.0), 0.8), Env::new(0.02, v.s(0.1), v.s(0.04)));
+    Variation::single(b.finish(0.5))
+}
+
+/// A last breath: a round groan falling away, its breath under it.
+fn last_breath(v: &mut Vary) -> Variation {
+    let mut b = v.buf();
+    voiced(&mut b, v, 0.0, v.hz(125.0), v.hz(75.0), v.s(0.7), &OH, 0.45, Env::new(0.05, v.s(0.25), v.s(0.08)));
+    b.noise(0.0, v.amp(0.3), Noise::band(v.hz(900.0), 0.5), Env::new(0.05, v.s(0.35), v.s(0.07)));
+    Variation::single(b.finish(0.4))
+}
+
+/// A long dying moan: a groan that wavers up once and sinks, breathing out under it.
+fn death_moan(v: &mut Vary) -> Variation {
+    let mut b = v.buf();
+    voiced(&mut b, v, 0.0, v.hz(120.0), v.hz(135.0), v.s(0.3), &OH, 0.4, Env::new(0.06, v.s(0.25), v.s(0.05)));
+    voiced(&mut b, v, v.s(0.4), v.hz(135.0), v.hz(72.0), v.s(0.6), &OH, 0.45, Env::new(0.04, v.s(0.3), v.s(0.07)));
+    b.noise(0.0, v.amp(0.25), Noise::band(v.hz(800.0), 0.5), Env::new(0.1, v.s(0.7), v.s(0.06)));
+    Variation::single(b.finish(0.4))
+}
+
+/// Choking for breath: ragged gasps in through a wet throat, a low gurgle under each.
+fn gasp(v: &mut Vary) -> Variation {
+    let mut b = v.buf();
+    for i in 0..3 {
+        let at = v.s(0.08 + 0.28 * i as f32) + v.rng.range(0.0, 0.04);
+        b.noise(at, v.amp(0.7), Noise::band(v.hz(1300.0), 1.1).sweep(v.hz(1900.0), v.s(0.12)), Env::new(0.04, v.s(0.05), v.s(0.03)));
+        for k in 0..4 {
+            let pop = at + 0.02 + 0.035 * k as f32;
+            b.noise(pop, v.amp(0.35), Noise::low(v.hz(320.0)), Env::new(0.003, 0.0, v.s(0.015)));
+        }
+    }
+    Variation::single(b.finish(0.35))
+}
+
+/// A scream as it falls: an open vowel high and rising, held.
+fn scream(v: &mut Vary) -> Variation {
+    let mut b = v.buf();
+    let vowel = AH.map(|(c, w, l)| (c * 1.15, w, l));
+    voiced(&mut b, v, 0.0, v.hz(330.0), v.hz(390.0), v.s(0.9), &vowel, 0.5, Env::new(0.06, v.s(0.75), v.s(0.05)));
+    b.noise(0.0, v.amp(0.15), Noise::band(v.hz(3000.0), 0.8), Env::new(0.06, v.s(0.7), v.s(0.05)));
+    Variation::single(b.finish(0.5))
+}
+
+/// The strain of struggling in a hold ("nngh"): a closed, pressed voice pushing up.
+fn struggle(v: &mut Vary) -> Variation {
+    let mut b = v.buf();
+    voiced(&mut b, v, 0.0, v.hz(150.0), v.hz(185.0), v.s(0.3), &NN, 0.5, Env::new(0.05, v.s(0.18), v.s(0.04)));
+    b.noise(0.0, v.amp(0.12), Noise::band(v.hz(600.0), 0.6), Env::new(0.05, v.s(0.15), v.s(0.04)));
     Variation::single(b.finish(0.4))
 }
 

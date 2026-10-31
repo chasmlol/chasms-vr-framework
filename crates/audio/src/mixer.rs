@@ -119,6 +119,8 @@ struct Voice {
     /// Next frame of the variation.
     at: usize,
     looping: Option<u64>,
+    /// Whose voice it is (see [`crate::Audio::play_voice`]).
+    speaker: Option<u64>,
     source: Vec3,
     /// Gain from intensity.
     loudness: f32,
@@ -152,6 +154,7 @@ impl Voice {
         wait: 0,
         at: 0,
         looping: None,
+        speaker: None,
         source: Vec3::ZERO,
         loudness: 0.0,
         hard: 0.0,
@@ -473,9 +476,15 @@ impl Mixer {
         match command {
             Command::Play { sound, pos, intensity } => {
                 self.shared.synth_plays.fetch_add(1, Ordering::Relaxed);
-                self.start(Source::Synth(sound), pos, intensity, None);
+                self.start(Source::Synth(sound), pos, intensity, None, None);
             }
-            Command::Event { event, set, fallback, pos, intensity } => self.start_event(event, set, fallback, pos, intensity),
+            Command::Event { event, set, fallback, pos, intensity, speaker } => {
+                if let Some(s) = speaker {
+                    self.hush(s);
+                }
+                self.start_event(event, set, fallback, pos, intensity, speaker);
+            }
+            Command::Hush { speaker } => self.hush(speaker),
             // (A game's pack replaces the runtime's sounds: no synthesised loop with one loaded.)
             Command::StartLoop { id, sound, event, pos } => {
                 // A pack's own loop for the event, else (no pack) the synthesised one.
@@ -484,11 +493,11 @@ impl Mixer {
                     (Some(p), Some(event)) => {
                         if let Some(layer) = p.find(SetKey::NONE, event).and_then(|e| e.layers.first()) {
                             let clip = layer.clips[layer.pick(&mut self.rng)];
-                            self.start(Source::Clip { pack: p.generation, clip, gain: layer.gain * p.gain, wait: 0 }, pos, 1.0, Some(id));
+                            self.start(Source::Clip { pack: p.generation, clip, gain: layer.gain * p.gain, wait: 0 }, pos, 1.0, Some(id), None);
                         }
                     }
                     (Some(_), None) => {}
-                    (None, _) => self.start(Source::Synth(sound), pos, 1.0, Some(id)),
+                    (None, _) => self.start(Source::Synth(sound), pos, 1.0, Some(id), None),
                 }
             }
             Command::MoveLoop { id, pos } => {
@@ -507,7 +516,7 @@ impl Mixer {
     /// The pack's sound for `event`, every layer at once (each picking one of its clips). With no
     /// pack loaded, the synthesised fallback; with one, nothing where it has none: a game's pack
     /// replaces the runtime's sounds, it doesn't patch them.
-    fn start_event(&mut self, event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32) {
+    fn start_event(&mut self, event: Event, set: SetKey, fallback: Option<Sound>, pos: Vec3, intensity: f32, speaker: Option<u64>) {
         // A clone of the `Arc`, so the voices can be started while it's borrowed; dropping it
         // again never frees the pack (`Shared::packs` holds every one).
         let pack = self.pack.clone();
@@ -517,20 +526,27 @@ impl Mixer {
                 for layer in &e.layers {
                     let clip = layer.clips[layer.pick(&mut self.rng)];
                     let source = Source::Clip { pack: p.generation, clip, gain: layer.gain * p.gain, wait: layer.delay };
-                    self.start(source, pos, intensity, None);
+                    self.start(source, pos, intensity, None, speaker);
                 }
             }
             None if pack.is_some() => {}
             None => {
                 if let Some(sound) = fallback {
                     self.shared.synth_plays.fetch_add(1, Ordering::Relaxed);
-                    self.start(Source::Synth(sound), pos, intensity, None);
+                    self.start(Source::Synth(sound), pos, intensity, None, speaker);
                 }
             }
         }
     }
 
-    fn start(&mut self, what: Source, source: Vec3, intensity: f32, looping: Option<u64>) {
+    /// Fades out what `speaker` is saying.
+    fn hush(&mut self, speaker: u64) {
+        for voice in self.voices.iter_mut().filter(|v| v.playing && !v.releasing() && v.speaker == Some(speaker)) {
+            voice.release(self.tuning.release);
+        }
+    }
+
+    fn start(&mut self, what: Source, source: Vec3, intensity: f32, looping: Option<u64>, speaker: Option<u64>) {
         let (pack, s, variation, gain, wait) = match what {
             Source::Synth(sound) => (0, sound as usize, self.pick(sound as usize), 1.0, 0),
             Source::Clip { pack, clip, gain, wait } => (pack, clip, 0, gain, wait),
@@ -545,6 +561,7 @@ impl Mixer {
             variation,
             wait,
             looping,
+            speaker,
             source,
             // A soft sound is quieter (down to −16 dB), duller, and without its hard layer.
             loudness: (0.15 + 0.85 * intensity) * gain,

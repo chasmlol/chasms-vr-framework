@@ -992,7 +992,8 @@ impl Dummies {
             (Some(s), _) if now - s.since < 0.6 => Doing::Staggered,
             (_, d) => d,
         };
-        let r = rustvr_melee::body::reaction(level, body, doing, p.heavy);
+        let table = if p.heavy { rustvr_melee::body::Table::MediumHeavy } else { rustvr_melee::body::Table::Medium };
+        let r = rustvr_melee::body::reaction(level, body, false, doing, table);
         // Getting up, any push puts it back down.
         if matches!(p.balance, Balance::Rising(_)) && level > 0 {
             self.people[k].balance = Balance::Down { since: now, still: None };

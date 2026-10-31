@@ -386,16 +386,40 @@
 
 /**
  * One of the game's creatures cries out (a grunt as it's hit, a shout as it swings, its last
- * breath), for a game with no voices of its own: `a` which (`VOICE_*`), f0..f2 where (world), f3
- * how loud (0..1).
+ * breath), for a game with no voices of its own: `a`'s low byte which (`VOICE_*`), and above it a
+ * number the game keeps for the creature speaking (0: none); f0..f2 where (world), f3 how loud
+ * (0..1). A creature has one voice: its new line cuts off the one it was saying, and
+ * [`VOICE_HUSH`] stops it.
  */
 #define RVR_EV_VOICE 9
+
+#define RVR_VOICE_HUSH 0
 
 #define RVR_VOICE_HURT 1
 
 #define RVR_VOICE_ATTACK 2
 
 #define RVR_VOICE_DEATH 3
+
+/**
+ * Dying slowly (killed by a stab).
+ */
+#define RVR_VOICE_DEATH_LONG 4
+
+/**
+ * Choking for breath (a throat cut or stabbed, or strangled).
+ */
+#define RVR_VOICE_BREATHLESS 5
+
+/**
+ * A scream as it falls, until it lands ([`VOICE_HUSH`]).
+ */
+#define RVR_VOICE_FALLING 6
+
+/**
+ * Struggling in a hold.
+ */
+#define RVR_VOICE_GRAPPLED 7
 
 #define RVR_HAPTIC_LEFT 0
 
