@@ -410,6 +410,9 @@ struct Hand {
     /// The grip closed in a slot that hands out the player's things: which, when, where the hand
     /// was (tracking space), and what it drew: held there still, it opens the slot's editor.
     pocket_press: Option<(usize, f64, Vec3, Option<u32>)>,
+    /// It holds a thing the game made in it (a bound weapon) that the grip hasn't closed on yet: the
+    /// grip's next press takes hold of that, not of something else near.
+    conjured: bool,
     /// The grip as it was last frame, for placing a slot by hand (which works in menus too).
     place_grip: bool,
     /// In one of the game's creatures' pockets, on one of its things ([`pickpocket`]); when its
@@ -1471,6 +1474,8 @@ impl Rig {
         }
         self.physics.set_pose(body, palm, rot);
         self.take(id, i, true);
+        let h = &mut self.hands.as_mut().unwrap()[i];
+        h.conjured = !h.grip_down;
         tracing::info!("rig: {id:#x} made in the {} hand", if i == 0 { "left" } else { "right" });
     }
 
@@ -2414,6 +2419,7 @@ impl Rig {
                 yielding: false,
                 pressing: None,
                 pocket_press: None,
+                conjured: false,
                 place_grip: false,
                 pocket: None,
                 heartbeat: 0.0,
@@ -3131,7 +3137,12 @@ impl Rig {
             self.release(i, inp, zones);
             self.hands.as_mut().unwrap()[i].pocket_press = None;
         }
-        if pressed {
+        // (The first press on a thing made in the hand only takes hold of it; gone from the hand, it's
+        // nothing to take hold of.)
+        let h = &mut self.hands.as_mut().unwrap()[i];
+        h.conjured &= h.holding.is_some();
+        let took_hold = pressed && std::mem::take(&mut h.conjured);
+        if pressed && !took_hold {
             let hover = self.hands.as_ref().unwrap()[i].hover;
             self.grab(i, inp);
             if let Hover::Pocket(k) = hover {
@@ -3890,6 +3901,7 @@ impl Rig {
             self.physics.set_kinematic(o.body, true);
             self.physics.set_groups(o.collider, groups_none());
             self.debug.returns += 1;
+            tracing::info!("rig: {id:#x} let go: kept, back to slot {slot}");
             self.emit(Cue::Release, Some(i), Some(id), palm, 0.6);
             return;
         }

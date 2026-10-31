@@ -581,13 +581,15 @@ impl Armory {
         }
     }
 
-    /// Object `id` made in hand `hand` (0 left, 1 right) by the game, as a bound weapon is: back where
-    /// it starts, then into that hand.
+    /// Object `id` made in hand `hand` (0 left, 1 right) by the game, as a bound weapon is: it hangs at
+    /// the left hip from now on and is kept there (let go, it goes back), and it's made in that hand.
     pub fn conjure(&mut self, id: u32, hand: u32) {
         let n = self.table.count as usize;
         if let Some(d) = self.table.descs[..n].iter_mut().find(|d| d.id == id) {
             d.spawn_seq = d.spawn_seq.wrapping_add(1).max(1);
             d.into_hand = hand.min(1) + 1;
+            d.start_slot = 1 + SLOT_HIP_LEFT;
+            d.flags |= OBJF_KEPT;
             self.dirty = true;
         }
     }
