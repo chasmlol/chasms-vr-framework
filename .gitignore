@@ -8,3 +8,32 @@
 __pycache__/
 # Agent worktrees.
 /.claude/worktrees
+# Keys and a machine's own settings never go in: they stay in %LOCALAPPDATA%\RustVR.
+.env
+.env.*
+*.pem
+*.key
+voice.toml
+dev.toml
+settings.toml
+# Saves, crash dumps and merge leftovers.
+*.ess
+*.dmp
+*.orig
+*.rej
+*.bak
+# Game files and recordings: the game's or the player's, never the repository's (what the tools
+# extract goes in local_assets/).
+*.bsa
+*.esm
+*.esp
+*.nif
+*.kf
+*.dds
+*.tex
+*.fnt
+*.wav
+*.mp3
+*.ogg
+*.mp4
+*.rdc

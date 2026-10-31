@@ -1,3 +1,4 @@
-# Half the machine's 16 threads, so builds never make the desktop sluggish.
+# Eight jobs at most, so a build leaves the desktop (and a game running beside it) responsive.
+# `cargo build -j <n>` overrides it.
 [build]
 jobs = 8

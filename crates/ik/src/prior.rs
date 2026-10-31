@@ -10,7 +10,7 @@
 //! (frame-rate independent, so the same at any headset rate). It's trained only on CMU's motion
 //! capture, which is free for any use (`docs/research/ik.md`), mirrored left for right; the
 //! evaluation's subjects and LaFAN1 are held out. The weights are `prior.bin`, made by the
-//! evaluation tools (`PLAYTEST.md`).
+//! evaluation tools (kept outside the repository, with the motion capture they train on).
 
 use glam::{Quat, Vec3};
 
@@ -157,7 +157,7 @@ pub struct Prior {
     layers: Vec<Layer>,
 }
 
-/// The weights, as `tools/train_prior.py` writes them (`PLAYTEST.md`): "IKP1", the feature count,
+/// The weights, as the evaluation tools' trainer writes them: "IKP1", the feature count,
 /// the features' means and scales, then each layer's input and output counts, its weights (output
 /// by input) and biases, all little-endian.
 const WEIGHTS: &[u8] = include_bytes!("prior.bin");

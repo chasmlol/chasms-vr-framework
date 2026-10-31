@@ -141,8 +141,8 @@ mod tests {
 
     #[test]
     fn a_pack_names_its_folder_and_objects() {
-        let mut p = SoundPack::new(r"X:\rustvr\local_assets\metro2033\sounds");
-        assert_eq!(p.path(), r"X:\rustvr\local_assets\metro2033\sounds");
+        let mut p = SoundPack::new(r"X:\local_assets\metro2033\sounds");
+        assert_eq!(p.path(), r"X:\local_assets\metro2033\sounds");
         assert!(p.add_object(3, "wpn_ak", SND_GAME_SHOTS));
         assert!(p.add_object(4, "wpn_revolver", 0));
         assert!(!p.add_object(0, "nothing", 0), "0 is never an object");

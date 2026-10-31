@@ -21,8 +21,8 @@ Status: draft v0.2 · 2026-10-21
   - it turns the runtime's intents into the game's own input.
 
 If an adapter re-implements a VR mechanic, or the runtime re-implements a game rule, the design has
-gone wrong. It's the same rule as SkyCraft (`skycraft\docs\DESIGN.md` §1), with Minecraft's player
-replaced by a VR body.
+gone wrong. It's the same rule as SkyCraft's (its `docs/DESIGN.md`, §1), with Minecraft's player replaced
+by a VR body.
 
 ## 2. Components
 
