@@ -47,11 +47,12 @@
 //! | [`OFF_POCKETS`] .. [`OFF_POCKETS_END`] | the creatures' pockets and what the hands do in them: see [`pockets`] | both | seqlock, ring |
 //! | [`OFF_STATIONS`], [`OFF_CARDS`] | [`Receptacles`]: bowls the hands make things in (see [`stations`]); [`Cards`]: cards made of a game's own interface (see [`cards`]) | adapter -> runtime | seqlock |
 //! | [`OFF_FACE_SCULPT`] | [`FaceSculpt`]: the face as the hands shape it (see [`avatar`]) | runtime -> adapter | seqlock |
+//! | [`OFF_MELEE_WEAPONS`] .. [`OFF_RT_MELEE`] | [`MeleeWeapons`], [`ActorItems`], [`MeleeRules`] (adapter -> runtime), [`RtMelee`] (runtime -> adapter): melee (see [`melee`]) | both | seqlock |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
 //! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, the
-//! inventory with the body's slots, the creatures' pockets, the bowls, the cards and the face the
-//! hands shape (a new one goes after the last).
+//! inventory with the body's slots, the creatures' pockets, the bowls, the cards, the face the
+//! hands shape and the melee (a new one goes after the last).
 //! Every region is listed in address order in `LAYOUT`, which the build checks: none overlaps the
 //! next, and all lie inside [`MAPPING_BYTES`].
 //!
@@ -85,6 +86,7 @@ pub mod inventory;
 pub mod items;
 pub mod stations;
 pub mod cards;
+pub mod melee;
 pub mod sound;
 pub mod world;
 pub mod lighting;
@@ -103,6 +105,7 @@ pub use inventory::*;
 pub use items::*;
 pub use stations::*;
 pub use cards::*;
+pub use melee::*;
 pub use sound::*;
 pub use world::*;
 pub use lighting::*;
@@ -112,9 +115,10 @@ pub use ride::*;
 pub use pockets::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 15;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v15";
-pub const MAPPING_BYTES: usize = 0x0053_0000;
+pub const VERSION: u32 = 16;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v16";
+/// (Grew by 64 KB in v16: the melee's regions after the face the hands shape.)
+pub const MAPPING_BYTES: usize = 0x0054_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;
@@ -1011,6 +1015,24 @@ pub const EV_MIRROR_CAST: u32 = 7;
 /// The game's effect for the mirror's summons `a` ([`MirrorView::summons`]) reached its moment:
 /// the glass appears (or goes) now, as a summoned creature appears at its effect's "Hit".
 pub const EV_MIRROR_HIT: u32 = 8;
+/// One of the game's creatures cries out (a grunt as it's hit, a shout as it swings, its last
+/// breath), for a game with no voices of its own: `a`'s low byte which (`VOICE_*`), and above it a
+/// number the game keeps for the creature speaking (0: none); f0..f2 where (world), f3 how loud
+/// (0..1). A creature has one voice: its new line cuts off the one it was saying, and
+/// [`VOICE_HUSH`] stops it.
+pub const EV_VOICE: u32 = 9;
+pub const VOICE_HUSH: u32 = 0;
+pub const VOICE_HURT: u32 = 1;
+pub const VOICE_ATTACK: u32 = 2;
+pub const VOICE_DEATH: u32 = 3;
+/// Dying slowly (killed by a stab).
+pub const VOICE_DEATH_LONG: u32 = 4;
+/// Choking for breath (a throat cut or stabbed, or strangled).
+pub const VOICE_BREATHLESS: u32 = 5;
+/// A scream as it falls, until it lands ([`VOICE_HUSH`]).
+pub const VOICE_FALLING: u32 = 6;
+/// Struggling in a hold.
+pub const VOICE_GRAPPLED: u32 = 7;
 
 pub const HAPTIC_LEFT: u32 = 0;
 pub const HAPTIC_RIGHT: u32 = 1;
@@ -1101,6 +1123,10 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_STATIONS, size_of::<Receptacles>()),
     (OFF_CARDS, size_of::<Cards>()),
     (OFF_FACE_SCULPT, size_of::<FaceSculpt>()),
+    (OFF_MELEE_WEAPONS, size_of::<MeleeWeapons>()),
+    (OFF_ACTOR_ITEMS, size_of::<ActorItems>()),
+    (OFF_MELEE_RULES, size_of::<MeleeRules>()),
+    (OFF_RT_MELEE, size_of::<RtMelee>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

@@ -31,6 +31,7 @@ pub struct Settings {
     pub riding: Riding,
     pub holsters: Holsters,
     pub desktop_bob: DesktopBob,
+    pub melee: Melee,
 }
 
 /// The desktop view's bob while the player moves by the stick or the game (`crate::view_bob`), so a
@@ -64,6 +65,39 @@ pub enum BobMode {
     /// The game's own first-person bob, when its adapter gives one (`rustvr_protocol::ViewBob`);
     /// the runtime's where it doesn't.
     Game,
+}
+
+/// Physical melee (`crate::rig::melee`, `crate::combat`, `docs/MELEE.md`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Melee {
+    /// The hands' strength on a weapon (1: the standard): their joint's spring and the most force
+    /// and torque it gives. Times the game's own number for the player.
+    pub strength: f32,
+    /// Swinging costs stamina, and a tired player's hands are weaker (a game's own stamina,
+    /// Oblivion's Fatigue, takes over when it gives one).
+    pub stamina: bool,
+    /// Seconds of hard swinging a full stamina lasts, and seconds it takes to come back.
+    pub stamina_time: f32,
+    pub stamina_refill: f32,
+    /// Slowing time on the focus meter.
+    pub slow_time: bool,
+    /// Telekinesis (point an open hand, grip, and the thing floats held off it, pulled in or
+    /// pushed away) in place of the gravity gloves, for a game that doesn't say (off: the gloves
+    /// stay what a game gets unless it asks).
+    pub telekinesis: bool,
+    /// Climbing by the hands: a grip on the world holds the player there.
+    pub climbing: bool,
+    /// Easy dismemberment: a cutting edge that goes into a limb or the neck takes it off, however
+    /// fast and wherever on it (without it a cut must be fast, 12 m/s for a sword, land within 4 cm
+    /// of a joint and meet it square, and that proved too hard to land in play). A stab still sticks.
+    pub easy_dismemberment: bool,
+}
+
+impl Default for Melee {
+    fn default() -> Self {
+        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true }
+    }
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.

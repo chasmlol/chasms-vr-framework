@@ -2702,6 +2702,9 @@ fn a_long_thing_in_both_hands_turns_with_both() {
 #[test]
 fn a_handle_takes_the_hand_anywhere_along_it_and_the_blade_where_it_is() {
     let mut s = Sim::with(&[sword()]);
+    // (Leaning in: lying on the table it's past the player's reach from the shoulders, which would
+    // let go of it, resting on something, at once.)
+    s.f.hmd.pos = [0.0, 1.7, 0.25];
     // Near the pommel end of the handle, 3 cm off it: on the handle there, held as the sword is.
     s.reach(1, s.on(SWORD, Vec3::new(0.0, 0.03, -0.095)));
     s.grip(1, 1.0);
@@ -2862,7 +2865,7 @@ fn a_blade_stuck_in_a_creature_drags_it_and_comes_out_backwards() {
     let front = p + q * Vec3::new(0.0, 0.0, 0.03);
     let axis = Vec3::new(front.x, 0.0, front.z + 0.15);
     s.rig.set_actor_parts([((9, 1), (axis + Vec3::Y * (front.y - 0.2), axis + Vec3::Y * (front.y + 0.2), 0.15))]);
-    let r = embed::Request { object: BOTTLE, into: embed::Into::Actor { id: 9, part: 1 }, point: front, dir: Vec3::Z, sample: Vec3::new(0.0, 0.0, 0.03), depth: 0.05, max_depth: 0.12 };
+    let r = embed::Request { object: BOTTLE, into: embed::Into::Actor { id: 9, part: 1 }, point: front, dir: Vec3::Z, sample: Vec3::new(0.0, 0.0, 0.03), depth: 0.05, max_depth: 0.12, dampers: embed::DAMPERS, slide: None, wounding: Default::default(), rock: (embed::ROCK.0, embed::ROCK.1.to_radians()) };
     s.rig.embed(&r);
     // The hand goes on in with the stab.
     s.set_hand(1, s.hand_pos(1) + Vec3::Z * 0.05);
@@ -2871,8 +2874,9 @@ fn a_blade_stuck_in_a_creature_drags_it_and_comes_out_backwards() {
     // The hand pulled sideways 15 cm: the bottle stays in, and the chest is dragged that way.
     s.move_hand(1, s.hand_pos(1) + Vec3::new(0.15, 0.0, 0.0), 15);
     assert!(s.pos(BOTTLE).distance(stuck) < 0.01, "still in, where it went in: {:?}", s.pos(BOTTLE));
-    let drag = s.rig.game_pushes.iter().find(|p| p.id == 9 && p.part == 2).copied().expect("dragged");
-    assert!(drag.normal[0] > 0.8 && drag.normal[3] > 0.5, "the way the hand pulls: {drag:?}");
+    // (The part's pushes: the drag where it went in, and the turn the blade's twist gives it.)
+    let drags: Vec<GamePush> = s.rig.game_pushes.iter().filter(|p| p.id == 9 && p.part == 2).copied().collect();
+    assert!(drags.iter().any(|p| p.normal[0] > 0.8 && p.normal[3] > 0.5), "dragged the way the hand pulls: {drags:?}");
     // Pulled back out the way it went in: out.
     s.move_hand(1, s.hand_pos(1) - Vec3::new(0.15, 0.0, 0.0), 10);
     s.move_hand(1, s.hand_pos(1) - Vec3::new(0.0, 0.0, 0.2), 20);
@@ -2930,7 +2934,7 @@ fn a_blade_stuck_in_a_loose_thing_stays_in_and_drags_it() {
     let top = s.pos(CRATE) + Vec3::Y * 0.12;
     s.move_hand(1, s.hand_pos(1) + (top - bottom(&s)), 40);
     s.step(20);
-    let r = embed::Request { object: BOTTLE, into: embed::Into::Object { id: CRATE }, point: bottom(&s), dir: Vec3::NEG_Y, sample: Vec3::new(0.0, -0.1, 0.0), depth: 0.05, max_depth: 0.12 };
+    let r = embed::Request { object: BOTTLE, into: embed::Into::Object { id: CRATE }, point: bottom(&s), dir: Vec3::NEG_Y, sample: Vec3::new(0.0, -0.1, 0.0), depth: 0.05, max_depth: 0.12, dampers: embed::DAMPERS, slide: None, wounding: Default::default(), rock: (embed::ROCK.0, embed::ROCK.1.to_radians()) };
     s.rig.embed(&r);
     s.set_hand(1, s.hand_pos(1) - Vec3::Y * 0.05);
     s.step(5);

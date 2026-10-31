@@ -549,6 +549,49 @@ impl Adapter {
         }
     }
 
+    /// The melee weapons' handles and damagers, with the game's numbers (see [`MeleeWeapons`]):
+    /// when they change.
+    pub fn write_melee_weapons(&self, table: &MeleeWeapons) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_melee_weapons(table);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// What the game's creatures hold (see [`ActorItems`]): every frame, with the actors.
+    pub fn write_actor_items(&self, items: &ActorItems) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_actor_items(items);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The game's rules for the player's melee (see [`MeleeRules`]): when they change.
+    pub fn write_melee_rules(&self, rules: &MeleeRules) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_melee_rules(rules);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The player's melee side this frame (see [`RtMelee`]): how fast the game's time should run,
+    /// the arms' climbing, stamina spent, imbuing.
+    pub fn read_rt_melee(&self, out: &mut RtMelee) -> bool {
+        match &self.link {
+            Some(l) if self.connected => l.read_rt_melee_into(out),
+            _ => false,
+        }
+    }
+
     /// The bowls the hands make things in (see [`Receptacles`]): when they change.
     pub fn write_receptacles(&self, table: &Receptacles) -> bool {
         match &self.link {

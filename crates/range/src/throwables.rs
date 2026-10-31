@@ -241,14 +241,16 @@ pub fn sound_set(t: &Throwable) -> &str {
 
 /// Everything the range throws: the built-in ones, then Metro's.
 pub fn all(root: &std::path::Path) -> Vec<Throwable> {
-    let mut v = vec![builtin_frag(), builtin_knife(), crate::combat::sword()];
+    let mut v = vec![builtin_frag(), builtin_knife()];
+    // The melee weapons (the arming sword first, on this table; the rest on the melee rack).
+    v.extend(crate::arsenal::all().into_iter().map(|a| a.thing));
     v.extend(metro_throwables(root));
     v
 }
 
 /// Their places: (which throwable, its descriptor with id, spawn pose and start slot). Two frags
-/// in the chest pouches and a knife in the belt; two frags, two knives (Metro's if it's there)
-/// and Metro's bombs on the table.
+/// in the chest pouches and a knife in the belt; two frags, two knives (Metro's if it's there),
+/// the arming sword, a dagger and Metro's bombs on the table.
 pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
     let find = |key: &str| list.iter().position(|t| t.key == key);
     let frag = find("builtin_frag").unwrap();
@@ -263,12 +265,26 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_LEFT + 1),
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_RIGHT + 1),
         (find("builtin_knife").unwrap(), Vec3::new(-0.91, top, 1.05), SLOT_BELT + 1),
-        // The sword, its handle towards the player.
-        (find("builtin_sword").unwrap(), Vec3::new(-0.72, top, 0.82), 0),
     ];
+    // The sword, its handle towards the player, and a dagger to throw at the back, its pommel clear
+    // of the knives' handles (a hand going for a knife takes the knife).
+    for (key, at) in [("builtin_sword", Vec3::new(-0.72, top, 0.82)), ("kit_dagger", Vec3::new(-0.62, top, 1.2))] {
+        if let Some(i) = find(key) {
+            places.push((i, at, 0));
+        }
+    }
     for (key, x) in [("throw_dynamite", -0.53), ("throw_incendiary", -0.61), ("throw_sticky_dynamite", -0.71)] {
         if let Some(i) = find(key) {
             places.push((i, Vec3::new(x, top, 1.08), 0));
+        }
+    }
+    let n_table = places.len();
+    // The melee rack's weapons, each lying its own way.
+    let mut turned: Vec<(usize, Quat)> = Vec::new();
+    for (key, at, rot) in crate::arsenal::rack_places() {
+        if let Some(i) = find(key) {
+            turned.push((places.len(), rot));
+            places.push((i, at, 0));
         }
     }
     places
@@ -280,8 +296,10 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
             d.id = THROW_BASE + k as u32;
             d.spawn_seq = 1;
             d.start_slot = slot;
-            let at = at.clamp(lo, hi);
-            d.spawn_pose = Pose { pos: (at + Vec3::Y * t.lying.1).to_array(), valid: 1, rot: t.lying.0.to_array() };
+            // (The rack's weapons lie on the rack, at the height their lying pose puts them.)
+            let rot = turned.iter().find(|(n, _)| *n == k).map_or(t.lying.0, |(_, r)| *r);
+            let at = if k < n_table { at.clamp(lo, hi) } else { at };
+            d.spawn_pose = Pose { pos: (at + Vec3::Y * t.lying.1).to_array(), valid: 1, rot: rot.to_array() };
             (i, d)
         })
         .collect()
@@ -301,15 +319,15 @@ pub fn part_id(throwable: usize, part: usize) -> usize {
 pub enum Event {
     /// Object `id` went off at `at` (world).
     Exploded { id: u32, at: Vec3, blast: Blast },
-    /// A knife (or sticky bomb) went in, its tip at `tip` (world).
-    Stuck { id: u32, tip: Vec3 },
+    /// A knife (or sticky bomb) went in, its tip at `tip` (world), flying at `vel` the frame before.
+    Stuck { id: u32, tip: Vec3, vel: Vec3 },
 }
 
 /// Watches the runtime's states for detonations and sticks, and puts spent grenades back.
 #[derive(Default)]
 pub struct Watch {
-    /// Per object: detonations seen, stuck last frame.
-    seen: HashMap<u32, (u32, bool)>,
+    /// Per object: detonations seen, stuck last frame, its velocity last frame.
+    seen: HashMap<u32, (u32, bool, Vec3)>,
     respawn: Vec<(u32, f64)>,
 }
 
@@ -320,7 +338,7 @@ impl Watch {
         for (s, p, q) in states {
             let Some(i) = which(s.desc) else { continue };
             let t = &list[i];
-            let (shots, stuck) = self.seen.get(&s.id).copied().unwrap_or((s.shots, s.flags & OS_STUCK != 0));
+            let (shots, stuck, was) = self.seen.get(&s.id).copied().unwrap_or((s.shots, s.flags & OS_STUCK != 0, Vec3::ZERO));
             if s.shots.wrapping_sub(shots) > 0
                 && let Some(blast) = t.blast
             {
@@ -329,9 +347,9 @@ impl Watch {
             }
             let now_stuck = s.flags & OS_STUCK != 0;
             if now_stuck && !stuck {
-                out.push(Event::Stuck { id: s.id, tip: *p + *q * Vec3::from_array(t.desc.muzzle) });
+                out.push(Event::Stuck { id: s.id, tip: *p + *q * Vec3::from_array(t.desc.muzzle), vel: was });
             }
-            self.seen.insert(s.id, (s.shots, now_stuck));
+            self.seen.insert(s.id, (s.shots, now_stuck, Vec3::from_array(s.lin_vel)));
         }
         out
     }

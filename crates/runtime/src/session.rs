@@ -167,6 +167,13 @@ pub struct Session {
     pub rig: Rig,
     pub rig_out: RigOutput,
     combat: crate::combat::Combat,
+    /// The melee weapons table the rig last took ([`MeleeWeapons::seq`]).
+    melee_weapons_seq: u32,
+    /// Slowing time, stamina, imbuing (crate::powers).
+    powers: crate::powers::Powers,
+    /// The player's kicks ([`crate::kick`]), and where the last frame's had the feet.
+    foot_kicks: crate::kick::Kicks,
+    kick_out: crate::kick::KickOut,
     /// Blood and limbs cut off (crate::gore).
     gore: crate::gore::Gore,
     /// Hands whose trigger casts a spell this frame (`crate::combat`).
@@ -375,6 +382,10 @@ impl Session {
             rig: Rig::default(),
             rig_out: RigOutput::default(),
             combat: crate::combat::Combat::default(),
+            melee_weapons_seq: 0,
+            powers: Default::default(),
+            foot_kicks: Default::default(),
+            kick_out: Default::default(),
             gore: crate::gore::Gore::default(),
             spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
@@ -415,8 +426,12 @@ impl Session {
             pointer: 1,
             sheets_drawn: 0,
             menu_pieces: Vec::new(),
-            audio: if opts.audio {
+            // (`RUSTVR_SILENT=1`: an unattended test run on the emulated headset mixes its sounds
+            // offline rather than out of the speakers.)
+            audio: if opts.audio && !std::env::var("RUSTVR_SILENT").is_ok_and(|v| v == "1") {
                 Some(rustvr_audio::Audio::new())
+            } else if opts.audio {
+                Some(rustvr_audio::Audio::offline(OFFLINE_RATE))
             } else {
                 opts.offline_audio.then(|| rustvr_audio::Audio::offline(OFFLINE_RATE))
             },
@@ -619,6 +634,34 @@ impl Session {
                 // The game's mirror spell, and its effect's moment.
                 EV_MIRROR_CAST => self.mirror.cast(),
                 EV_MIRROR_HIT => self.mirror.hit(ev.a),
+                // A creature's voice the game has none of its own for: the runtime's line there, on
+                // that creature's one voice.
+                EV_VOICE => {
+                    if let (Some(map), true, Some(a)) = (self.map_now, self.settings.current.sound.enabled, &self.audio) {
+                        use rustvr_audio::Event as E;
+                        let speaker = (ev.a >> 8) as u64;
+                        let event = match ev.a & 0xff {
+                            VOICE_HUSH => None,
+                            VOICE_ATTACK => Some(E::Shout),
+                            VOICE_DEATH => Some(E::Death),
+                            VOICE_DEATH_LONG => Some(E::DeathLong),
+                            VOICE_BREATHLESS => Some(E::Gasp),
+                            VOICE_FALLING => Some(E::Scream),
+                            VOICE_GRAPPLED => Some(E::Struggle),
+                            _ => Some(E::Grunt),
+                        };
+                        let (pos, loud) = (map.inv_point(Vec3::new(ev.f[0], ev.f[1], ev.f[2])), ev.f[3].clamp(0.1, 1.0));
+                        match event {
+                            None if speaker != 0 => a.hush(speaker),
+                            None => {}
+                            Some(e) if speaker != 0 => a.play_voice(e, e.fallback(), pos, loud, speaker),
+                            Some(e) => a.play_event(e, rustvr_audio::SetKey::NONE, e.fallback(), pos, loud),
+                        }
+                        if event.is_some() {
+                            self.sounds_played += 1;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -937,10 +980,13 @@ impl Session {
             let rig_paused = (menu_mode && !held_open) || menu_pointer.is_some() || g.flags & (GS_PAUSED | GS_LOADING | GS_DEAD) != 0;
             let game_name = name_str(&g.name).to_owned();
             self.holsters.before(&self.link, &mut self.rig, &mut self.settings, &game_name, &self.gpu, &mut self.held_objects);
+            // Slowed time (crate::powers): the player's world steps less a frame; the hands keep their
+            // real speed, so in it they swing faster.
+            let world_dt = frame.dt * self.powers.time_scale;
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
                 map: rig_map,
-                dt: frame.dt,
+                dt: world_dt,
                 now,
                 settings: &self.settings.current,
                 eye_height: if stand > 1.0 { stand } else { 1.7 },
@@ -1116,6 +1162,24 @@ impl Session {
             }
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
             self.combat.read(&self.link);
+            // The game's melee weapons' handles, and how strong it says the player is.
+            if self.combat.weapons.seq != self.melee_weapons_seq {
+                self.melee_weapons_seq = self.combat.weapons.seq;
+                self.rig.set_melee_weapons(&self.combat.weapons);
+            }
+            // Climbing: as the settings have it, unless the game says.
+            let rules = &self.combat.rules;
+            let climbing = if rules.flags & RULES_SAYS_CLIMB != 0 { rules.flags & RULES_CLIMB != 0 } else { self.settings.current.melee.climbing };
+            self.rig.set_climbing_allowed(climbing);
+            self.rig.set_melee_buttons(rules.flags & RULES_KICK != 0);
+            let tk = if rules.flags & RULES_SAYS_TELEKINESIS != 0 { rules.flags & RULES_TELEKINESIS != 0 } else { self.settings.current.melee.telekinesis };
+            if tk != self.rig.telekinesis_on() {
+                self.rig.set_telekinesis(tk);
+            }
+            let game_strength = if self.combat.rules.strength > 0.0 { self.combat.rules.strength } else { 1.0 };
+            self.rig.set_melee_strength(game_strength * self.powers.strength());
+            self.combat.imbues = self.powers.imbues.keys().filter_map(|&id| self.powers.imbue_of(id).map(|i| (id, i))).collect();
+            self.combat.fire_spells = self.combat.spells_with(SPELL_FIRE);
             // The game's effect shaders over what the runtime draws, when they change.
             if self.link.read_overlays_into(&mut self.overlays) && self.overlays.seq != self.overlays_seq {
                 self.overlays_seq = self.overlays.seq;
@@ -1124,6 +1188,31 @@ impl Session {
             self.rig.set_actor_parts(self.combat.actor_parts());
             self.link.read_actor_bodies_into(&mut self.actor_bodies);
             self.rig.set_actor_bodies(self.combat.actors(), &self.actor_bodies);
+            // What the creatures' weapons can strike: the player's body as capsules (world).
+            let player = crate::combat::player_capsules(&self.body.body.joints, &rig_map);
+            // A kick (the melee buttons, the game's say): the movement stick's click, at what the
+            // eyes see, the foot driven out by the body's legs and judged with the Kick damager.
+            self.kick_out = if self.combat.rules.flags & RULES_KICK != 0 {
+                let targets: Vec<(Vec3, Vec3, f32)> = self.combat.actor_parts().into_iter().map(|(_, (a, b, r))| (rig_map.inv_point(a), rig_map.inv_point(b), r / rig_map.world_per_meter)).collect();
+                let off = self.settings.current.dominant() ^ 1;
+                self.foot_kicks.update(&crate::kick::KickInput {
+                    frame: &frame,
+                    stick_hand: off,
+                    now,
+                    joints: &self.body.body.joints,
+                    floor: self.floor,
+                    walking: self.locomotion.walk().0.length() / rig_map.world_per_meter,
+                    targets: &targets,
+                    paused: rig_paused || menu_mode,
+                })
+            } else {
+                crate::kick::KickOut::default()
+            };
+            let kick = self.kick_out.striking.and_then(|(foot, way)| {
+                let toes = Vec3::from_array(self.body.body.joints[if foot == 0 { Joint::LeftToes } else { Joint::RightToes } as usize].pos);
+                self.kick_out.ankles[foot].map(|a| (foot, rig_map.point(a), rig_map.point(toes), rig_map.rot(Quat::IDENTITY) * way))
+            });
+            self.rig.set_actor_items(&self.combat.items);
             let combat = self.combat.update(&crate::combat::CombatInput {
                 rig: &self.rig,
                 out: &self.rig_out,
@@ -1132,11 +1221,55 @@ impl Session {
                 objects: &self.objects,
                 dominant: self.settings.current.dominant(),
                 now,
-                dt: frame.dt,
+                dt: world_dt,
                 paused: rig_paused || menu_mode,
+                player: &player,
+                kick,
+                easy_dismemberment: self.settings.current.melee.easy_dismemberment,
             });
+            if self.combat.kicked {
+                self.foot_kicks.met(now);
+            }
             for ev in &combat {
                 self.link.push_combat_event(ev);
+            }
+            // The powers: slowing time, stamina, imbuing, for the game too.
+            {
+                let held: [Option<u32>; 2] = [self.rig.held(0), self.rig.held(1)];
+                let charging = std::array::from_fn(|h| {
+                    let c = self.combat.casting[h];
+                    (matches!(c.state, CAST_CHARGING | CAST_READY) && c.object == 0).then(|| (c.spell, c.charge, rig_map.point(Vec3::from_array(c.at.pos)), self.combat.spell_flags(c.spell)))
+                });
+                let melee_held = held
+                    .iter()
+                    .flatten()
+                    .filter_map(|&id| self.combat.weapons.get(id).map(|w| (id, w.tier, self.rig.mass_of(id), self.combat.blades(id).into_iter().map(|(a, b, _)| (a, b)).collect())))
+                    .collect();
+                let hits = combat.iter().filter(|e| e.kind == CE_HIT).map(|e| e.object).collect();
+                let loose = self.powers.imbues.keys().copied().filter(|id| self.rig.is_free(*id)).collect();
+                let off = self.settings.current.dominant() ^ 1;
+                self.powers.update(&crate::powers::PowersInput {
+                    frame: &frame,
+                    settings: &self.settings.current.melee,
+                    rules: &self.combat.rules,
+                    dominant: self.settings.current.dominant(),
+                    dt: frame.dt,
+                    now,
+                    walking: Vec2::from_array(frame.hands[off].stick).length() > 0.2,
+                    charging,
+                    held: melee_held,
+                    world_per_meter: rig_map.world_per_meter,
+                    loose,
+                    hits,
+                    paused: rig_paused || menu_mode,
+                });
+                let mut rt = self.powers.report(held);
+                rt.climb = self.rig.climb_velocity().to_array();
+                rt.jump = self.rig.take_climb_jump().unwrap_or(Vec3::ZERO).to_array();
+                if self.rig.climbing() {
+                    rt.flags |= RTM_CLIMBING;
+                }
+                self.link.write_rt_melee(&rt);
             }
             // Each hand's casting, for the game's own casting art.
             let mut casters: Casters = bytemuck::Zeroable::zeroed();
@@ -1151,18 +1284,40 @@ impl Session {
             }
             // Gore: the blood the hits and the stumps spill, the limbs the game says were cut off.
             let gore_events = self.gore.read(&self.link);
-            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, combat: &self.combat, now, dt: frame.dt, paused: rig_paused || menu_mode };
+            let stuck_events = self.rig.embed_events.clone();
+            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, stuck_events: &stuck_events, combat: &self.combat, now, dt: world_dt, paused: rig_paused || menu_mode };
             self.gore.update(&mut self.rig, &gore_input, &gore_events);
             for p in &self.gore.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
-            // Blades that went in and stay in.
+            // Blades that went in and stay in, and ones that cut a limb off and carry on through.
             for r in std::mem::take(&mut self.combat.embeds) {
                 self.rig.embed(&r);
+            }
+            for (object, actor) in std::mem::take(&mut self.combat.cuts) {
+                self.rig.cut_through(object, actor);
+            }
+            // What blades stuck in creatures did (gone in deep, out the far side, pulled out), the
+            // part as the game numbers it.
+            for mut ev in std::mem::take(&mut self.rig.embed_events) {
+                ev.part = self.combat.game_part(ev.actor, ev.part as usize);
+                self.link.push_combat_event(&ev);
+            }
+            // Things broken (`rig::breaking`): the game makes their pieces.
+            for ev in self.rig.take_breaks() {
+                self.link.push_combat_event(&ev);
             }
             for p in &self.combat.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
+            // The hits heard: by what met what, as loud as they were hard.
+            if self.settings.current.sound.enabled {
+                for (cue, at, intensity, object) in std::mem::take(&mut self.combat.sounds) {
+                    let fb = feedback::Feedback { cue, hand: None, object: (object != 0).then_some(object), pos: rig_map.inv_point(at), intensity };
+                    self.play_cue(&fb);
+                }
+            }
+            self.combat.sounds.clear();
             self.spell_hands = self.combat.spell_hands(self.settings.current.dominant());
             // Where the hands push the game's own props.
             self.game_pushes.count = self.rig.game_pushes.len().min(MAX_GAME_PUSHES) as u32;
@@ -1376,6 +1531,7 @@ impl Session {
                 }),
                 eye_height: if stand > 0.5 { stand } else { 0.0 },
                 floor,
+                kicks: self.kick_out.ankles,
                 saddle: self.saddle(),
                 hands_only: gflags & GS_HANDS_ONLY != 0,
                 settings: &self.settings.current,
@@ -2694,7 +2850,12 @@ fn event_of(c: feedback::Cue) -> Option<(rustvr_audio::Event, Option<rustvr_audi
         // The game sounds its own grinding (the bowl's strokes).
         C::Grind | C::GrindStroke => return None,
         // And what a touch on its page does.
-        C::Touch => return None,
+        C::Touch | C::Slide | C::Penetrate | C::Rub => return None,
+        C::HitCut => (E::HitCut, S::Cut),
+        C::HitStab => (E::HitStab, S::Stab),
+        C::HitBlunt => (E::Melee, S::Melee),
+        C::Clash => (E::Clash, S::Clash),
+        C::Chop => (E::Chop, S::Chop),
         // The actions' cues play the nearest handling event of the pack (the gun's own bolt and
         // reload sounds) until the audio crate gives them events of their own by the same names.
         C::BreakOpen | C::SwingOpen | C::BoltUp | C::BoltBack | C::PumpBack | C::Pump => (E::BoltBack, S::SlideBack),

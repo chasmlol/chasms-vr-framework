@@ -1,6 +1,6 @@
 //! What a bullet (or a bouncing casing) meets in the range: the room's boxes, the target plates and
 //! the objects the runtime is simulating, each with the kind of surface it is (for the sparks,
-//! dust and holes it gets).
+//! dust and holes it gets); and, from the creatures' own world, their bodies and what they hold.
 
 use glam::{Quat, Vec3};
 
@@ -12,6 +12,8 @@ pub enum Surface {
     Metal,
     /// A steel target plate.
     Target,
+    /// A creature's flesh (or what covers it that a round goes through).
+    Flesh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -20,6 +22,8 @@ pub enum HitWhat {
     Target(usize),
     /// An object the runtime simulates (its id), and what it's made of.
     Object(u32, Surface),
+    /// One of the creatures (its id: a person's, or what it holds), and what it's made of there.
+    Body(u32, Surface),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -33,7 +37,7 @@ pub struct Hit {
 impl Hit {
     pub fn surface(&self) -> Surface {
         match self.what {
-            HitWhat::World(s) | HitWhat::Object(_, s) => s,
+            HitWhat::World(s) | HitWhat::Object(_, s) | HitWhat::Body(_, s) => s,
             HitWhat::Target(_) => Surface::Target,
         }
     }

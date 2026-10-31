@@ -124,6 +124,7 @@ impl BodySolver {
                     elbows: [None; 2],
                     shoulders: [None; 2],
                     swim: None,
+                    kicks: [None; 2],
                 };
                 let mut out = s.solve(&input);
                 for _ in 0..30 {
@@ -175,6 +176,7 @@ impl BodySolver {
             elbows: [None, None],
             shoulders: [None, None],
             swim: None,
+            kicks: [None; 2],
         };
         let out = self.solve_frame(&neutral);
         self.state = None;
@@ -370,6 +372,12 @@ impl BodySolver {
             if floating > 0.0 {
                 let float = state.swim.legs(skel, chain.rot[0], joints_at_hips);
                 legs = [0, 1].map(|i| swim::blend(&legs[i], &float[i], floating));
+            }
+            // A kick: that leg drives its ankle where the kick has it.
+            for i in 0..2 {
+                if let Some(ankle) = input.kicks[i].filter(|a| a.is_finite()) {
+                    legs[i] = legs::solve_kick(skel, joints_at_hips[i], ankle, hips_fwd);
+                }
             }
                 (chain, legs)
             }

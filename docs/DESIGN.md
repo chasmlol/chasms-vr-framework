@@ -38,7 +38,7 @@ headset ◀─ OpenXR ─┐
                    │    session.rs          the frame loop
                    │    scenario.rs         scripted end-to-end tests
                    │
-                   │  shared memory "Local\RustVR_v15" (crates/protocol)
+                   │  shared memory "Local\RustVR_v16" (crates/protocol)
                    │  + D3D11 shared textures (NT handles, keyed mutex) + named events
                    │
                    │  game process
@@ -425,6 +425,21 @@ again, counted in the page's state with where on the card it came down; the hand
 meanwhile, nothing). Oblivion's alchemy bench leaves
 a note of the game's scroll this way, in its handwriting, listing what the player can make and the
 steps of the recipe touched.
+
+## 6f. Melee
+
+Melee is physical (`docs/MELEE.md`). The runtime holds a game's melee weapons on a hand joint (their weight their own, two hands and leverage, hands sliding along
+handles; a hand near a handle goes onto it at the grip it's made for, as a gun's grip locks on),
+judges every contact by the impact's speed and angles against each damager and the damage tables
+by damage type, material and tier, keeps blades stuck in what they went into (rocking, sliding
+and running through), cuts limbs off at the body's joints, kicks with untracked feet, and does the
+extras: throwing, telekinesis (on things and on bodies), slowed time, imbuing,
+breakable things, climbing by the hands and the climb jump, and an optional stamina. A game may ask
+for the melee buttons (`RULES_KICK`). The game describes its weapons (`MeleeWeapons`), lists what its creatures
+hold (`ActorItems`), says its rules (`MeleeRules`), and is told the hits (`CombatEvent`) and the
+player's side (`RtMelee`); its creatures, their health and their brains are its own. The test
+range plays it all: ragdoll fighters with their pins, balance, reactions and brains,
+a bench of dummies in armour, a melee rack, a block to climb.
 
 ## 7. Adapters
 

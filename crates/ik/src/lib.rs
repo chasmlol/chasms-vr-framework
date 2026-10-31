@@ -107,6 +107,8 @@ pub struct TrackedInput {
     pub shoulders: [Option<Vec3>; 2],
     /// The player is swimming: the body floats.
     pub swim: Option<Swimming>,
+    /// A kick under way: where it has each foot's ankle (tracking space; `None`: the gait's).
+    pub kicks: [Option<Vec3>; 2],
 }
 
 /// A swimming body: how it moves through the water.

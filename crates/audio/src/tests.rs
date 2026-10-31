@@ -120,6 +120,9 @@ fn library_is_short_and_bounded() {
             let longest = match sound {
                 // The shot tails are the room and ring on; the travel loop is one cycle.
                 Sound::ShotPistol | Sound::ShotRifle | Sound::ShotShotgun | Sound::GloveTravel => 1.5,
+                // A creature's lines last as long as they're said; a struck blade rings on.
+                Sound::Grunt | Sound::Shout | Sound::LastBreath | Sound::DeathMoan | Sound::Gasp | Sound::Scream | Sound::Struggle => 1.5,
+                Sound::Clash => 3.0,
                 _ => 0.5,
             };
             assert!(seconds < longest, "{sound:?} lasts {seconds} s");

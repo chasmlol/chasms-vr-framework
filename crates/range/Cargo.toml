@@ -21,6 +21,8 @@ rustvr-avatar.workspace = true
 rustvr-ik.workspace = true
 # The guns (Metro's, rigged) and how they're registered: shared with the adapters and the runtime.
 rustvr-guns.workspace = true
+# The melee rules: the range is the game for its creatures and weapons.
+rustvr-melee.workspace = true
 anyhow.workspace = true
 bytemuck.workspace = true
 glam.workspace = true

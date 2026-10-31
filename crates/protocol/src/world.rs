@@ -526,6 +526,12 @@ pub const OBJF_DRAWN_ALWAYS: u32 = 1 << 17;
 /// its state's `shots`, `slide` and `fuse` saying where the last one came down, across the card (0
 /// its left edge .. 1 its right) and down it (0 its top .. 1 its foot).
 pub const OBJF_SHEET: u32 = 1 << 18;
+/// It breaks when something meets it hard enough (a pot, a crate, a stool): the hitter's mass
+/// weighed clamp(0.5 ln m, 1, 5) times the speed they meet at, squared, 20 or more (about 4.5 m/s
+/// for anything up to 7 kg). The runtime takes it out of its world
+/// ([`OS_BROKEN`]) and tells the game ([`crate::CE_BROKE`]), which makes its pieces and puts it
+/// back when it likes (a new `spawn_seq`).
+pub const OBJF_BREAKABLE: u32 = 1 << 19;
 /// Seconds a let-go [`OBJF_GAME_SIMULATED`] object stays the runtime's before following the game.
 pub const GAME_HANDBACK: f32 = 0.15;
 
@@ -793,6 +799,8 @@ pub const OS_INVENTORY: u32 = 1 << 18;
 /// In a bowl ([`crate::Receptacle`]): `parent` is the bowl, `fuse` how far it's ground (0 .. 1),
 /// `slide` the size to draw it at (1: its own; shrunk to fit the bowl, and as it's ground).
 pub const OS_IN_RECEPTACLE: u32 = 1 << 19;
+/// Broken ([`OBJF_BREAKABLE`]): out of the runtime's world until the game puts it back.
+pub const OS_BROKEN: u32 = 1 << 20;
 
 pub const SLOT_HIP_RIGHT: u32 = 0;
 pub const SLOT_HIP_LEFT: u32 = 1;

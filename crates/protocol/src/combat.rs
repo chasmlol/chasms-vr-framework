@@ -56,7 +56,8 @@ pub fn biteable(material: u32) -> bool {
     matches!(material, MAT_FLESH | MAT_LEATHER | MAT_WOOD | MAT_EARTH)
 }
 
-/// One capsule of a creature's body: from `a` to `b`, `radius` thick.
+/// One capsule of a creature's body: from `a` (the end it hangs from: a limb's joint) to `b`,
+/// `radius` thick.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
 pub struct ActorPart {
@@ -195,6 +196,11 @@ pub const SPELL_CASTABLE: u32 = 1 << 1;
 pub const SPELL_POWER: u32 = 1 << 2;
 /// The player has it on a quick slot (a favourite).
 pub const SPELL_FAVOURITE: u32 = 1 << 3;
+/// Fire, or shock: a hand charged with it held to a blade fills the blade with it (imbuing,
+/// [`crate::RtMelee::imbue`]), and the blade's hits carry it (the fire rows of the damage tables;
+/// burning, a shock's stun, for the game).
+pub const SPELL_FIRE: u32 = 1 << 4;
+pub const SPELL_SHOCK: u32 = 1 << 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -252,6 +258,26 @@ pub const CE_CAST: u32 = 3;
 /// `speed` how fast the bow's table says the game's arrow flies at that draw. The game fires its own
 /// arrow.
 pub const CE_LOOSE: u32 = 4;
+/// The player was struck by a creature's weapon ([`crate::ActorItems`]): `actor` swung `object`,
+/// whose damager of kind `what` met the player's body part `part` (`PART_*`) at `point`, moving
+/// `dir` at `speed`; `strength` and `damage` as a hit's. The game hurts the player.
+pub const CE_STRUCK: u32 = 5;
+/// A blade the player holds that went in comes back out of `actor`'s part `part` (`object` the
+/// weapon; `depth` how deep it had gone).
+pub const CE_PULLED_OUT: u32 = 6;
+/// A blade in `actor` cuts on as it's dragged (`DMGF_SLIDES`), or is pushed deeper: more damage
+/// (`damage`), `depth` how deep it is now.
+pub const CE_WOUND: u32 = 7;
+/// Thing `object` broke ([`crate::OBJF_BREAKABLE`]), struck by `what` (one of the runtime's things,
+/// or 0: a hand, a creature or the world) at `speed` along `dir`, `strength` the knock's weighed
+/// speed, at `point`: the runtime has taken it out of its world until the game puts it back (a new
+/// `spawn_seq`), and the game makes its pieces.
+pub const CE_BROKE: u32 = 8;
+/// One of the player's damagers (`object`, `blade`; 0 a hand) met `actor`'s part `part` (the
+/// game's) of `material` without doing anything: too slow for what it met, or at a bad angle with
+/// no blunt blow to fall back on. It's heard, and on armour
+/// it scratches or scuffs (`what` the damager's kind, `speed`, `point`, `dir` as a hit's).
+pub const CE_TOUCH: u32 = 9;
 
 /// A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
 pub const CEF_GLANCING: u32 = 1 << 0;
@@ -264,6 +290,20 @@ pub const CEF_POWER: u32 = 1 << 3;
 pub const CEF_PARRY: u32 = 1 << 4;
 /// From behind the creature.
 pub const CEF_BACK: u32 = 1 << 5;
+/// A blow that went in fast enough, and square enough at a joint, to cut through it (a limb's
+/// dismemberment): the event's `part` is the one it takes off (the part hit, or the one
+/// beside it whose joint it crossed: a forearm cut at the wrist takes the hand), and the game cuts
+/// it off, and what hangs from it, at its joint. The cut kills. The blade doesn't stay in: it
+/// carries on through.
+pub const CEF_SEVER: u32 = 1 << 6;
+/// A stab made by pushing slowly (a pressure stab).
+pub const CEF_PRESSURE: u32 = 1 << 7;
+/// It went on through into another creature behind (a skewer).
+pub const CEF_SKEWER: u32 = 1 << 8;
+/// From a weapon filled with a spell ([`crate::RtMelee::imbue`]): `spell` is which.
+pub const CEF_IMBUED: u32 = 1 << 9;
+/// Two hands on the weapon.
+pub const CEF_TWO_HANDED: u32 = 1 << 10;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
@@ -279,11 +319,17 @@ pub struct CombatEvent {
     pub material: u32,
     pub strength: f32,
     pub speed: f32,
-    pub _p0: [f32; 2],
+    /// How deep the blade went in (metres): a penetration's.
+    pub depth: f32,
+    /// The hit's damage by the melee rules (the damager's curve and tier, the material's
+    /// multiplier), before the creature's own: a game may take it as it is, or use its own.
+    pub damage: f32,
     pub point: [f32; 3],
-    pub _p1: f32,
+    /// Which of the weapon's damagers it was (its index).
+    pub blade: u32,
     pub dir: [f32; 3],
-    pub _p2: f32,
+    /// The spell an imbued weapon carries ([`CEF_IMBUED`]), else 0.
+    pub spell: u32,
 }
 
 /// Runtime -> game: `written` events so far; event `n` is in slot `n % COMBAT_EVENT_SLOTS`. The
