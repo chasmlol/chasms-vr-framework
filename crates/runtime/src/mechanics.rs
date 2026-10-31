@@ -368,8 +368,8 @@ pub struct Mechanics {
     /// recentre takes the head's height as it is.
     upright_settled: bool,
     upright_still: f32,
-    upright_above: f32,
-    upright_min: f32,
+    /// The head's heights over the last [`UPRIGHT_HOLD`] seconds (when, how high).
+    upright_window: std::collections::VecDeque<(f64, f32)>,
     recalibrate: bool,
     phys_crouch: bool,
     crouch_by_phys: bool,
@@ -421,8 +421,7 @@ impl Default for Mechanics {
             stand_h: 0.0,
             upright_settled: false,
             upright_still: 0.0,
-            upright_above: 0.0,
-            upright_min: f32::MAX,
+            upright_window: Default::default(),
             recalibrate: false,
             phys_crouch: false,
             crouch_by_phys: false,
@@ -936,34 +935,36 @@ impl Mechanics {
             // view's height is the head's over it (`upright_offset`), and ducking a good way under
             // it crouches. Until the headset's been still at a likely height a while (worn: not on
             // the desk, nor being put on), it follows the head. Then, held higher a second or more
-            // (stood up), it rises to there over a moment (to the lowest it was held at: a moment
-            // higher, a stretch, on tiptoe, a tracking glitch, doesn't count). Lower by a slouch (under half a crouch), it
-            // settles there slowly; lower than that (a crouch, made however slowly, or held), it
-            // stays. A recentre takes the head's height as it is.
+            // (stood up, after sitting), it rises to there over a moment (to the lowest it was in
+            // that second: a moment higher, a stretch, on tiptoe, a tracking glitch, doesn't
+            // count). Lower by a slouch (under half a crouch), it settles there slowly; lower than
+            // that (a crouch, made however slowly, or held), it stays. A recentre takes the head's
+            // height as it is.
             let h = (hmd_pos + hmd_rot * NECK).y - NECK.y;
             let dt = inp.dt;
-            let thr = c.input.stealth_crouch_amount.max(0.05);
+            let thr = c.input.stealth_crouch_amount.clamp(0.05, 0.4);
             let likely = (UPRIGHT_LOW..UPRIGHT_HIGH).contains(&h);
             if std::mem::take(&mut self.recalibrate) && likely {
                 self.stand_h = h;
                 self.upright_settled = true;
-                self.upright_above = 0.0;
-                self.upright_min = f32::MAX;
+                self.upright_window.clear();
             }
             if !self.upright_settled {
                 self.upright_still = if likely && (h - self.stand_h).abs() < UPRIGHT_STILL { self.upright_still + dt } else { 0.0 };
                 self.stand_h = if self.stand_h == 0.0 { h } else { self.stand_h + (h - self.stand_h) * (dt / 0.25).min(1.0) };
                 self.upright_settled = self.upright_still >= UPRIGHT_SETTLE;
-            } else if h > self.stand_h {
-                self.upright_above += dt;
-                self.upright_min = self.upright_min.min(h);
-                if self.upright_above >= UPRIGHT_HOLD {
-                    self.stand_h = (self.stand_h + UPRIGHT_SPEED * dt).min(self.upright_min);
-                }
             } else {
-                self.upright_above = 0.0;
-                self.upright_min = f32::MAX;
-                if h < self.stand_h && self.stand_h - h < thr * 0.5 && !self.phys_crouch {
+                // The head's lowest over the last second: held higher than upright that long, it's
+                // upright there now.
+                self.upright_window.push_back((now, h));
+                while self.upright_window.front().is_some_and(|(t, _)| now - t > UPRIGHT_HOLD as f64) {
+                    self.upright_window.pop_front();
+                }
+                let held = self.upright_window.front().is_some_and(|(t, _)| now - t >= UPRIGHT_HOLD as f64 * 0.9);
+                let low = self.upright_window.iter().fold(f32::MAX, |m, (_, h)| m.min(*h));
+                if held && low > self.stand_h {
+                    self.stand_h = (self.stand_h + UPRIGHT_SPEED * dt).min(low);
+                } else if h < self.stand_h && self.stand_h - h < thr * 0.5 && !self.phys_crouch {
                     // slouching
                     self.stand_h = (self.stand_h - UPRIGHT_SETTLE_SPEED * dt).max(h);
                 }
@@ -1647,6 +1648,26 @@ mod tests {
         t += 1.0;
         let out = run(&mut m, &f, &g, &s, t);
         assert_eq!(out.intents.presses[Action::Crouch as usize], 2);
+    }
+
+    #[test]
+    fn sat_when_it_started_then_stood_up_upright_is_standing() {
+        let (mut m, s, g) = (Mechanics::default(), Settings::default(), game());
+        let mut f = standing();
+        let mut t = 0.0;
+        let mut step = |m: &mut Mechanics, f: &HmdFrame, secs: f64| {
+            for _ in 0..(secs * 90.0) as usize {
+                t += 1.0 / 90.0;
+                run(m, f, &g, &s, t);
+            }
+        };
+        f.hmd.pos[1] = 1.3;
+        step(&mut m, &f, 2.0);
+        assert!((m.debug.stand_h - 1.3).abs() < 0.01, "sat: {}", m.debug.stand_h);
+        f.hmd.pos[1] = 1.7;
+        step(&mut m, &f, 6.0);
+        assert!((m.debug.stand_h - 1.7).abs() < 0.01, "stood: {}", m.debug.stand_h);
+        assert!(!m.debug.phys_crouch);
     }
 
     #[test]
