@@ -451,7 +451,7 @@ pub fn all() -> Vec<Scenario> {
         Scenario {
             name: "crouch",
             about: "duck in real life: the game crouches and the view stays at your real head height",
-            duration: 4.0,
+            duration: 5.5,
             needs_game: true,
             lockstep: true,
             range_args: vec![],
@@ -461,7 +461,8 @@ pub fn all() -> Vec<Scenario> {
             input: || {
                 Box::new(|t, _| {
                     let mut b = Body::rest();
-                    let duck = ramp(t, 0.5, 1.0) - ramp(t, 2.5, 3.0);
+                    // (Stood still first: upright is learned before a duck counts.)
+                    let duck = ramp(t, 2.0, 2.5) - ramp(t, 4.0, 4.5);
                     b.head_pos.y -= 0.55 * duck;
                     for h in &mut b.hands {
                         h.pos.y -= 0.4 * duck;
@@ -470,13 +471,13 @@ pub fn all() -> Vec<Scenario> {
                 })
             },
             checks: vec![
-                check(2.2, "the game crouched", |c| ensure(c.stat(rs::CROUCHED) == 1, || "standing".into())),
-                check(2.2, "the view isn't lowered twice", |c| {
+                check(3.7, "the game crouched", |c| ensure(c.stat(rs::CROUCHED) == 1, || "standing".into())),
+                check(3.7, "the view isn't lowered twice", |c| {
                     ensure(c.mech.height_comp > 0.2, || format!("height_comp {:.2}", c.mech.height_comp))
                 }),
-                check(3.9, "standing up stands the game up", |c| ensure(c.stat(rs::CROUCHED) == 0, || "still crouched".into())),
+                check(5.4, "standing up stands the game up", |c| ensure(c.stat(rs::CROUCHED) == 0, || "still crouched".into())),
             ],
-            captures: vec![(2.0, "crouched")],
+            captures: vec![(3.5, "crouched")],
         },
         Scenario {
             name: "gestures",

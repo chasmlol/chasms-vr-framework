@@ -967,7 +967,10 @@ impl Mechanics {
             }
             let was = self.phys_crouch;
             let thr = c.input.stealth_crouch_amount.max(0.05);
-            if !self.phys_crouch && h < self.stand_h - thr {
+            // (Not while the headset's still being put on: upright isn't known yet.)
+            if !self.upright_settled {
+                self.phys_crouch = false;
+            } else if !self.phys_crouch && h < self.stand_h - thr {
                 self.phys_crouch = true;
             } else if self.phys_crouch && h > self.stand_h - thr + (thr * 0.5).min(0.06) {
                 self.phys_crouch = false;
@@ -1000,6 +1003,9 @@ impl Mechanics {
                 0.0
             };
             out.tracking.height_comp = comp;
+            if c.input.physical_crouch && !c.comfort.seated && self.phys_crouch {
+                out.intents.crouch = (self.stand_h - h).max(0.0);
+            }
             self.debug.stand_h = self.stand_h;
             self.debug.phys_crouch = self.phys_crouch;
             self.debug.game_crouched = game_crouched;
@@ -1618,7 +1624,8 @@ mod tests {
         let mut f = standing();
         let mut g = game();
         let mut t = 0.0;
-        for _ in 0..10 {
+        // Stood still a moment: upright is learned.
+        for _ in 0..180 {
             t += 1.0 / 90.0;
             run(&mut m, &f, &g, &s, t);
         }
@@ -1631,8 +1638,8 @@ mod tests {
         g.eye_above_feet = 1.1;
         t += 1.0 / 90.0;
         let out = run(&mut m, &f, &g, &s, t);
-        // Standing eye height was learned as ~1.75 m (it adapts from 1.8 toward the game's 1.7).
-        assert!((0.6..0.7).contains(&out.tracking.height_comp), "{}", out.tracking.height_comp);
+        // Standing eye height was learned as the game's 1.7 m.
+        assert!((out.tracking.height_comp - 0.6).abs() < 0.02, "{}", out.tracking.height_comp);
         // Standing up again toggles back.
         f.hmd.pos[1] = 1.7;
         t += 1.0;
