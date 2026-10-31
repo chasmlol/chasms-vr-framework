@@ -684,7 +684,7 @@ impl Default for Input {
             ability_flicks: true,
             flick_speed: 2.0,
             physical_crouch: true,
-            stealth_crouch_amount: 0.12,
+            stealth_crouch_amount: 0.08,
             arm_swimming: true,
             swim_ease: 1.0,
         }

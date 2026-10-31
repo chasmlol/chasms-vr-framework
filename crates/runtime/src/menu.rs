@@ -274,7 +274,7 @@ fn comfort(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::R
     }
     ui.checkbox(&mut s.input.physical_crouch, "Duck to crouch");
     if s.input.physical_crouch {
-        slider(ui, "Stealth crouch amount", &mut s.input.stealth_crouch_amount, 0.08, 0.7, " m", 2);
+        slider(ui, "Stealth crouch amount", &mut s.input.stealth_crouch_amount, 0.05, 0.7, " m", 2);
     }
     slider(ui, "Height offset", &mut s.comfort.height_offset, -0.5, 0.5, " m", 2);
     ui.checkbox(&mut s.comfort.camera_anims, "Follow scripted camera (ladders, cut-scenes)");
