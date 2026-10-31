@@ -117,14 +117,6 @@ pub const GRAVITY: Vec3 = Vec3::new(0.0, -9.81, 0.0);
 /// A creature's part the game gives no mass for (kg: a 65 kg human over its 11 parts).
 pub const PART_MASS: f32 = 6.0;
 
-/// How fast (m/s) an axe's edge must chop, and a point stab, to stay in, when the game gives no
-/// damage tables (the material minimums: a pierce 1 m/s into anything, an axe's slash 3).
-pub const AXE_SPEED: f32 = 3.0;
-pub const STAB_SPEED: f32 = 1.0;
-/// How deep an axe bites, and how deep it can go; a point's default reach in.
-pub const AXE_DEPTH: f32 = 0.03;
-pub const AXE_MAX_DEPTH: f32 = 0.05;
-pub const STAB_MAX_DEPTH: f32 = 0.12;
 /// A sword's stab dampers when the game gives none (held in 1000, out 500, free 1250).
 pub const DAMPERS: [f32; 3] = [1000.0, 500.0, 1250.0];
 

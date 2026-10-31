@@ -12,8 +12,21 @@ use rustvr_protocol::*;
 
 pub mod body;
 pub mod modifiers;
+pub mod weapons;
 
 pub use modifiers::*;
+
+/// The speed (m/s) a full-strength blow of a damage kind has: a game that scales its own damage by
+/// how hard a blow was takes a blow this fast as its own full one (`CombatEvent::strength` 1; ours,
+/// tuned here: a sword's cut at 7, a stab at 5, a fist at 6, a blunt blow at 8).
+pub fn full_speed(kind: u32) -> f32 {
+    match kind {
+        DMG_SLASH => 7.0,
+        DMG_PIERCE => 5.0,
+        DMG_PUNCH => 6.0,
+        _ => 8.0,
+    }
+}
 
 /// A curve of two keys, as a damager's damage by speed: flat before the first key and after the
 /// second, a cubic between them with the keys' slopes (the first's leaving, the second's arriving;

@@ -2,7 +2,30 @@
 //! do a part its deep damage, which parts come off, how hits stagger and floor it, and what the
 //! player takes.
 
+use glam::Vec3;
 use rustvr_protocol::*;
+
+/// The throat on a creature's capsules: the lower part of the head's (from the neck, this share of
+/// it), or the top of the torso's (this far from its end at the neck, metres).
+pub const THROAT_SHARE: f32 = 0.45;
+pub const THROAT_TORSO: f32 = 0.1;
+
+/// Whether `p` (world) on a part of `kind` from `a` to `b` is on its throat (the neck).
+pub fn on_throat(kind: u32, a: Vec3, b: Vec3, p: Vec3) -> bool {
+    let ab = b - a;
+    let len = ab.length();
+    if len < 1e-4 {
+        return false;
+    }
+    let along = (p - a).dot(ab) / len;
+    match kind {
+        // The head's capsule runs from the neck up through the crown.
+        PART_HEAD => along < len * THROAT_SHARE,
+        // The torso's from the pelvis up to the neck.
+        PART_TORSO => along > len - THROAT_TORSO,
+        _ => false,
+    }
+}
 
 /// A human's health (50), and the player's (100).
 pub const HEALTH: f32 = 50.0;

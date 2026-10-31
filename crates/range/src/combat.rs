@@ -438,23 +438,6 @@ pub fn bloods() -> BloodTable {
     t
 }
 
-/// The melee weapons' blades as the runtime's simpler table has them ([`MeleeTable`]: four damagers
-/// a weapon), for a runtime that reads only that; the full ones are [`MeleeWeapons`].
-pub fn melee_table(weapons: &MeleeWeapons) -> MeleeTable {
-    let mut t: MeleeTable = bytemuck::Zeroable::zeroed();
-    for (i, w) in weapons.weapons[..(weapons.count as usize).min(MAX_MELEE_WEAPONS)].iter().take(MAX_MELEE).enumerate() {
-        let mut d = MeleeDesc { id: w.id, damage: 12.0, ..Default::default() };
-        for b in w.blades().iter().take(MAX_DAMAGERS) {
-            d.damagers[d.count as usize] = Damager { kind: b.kind, flags: b.flags & (DMGF_BOTH_WAYS | DMGF_AXE), depth: b.depth, radius: b.radius, a: b.a, b: b.b, edge: b.edge, ..Default::default() };
-            d.count += 1;
-            d.reach = d.reach.max(glam::Vec3::from_array(b.b).length() + b.radius);
-        }
-        t.weapons[i] = d;
-        t.count += 1;
-    }
-    t
-}
-
 /// The player's spells: a fire bolt and a shock, `selected` the one the spell hand charges.
 pub fn spells_with(selected: u32) -> Spells {
     let mut s: Spells = bytemuck::Zeroable::zeroed();

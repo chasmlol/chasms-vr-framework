@@ -115,6 +115,9 @@ pub struct Actors {
 }
 
 // ---- melee weapons ------------------------------------------------------------------------------
+/// The older, simpler melee table ([`MeleeTable`]). The runtime no longer judges by it: a melee
+/// weapon is described by its own numbers in [`crate::MeleeWeapons`] (the damage kinds and
+/// flags below are still theirs). Its region stays where it is so the layout doesn't move.
 pub const OFF_MELEE: usize = OFF_ACTORS + size_of::<Actors>();
 pub const MAX_MELEE: usize = 32;
 pub const MAX_DAMAGERS: usize = 4;

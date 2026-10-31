@@ -14,9 +14,11 @@ bodies' physics. The two meet through the protocol, as everything else in the fr
 
 * The game describes its melee weapons (`MeleeWeapons`): each weapon's handles (where hands hold
   it and slide along it) and its damagers (each with its numbers: its damage type, its angles,
-  its damage curve, which of the damage tables it's judged by, its penetration depth and dampers,
-  its tier). The runtime holds and judges them; a weapon without one is judged by the older,
-  simpler `MeleeDesc`.
+  its damage curve, which of the damage tables it's judged by, its penetration depth and
+  dampers, its tier). The runtime holds and judges them; a weapon the game gives none for doesn't
+  hit (the older, simpler `MeleeTable` is no longer read). Ready-made damagers and handles, as
+  items carry them, are `rustvr_melee::weapons` (the range's weapons, and a game's own weapons by
+  their kinds: Oblivion's).
 * The game lists what its creatures hold (`ActorItems`): the runtime's hands and weapons meet
   those things as solid, block and parry them, and are struck by them.
 * The game says its rules for the player (`MeleeRules`): its strength, its stamina (when the game
@@ -399,8 +401,6 @@ The choices that need a reason, and why:
   carry none of those).
 * A breakable's pieces keeping its own speed (the range's debris flies from the blow).
 * Telekinesis choking a body.
-* Oblivion's weapons on this judge: its adapter still describes them by the older `MeleeDesc`, so
-  they're held and judged the older way until it gives `MeleeWeapons`.
 
 ## Testing
 

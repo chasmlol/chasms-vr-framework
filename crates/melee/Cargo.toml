@@ -9,3 +9,4 @@ publish.workspace = true
 [dependencies]
 rustvr-protocol.workspace = true
 glam.workspace = true
+bytemuck.workspace = true

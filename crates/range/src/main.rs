@@ -714,7 +714,6 @@ impl Game {
         }
         if self.combat_for != self.adapter.connections() && self.adapter.connected() {
             self.combat_for = self.adapter.connections();
-            self.adapter.write_melee(&combat::melee_table(&self.melee_weapons));
             self.melee_weapons.seq = self.melee_weapons.seq.wrapping_add(2);
             self.adapter.write_melee_weapons(&self.melee_weapons);
             self.adapter.write_spells(&combat::spells_with(self.spell));

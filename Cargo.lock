@@ -1659,6 +1659,7 @@ dependencies = [
 name = "rustvr-melee"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "glam 0.34.1",
  "rustvr-protocol",
 ]

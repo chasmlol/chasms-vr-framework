@@ -17,16 +17,13 @@
 //!   body if the controller is in it, catching up eased, never through it.
 
 use glam::{Quat, Vec3};
+use rustvr_melee::body::{THROAT_SHARE, THROAT_TORSO};
 use rustvr_protocol::*;
 
 /// A hand pulled this far from its controller by what it holds (metres) loses its grip, after
 /// [`SLIP_TIME`] seconds of it: an arm's reach (HIGGS lets go at 0.7 m).
 pub const REACH: f32 = 0.6;
 pub const SLIP_TIME: f64 = 0.15;
-/// The throat: the lower part of the head's capsule (from the neck, this share of it), or the top
-/// of the torso's (this far from its end at the neck, metres).
-const THROAT_SHARE: f32 = 0.45;
-const THROAT_TORSO: f32 = 0.1;
 /// A capsule thinner than this (metres) is held in the fist (an arm, a neck); thicker, with the
 /// fingers spread over it (a torso, a head).
 const THIN: f32 = 0.07;
@@ -105,21 +102,7 @@ pub fn neck(kind: u32, a: Vec3, b: Vec3) -> Option<(Vec3, Vec3)> {
     }
 }
 
-pub fn on_throat(kind: u32, a: Vec3, b: Vec3, p: Vec3) -> bool {
-    let ab = b - a;
-    let len = ab.length();
-    if len < 1e-4 {
-        return false;
-    }
-    let along = (p - a).dot(ab) / len;
-    match kind {
-        // The head's capsule runs from the neck up through the crown.
-        PART_HEAD => along < len * THROAT_SHARE,
-        // The torso's from the pelvis up to the neck.
-        PART_TORSO => along > len - THROAT_TORSO,
-        _ => false,
-    }
-}
+pub use rustvr_melee::body::on_throat;
 
 /// The fingers' shape round a capsule this thick.
 pub fn hold_shape(radius: f32) -> rustvr_ik::HoldShape {
