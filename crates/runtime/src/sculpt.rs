@@ -270,7 +270,9 @@ impl Sculpt {
         }
         self.kit = kit.map(|FaceKit { source, sculptor, controls }| {
             self.controls = controls;
-            let (lo, hi) = source.meshes.iter().flat_map(|(m, _)| &m.vertices).fold((Vec3::MAX, Vec3::MIN), |(lo, hi), v| (lo.min(v3(v.pos)), hi.max(v3(v.pos))));
+            // (The middle of the head with no face on it: the copy stays where it stands however
+            // the face is shaped, and as the body is put together again with each new face.)
+            let (lo, hi) = source.meshes.iter().filter_map(|(_, x)| x.shape.as_ref()).flat_map(|s| &s.rest).fold((Vec3::MAX, Vec3::MIN), |(lo, hi), v| (lo.min(v3(*v)), hi.max(v3(*v))));
             Kit { source, sculptor, model: None, centre: (lo + hi) * 0.5, positions: Vec::new(), normals: Vec::new() }
         });
         self.now = None;
@@ -443,18 +445,23 @@ impl Sculpt {
         self.write(link, inp.now);
     }
 
-    /// A hand lets go: its change stays in the face.
+    /// A hand lets go: the face it made stays (as it was kept within its limits), and a hand still
+    /// holding goes on pulling from it, its point where it is and the hand held back as far.
     fn let_go(&mut self, i: usize, p: Vec3, now: f64) {
         let Some(h) = self.hands[i].holding.take() else { return };
         if let Some(out) = self.hands[i].out.clone() {
             self.hands[i].released = Some((now, out));
         }
-        let (ks, _) = (self.base.0.len(), self.base.1.len());
-        for (k, x) in h.change.iter().enumerate() {
-            if k < ks {
-                self.base.0[k] += x;
-            } else if let Some(v) = self.base.1.get_mut(k - ks) {
-                *v += x;
+        self.base = self.face.clone();
+        if let Some(kit) = self.kit.as_ref() {
+            for other in self.hands.iter_mut() {
+                let Some(o) = other.holding.as_mut() else { continue };
+                let Some(&got) = kit.positions.get(o.hold.part).and_then(|ps| ps.get(o.hold.vertex)) else { continue };
+                let want = o.hold.at + o.pull;
+                o.hold.rebase(self.face.clone(), got);
+                o.from += o.pull - (want - got);
+                o.pull = want - got;
+                o.change.iter_mut().for_each(|x| *x = 0.0);
             }
         }
         tracing::info!("sculpt: the {} hand lets go, pulled {:.1} cm", if i == 0 { "left" } else { "right" }, h.pull.length() * 100.0);
@@ -464,18 +471,16 @@ impl Sculpt {
         self.pulled();
     }
 
-    /// The face for the hands' pulls: the stroke's base and each holding hand's change, kept in the
-    /// sliders' ranges.
+    /// The face for the hands' pulls: the stroke's base and each holding hand's change, kept within
+    /// what the face may be (the sliders' ranges, its age, how far from the mean face).
     fn pulled(&mut self) {
-        if self.kit.is_none() {
-            return;
-        }
+        let Some(kit) = self.kit.as_ref() else { return };
         let (mut s, mut a) = self.base.clone();
         let ks = s.len();
         for h in self.hands.iter_mut() {
             let asym = h.asym;
             let Some(hold) = h.holding.as_mut() else { continue };
-            let (ds, da) = hold.hold.pulled(hold.pull, asym, None, &[]);
+            let (ds, da) = hold.hold.pulled(hold.pull, asym);
             hold.change = ds.iter().zip(&hold.hold.from.0).map(|(x, f)| x - f).chain(da.iter().zip(&hold.hold.from.1).map(|(x, f)| x - f)).collect();
             for (k, x) in hold.change.iter().enumerate() {
                 if k < ks {
@@ -485,9 +490,8 @@ impl Sculpt {
                 }
             }
         }
-        if let Some(c) = &self.controls {
-            c.limit(&mut s, &self.limits, &self.base.0);
-        }
+        let holds: Vec<&Hold> = self.hands.iter().filter_map(|h| h.holding.as_ref().map(|h| &h.hold)).collect();
+        kit.sculptor.limit(&mut s, &mut a, &self.base, &holds, &self.limits);
         if (s.clone(), a.clone()) != self.face {
             self.face = (s, a);
             self.dirty = true;
