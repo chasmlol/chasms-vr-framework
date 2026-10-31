@@ -295,7 +295,13 @@ fn comfort(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::R
     }
     ui.checkbox(&mut s.input.physical_crouch, "Duck to crouch");
     if s.input.physical_crouch {
-        slider(ui, "Crouch depth", &mut s.input.crouch_threshold, 0.15, 0.7, " m", 2);
+        // (Wide, and no number box beside it: a laser drags a number box to its end, and clicked it
+        // wants typing.)
+        ui.scope(|ui| {
+            ui.spacing_mut().slider_width = 260.0;
+            let cm = s.input.stealth_crouch_amount * 100.0;
+            ui.add(egui::Slider::new(&mut s.input.stealth_crouch_amount, 0.05..=0.4).show_value(false).text(format!("Stealth crouch amount: {cm:.0} cm")));
+        });
     }
     slider(ui, "Height offset", &mut s.comfort.height_offset, -0.5, 0.5, " m", 2);
     ui.checkbox(&mut s.comfort.camera_anims, "Follow scripted camera (ladders, cut-scenes)");

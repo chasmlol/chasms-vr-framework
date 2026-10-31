@@ -620,10 +620,11 @@ pub struct Input {
     pub ability_flicks: bool,
     /// Flick speed (m/s) that counts.
     pub flick_speed: f32,
-    /// Ducking in real life crouches in the game.
+    /// Ducking in real life crouches in the game (its sneak, where it has one).
     pub physical_crouch: bool,
-    /// Metres below the calibrated standing height that count as crouching.
-    pub crouch_threshold: f32,
+    /// Metres below the calibrated standing height that count as crouching (a slight crouch by
+    /// default; 0.05 to 0.4).
+    pub stealth_crouch_amount: f32,
     /// In a game's water, the arms swim (strokes push the player); the stick swims either way.
     pub arm_swimming: bool,
     /// How fast a stroke carries the swimmer: 2 is twice as fast (1: as designed).
@@ -953,7 +954,7 @@ impl Default for Input {
             ability_flicks: true,
             flick_speed: 2.0,
             physical_crouch: true,
-            crouch_threshold: 0.35,
+            stealth_crouch_amount: 0.08,
             arm_swimming: true,
             swim_ease: 1.0,
         }

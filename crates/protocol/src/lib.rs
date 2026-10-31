@@ -500,7 +500,10 @@ pub struct Intents {
     /// Scrolling the game's menu (the dominant stick): notches a second, up positive, as a mouse
     /// wheel turns.
     pub scroll: f32,
-    pub _pad2: f32,
+    /// How far the player is crouched in real life, while their ducking crouches the game (metres
+    /// under their standing height; 0 not crouched so, or with physical crouching off): a game may
+    /// slow its crouched walk less the less they crouch.
+    pub crouch: f32,
     /// Swimming by the arms, while [`INT_SWIM`]: the velocity the strokes give the player
     /// (tracking space, metres a second; scaled by [`WaterState::swim_speed`], up to a few times it:
     /// the strokes are made as strong as the game's swimmer, and stronger still). The adapter
