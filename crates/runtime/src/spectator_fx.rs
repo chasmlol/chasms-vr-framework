@@ -1697,11 +1697,13 @@ impl Stage {
             world.rot = (r * rot * bob).normalize().to_array();
             f.dissolve = e.dissolving();
         }
-        // The field of view: the lens's (the zoom the desktop view has now kept), wider with speed.
+        // The field of view: the lens's, narrowed to the aiming field of view as far as the aim zoom
+        // has gone (`crate::spectator::AimZoom`, which narrowed the desktop view's own towards it),
+        // and wider with speed (less while aiming).
         let aspect = i.fov.right / i.fov.up.max(1e-4);
         let now_deg = 2.0 * i.fov.right.atan().to_degrees();
-        let base = i.settings.spectator.fov.max(1.0);
-        let zoom = now_deg / base;
+        let sp = &i.settings.spectator;
+        let base = sp.fov.max(1.0);
         let lens = if s.lens_fov > 1.0 { s.lens_fov } else { base };
         let speed = self.ground.walk.length();
         let want = if s.speed_fov && !cut { s.speed_fov_deg * smoothstep(s.speed_from, s.speed_full.max(s.speed_from + 0.1), speed) } else { 0.0 };
@@ -1713,7 +1715,7 @@ impl Stage {
             let [a, b] = info.fov;
             2.0 * a.right.atan().max(b.right.atan()).min((-a.left).atan().max((-b.left).atan())).to_degrees()
         });
-        let deg = (lens + self.widen.min((reach - lens).max(0.0))) * zoom;
+        let deg = field_of_view(lens, base, sp.aim_fov, now_deg, self.widen, reach);
         let fov = crate::spectator::fov(deg, aspect);
         // The hands, for what they carry.
         let hands = std::array::from_fn(|h| {
@@ -1933,6 +1935,15 @@ impl Stage {
             }
         }
     }
+}
+
+/// The desktop view's field of view across (degrees): the look's `lens` (the desktop view's own,
+/// `base`, without one), narrowed to `aim_fov` as far as the aim zoom has narrowed the desktop
+/// view's own (`now`, from `base`), and wider by `widen` for speed (as far as the game's pictures
+/// `reach`, less while aiming).
+fn field_of_view(lens: f32, base: f32, aim_fov: f32, now: f32, widen: f32, reach: f32) -> f32 {
+    let aimed = if (base - aim_fov).abs() > 0.5 { ((base - now) / (base - aim_fov)).clamp(0.0, 1.0) } else { 0.0 };
+    lens + (aim_fov - lens) * aimed + widen.min((reach - lens).max(0.0)) * (1.0 - aimed)
 }
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
@@ -2159,10 +2170,10 @@ fn slider(ui: &mut egui::Ui, label: &str, v: &mut f32, lo: f32, hi: f32, suffix:
     ui.add(egui::Slider::new(v, lo..=hi).text(label).suffix(suffix).fixed_decimals(decimals));
 }
 
-/// The menu's Studio tab: the looks; what's for viewers; the desktop camera (its field of view,
-/// the overscan that gives it room, its bob as the player walks); then every effect with its own
-/// strengths. (The desktop view's eye and smoothing stay on the Display tab; the aim zoom's goes in
-/// the Camera section here once it's merged.)
+/// The menu's Studio tab: the looks; what's for viewers; the desktop camera (its field of view, its
+/// zoom while the player aims, the overscan that gives it room, its bob as the player walks); then
+/// every effect with its own strengths. (The desktop view's eye and smoothing stay on the Display
+/// tab.)
 pub fn panel(ui: &mut egui::Ui, s: &mut Settings, status: &crate::menu::Status) {
     ui.label("Effects only the desktop window shows, for recording and streaming: never the headset.");
     ui.horizontal_wrapped(|ui| {
@@ -2200,6 +2211,12 @@ pub fn panel(ui: &mut egui::Ui, s: &mut Settings, status: &crate::menu::Status) 
         ui.label(egui::RichText::new("(this look's lens; the Clean look uses your own)").weak());
     } else {
         s.spectator.fov = deg;
+    }
+    ui.checkbox(&mut s.spectator.aim_zoom, "Zooms in while you aim (a gun's sights at your eye, a bow drawn to your cheek)");
+    if s.spectator.aim_zoom {
+        slider(ui, "Aiming field of view", &mut s.spectator.aim_fov, 30.0, 100.0, " deg", 0);
+        slider(ui, "Aiming zoom: in over", &mut s.spectator.aim_in, 0.05, 1.0, " s", 2);
+        slider(ui, "Aiming zoom: out over", &mut s.spectator.aim_out, 0.05, 1.0, " s", 2);
     }
     // (More draws more, in the headset too: for a wider desktop view, in games that can spare it.)
     slider(ui, "Overscan: the game drawn past the headset's view", &mut s.vr.overscan, 0.0, 30.0, " deg", 0);
@@ -2396,6 +2413,17 @@ mod tests {
         let speed = e.speed;
         let e = Ease::jump(Some(e), snap, Vec3::ZERO, 320.0, false);
         assert!(e.speed == speed && speed.abs() > 1.0, "{speed}");
+    }
+
+    #[test]
+    fn aiming_reaches_the_aiming_field_of_view_whatever_the_lens() {
+        // The Display tab's 105, aiming at 65; a look's 90 degree lens.
+        assert_eq!(field_of_view(90.0, 105.0, 65.0, 105.0, 0.0, 108.0), 90.0, "not aiming: the lens");
+        assert!((field_of_view(90.0, 105.0, 65.0, 65.0, 8.0, 108.0) - 65.0).abs() < 1e-4, "aimed: the aiming field of view, no widening");
+        let half = field_of_view(90.0, 105.0, 65.0, 85.0, 8.0, 108.0);
+        assert!((half - (77.5 + 4.0)).abs() < 1e-3, "half way: {half}");
+        // Running, not aiming: wider, never past what the pictures reach.
+        assert_eq!(field_of_view(105.0, 105.0, 65.0, 105.0, 8.0, 108.0), 108.0);
     }
 
     #[test]
