@@ -2403,8 +2403,13 @@ impl Session {
                             metres: 1.0 / wpm.max(1e-6),
                             // Gamebryo's shaders fog by clip-space distance: where the other eye's
                             // picture fills in, its fog is made this eye's (`refog` in the
-                            // compositor's shader).
-                            fog: (self.has_game_lighting && self.game_lighting.model == rustvr_protocol::lighting::LM_GAMEBRYO && self.game_lighting.fog_fade[1] != 0.0).then(|| {
+                            // compositor's shader). Not once the adapter has its shaders fog by the
+                            // distance (`fog_fade.z`).
+                            fog: (self.has_game_lighting
+                                && self.game_lighting.model == rustvr_protocol::lighting::LM_GAMEBRYO
+                                && self.game_lighting.fog_fade[1] != 0.0
+                                && self.game_lighting.fog_fade[2] == 0.0)
+                                .then(|| {
                                 let (c, f) = (self.game_lighting.fog_color, self.game_lighting.fog_fade);
                                 crate::compositor::ClipFog { color: [c[0], c[1], c[2]], fade: [f[0], f[1]] }
                             }),
