@@ -16,8 +16,9 @@
 //! (no scope's picture); the camera is steadied the more for it, and the headset's view never
 //! changes.
 //!
-//! The window never takes focus when it opens. F11 switches it to borderless fullscreen on the
-//! monitor it's on and back; it opens sized to fit its monitor.
+//! The window never takes focus when it opens, but opens in front of the other windows (the game's
+//! too). F11 switches it to borderless fullscreen on the monitor it's on and back; it opens sized to
+//! fit its monitor.
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::{Fov, Pose};
@@ -324,6 +325,11 @@ mod win {
                 win.make_target(gpu)?;
                 if fullscreen && !hidden {
                     win.toggle_fullscreen();
+                }
+                // In front of the game's window (Oblivion's is the headset eye's size, over the whole
+                // screen), still without taking its focus.
+                if !hidden {
+                    let _ = SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 }
                 Ok(win)
             }
