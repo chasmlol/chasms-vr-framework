@@ -2329,7 +2329,8 @@ impl Session {
                 frame.dt,
                 &s.desktop_bob,
             );
-            let cam = bob.apply(cam);
+            // (Given to the effects studio, which turns the world with it: `crate::spectator_fx`.)
+            let bobbed = bob.apply(cam);
             // The game's depth (and its bloom and lens) as this camera sees them: the body hides
             // behind what the game drew in front of it (a gun in the hand) and gets its light, as in
             // the headset.
@@ -2339,6 +2340,7 @@ impl Session {
             let shot = self.spectator_fx.shot(&crate::spectator_fx::ShotInput {
                 settings: s,
                 cam,
+                bobbed,
                 fov,
                 frame,
                 picture: stereo.as_ref().filter(|_| !framework).map(|(_, info)| (info, first)),

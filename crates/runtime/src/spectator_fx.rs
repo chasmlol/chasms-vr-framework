@@ -260,6 +260,27 @@ const HEAD_DAMPING: f32 = 0.7;
 /// a half at a snap's fastest, as a head whipped round dips its ear a little.
 const HEAD_LEAN: f32 = 0.0045;
 
+/// How far off the world a bob's move is seen as a turn of it (metres): what a flat game's view
+/// shows of a step, a room's walls and the people in it.
+const BOB_SEEN_AT: f32 = 2.5;
+
+/// The bob (`bobbed` against `cam`) as a turn of the camera on the world: its own turn, and its move
+/// as the turn that moves what's `BOB_SEEN_AT` away as much.
+///
+/// The game's picture is looked up by direction, so moving the camera never moves the world in it;
+/// it only moves the body the runtime draws, the wrong way and into the camera (a landing's 20 cm
+/// dip puts the camera in the chest). As a turn of the world's camera, the world bobs and the body
+/// stays with the camera, as a flat game's arms do.
+fn bob_turn(cam: &Pose, bobbed: &Pose) -> Quat {
+    let rot = Quat::from_array(cam.rot).normalize();
+    let moved = rot.inverse() * (Vec3::from_array(bobbed.pos) - Vec3::from_array(cam.pos));
+    let turned = rot.inverse() * Quat::from_array(bobbed.rot).normalize();
+    // (Up looks like the view tipped up, which is a turn about x the negative way; right like it
+    // turned right.)
+    let seen = Quat::from_rotation_y((moved.x / BOB_SEEN_AT).atan()) * Quat::from_rotation_x(-(moved.y / BOB_SEEN_AT).atan());
+    (turned * seen).normalize()
+}
+
 impl Ease {
     /// A jump of `yaw` (radians) on top of `was` (none: from rest), settled in about `seconds` for a
     /// 45 degree turn. A head turns further faster and for longer, so a bigger turn takes a little
@@ -492,6 +513,8 @@ pub struct ShotInput<'a> {
     pub settings: &'a Settings,
     /// The steadied camera and its field of view, as the desktop view has them.
     pub cam: Pose,
+    /// The same camera bobbed as the player walks (`crate::view_bob`).
+    pub bobbed: Pose,
     pub fov: Fov,
     pub frame: &'a HmdFrame,
     /// The picture the view shows: its slot info and the eye it's seen from (none: no game
@@ -1546,7 +1569,7 @@ impl Stage {
     /// The camera for this frame: the steadied camera turned after the chest, shaken, its field of
     /// view widened with speed, and its view of the world turned through a jump being eased out.
     pub fn shot(&mut self, i: &ShotInput) -> Shot {
-        let none = Shot { cam: i.cam, world: i.cam, fov: i.fov };
+        let none = Shot { cam: i.cam, world: Pose { rot: (Quat::from_array(i.cam.rot) * bob_turn(&i.cam, &i.bobbed)).normalize().to_array(), ..i.cam }, fov: i.fov };
         let Some(f) = self.frame.as_mut() else { return none };
         let s = &i.settings.studio;
         let dt = i.frame.dt.clamp(0.0, 0.1);
@@ -1554,6 +1577,7 @@ impl Stage {
         f.dt = dt;
         let pos = Vec3::from_array(i.cam.pos);
         let mut rot = Quat::from_array(i.cam.rot).normalize();
+        let bob = bob_turn(&i.cam, &i.bobbed);
         // The world under the player, from the pictures.
         let mut cut = self.prev.is_none();
         let mut landed = None;
@@ -1657,13 +1681,14 @@ impl Stage {
             self.shake = Shake::default();
         }
         let cam = Pose { pos: i.cam.pos, valid: 1, rot: rot.normalize().to_array() };
-        // The world's camera: turned back by as much of the jump as the head hasn't turned yet.
-        let mut world = cam;
+        // The world's camera: bobbed, and turned back by as much of a jump as the head hasn't turned
+        // yet.
+        let mut world = Pose { rot: (rot * bob).normalize().to_array(), ..cam };
         f.dissolve = 0.0;
         if let Some(e) = &self.ground.ease {
             let r = Quat::from_rotation_y(e.yaw);
             world.pos = (e.pivot + r * (pos - e.pivot)).to_array();
-            world.rot = (r * rot).normalize().to_array();
+            world.rot = (r * rot * bob).normalize().to_array();
             f.dissolve = e.dissolving(s.snap_seconds);
         }
         // The field of view: the lens's (the zoom the desktop view has now kept), wider with speed.
@@ -2356,6 +2381,23 @@ mod tests {
         let speed = e.speed;
         let e = Ease::jump(Some(e), snap, Vec3::ZERO, 0.3, false);
         assert!(e.speed == speed && speed.abs() > 1.0, "{speed}");
+    }
+
+    #[test]
+    fn a_bob_turns_the_world_and_never_moves_the_camera() {
+        let look = Quat::from_rotation_y(0.7);
+        let cam = Pose { pos: [0.0, 1.7, 0.0], valid: 1, rot: look.to_array() };
+        // The camera dropped 2 cm (a step): the world's camera tips down, by what 2 cm is at 2.5 m.
+        let down = Pose { pos: [0.0, 1.68, 0.0], ..cam };
+        let t = bob_turn(&cam, &down);
+        let fwd = t * Vec3::Z;
+        assert!((fwd.y - (-0.02f32 / BOB_SEEN_AT).atan().sin()).abs() < 1e-4, "{fwd:?}");
+        assert!(fwd.x.abs() < 1e-5);
+        // Sideways to the right: turned right.
+        let right = Pose { pos: (Vec3::from_array(cam.pos) + look * Vec3::X * 0.03).to_array(), ..cam };
+        assert!((bob_turn(&cam, &right) * Vec3::Z).x > 0.0);
+        // No bob: no turn.
+        assert!(bob_turn(&cam, &cam).angle_between(Quat::IDENTITY) < 1e-5);
     }
 
     #[test]
