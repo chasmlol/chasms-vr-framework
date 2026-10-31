@@ -1324,12 +1324,14 @@ impl Rig {
                             self.load_game_magazine(d.id);
                         }
                         self.replace(d.id, d.replaces);
+                        self.conjure(d.id, d.into_hand);
                     }
                 }
                 None => {
                     self.add(*d, d.id, false, v3(d.spawn_pose.pos), q4(d.spawn_pose.rot));
                     self.start_in_slot(d);
                     self.replace(d.id, d.replaces);
+                    self.conjure(d.id, d.into_hand);
                 }
             }
         }
@@ -1446,6 +1448,30 @@ impl Rig {
         self.physics.set_pose(body, at.0, at.1);
         self.take(id, i, true);
         tracing::info!("rig: {id:#x} takes the place of its copy {copy:#x} in the {} hand", if i == 0 { "left" } else { "right" });
+    }
+
+    /// A thing the game made in a hand (`into`: 1 the left, 2 the right; a bound weapon the hand
+    /// conjured): in that hand at once, by its grip, out of the slot it would start in. Only an empty
+    /// hand takes it.
+    fn conjure(&mut self, id: u32, into: u32) {
+        let i = match into {
+            1 => 0,
+            2 => 1,
+            _ => return,
+        };
+        let Some(hands) = self.hands.as_ref() else { return };
+        if hands[i].holding.is_some() || hands[i].support.is_some() {
+            tracing::info!("rig: {id:#x} would be made in the {} hand, which holds something", if i == 0 { "left" } else { "right" });
+            return;
+        }
+        let (palm, rot) = hands[i].target;
+        let Some(body) = self.objects.get(&id).map(|o| o.body) else { return };
+        for s in self.slots.iter_mut().filter(|s| **s == Some(id)) {
+            *s = None;
+        }
+        self.physics.set_pose(body, palm, rot);
+        self.take(id, i, true);
+        tracing::info!("rig: {id:#x} made in the {} hand", if i == 0 { "left" } else { "right" });
     }
 
     /// Objects the game hands the player at the start go straight into their body slot.

@@ -18,6 +18,8 @@ pub const SHOCK_TOUCH: u32 = 3;
 pub const HEAL: u32 = 4;
 pub const LANTERN: u32 = 5;
 pub const INFERNO: u32 = 6;
+/// It conjures the range's sword in the hand that casts it, as a bound weapon is made.
+pub const BOUND_SWORD: u32 = 17;
 
 /// The player's magicka, and how fast it comes back (a second): plenty, to play with.
 const MAGICKA: f32 = 1000.0;
@@ -81,7 +83,7 @@ impl Default for RangeMagic {
             spell(14, "Shield", DELIVER_SELF, 75.0, 3, 0.37, 0.93, [0.8, 0.8, 0.9], 0),
             spell(15, "Starlight", DELIVER_SELF, 10.0, 0, 0.37, 0.93, [1.0, 1.0, 0.85], 0),
             spell(16, "Summon skeleton", DELIVER_SELF, 45.0, 1, 0.37, 0.93, [0.7, 0.6, 1.0], 0),
-            spell(17, "Bound sword", DELIVER_SELF, 175.0, 3, 0.37, 0.93, [0.6, 0.55, 1.0], 0),
+            spell(BOUND_SWORD, "Bound sword", DELIVER_SELF, 175.0, 3, 0.37, 0.93, [0.6, 0.55, 1.0], 0),
             spell(18, "Convalescence", DELIVER_TARGET, 30.0, 1, 0.4, 0.5, [0.5, 1.0, 0.55], 0),
         ];
         RangeMagic { spells, magicka: MAGICKA, selected: FIRE_BOLT, bolts: Vec::new(), written: f64::NEG_INFINITY }

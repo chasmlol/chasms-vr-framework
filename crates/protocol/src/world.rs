@@ -390,7 +390,10 @@ pub struct ObjectDesc {
     /// runtime's copy of it ([`OS_INVENTORY`]); the game equips it, and its own weapon goes into
     /// that hand by its grip, the copy gone.
     pub replaces: u32,
-    pub _p_grips: u32,
+    /// As it arrives (or comes back with a new `spawn_seq`): the hand it appears in, by its grip (1
+    /// the left, 2 the right; 0: where it starts). A bound weapon a hand conjured is made in that
+    /// hand (the game equips it; the hand that cast it has it at once). Only an empty hand takes it.
+    pub into_hand: u32,
 }
 pub const OBJ_PROP: u32 = 1;
 pub const OBJ_WEAPON: u32 = 2;

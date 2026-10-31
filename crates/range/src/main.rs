@@ -579,6 +579,14 @@ impl Game {
                     if cast {
                         self.stats_f[rs::F_CASTS] += 1.0;
                     }
+                    // A bound weapon: the range's sword, made in the hand that cast it.
+                    if cast
+                        && ev.what == magic::BOUND_SWORD
+                        && let Some(a) = &mut self.armory
+                        && let Some(&sword) = a.ids_of_kind(OBJ_MELEE).first()
+                    {
+                        a.conjure(sword, ev.hand);
+                    }
                     if into_dummy {
                         self.stats_f[rs::F_CASTS_AT_DUMMY] += 1.0;
                     }
