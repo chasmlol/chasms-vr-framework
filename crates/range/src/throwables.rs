@@ -265,10 +265,13 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_LEFT + 1),
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_RIGHT + 1),
         (find("builtin_knife").unwrap(), Vec3::new(-0.91, top, 1.05), SLOT_BELT + 1),
-        // The sword, its handle towards the player, and a dagger to throw behind it.
-        (find("builtin_sword").unwrap(), Vec3::new(-0.72, top, 0.82), 0),
-        (find("kit_dagger").unwrap(), Vec3::new(-0.66, top, 0.97), 0),
     ];
+    // The sword, its handle towards the player, and a dagger to throw behind it.
+    for (key, at) in [("builtin_sword", Vec3::new(-0.72, top, 0.82)), ("kit_dagger", Vec3::new(-0.66, top, 0.97))] {
+        if let Some(i) = find(key) {
+            places.push((i, at, 0));
+        }
+    }
     for (key, x) in [("throw_dynamite", -0.53), ("throw_incendiary", -0.61), ("throw_sticky_dynamite", -0.71)] {
         if let Some(i) = find(key) {
             places.push((i, Vec3::new(x, top, 1.08), 0));

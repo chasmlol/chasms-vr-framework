@@ -107,6 +107,9 @@ pub struct MeleeRig {
     pub melee_buttons: bool,
     pub jump: Option<Vec3>,
     pub jump_click_was: bool,
+    /// Where each held weapon last buzzed against what it rubs on, by (weapon, the collider it
+    /// touches): the contact then, in the weapon's frame and in the other's.
+    pub rubs: std::collections::HashMap<(u32, rapier3d::prelude::ColliderHandle), (Vec3, Vec3)>,
 }
 
 /// A thrown weapon: the hand that threw it, when, (flying point first) its point's way (weapon
@@ -639,6 +642,55 @@ impl Rig {
             }
         }
         out
+    }
+}
+
+/// A held weapon rubbing along what it touches buzzes its hands each time the contact has slid this
+/// far (m) along the two of them ([`RUB_PERIOD`]), this hard ([`RUB_INTENSITY`]).
+pub const RUB_PERIOD: f32 = 0.02;
+pub const RUB_INTENSITY: f32 = 0.8;
+
+impl Rig {
+    /// Rubbing (a contact that stays): a held weapon sliding along what it touches (the
+    /// world, a loose thing, a creature) buzzes the hands on it each 2 cm the contact slides, as
+    /// measured on both: the point where it last buzzed, carried by each, that far apart.
+    pub(super) fn rub_melee(&mut self) {
+        let w = self.map.world_per_meter;
+        let hands: Vec<rapier3d::prelude::ColliderHandle> = self.hands.as_ref().map_or(Vec::new(), |h| vec![h[0].collider, h[1].collider]);
+        let held: Vec<(u32, usize, rapier3d::prelude::ColliderHandle, rapier3d::prelude::RigidBodyHandle)> = self
+            .objects
+            .iter()
+            .filter_map(|(&id, o)| match o.holder {
+                Holder::Held(h) if self.melee.weapons.contains_key(&id) && o.embed.is_none() => Some((id, h, o.collider, o.body)),
+                _ => None,
+            })
+            .collect();
+        let mut touching = std::collections::HashSet::new();
+        for (id, hand, collider, body) in held {
+            let me = self.physics.pose(body);
+            for other in self.physics.touching(collider) {
+                if hands.contains(&other) {
+                    continue;
+                }
+                // (Touching within a centimetre: the solver's contacts keep a hair apart.)
+                let (Some((point, ..)), Some(them)) = (self.physics.touch(collider, other, 0.01 * w), self.physics.collider_world_pose(other)) else { continue };
+                touching.insert((id, other));
+                let here = (inverse(me).1 * (point - me.0), inverse(them).1 * (point - them.0));
+                let Some(&(on_me, on_them)) = self.melee.rubs.get(&(id, other)) else {
+                    self.melee.rubs.insert((id, other), here);
+                    continue;
+                };
+                if (me.0 + me.1 * on_me).distance(them.0 + them.1 * on_them) > RUB_PERIOD * w {
+                    self.melee.rubs.insert((id, other), here);
+                    for h in [hand, hand ^ 1] {
+                        if h == hand || self.two_handed_melee(id) {
+                            self.emit(super::feedback::Cue::Rub, Some(h), Some(id), point, RUB_INTENSITY);
+                        }
+                    }
+                }
+            }
+        }
+        self.melee.rubs.retain(|k, _| touching.contains(k));
     }
 }
 

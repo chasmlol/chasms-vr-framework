@@ -134,7 +134,8 @@ and body rules, shared by the runtime and the range.
 * **Impact feedback.** A hit's sound is picked by what hit what (a blade, a mace or a fist against
   flesh, mail and plate, wood), as loud as it was hard (its intensity, 0.25 to 15 m/s, or the
   damager's own after a damaging blow: a mace's 6 to 16); metal sparks above an intensity of 0.5;
-  the holding hands buzz a 0.3 s hit at the sound's volume.
+  the holding hands buzz a 0.3 s hit at the sound's volume. A held weapon rubbing along what it
+  touches (a wall, a table, a body) buzzes them 0.8 each 2 cm the contact slides.
 * **Blood.** A blade is bloodied off flesh, or where it went in: a stuck blade a mark each 6 cm it
   goes in. A neck a blade came out of bleeds; a cut-off piece leaves at half its speed plus 3 m/s
   along the limb (a head 3.5). The game draws its wounds (the range: reveal masks per armour,
@@ -355,8 +356,8 @@ The choices that need a reason, and why:
 * Special moves: a karate chop, punch spells, a telekinetic spin, a stronger
   kick, a flying kick, chain lightning, a deeper slowed time.
 * Feet placed on walls while climbing (looks only).
-* Rubbing: sliding-blade loop sounds, sparks and a 0.8-each-2-cm buzz for a blade drawn along
-  something it isn't in (the runtime has no loop sounds).
+* Rubbing's sound and sparks: a hit's effect playing on while a blade is drawn along something (the
+  runtime's loops have no scrape of their own yet; the buzz is done).
 * A hit shaking a climbing grip loose (dagger points, rocks, spells, arrows; the range's fighters
   carry none of those).
 * A breakable's pieces keeping its own speed (the range's debris flies from the blow).

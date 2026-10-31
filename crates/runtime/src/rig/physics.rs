@@ -26,6 +26,15 @@ pub fn groups_free() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_WORLD | G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
 }
 
+/// An object stuck in a loose thing, held by `hand` or let go of: it meets the world (and, let go
+/// of, the hands), not the things (the one it's in would fight it out).
+pub fn groups_stuck_in_thing(hand: Option<usize>) -> InteractionGroups {
+    match hand {
+        Some(h) => InteractionGroups::new(G_HELD[h], G_WORLD, InteractionTestMode::And),
+        None => InteractionGroups::new(G_OBJECT, G_WORLD | G_HAND[0] | G_HAND[1], InteractionTestMode::And),
+    }
+}
+
 /// A sheet ([`rustvr_protocol::OBJF_SHEET`]) lying free: as any free object, but the hands and
 /// their fingers go through it. A fingertip on its face touches it ([`super::sheet`]); pushed, a
 /// page on a table would only be squeezed between the hand and the table.
@@ -335,6 +344,12 @@ impl Physics {
         let (a, b) = (self.world.colliders.get(c)?, self.world.colliders.get(other)?);
         let ct = rapier3d::parry::query::contact(&self.collider_pose(a), a.shape(), &self.collider_pose(b), b.shape(), within).ok()??;
         Some((from_v(ct.point2), from_v(ct.normal1), ct.dist))
+    }
+
+    /// Where collider `c` is now (world), from its body as it is.
+    pub fn collider_world_pose(&self, c: ColliderHandle) -> Option<(V3, Q)> {
+        let p = self.collider_pose(self.world.colliders.get(c)?);
+        Some((from_v(p.translation), Q::from_xyzw(p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w)))
     }
 
     /// Where a collider is, from its body as it is now (its own position may wait for the next step

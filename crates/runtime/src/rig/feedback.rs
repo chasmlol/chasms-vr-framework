@@ -135,6 +135,9 @@ pub enum Cue {
     /// its intensity, each centimetre it goes in or comes out and each two it slides (0.9 going in
     /// or out, 0.8 sliding; felt only).
     Penetrate,
+    /// A held weapon rubbing along what it touches: a short pulse each 2 cm it slides (0.8,
+    /// [`super::melee::RUB_PERIOD`]; felt only).
+    Rub,
     /// Melee hits, heard by what met what (`crate::combat`; their pulses are the combat's own): an
     /// edge cutting flesh, a point going in, a blunt blow, metal on metal (blades, armour), a blade
     /// biting wood.
@@ -222,6 +225,7 @@ impl Cue {
             Cue::Touch => "touch",
             Cue::Slide => "slide",
             Cue::Penetrate => "penetrate",
+            Cue::Rub => "rub",
             Cue::HitCut => "hit_cut",
             Cue::HitStab => "hit_stab",
             Cue::HitBlunt => "melee",
@@ -344,7 +348,7 @@ pub fn haptic(cue: Cue, intensity: f32) -> Option<(f32, f32, f32)> {
         // Wood or leather running through a loose fist: a fine, rising buzz.
         Cue::Slide => (0.015, 180.0 + 120.0 * i, (0.08 + 0.3 * i).min(0.4)),
         // (Its intensity is its strength.)
-        Cue::Penetrate => (0.01, 160.0, 1.0),
+        Cue::Penetrate | Cue::Rub => (0.01, 160.0, 1.0),
         // (The combat feels its hits itself.)
         Cue::HitCut | Cue::HitStab | Cue::HitBlunt | Cue::Clash | Cue::Chop => return None,
     })

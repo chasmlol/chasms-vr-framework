@@ -2083,6 +2083,7 @@ impl Rig {
         self.physics.set_dt(dt);
         self.physics.step();
         self.breaks();
+        self.rub_melee();
         self.after_step(inp);
         self.bowls(dt);
         self.sheets();
@@ -2361,8 +2362,13 @@ impl Rig {
                 // Who's pressing, and how far behind where it's driven it is (what it presses with).
                 // (Only an open hand shoves: one closing is taking hold, a fist punches, the game's
                 // own blow.)
+                // (A blade stuck in it passes through it: it drags it as it's stuck, below.)
                 let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0, Some(if h.squeeze < OPEN_HAND { self.map.vel(h.vel_t) } else { Vec3::ZERO }))).or_else(|| {
-                    self.objects.values().find(|o| o.collider == c).map(|o| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
+                    self.objects
+                        .iter()
+                        .find(|(_, o)| o.collider == c)
+                        .filter(|&(&id, _)| !self.embedded_in(id, actor))
+                        .map(|(_, o)| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
                 });
                 let Some((body, lag, controller)) = pusher else { continue };
                 let Some((point, normal, depth)) = self.physics.overlap(c, proxy).or_else(|| {
@@ -6050,7 +6056,9 @@ impl Rig {
         let w = self.map.world_per_meter;
         match into {
             embed::Into::Actor { id: actor, part } => {
-                let Some(p) = self.bodies.get(&actor).and_then(|b| b.parts.get(part)).copied() else { return };
+                // (A game that doesn't say its parts' masses and speeds: a part of standard weight,
+                // still.)
+                let p = self.bodies.get(&actor).and_then(|b| b.parts.get(part)).copied().unwrap_or_default();
                 let mass = if p.mass > 0.0 { p.mass } else { embed::PART_MASS };
                 let speed = (p.vel.dot(dir) / w).max(0.0) + f * dt / mass;
                 self.drags.push(GamePush { id: actor, part: part as u32 + 1, point: at.extend(1.0).to_array(), normal: dir.extend(speed.min(PUSH_MAX)).to_array(), ..Default::default() });
@@ -6074,6 +6082,11 @@ impl Rig {
             self.unembed(id);
             return Stuck::Out;
         };
+        // (A blade passes only through what it's in.)
+        if matches!(e.into, embed::Into::Object { .. }) {
+            self.physics.set_groups(o.collider, physics::groups_stuck_in_thing(Some(hand)));
+        }
+        let o = &self.objects[&id];
         let Some(now) = self.embedded_pose(&e) else { return Stuck::Out };
         let pivot = match o.attach {
             Attach::Gun => v3(o.desc.grip),
@@ -6199,6 +6212,10 @@ impl Rig {
             self.unembed(id);
             return;
         };
+        // (A blade passes only through what it's in.)
+        if matches!(e.into, embed::Into::Object { .. }) {
+            self.physics.set_groups(self.objects[&id].collider, physics::groups_stuck_in_thing(None));
+        }
         let axis = parent.1 * e.axis;
         let weight = embed::GRAVITY * self.objects[&id].desc.mass.max(0.05);
         let through = self.objects[&id].through.clone();
