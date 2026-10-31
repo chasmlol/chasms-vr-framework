@@ -210,6 +210,11 @@ pub struct Session {
     /// Since when a menu over the game's world has had no pieces: the flat screen stands in for it
     /// only after a moment (see `ungrouped`).
     ungrouped_since: Option<f64>,
+    /// The place the player was in, held while the game loads another (`crate::held`).
+    held_world: crate::held::HeldWorld,
+    /// How black the game's own fade makes its picture now, when there's no held place to fade
+    /// from (`SlotInfo::held_over`): drawn as the comfort fade is.
+    game_black: f32,
     /// Where the game's own simulated objects are (`OBJF_GAME_SIMULATED`).
     game_poses: Box<GamePoses>,
     /// Where the hands push them (see `Rig::game_pushes`).
@@ -393,6 +398,8 @@ impl Session {
             hud_layout_seq: 0,
             hud_layout_next: bytemuck::zeroed_box(),
             ungrouped_since: None,
+            held_world: Default::default(),
+            game_black: 0.0,
             game_poses: bytemuck::zeroed_box(),
             game_pushes: bytemuck::zeroed_box(),
             actor_bodies: bytemuck::zeroed_box(),
@@ -629,7 +636,9 @@ impl Session {
         // A menu over the game's world, which goes on being drawn (the game keeps rendering it, and
         // its menus have real alpha): the world, the body and the menu floating in it, never the
         // void.
-        let mut floating = menu_mode && alive && shown_info.is_some_and(|i| i.flags & SLOT_STEREO != 0) && self.hud_layout.flags & HUDL_ALPHA != 0;
+        // (A game's menu cut into pieces with real alpha floats over the runtime's room too, when
+        // there's no world picture: its loading bar before there's a place to hold.)
+        let mut floating = menu_mode && alive && shown_info.is_some_and(|i| i.flags & SLOT_STEREO != 0 || self.hud_layout.group_count > 0) && self.hud_layout.flags & HUDL_ALPHA != 0;
         let grouped = floating && self.hud_layout.group_count > 0;
         // A menu over the world whose pieces haven't come yet shows nothing, not the flat screen:
         // the game says it's in a menu as the frame that opens it starts, and what the menu's
@@ -654,7 +663,10 @@ impl Session {
             .or_else(|| self.targets.as_ref().map(|t| t.spec.hud_w as f32 / t.spec.hud_h.max(1) as f32));
         // (A menu shown in the world stands beside the mirror as soon as it opens, with whatever
         // pieces float over it: a question it asks, where the eyes look.)
-        let menu_panel = if menu_mode && (menu_in_world || !grouped && (!floating || ungrouped)) { hud_aspect.or(Some(16.0 / 9.0)) } else { None };
+        // (Never over a place held while the game loads: what it shows then that isn't cut into
+        // pieces, its picture of the loading screen, isn't the world's.)
+        let held_now = shown_info.is_some_and(|i| i.flags & SLOT_HELD != 0);
+        let menu_panel = if menu_mode && (menu_in_world || !grouped && (!floating || ungrouped) && !held_now) { hud_aspect.or(Some(16.0 / 9.0)) } else { None };
         let hud_panel = if !menu_mode && shown_info.is_some_and(|i| i.flags & SLOT_HUD != 0) { hud_aspect } else { None };
         let head_pos = Vec3::from_array(frame.hmd.pos);
         let head_rot = quat(frame.hmd.rot);
@@ -1365,6 +1377,7 @@ impl Session {
                 eye_height: if stand > 0.5 { stand } else { 0.0 },
                 floor,
                 saddle: self.saddle(),
+                hands_only: gflags & GS_HANDS_ONLY != 0,
                 settings: &self.settings.current,
             });
             self.link.write_body(body);
@@ -1640,9 +1653,11 @@ impl Session {
             fade = 1.0;
         }
         let kf = 1.0 - (-dt / 0.08).exp();
-        if (fade > 0.5) != (self.comfort.fade > 0.5) {
+        if (fade > 0.5) != (self.comfort.fade > 0.5) && self.game_black < 0.5 {
             tracing::info!("runtime: the head is {} the world's geometry: fading {}", if fade > 0.5 { "inside" } else { "out of" }, if fade > 0.5 { "out" } else { "back in" });
         }
+        // The game's own fade from black after a load, when there's no place held to fade from.
+        let fade = fade.max(self.game_black);
         self.comfort.fade += (fade - self.comfort.fade) * kf;
         self.stats.vignette = self.comfort.vignette;
         self.stats.fade = self.comfort.fade;
@@ -1819,6 +1834,23 @@ impl Session {
         let menu_in_world = menu_mode && self.game.as_ref().is_some_and(|g| g.flags & GS_MENU_IN_WORLD != 0);
         let stereo = locked.filter(|(_, i)| i.flags & SLOT_STEREO != 0 && (!menu_mode || floating || menu_in_world) && alive);
         let framework = self.mech.framework_view && self.rig_active_last;
+        // The place the player was in, held while the game loads another (`crate::held`): copied
+        // the first time it's shown, drawn fixed in tracking space while it is; then over the
+        // game's new picture as much as the game's fade says (with nothing held, the fade is the
+        // game's own black).
+        let held_shown = stereo.as_ref().is_some_and(|(_, i)| i.flags & SLOT_HELD != 0);
+        let mut held_over = 0.0;
+        self.game_black = 0.0;
+        match &stereo {
+            Some((slot, info)) if held_shown => self.held_world.keep(&self.gpu, slot, info),
+            Some((_, info)) => {
+                if !self.held_world.has() {
+                    self.game_black = info.held_over.clamp(0.0, 1.0);
+                }
+                held_over = self.held_world.over(info, frame.dt);
+            }
+            None => {}
+        }
         // The game's picture moved to this headset frame's eyes, by its depth (`crate::warp`), and
         // everything drawn and submitted with them: the world where it is at every headset frame,
         // however late the picture. Not moved, everything over the game's picture is drawn from
@@ -1829,7 +1861,7 @@ impl Session {
         // does a native game's. A picture shown later than it was drawn for (a game slower than
         // the headset, the same picture again), or drawn with the head somewhere else, is moved:
         // the head where it is, and the walk carried on over how late it is.
-        let late = stereo.as_ref().map_or(0.0, |(_, info)| {
+        let late = stereo.as_ref().filter(|_| !held_shown).map_or(0.0, |(_, info)| {
             self.frame_log
                 .iter()
                 .find(|l| l.0 == info.frame_index && l.0 != 0)
@@ -1838,7 +1870,9 @@ impl Session {
         let head_off = stereo.as_ref().map_or(0.0, |(_, info)| {
             (0..2).map(|e| Vec3::from_array(info.eye_pose[e].pos).distance(Vec3::from_array(frame.eyes[e].pos))).fold(0.0, f32::max)
         });
-        let warped = s.vr.reproject && stereo.is_some() && !framework && (late > 0.002 || head_off > 0.004);
+        // (A held place is always moved: it's where it was, the head somewhere else. So is a picture
+        // the held place is fading over, so it's under it before the rest is drawn.)
+        let warped = stereo.is_some() && !framework && (held_shown || held_over > 0.0 || s.vr.reproject && (late > 0.002 || head_off > 0.004));
         self.stats.warped_frames += warped as u64;
         let walk = self.locomotion.walk();
         // (Drawn wider than the headset shows, overscanned, the headset is given its own view of it at
@@ -2173,6 +2207,7 @@ impl Session {
         let held_objects = &mut self.held_objects;
         let reins = &mut self.reins;
         let warp = &mut self.warp;
+        let held_world = &self.held_world;
         let mirror = &mut self.mirror;
         // The game's world in the mirror: its picture from the camera asked for (`MirrorView`), with
         // its depth, carried from where it was drawn in the world to where the mirror is now.
@@ -2237,10 +2272,26 @@ impl Session {
                             metres_per_unit: 1.0 / if given { then.world_per_meter } else { wpm },
                         })
                     };
-                    let sources: Vec<_> = [source(e ^ 1), source(e)].into_iter().flatten().collect();
+                    let sources: Vec<_> = if held_shown {
+                        [held_world.source(e ^ 1, wpm), held_world.source(e, wpm)].into_iter().flatten().collect()
+                    } else {
+                        [source(e ^ 1), source(e)].into_iter().flatten().collect()
+                    };
+                    // The place held, fading out over the new one: moved first, to go over it.
+                    let over = (held_over > 0.0).then(|| [held_world.source(e ^ 1, wpm), held_world.source(e, wpm)].into_iter().flatten().collect::<Vec<_>>()).filter(|v| !v.is_empty());
+                    let over = over.is_some_and(|o| match warp.draw_held(&self.gpu, target.width, target.height, eye, fov, &o) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            tracing::warn!("runtime: moving the place held: {err:#}");
+                            false
+                        }
+                    });
                     if !sources.is_empty() {
                         match warp.draw(&self.gpu, target, eye, fov, &sources).and_then(|_| warp.post(&self.gpu, target.width, target.height)) {
                             Ok(post) => {
+                                if over {
+                                    warp.blend_held(&self.gpu, target, held_over);
+                                }
                                 background = crate::compositor::Background::Keep;
                                 moved = true;
                                 depth_units = 1.0;

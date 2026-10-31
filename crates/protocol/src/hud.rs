@@ -98,6 +98,11 @@ pub const ANCHOR_POPUP: u32 = 3;
 /// on it: the free hand's fingertip presses its buttons (`Intents::cursor_uv`; in a menu the game's
 /// cursor and click). A game may hold one with no menu open (a book read as it plays on).
 pub const ANCHOR_HELD: u32 = 4;
+/// Over a view, as a title screen in the world: `HudGroup::at` is what the view is of (far off,
+/// in the world, metres). The group floats out over the view a few metres away, beside its subject
+/// on `side` (so it never covers it), a little under the horizon, and stays put in the world while
+/// the player looks round.
+pub const ANCHOR_VISTA: u32 = 5;
 
 // ---- how a group lies on what holds it (`HudHeld::flags`) ----------------------------------------
 /// On the thing's broad face, the one turned to the eyes as it appears (a book's cover): its middle

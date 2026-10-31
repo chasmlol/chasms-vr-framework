@@ -46,6 +46,9 @@ pub struct BodyInput<'a> {
     pub floor: f32,
     /// Riding: the game's seat on its mount (tracking space), where the body sits instead.
     pub saddle: Option<rustvr_ik::Saddle>,
+    /// The game has no body for the player yet (`GS_HANDS_ONLY`): the hands alone, whatever the
+    /// settings say.
+    pub hands_only: bool,
     pub settings: &'a Settings,
 }
 
@@ -366,6 +369,7 @@ impl PlayerBody {
         body.scale = out.scale;
         body.arm_length = out.arm_length;
         body.visibility = match inp.settings.body.visibility {
+            _ if inp.hands_only => BODYVIS_HANDS,
             BodyVisibility::Hands => BODYVIS_HANDS,
             BodyVisibility::Arms => BODYVIS_ARMS,
             BodyVisibility::Full => BODYVIS_FULL,
@@ -812,6 +816,7 @@ mod tests {
                 eye_height: 1.7,
                 floor: 0.0,
                 saddle: None,
+                hands_only: false,
                 settings: &settings,
             });
         }
@@ -849,6 +854,7 @@ mod tests {
                     eye_height: 1.7 + floor,
                     floor,
                     saddle: None,
+                    hands_only: false,
                     settings: &settings,
                 });
             }

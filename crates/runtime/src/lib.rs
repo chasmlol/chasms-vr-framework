@@ -38,6 +38,7 @@ pub mod swim;
 pub mod targets;
 pub mod view_bob;
 pub mod warp;
+pub mod held;
 pub mod locomotion;
 pub mod pacing;
 
