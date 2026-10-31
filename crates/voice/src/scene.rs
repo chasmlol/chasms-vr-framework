@@ -55,12 +55,15 @@ const CLAUSE: f32 = 2.0;
 const FIRST_CLAUSE: f32 = 0.8;
 /// With the game about to run out of what it has to say (within `RUNNING_OUT` seconds), the next
 /// clause goes at the first pause after this: a short clause now rather than a gap. (A voice made
-/// faster than it's said never gets there, and its clauses stay long.)
+/// faster than it's said never gets there, and its clauses stay long.) A voice made slower than
+/// it's said leaves the game waiting all the same, at a pause, where a speaker would.
 const HURRIED_CLAUSE: f32 = 0.8;
 const RUNNING_OUT: f32 = 0.4;
 const PAUSE: f32 = 0.12;
-/// A cut in a hurry (a line's first clause, or the game about to run dry) is at the gap between two
-/// words, not a pause: speech without a pause would keep the game waiting.
+/// Only in a hurry with this much voice and no pause in it yet, a cut at a gap this short: a
+/// quiet this short is mostly inside a word (the closure of a "p" or a "t"), not between two, and
+/// the word comes out in two halves.
+const NO_PAUSE: f32 = 3.0;
 const WORD_GAP: f32 = 0.04;
 
 /// A clip's loudness while it speaks: the RMS of its 10 ms windows louder than a tenth of its
@@ -374,14 +377,15 @@ impl Game for Scene {
         v.rate = rate;
         v.samples.extend_from_slice(samples);
         let running_out = self.playing_until.lock().unwrap().saturating_duration_since(Instant::now()).as_secs_f32() < RUNNING_OUT;
-        let (clause, pause) = if self.fresh.load(Ordering::SeqCst) {
-            (FIRST_CLAUSE, WORD_GAP)
+        let clause = if self.fresh.load(Ordering::SeqCst) {
+            FIRST_CLAUSE
         } else if running_out {
-            (HURRIED_CLAUSE, WORD_GAP)
+            HURRIED_CLAUSE
         } else {
-            (CLAUSE, PAUSE)
+            CLAUSE
         };
-        if let Some(at) = pause_in(&v.samples, rate, clause, pause) {
+        let long = v.samples.len() as f32 > NO_PAUSE * rate as f32 && clause < CLAUSE;
+        if let Some(at) = pause_in(&v.samples, rate, clause, PAUSE).or_else(|| long.then(|| pause_in(&v.samples, rate, clause, WORD_GAP)).flatten()) {
             self.fresh.store(false, Ordering::SeqCst);
             let rest = v.samples.split_off(at);
             let clause = Voicing { speaker: v.speaker.clone(), text: v.text.clone(), how: v.how.clone(), samples: std::mem::replace(&mut v.samples, rest), rate, last: false, level: v.level, volume: v.volume };
@@ -474,8 +478,13 @@ mod tests {
         // (not yet a whole pause: no cut)
         samples.truncate((2.55 * rate as f32) as usize);
         assert_eq!(pause_in(&samples, rate, CLAUSE, PAUSE), None);
-        // (a line's first clause goes at the first gap after 0.8 s: the breath at 1 s)
-        assert!((pause_in(&samples, rate, FIRST_CLAUSE, WORD_GAP).unwrap() as f32 / rate as f32 - 1.01).abs() < 0.03);
+        // (a line's first clause goes at the first pause after 0.8 s: the breath at 1 s)
+        assert!((pause_in(&samples, rate, FIRST_CLAUSE, PAUSE).unwrap() as f32 / rate as f32 - 1.06).abs() < 0.03);
+        // (a quiet inside a word, a "p"'s closure, is no pause: only a gap between words, the
+        // last resort)
+        let word = [voice(1.0), quiet(0.05), voice(1.0)].concat();
+        assert_eq!(pause_in(&word, rate, FIRST_CLAUSE, PAUSE), None);
+        assert!(pause_in(&word, rate, FIRST_CLAUSE, WORD_GAP).is_some());
     }
 
     #[test]
