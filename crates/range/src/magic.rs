@@ -2,7 +2,8 @@
 //! as a game would, so the runtime's magic (the hands holding spells, the wheel, charging, aiming)
 //! can be played and tested without a game: each spell's magicka spent and coming back, a bolt that
 //! flies from the palm and strikes a dummy, a touch that jolts the one it goes into, a heal's flash
-//! on the player; one spell costs more than the player has (the game's "not enough magicka").
+//! on the player; plenty of magicka and eighteen spells to play with, and one that costs more than
+//! the player has (the game's "not enough magicka").
 
 use glam::Vec3;
 use rustvr_protocol::*;
@@ -18,9 +19,9 @@ pub const HEAL: u32 = 4;
 pub const LANTERN: u32 = 5;
 pub const INFERNO: u32 = 6;
 
-/// The player's magicka, and how fast it comes back (a second).
-const MAGICKA: f32 = 150.0;
-const REGEN: f32 = 4.0;
+/// The player's magicka, and how fast it comes back (a second): plenty, to play with.
+const MAGICKA: f32 = 1000.0;
+const REGEN: f32 = 60.0;
 /// How fast a bolt flies (m/s), how far before it fizzles out (m).
 const BOLT_SPEED: f32 = 14.0;
 const BOLT_RANGE: f32 = 40.0;
@@ -68,7 +69,20 @@ impl Default for RangeMagic {
             spell(FROST_BOLT, "Frost bolt", DELIVER_TARGET, 30.0, 2, 0.4, 0.5, [0.55, 0.8, 1.0], SPELL_HARMFUL),
             spell(SHOCK_TOUCH, "Shocking touch", DELIVER_TOUCH, 10.0, 0, 0.27, 0.6, [0.6, 0.6, 1.0], SPELL_HARMFUL),
             spell(LANTERN, "Lantern", DELIVER_SELF, 0.0, 0, 0.37, 0.93, [1.0, 0.9, 0.6], SPELL_POWER),
-            spell(INFERNO, "Inferno", DELIVER_TARGET, 400.0, 4, 0.4, 0.5, [1.0, 0.3, 0.05], SPELL_HARMFUL),
+            spell(INFERNO, "Inferno", DELIVER_TARGET, 5000.0, 4, 0.4, 0.5, [1.0, 0.3, 0.05], SPELL_HARMFUL),
+            // (More, for a second page of the wheel: each range, each level.)
+            spell(7, "Fireball", DELIVER_TARGET, 60.0, 2, 0.4, 0.5, [1.0, 0.5, 0.15], SPELL_HARMFUL),
+            spell(8, "Lightning bolt", DELIVER_TARGET, 55.0, 2, 0.4, 0.5, [0.7, 0.7, 1.0], SPELL_HARMFUL),
+            spell(9, "Ice storm", DELIVER_TARGET, 200.0, 4, 0.4, 0.5, [0.6, 0.85, 1.0], SPELL_HARMFUL),
+            spell(10, "Spark", DELIVER_TARGET, 10.0, 0, 0.4, 0.5, [0.75, 0.75, 1.0], SPELL_HARMFUL),
+            spell(11, "Cold touch", DELIVER_TOUCH, 10.0, 0, 0.27, 0.6, [0.6, 0.85, 1.0], SPELL_HARMFUL),
+            spell(12, "Searing grasp", DELIVER_TOUCH, 50.0, 2, 0.27, 0.6, [1.0, 0.45, 0.1], SPELL_HARMFUL),
+            spell(13, "Paralyze", DELIVER_TOUCH, 150.0, 4, 0.27, 0.6, [0.9, 0.8, 0.5], SPELL_HARMFUL),
+            spell(14, "Shield", DELIVER_SELF, 75.0, 3, 0.37, 0.93, [0.8, 0.8, 0.9], 0),
+            spell(15, "Starlight", DELIVER_SELF, 10.0, 0, 0.37, 0.93, [1.0, 1.0, 0.85], 0),
+            spell(16, "Summon skeleton", DELIVER_SELF, 45.0, 1, 0.37, 0.93, [0.7, 0.6, 1.0], 0),
+            spell(17, "Bound sword", DELIVER_SELF, 175.0, 3, 0.37, 0.93, [0.6, 0.55, 1.0], 0),
+            spell(18, "Convalescence", DELIVER_TARGET, 30.0, 1, 0.4, 0.5, [0.5, 1.0, 0.55], 0),
         ];
         RangeMagic { spells, magicka: MAGICKA, selected: FIRE_BOLT, bolts: Vec::new(), written: f64::NEG_INFINITY }
     }

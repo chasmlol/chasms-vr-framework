@@ -41,7 +41,7 @@ const ICON: f32 = 112.0;
 const ICON_HOVER: f32 = 146.0;
 const MIDDLE: f32 = 140.0;
 const REACH: f32 = 480.0;
-const SLICE_REACH: f32 = 1100.0;
+const SLICE_REACH: f32 = 800.0;
 const ARROW_AT: [(f32, f32); 2] = [(110.0, 900.0), (890.0, 900.0)];
 const ARROW_RADIUS: f32 = 75.0;
 /// Its texture's size.
@@ -85,6 +85,8 @@ struct Open {
     panel: Panel,
     page: usize,
     hover: [Option<Entry>; 2],
+    /// When each hand's pointer last moved onto an entry: the one named is the latest.
+    moved: [f64; 2],
     /// Where each pointer meets it (tracking space).
     hits: [Option<Vec3>; 2],
 }
@@ -172,6 +174,14 @@ pub fn entry_at(x: f32, y: f32, ids: &[u32], pages: usize) -> Option<Entry> {
     Some(Entry::Spell(ids[i]))
 }
 
+impl Open {
+    /// What a pointer was last moved onto (and is still on): either hand's.
+    fn named(&self) -> Option<Entry> {
+        let h = if self.moved[0] > self.moved[1] { 0 } else { 1 };
+        self.hover[h].or(self.hover[h ^ 1])
+    }
+}
+
 impl Wheel {
     pub fn is_open(&self) -> bool {
         self.open.is_some()
@@ -211,7 +221,7 @@ impl Wheel {
             let panel = Panel::facing(center, d.x.atan2(d.z), -(d.y.clamp(-1.0, 1.0)).asin(), WIDTH, 1.0);
             // (It opens on the page of the main hand's spell.)
             let page = self.order.iter().position(|s| s.id == inp.held[dom]).map_or(0, |i| i / PER_PAGE);
-            self.open = Some(Open { panel, page, hover: [None; 2], hits: [None; 2] });
+            self.open = Some(Open { panel, page, hover: [None; 2], moved: [0.0; 2], hits: [None; 2] });
             tracing::info!("magic: the spell wheel opens ({} spells, {} pages)", self.order.len(), pages(self.order.len()));
         }
         let n_pages = pages(self.order.len());
@@ -225,6 +235,7 @@ impl Wheel {
             open.hits[h] = hit.map(|(t, _)| o + d * t);
             let now = hit.and_then(|(_, (u, v))| entry_at(u * UNITS, v * UNITS, &ids, n_pages));
             if now.is_some() && now != open.hover[h] {
+                open.moved[h] = inp.now;
                 self.pulses.push(Pulse { hand: h, ..TICK });
             }
             open.hover[h] = now;
@@ -296,6 +307,7 @@ impl Wheel {
             let mut k = std::collections::hash_map::DefaultHasher::new();
             open.page.hash(&mut k);
             open.hover.hash(&mut k);
+            open.named().hash(&mut k);
             self.held.hash(&mut k);
             ((self.magicka * 20.0) as i32).hash(&mut k);
             for s in &self.order {
@@ -303,11 +315,11 @@ impl Wheel {
             }
             k.finish()
         };
-        let (page, hover) = (open.page, open.hover);
+        let (page, hover, named) = (open.page, open.hover, open.named());
         let art = self.art.as_mut().unwrap();
         if art.painted != Some(key) {
             let shown: Vec<Spell> = self.order.iter().skip(page * PER_PAGE).take(PER_PAGE).copied().collect();
-            paint(gpu, art, &shown, page, pages(self.order.len()), hover, self.held, &self.font, &self.back)?;
+            paint(gpu, art, &shown, page, pages(self.order.len()), hover, named, self.held, &self.font, &self.back)?;
             art.painted = Some(key);
         }
         Ok(())
@@ -322,7 +334,7 @@ impl Wheel {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn paint(gpu: &Gpu, art: &mut Art, shown: &[Spell], page: usize, n_pages: usize, hover: [Option<Entry>; 2], held: [u32; 2], font: &str, back: &str) -> Result<()> {
+fn paint(gpu: &Gpu, art: &mut Art, shown: &[Spell], page: usize, n_pages: usize, hover: [Option<Entry>; 2], named: Option<Entry>, held: [u32; 2], font: &str, back: &str) -> Result<()> {
     let scale = PX as f32 / UNITS;
     art.ctx.set_pixels_per_point(1.0);
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(PX as f32, PX as f32))), ..Default::default() };
@@ -391,8 +403,7 @@ fn paint(gpu: &Gpu, art: &mut Art, shown: &[Spell], page: usize, n_pages: usize,
                 }
             }
         }
-        // What a pointer is on, named in the middle with its cost.
-        let named = hover.iter().flatten().next().copied();
+        // What a pointer was last moved onto, named in the middle with its cost.
         if let Some(Entry::Spell(id)) = named
             && let Some(s) = shown.iter().find(|s| s.id == id)
         {
@@ -431,7 +442,7 @@ mod tests {
         assert_eq!(entry_at(510.0, 490.0, &ids, 1), Some(Entry::Empty));
         // Past the ring its way: still that slice; far off: nothing. The arrows only with more than a
         // page.
-        assert_eq!(entry_at(500.0, -100.0, &ids, 1), Some(Entry::Spell(1)));
+        assert_eq!(entry_at(500.0, 0.0, &ids, 1), Some(Entry::Spell(1)));
         assert_eq!(entry_at(500.0, -900.0, &ids, 1), None);
         assert_eq!(entry_at(110.0, 900.0, &ids, 2), Some(Entry::Prev));
         assert_eq!(pages(25), 3);
