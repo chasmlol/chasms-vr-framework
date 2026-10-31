@@ -3503,9 +3503,10 @@ impl Rig {
         // hand anywhere along it. Drawn from a holster or caught (`snap`), a gun or a rigged
         // weapon goes into the hand by its grip whatever.
         let rigged = gun || (authored(d.grip_rot).is_some() && matches!(d.kind, OBJ_THROWABLE | OBJ_MELEE | OBJ_BOW));
-        // A melee weapon the game describes is taken where it is, nothing moving ([`melee`]),
-        // unless it comes from a holster or is caught (into the hand by its grip).
-        let melee_at = (d.kind == OBJ_MELEE && !snap && self.melee.weapons.contains_key(&id)).then(|| self.take_melee(id, i));
+        // A melee weapon the game describes goes in by the handle the hand takes, or is held where
+        // it is off its handles ([`melee`]).
+        let melee_at = (d.kind == OBJ_MELEE && self.melee.weapons.contains_key(&id)).then(|| self.take_melee(id, i, snap));
+        let by_joint = melee_at.is_some();
         let hold = self.handle_of(&d, i, On::Grip).filter(|_| melee_at.is_none()).and_then(|h| match h.take(local.0, local.1) {
             Some(hold) => Some(hold),
             None if snap && rigged => Some((h.at, h.rot)),
@@ -3563,7 +3564,8 @@ impl Rig {
         self.out_of_bowl(id);
         let o = self.objects.get_mut(&id).unwrap();
         o.attach = attach;
-        o.blend = Some((pos, rot, self.now, pos.distance(to)));
+        // (A melee weapon isn't eased in: its joint pulls it into the hand.)
+        o.blend = (!by_joint).then_some((pos, rot, self.now, pos.distance(to)));
         if let Holder::Holstered(slot) = o.holder {
             o.home_slot = Some(slot);
         }
@@ -3607,14 +3609,17 @@ impl Rig {
         let (collider, gun) = (o.collider, o.desc.kind == OBJ_WEAPON);
         let palm = self.hands.as_ref().unwrap()[i].target.0;
         let other_on = self.hands.as_ref().unwrap()[other].on;
-        // A melee weapon the game describes: the second hand holds on where it is drawn on it, on
-        // a handle or not (nothing snaps); the first keeps it (the hold's two hands are the same either
-        // way round).
+        // A melee weapon the game describes: the second hand goes onto the handle it takes, as the
+        // first does ([`Rig::take_melee`]), or holds on where it is drawn on it off its handles; the
+        // first keeps it (the hold's two hands are the same either way round).
         if o.desc.kind == OBJ_MELEE && self.melee.weapons.contains_key(&id) {
             let (hp, hq) = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
-            let at = (oq.inverse() * (hp - op), (oq.inverse() * hq).normalize());
-            let on = if self.melee_handle(id, at.0).is_some() { On::Grip } else { On::Free };
-            let reach = self.reach_of(i, (op, oq), at);
+            let drawn = (oq.inverse() * (hp - op), (oq.inverse() * hq).normalize());
+            let (at, on) = match self.melee.handle_near(id, drawn.0, melee::ON_HANDLE * self.map.world_per_meter) {
+                Some((k, p)) => (self.onto_handle(id, k, p, drawn, i, true), On::Grip),
+                None => (drawn, On::Free),
+            };
+            let reach = if on == On::Grip { Vec3::ZERO } else { self.reach_of(i, (op, oq), at) };
             let h = &mut self.hands.as_mut().unwrap()[i];
             h.support = Some(Support { id, at: at.0, rot: at.1, on, reach });
             h.glove = Glove::Idle;

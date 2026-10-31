@@ -701,20 +701,17 @@ impl Physics {
         (carry_v, carry_w)
     }
 
-    /// Body `b`'s inertia (kg m^2) about the line through `point` along `axis` (world): its own
-    /// about its centre of mass, and the parallel axis's.
-    pub fn body_inertia_about(&self, b: RigidBodyHandle, point: V3, axis: V3) -> f32 {
+    /// Body `b`'s inertia (kg m^2) about `point` (world, as it lies now): its own about its centre
+    /// of mass, and the parallel axis's.
+    pub fn body_inertia_tensor_about(&self, b: RigidBodyHandle, point: V3) -> glam::Mat3 {
         let rb = &self.world.bodies[b];
         let mp = &rb.mass_properties().local_mprops;
         let (_, rot) = from_pose(rb.position());
-        let axis = axis.normalize_or_zero();
-        let n = rot.inverse() * axis;
-        let in_frame = from_q(mp.principal_inertia_local_frame).inverse() * n;
-        let principal = from_v(mp.principal_inertia());
-        let about_com = principal.x * in_frame.x * in_frame.x + principal.y * in_frame.y * in_frame.y + principal.z * in_frame.z * in_frame.z;
-        let off = from_v(rb.center_of_mass()) - point;
-        let d2 = (off - axis * off.dot(axis)).length_squared();
-        about_com + rb.mass() * d2
+        let frame = glam::Mat3::from_quat((rot * from_q(mp.principal_inertia_local_frame)).normalize());
+        let about_com = frame * glam::Mat3::from_diagonal(from_v(mp.principal_inertia())) * frame.transpose();
+        let r = from_v(rb.center_of_mass()) - point;
+        let outer = glam::Mat3::from_cols(r * r.x, r * r.y, r * r.z);
+        about_com + (glam::Mat3::from_diagonal(V3::splat(r.length_squared())) - outer) * rb.mass()
     }
 
     /// Holds a body as a hand holds a melee weapon ([`Joint`]): a spring and a
@@ -754,16 +751,18 @@ impl Physics {
         let rb = &self.world.bodies[b];
         let gravity = from_v(self.world.gravity) * rb.gravity_scale();
         let weight = (com - pivot_now).cross((gravity - (v_next - v) / dt) * mass);
-        // Turning: the same about the point held, against the body's inertia about the way it
-        // must turn (a long weapon's head far out is hard to swing round).
+        // Turning: the same about the point held, against the body's inertia about it each way
+        // round (a long weapon's head far out is hard to swing round, but it twists about its own
+        // handle easily: taken as one number for every way, the weight swinging it round would
+        // spin it about its handle as if that were as hard to turn, and it flew off the hand).
         let dq = (target_rot * rot_c.inverse()).normalize();
         let angle = scaled_axis(dq);
-        let axis = (angle + (j.target_ang - w) * dt).normalize_or(V3::Y);
-        let inertia = self.body_inertia_about(b, pivot_now, axis).max(1e-4);
+        let inertia = self.body_inertia_tensor_about(b, pivot_now) + glam::Mat3::from_diagonal(V3::splat(1e-6));
         let (ka, ca) = (j.ang_spring, j.ang_damper);
-        let free_w = (inertia * w + dt * ka * angle + dt * ca * j.target_ang + dt * weight) / (inertia + ca * dt + ka * dt * dt);
+        let drive = glam::Mat3::from_diagonal(V3::splat(ca * dt + ka * dt * dt));
+        let free_w = (inertia + drive).inverse() * (inertia * w + dt * (ka * angle + ca * j.target_ang + weight));
         let torque = j.turning(inertia * (free_w - w) / dt - weight);
-        let w_next = (w + (torque + weight) * dt / inertia).clamp_length_max(60.0);
+        let w_next = (w + inertia.inverse() * (torque + weight) * dt).clamp_length_max(60.0);
         // 20 m/s is beyond any real hand; it only guards against tracking glitches.
         let v_next = v_next.clamp_length_max(20.0) + carry_v;
         let w_next = w_next + carry_w;

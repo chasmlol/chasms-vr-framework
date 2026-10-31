@@ -428,13 +428,12 @@ steps of the recipe touched.
 
 ## 6f. Melee
 
-Melee is physical, its numbers tuned as one set (`docs/MELEE.md`).
-The runtime holds a game's melee weapons on a
-hand joint (their weight their own, two hands and leverage, hands sliding along handles), judges
-every contact by its physics (the impact's speed and angles against each damager, the damage tables
-by damage type, material and tier), keeps blades stuck in what they went into (rocking, sliding
-and running through), cuts limbs off at the body's joints, kicks with untracked feet
-as well, and does the extras: throwing, telekinesis (on things and on bodies), slowed time, imbuing,
+Melee is physical (`docs/MELEE.md`). The runtime holds a game's melee weapons on a hand joint (their weight their own, two hands and leverage, hands sliding along
+handles; a hand near a handle goes onto it at the grip it's made for, as a gun's grip locks on),
+judges every contact by the impact's speed and angles against each damager and the damage tables
+by damage type, material and tier, keeps blades stuck in what they went into (rocking, sliding
+and running through), cuts limbs off at the body's joints, kicks with untracked feet, and does the
+extras: throwing, telekinesis (on things and on bodies), slowed time, imbuing,
 breakable things, climbing by the hands and the climb jump, and an optional stamina. A game may ask
 for the melee buttons (`RULES_KICK`). The game describes its weapons (`MeleeWeapons`), lists what its creatures
 hold (`ActorItems`), says its rules (`MeleeRules`), and is told the hits (`CombatEvent`) and the

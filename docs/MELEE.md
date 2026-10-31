@@ -47,18 +47,30 @@ and body rules, shared by the runtime and the range.
   centre of mass, and the grip's own acceleration, turn it about the grip, so a heavy head sags (the
   8 kg maul 2° at rest), trails a fast swing (60°) and swings on past a stop, while a dagger keeps
   up. The joint is solved implicitly each step (the velocity that lands the weapon where the spring
-  and damper would put it at the end of the step), so it's stable for any weight. The hand is drawn
+  and damper would put it at the end of the step), so it's stable for any weight, its turning
+  against the weapon's inertia about the grip each way round (a long weapon twists about its own
+  handle far more easily than it swings round: taken as one number, the weight swinging an 8 kg
+  maul spun it about its haft at 50 rad/s, off the hand). The hand is drawn
   on the weapon, held back with it; an empty hand follows its controller exactly. Strength scales
   the springs and caps, the dampers by half of it past 1.
-* **Handles** (`MeleeHandle::kind`). A light grip (one-handed weapons) turns it
-  about the handle and across it apart, each to its cap; a heavy one (long and
-  two-handed weapons) under one cap; a super heavy one x0.6 on everything; a supporting hand's (a
-  pommel, a ricasso) never takes the turning; a half-sword grip on the blade turns less and damps
-  more; a shield's and a throwing knife's their own. Off its handles a hand only grips the weapon
-  (the grip multipliers: x0.5 linear, x0.1 turning, at most 2000 N and 100 N m). A grab never
-  moves the hand or the weapon: the hand takes the weapon where it is, a second hand too (the user's
-  rule, rather than pulling the weapon into a posed grip); the fingers close round the handle the hand
-  is on.
+* **Handles** (`MeleeHandle::kind`). A light grip (one-handed weapons) turns it about the handle
+  and across it apart, each to its cap; a heavy one (long and two-handed weapons) under one cap; a
+  super heavy one x0.6 on everything; a supporting hand's (a pommel, a ricasso) never takes the
+  turning; a half-sword grip on the blade turns less and damps more; a shield's and a throwing
+  knife's their own. Off its handles a hand only grips the weapon (the grip multipliers: x0.5
+  linear, x0.1 turning, at most 2000 N and 100 N m).
+* **Grabbing** (`take_melee`). A hand that
+  takes the weapon within 7 cm of one of its handles' lines (where the hand is, against the weapon)
+  goes onto that handle (a first hand onto the main one whenever it's within reach, so a sword
+  taken by the end of its grip is held by its grip, not its pommel): the hold on its line nearest the hand, turned as the handle's made to be
+  held (`MeleeHandle::rot`, the right hand's; the left holds it the same, the fingers round the same
+  side, and a shield's turned half round the fist's axis so its face is out from the back of either
+  hand), or the other way round it (a reversed grip) when the handle's held either way and that's
+  the nearer turn to the hand's. The hand goes onto the handle there and the weapon, left where it
+  lay, eases into the hand on its joint. A second hand goes onto the handle it takes the same way.
+  Drawn from a holster or caught from the gloves, it goes in by its main handle wherever the hand
+  is, its own way round. Anywhere off its handles it's taken
+  where it is, neither moving, the fingers round the weapon itself.
 * **Two hands** on its handles are the two-handed hold: each hand's linear drive doubled (10000
   N/m, at most 6000 N; damped x1.5 when both are on one handle), the turning on one hand only (the
   dominant side's, unless that hand is on a supporting handle) at twice its one-hand value (a fifth,
@@ -296,9 +308,9 @@ The choices that need a reason, and why:
 
 | What | Usual | Ours | Why |
 |---|---|---|---|
-| Taking a weapon | pulls it into a posed grip on the handle | taken where it is, by either hand; the handle only shapes the fingers | the user's rule: grabs never snap |
+| Taking a weapon | pulls it into a posed grip on the handle | the same: near a handle onto it, at its grip turn or reversed, eased into the hand; off its handles taken where it is | the user's rule: weapons snap to their rigged grips (it replaced "grabs never snap") |
 | Drawn from a holster, or caught | into the hand by its grip | the same (into the grip) | a weapon in a holster or in the air has no "where the hand is on it" |
-| Sliding over the guard | the hand jumps to the linked handle | it crosses the gap, the weapon sliding through the fist | the user's rule: nothing snaps |
+| Sliding over the guard | the hand jumps to the linked handle | it crosses the gap, the weapon sliding through the fist | a slide goes on as the hand moves, rather than jumping |
 | The hold's solve | a configurable joint | the same spring, damper and caps, solved implicitly per step, with the weight's turn at the grip | stable at any weight in Rapier |
 | Two hands | a joint at each hand | one joint at the holding hand: the other's drive at its distance as leverage, its pull leaning the target | one body, one joint |
 | Sliding's damper | against the hand's slide | against the slide relative to the controller's own motion | a steady swing doesn't slide the hand off |
@@ -314,7 +326,7 @@ The choices that need a reason, and why:
 | Bone | a material of effects only | cut and stabbed like wood, struck like plate | it needs a row in the tables |
 | A thrown point | its going-in damper is 0 (50 for sword stabs) for 0.5–1 s, then locked going out | goes in to its full depth at once | the same end, without timing the damper |
 | Breaking on the world | left to the hitter's rigid body | the thing's own mass is weighed | a world has no mass |
-| Telekinesis | always there | off by default, on when the game says or the settings ask | the gloves stay what a game gets unless it asks |
+| Telekinesis | always there | off by default, on when the game says or the settings ask; the range's melee areas keep the gravity gloves | the user wants the gloves' pull, not telekinesis |
 | A telekinesis throw | a skill | always | the range has no skill tree; it was asked for |
 | Telekinesis on bodies | a skill (or a gravity spell's creature control) | always, with telekinesis | the same |
 | Tearing limbs off | skills (two telekinesis hands on a body, both hands on one); a body burned to a full char | all three, always | the same; it was asked for |

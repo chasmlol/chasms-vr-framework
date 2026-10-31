@@ -70,9 +70,11 @@ pub struct MeleeHandle {
     pub radius: f32,
     pub b: [f32; 3],
     pub flags: u32, // HANDLE_*
-    /// The fist's best turn on it (the controller grip pose's rotation, object space): which way
-    /// round the fingers close and the thumb lies. A grab moves nothing, so it's only how the
-    /// fingers wrap; zero: any turn about the line.
+    /// The fist's turn on it, the right hand's (the controller grip pose's rotation, object space):
+    /// a hand that takes the weapon by this handle goes onto it turned so, or the other way round
+    /// it ([`HANDLE_REVERSIBLE`]), and the weapon's pulled into the hand that way. The left hand
+    /// holds it the same (a shield's turned half round the fist's axis). Zero: the hand's own turn
+    /// about the line.
     pub rot: [f32; 4],
     /// How much of the hand's hold a grip here gives (its force's multiplier): a pommel held at its
     /// very end turns the blade less well. 0: 1.

@@ -13,9 +13,11 @@
 //!   while its trigger is held, against a friction the trigger's depth sets (a damper of 300 at a
 //!   light squeeze down to 20 at a full pull): let go of the trigger, it holds where it is. At
 //!   a handle's end it stops, or goes on onto the next handle (the blade, for half-swording).
-//! * **Where a hand takes it** is where it is: a grab moves neither the hand nor the weapon (the
-//!   user's rule, rather than pulling the weapon into a pose). The handle the hand is on says how
-//!   the fingers close (round its line) and whether the hold is reversed.
+//! * **Where a hand takes it.** Near one of its handles it goes into the hand by that handle: the
+//!   hold on the handle's line nearest the hand, turned as the handle's made to be held (or the
+//!   other way round it, for a hand that comes at it reversed), the hand onto it and the weapon
+//!   pulled into the hand from where it was. Anywhere else it's held where it is, neither moving,
+//!   the fingers round the weapon itself.
 //! * **Throwing.** Let go of, it leaves as it was moving; let go of with the hand faster than
 //!   2 m/s (in the world's time) it's thrown, its speed doubled. One made to fly point first
 //!   ([`MW_FLIES`]: a dagger, a spear), thrown with its point near the way it goes,
@@ -48,7 +50,8 @@ pub const SLIDE_DAMPER_MIN: f32 = 20.0;
 /// A hand sliding within this of a handle's end goes on to the handle that continues it, or stops
 /// there.
 pub const HANDLE_HOP: f32 = 0.01;
-/// The fingers close round a handle this near the point held (metres from its line).
+/// A hand this near a handle's line (metres, past its radius) takes the weapon by that handle, and
+/// the fingers close round the handle a hold this near it is on.
 pub const ON_HANDLE: f32 = 0.07;
 /// A weapon let go of with the hand faster than this (m/s, the world's time) is thrown, its speed
 /// times [`THROW_MULT`].
@@ -165,6 +168,50 @@ impl MeleeRig {
             .map(|(k, h)| (k, on_line(v3(h.a), v3(h.b), at)))
             .filter(|(k, p)| p.distance(at) <= reach + w.handles()[*k].radius)
             .min_by(|a, b| a.1.distance(at).total_cmp(&b.1.distance(at)))
+    }
+}
+
+impl MeleeRig {
+    /// Weapon `id`'s main handle ([`HANDLE_MAIN`], or its first) and the point on its line nearest
+    /// `at` (weapon space): where a weapon drawn or caught goes into the hand.
+    pub fn main_handle(&self, id: u32, at: Vec3) -> Option<(usize, Vec3)> {
+        let w = self.weapons.get(&id)?;
+        let k = w.handles().iter().position(|h| h.flags & HANDLE_MAIN != 0).or((!w.handles().is_empty()).then_some(0))?;
+        let h = w.handles()[k];
+        Some((k, on_line(v3(h.a), v3(h.b), at)))
+    }
+
+    /// The handle a first hand at `at` (weapon space) takes weapon `id` by: its main handle when it's
+    /// within `reach`, so a sword taken by the end of its grip is held by its grip, not its pommel;
+    /// else the nearest within it (the blade, to half-sword).
+    pub fn first_handle(&self, id: u32, at: Vec3, reach: f32) -> Option<(usize, Vec3)> {
+        let w = self.weapons.get(&id)?;
+        self.main_handle(id, at).filter(|&(k, p)| p.distance(at) <= reach + w.handles()[k].radius).or_else(|| self.handle_near(id, at, reach))
+    }
+
+    /// The hold hand `hand` turned `turn` (its grip pose's rotation, weapon space) takes at `at` on
+    /// weapon `id`'s handle `k`: the handle's own turn ([`MeleeHandle::rot`]), or (`nearest`) for one
+    /// held either way round the other way round it, whichever is nearer the hand's (the most alike
+    /// of its poses; a weapon that comes to the hand, drawn or caught, goes in its own way round); a
+    /// handle with no turn of its own takes the hand's, the fist laid along its line. The left hand
+    /// holds it as the right
+    /// does (the fingers round the same side, towards a blade's edge), a shield's turned half round
+    /// the fist's axis (its face out from the back of either hand).
+    pub fn handle_hold(&self, id: u32, k: usize, at: Vec3, turn: Quat, hand: usize, nearest: bool) -> (Vec3, Quat) {
+        let w = &self.weapons[&id];
+        let h = w.handle[k];
+        let axis = (v3(h.b) - v3(h.a)).normalize_or(Vec3::Z);
+        let made = Quat::from_array(h.rot);
+        let rot = if made.is_finite() && made.length_squared() > 1e-6 {
+            let made = made.normalize();
+            if hand == 0 && w.flags & MW_SHIELD != 0 { (made * Quat::from_rotation_z(std::f32::consts::PI)).normalize() } else { made }
+        } else {
+            let z = turn * Vec3::Z;
+            (Quat::from_rotation_arc(z, if z.dot(axis) < 0.0 { -axis } else { axis }) * turn).normalize()
+        };
+        let like = |q: Quat| (turn * Vec3::Y).dot(q * Vec3::Y) + (turn * Vec3::Z).dot(q * Vec3::Z);
+        let reversed = (rot * Quat::from_rotation_x(std::f32::consts::PI)).normalize();
+        (at, if nearest && h.flags & HANDLE_REVERSIBLE != 0 && like(reversed) > like(rot) { reversed } else { rot })
     }
 }
 
@@ -537,18 +584,42 @@ impl Rig {
         self.emit(super::Cue::Slide, Some(i), Some(id), at, (speed / 2.0).clamp(0.05, 1.0));
     }
 
-    /// Hand `i` takes melee weapon `id` where it is on it: neither moves. Near one of its handles
-    /// (`docs/MELEE.md`: the user's rule, never a pull into a pose) the fingers close round that
-    /// handle; elsewhere round the weapon itself.
-    pub(super) fn take_melee(&self, id: u32, i: usize) -> (Attach, On, Option<(Vec3, Quat)>) {
+    /// Hand `i`, drawn on weapon `id` at `drawn` (weapon space), onto its handle `k` at `at`
+    /// ([`MeleeRig::handle_hold`]): its hold there.
+    pub(super) fn onto_handle(&self, id: u32, k: usize, at: Vec3, drawn: (Vec3, Quat), i: usize, nearest: bool) -> (Vec3, Quat) {
+        let hold = self.melee.handle_hold(id, k, at, drawn.1, i, nearest);
+        let made = Quat::from_array(self.melee.weapons[&id].handle[k].rot);
+        tracing::info!(
+            "rig: hand {i} onto {id:#x}'s handle {k} at {:.3?}{} (from {:.3?}, turned {:.0} deg)",
+            hold.0,
+            if made.is_finite() && (hold.1 * Vec3::Z).dot(made * Vec3::Z) < 0.0 { " reversed" } else { "" },
+            drawn.0,
+            hold.1.angle_between(drawn.1).to_degrees()
+        );
+        hold
+    }
+
+    /// Hand `i` takes melee weapon `id`. Near one of its handles (where the hand is, drawn against
+    /// it: the handle its hand touches; its main one first, [`MeleeRig::first_handle`])
+    /// it goes into the hand by that handle ([`MeleeRig::handle_hold`]): the hand goes onto it there, and the weapon, left where it was,
+    /// is pulled into the hand by its joint (its grip joint made, the weapon put back where it
+    /// lay). Drawn from a holster or caught (`snap`), it goes in by its main
+    /// handle whatever. Anywhere else it's taken where it is: neither moves, and the fingers close
+    /// round the weapon itself.
+    pub(super) fn take_melee(&self, id: u32, i: usize, snap: bool) -> (Attach, On, Option<(Vec3, Quat)>) {
         let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
         let o = &self.objects[&id];
         let (pos, rot) = self.physics.pose(o.body);
-        let rel = compose(inverse((palm, grip_rot)), (pos, rot));
         let hand = self.physics.pose(self.hands.as_ref().unwrap()[i].body);
         let drawn = compose(inverse((pos, rot)), hand);
-        let on = if self.melee.handle_near(id, drawn.0, ON_HANDLE * self.map.world_per_meter).is_some() { On::Grip } else { On::Free };
-        (Attach::Fixed(rel.0, rel.1), on, Some(drawn))
+        let near = if snap { self.melee.main_handle(id, drawn.0) } else { self.melee.first_handle(id, drawn.0, ON_HANDLE * self.map.world_per_meter) };
+        if let Some((k, at)) = near {
+            let hold = self.onto_handle(id, k, at, drawn, i, !snap);
+            let rel = inverse(hold);
+            return (Attach::Fixed(rel.0, rel.1), On::Grip, Some(hold));
+        }
+        let rel = compose(inverse((palm, grip_rot)), (pos, rot));
+        (Attach::Fixed(rel.0, rel.1), On::Free, Some(drawn))
     }
 }
 

@@ -157,7 +157,7 @@ struct Game {
     /// The range's people: the training dummies, the bench's and the arena's fighters
     /// (`arena`), who the player's hands meet, hit, push, stab and hold.
     people: arena::People,
-    /// Started in one of the melee areas (`--arena`): the runtime's told to use the melee rules.
+    /// Started in one of the melee areas (`--arena`): the runtime's told to use the melee buttons.
     melee: bool,
     /// The player's health (100), what the fighters' blows take from it, and when it was last
     /// struck.
@@ -216,8 +216,8 @@ fn main() -> Result<()> {
         anyhow::bail!("no area {arena}: {}", arenas::starts().map(|s| s.0).join(", "));
     };
     (game.feet, game.yaw) = (feet, yaw);
-    // The melee areas play with the melee rules: telekinesis in place of the gravity gloves (the
-    // gun range keeps the gloves, unless the settings ask for it).
+    // The melee areas play with the melee buttons (the gravity gloves stay: telekinesis is
+    // the settings' to turn on, as in the gun range).
     game.melee = arena != "range";
     tracing::info!("range: starting in the {arena} area at {feet:.1?}");
     game.run(fps_cap)
@@ -716,7 +716,7 @@ impl Game {
             self.adapter.write_spells(&combat::spells_with(self.spell));
             if self.melee {
                 let mut rules: MeleeRules = bytemuck::Zeroable::zeroed();
-                rules.flags = RULES_SAYS_TELEKINESIS | RULES_TELEKINESIS | RULES_KICK;
+                rules.flags = RULES_KICK;
                 self.adapter.write_melee_rules(&rules);
             }
             let mut bloods = combat::bloods();
