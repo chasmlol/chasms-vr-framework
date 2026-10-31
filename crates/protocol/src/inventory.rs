@@ -195,7 +195,15 @@ pub struct Inventory {
     /// How many objects the game has taken back so far: the last [`MAX_TAKEN`] are in `taken`
     /// (`taken[n % MAX_TAKEN]` is the `n`th).
     pub taken_count: u32,
-    pub _pad: [u32; 11],
+    /// Goes up by one each time the game puts one of the player's things in a hand: stack
+    /// `give_item` (an [`InvItem::id`]) into hand `give_hand` (0 left, 1 right), the runtime's copy
+    /// of it held where the hand is, as if drawn from a slot there (a plant plucked: its ingredient in
+    /// the fingers that plucked it). Only a hand still closed and holding nothing takes it; otherwise
+    /// it stays where it is in the inventory.
+    pub give_seq: u32,
+    pub give_hand: u32,
+    pub give_item: u32,
+    pub _pad: [u32; 8],
     /// The objects drawn from the slots ([`crate::ObjectDesc::id`]s of [`crate::OS_INVENTORY`]
     /// ones) the game has taken back: used, or dropped into the world. The runtime lets them go.
     pub taken: [u32; MAX_TAKEN],

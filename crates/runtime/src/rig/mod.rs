@@ -837,9 +837,11 @@ pub struct Rig {
     /// Hands turning a held book's pages (its grip on them): they take nothing, and their gloves
     /// pull nothing.
     page_hands: [bool; 2],
-    /// The player's things as the game keeps them, and how many of its taken-back list were seen.
+    /// The player's things as the game keeps them, how many of its taken-back list were seen, and
+    /// the last of its things put in a hand that was seen.
     inventory: Box<Inventory>,
     taken_seen: Option<u32>,
+    given_seen: Option<u32>,
     /// The body's slots that hand them out (the player's, or the game's own), and their zones this
     /// frame.
     pockets: Vec<BodySlot>,
@@ -924,6 +926,7 @@ impl Default for Rig {
             page_hands: [false; 2],
             inventory: bytemuck::zeroed_box(),
             taken_seen: None,
+            given_seen: None,
             pockets: Vec::new(),
             pocket_zones: Vec::new(),
             placing: None,
@@ -3981,6 +3984,28 @@ impl Rig {
             tracing::info!("rig: {id:#x}'s stack is gone from the inventory: it goes too");
             self.remove(id);
         }
+        // One of the player's things the game put in a hand (a plant plucked: its ingredient). (One
+        // asked for before this runtime started isn't for now.)
+        if self.given_seen.is_some_and(|g| g != inv.give_seq) {
+            self.given(inv.give_hand as usize, inv.give_item);
+        }
+        self.given_seen = Some(inv.give_seq);
+    }
+
+    /// Stack `item` into hand `i`, as if drawn from a slot there: only a hand still closed and
+    /// holding nothing takes it (one that has let go has nothing to hold it with: the thing stays in
+    /// the inventory, where the game put it).
+    fn given(&mut self, i: usize, item: u32) {
+        let Some(item) = self.inventory.item(item).copied() else { return };
+        let Some(h) = self.hands.as_ref().and_then(|h| h.get(i)) else { return };
+        if !h.grip_down || h.holding.is_some() || item.model().is_empty() {
+            tracing::info!("rig: {} not put in the {} hand (closed {}, holding {:?})", item.name(), if i == 0 { "left" } else { "right" }, h.grip_down, h.holding);
+            return;
+        }
+        // (It counts as from the first slot that keeps things of its kind, for that slot's own order.)
+        let k = self.pockets.iter().position(|p| p.categories.iter().any(|c| self.inventory.category(c) == Some(item.category as u8))).unwrap_or(usize::MAX);
+        let id = self.draw_item(i, &item, k);
+        tracing::info!("rig: {} put in the {} hand by the game as {id:#x}", item.name(), if i == 0 { "left" } else { "right" });
     }
 
     pub fn inventory(&self) -> &Inventory {
@@ -4117,7 +4142,7 @@ impl Rig {
     }
 
     fn draw_pocket(&mut self, i: usize, k: usize) {
-        let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
+        let palm = self.hands.as_ref().unwrap()[i].target.0;
         let Some(slot) = self.pockets.get(k) else { return };
         let out = self.drawn_out();
         let has = pockets::contents(slot, &self.inventory, &out);
@@ -4147,9 +4172,19 @@ impl Rig {
             }
             return;
         }
+        let id = self.draw_item(i, &item, k);
+        // (Where the hand was, from the eyes in the body's frame: where players reach for a slot.)
+        let reached = self.anchor.local(self.hands.as_ref().unwrap()[i].grip_t.0);
+        tracing::info!("rig: {} ({} of them) drawn from slot {k} ({name}) into the {} hand as {id:#x}, reached at {reached:.2?}", item.name(), item.count, if i == 0 { "left" } else { "right" });
+    }
+
+    /// One of the player's things into hand `i`: the runtime's copy of it, held just where the hand
+    /// is (`k`: the slot it counts as coming from).
+    fn draw_item(&mut self, i: usize, item: &InvItem, k: usize) -> u32 {
+        let (palm, grip_rot) = self.hands.as_ref().unwrap()[i].target;
         let id = self.next_spawn;
         self.next_spawn = self.next_spawn.wrapping_add(1).max(SPAWN_BASE);
-        let desc = pockets::object_desc(&item, id);
+        let desc = pockets::object_desc(item, id);
         let (desc, pos, rot) = match self.holds.get(item.model()).copied().flatten() {
             // Rigged: in the hand where it's made to be held, the fingers round its handle (the
             // left hand the same way round, its palm on the same side: `handle_of`).
@@ -4162,7 +4197,7 @@ impl Rig {
             // the fingers.
             None => {
                 let wpm = self.map.world_per_meter;
-                let rot = (grip_rot * pockets::hold_rot(&item)).normalize();
+                let rot = (grip_rot * pockets::hold_rot(item)).normalize();
                 let to_palm = grip_rot * if i == 1 { Vec3::X } else { Vec3::NEG_X };
                 let across = (rot.inverse() * to_palm).abs().dot(v3(item.half_extents));
                 let centre = palm - to_palm * ((across - 0.025) * wpm).max(0.0);
@@ -4171,15 +4206,13 @@ impl Rig {
         };
         self.add(desc, id, true, pos, rot);
         if let Some(o) = self.objects.get_mut(&id) {
-            o.drawn = Some(pockets::Drawn::new(&item, k));
+            o.drawn = Some(pockets::Drawn::new(item, k));
         }
         // Held just where it came out: the hand stays where it is, the fingers close on it.
         self.take(id, i, false);
         self.debug.pocket_draws += 1;
         self.emit(Cue::PocketOut, Some(i), Some(id), palm, 1.0);
-        // (Where the hand was, from the eyes in the body's frame: where players reach for a slot.)
-        let reached = self.anchor.local(self.hands.as_ref().unwrap()[i].grip_t.0);
-        tracing::info!("rig: {} ({} of them) drawn from slot {k} ({name}) into the {} hand as {id:#x}, reached at {reached:.2?}", item.name(), item.count, if i == 0 { "left" } else { "right" });
+        id
     }
 
     /// A grip held still in a slot (`Holsters::edit_hold`) asks for the slot's editor; what it drew
