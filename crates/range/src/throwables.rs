@@ -266,8 +266,9 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_RIGHT + 1),
         (find("builtin_knife").unwrap(), Vec3::new(-0.91, top, 1.05), SLOT_BELT + 1),
     ];
-    // The sword, its handle towards the player, and a dagger to throw behind it.
-    for (key, at) in [("builtin_sword", Vec3::new(-0.72, top, 0.82)), ("kit_dagger", Vec3::new(-0.66, top, 0.97))] {
+    // The sword, its handle towards the player, and a dagger to throw at the back, its pommel clear
+    // of the knives' handles (a hand going for a knife takes the knife).
+    for (key, at) in [("builtin_sword", Vec3::new(-0.72, top, 0.82)), ("kit_dagger", Vec3::new(-0.62, top, 1.2))] {
         if let Some(i) = find(key) {
             places.push((i, at, 0));
         }

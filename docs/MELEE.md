@@ -362,11 +362,14 @@ The choices that need a reason, and why:
   carry none of those).
 * A breakable's pieces keeping its own speed (the range's debris flies from the blow).
 * Telekinesis choking a body.
+* Oblivion's weapons on this judge: its adapter still describes them by the older `MeleeDesc`, so
+  they're held and judged the older way until it gives `MeleeWeapons`.
 
 ## Testing
 
 Melee is checked by doing it, with the emulated headset (`docs/XRSIM.md`): scripts that take a
 weapon from a table and swing, stab, throw, block, climb, and captures and logs to see what
 happened. `RUSTVR_DEBUG_MELEE=1` logs how far held weapons lag their hands, `RUSTVR_DEBUG_COMBAT=1`
-each contact's judging, `RUSTVR_SILENT=1` keeps the runtime's sounds off the speakers.
+each contact's judging, `RUSTVR_DEBUG_BRAIN=1` (the range) each fighter's state once a second,
+`RUSTVR_SILENT=1` keeps the runtime's sounds off the speakers.
 `PLAYTEST.md` (at the adapter's root) says how to start each area and what to try.

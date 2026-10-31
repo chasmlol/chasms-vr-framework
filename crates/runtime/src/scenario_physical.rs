@@ -48,6 +48,18 @@ fn lean_in(b: &mut Body, t: f64, [t0, t1, t2, t3]: [f64; 4], eye: Vec3, at: Vec3
     }
 }
 
+/// The body stepping towards `at` (a thing on the table) between `t0` and `t1`, as far as a person
+/// would to reach it, and back from `t2` to `t3`: a weapon taken from where it rests is let go of
+/// past the player's reach from their shoulders (the stuck rule), as a hand couldn't be there.
+fn step_to(b: &mut Body, t: f64, [t0, t1, t2, t3]: [f64; 4], at: Vec3) {
+    let k = ramp(t, t0, t1) * (1.0 - ramp(t, t2, t3));
+    let to = (at - b.head_pos).with_y(0.0);
+    b.head_pos += to.normalize_or_zero() * (to.length() - STEP_REACH).max(0.0) * k;
+}
+
+/// How far (horizontally, m) the eyes stay from what the hand takes off the table.
+const STEP_REACH: f32 = 0.55;
+
 fn on(t: f64, spans: &[(f64, f64)]) -> f32 {
     if spans.iter().any(|(a, b)| between(t, *a, *b)) { 1.0 } else { 0.0 }
 }
@@ -858,6 +870,7 @@ pub fn all() -> Vec<Scenario> {
                     // Then a step to the right to see it in the plate.
                     b.head_pos = keys(t, &[(1.9, Body::rest().head_pos), (2.3, Body::rest().head_pos + Vec3::new(0.7, 0.0, 0.3))]);
                     b.head_rot = qkeys(t, &[(0.0, look_rot(above - Body::rest().head_pos)), (1.0, look_rot(target - Body::rest().head_pos)), (1.9, look_rot(target - Body::rest().head_pos)), (2.3, look_rot(target - b.head_pos))]);
+                    step_to(&mut b, t, [0.1, 0.35, 0.65, 0.95], above);
                     b
                 })
             },
@@ -915,6 +928,7 @@ pub fn all() -> Vec<Scenario> {
                     let lies = hand_rot_for(&s, s.rot);
                     b.hands[1].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.25, lies), (0.6, lies), (0.85, look_rot(Vec3::Y)), (1.0, look_rot(Vec3::Z))]);
                     b.hands[1].squeeze = on(t, &[(0.5, 3.2)]);
+                    step_to(&mut b, t, [0.1, 0.4, 0.7, 0.95], above);
                     b
                 })
             },
@@ -955,6 +969,7 @@ pub fn all() -> Vec<Scenario> {
                     let lies = hand_rot_for(&s, s.rot);
                     b.hands[1].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.25, lies), (0.75, lies), (1.3, look_rot(Vec3::Z))]);
                     b.hands[1].squeeze = on(t, &[(0.65, 4.6)]);
+                    step_to(&mut b, t, [0.1, 0.5, 0.85, 1.2], above);
                     b.head_rot = Quat::from_rotation_x(0.2);
                     b
                 })
@@ -996,6 +1011,7 @@ pub fn all() -> Vec<Scenario> {
                     let lies = hand_rot_for(&s, s.rot);
                     b.hands[1].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.25, lies), (0.75, lies), (1.3, look_rot(Vec3::NEG_Y))]);
                     b.hands[1].squeeze = on(t, &[(0.65, 4.6)]);
+                    step_to(&mut b, t, [0.1, 0.5, 0.85, 1.2], above);
                     b.head_rot = Quat::from_rotation_x(0.4);
                     b
                 })
@@ -1005,7 +1021,9 @@ pub fn all() -> Vec<Scenario> {
                 check(2.1, "the thrust went into the floor and stayed", |c| ensure(c.rig.embeds >= 1, || format!("{} embeds", c.rig.embeds))),
                 check(3.0, "pulled sideways, the blade stays where it went in", |c| {
                     let Some(s) = c.objects.iter().find(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0) else { return Err("not held".into()) };
-                    ensure((s.pos.x - STAB_FLOOR_X).abs() < 0.04, || format!("the sword moved to x {:.3} (went in at {STAB_FLOOR_X})", s.pos.x))
+                    // (Not dragged along with the hand, 15 cm to the right of the stab: the sword hangs
+                    // in the hand as it was taken, so its point went in a few cm off the hand's line.)
+                    ensure(s.pos.x < STAB_FLOOR_X + 0.05, || format!("the sword was dragged to x {:.3} (the hand stabbed at {STAB_FLOOR_X})", s.pos.x))
                 }),
                 check(4.5, "pulled up, it came out and is still in the hand", |c| {
                     let Some(s) = c.objects.iter().find(|o| o.kind == OBJ_MELEE && o.flags & OS_HELD_RIGHT != 0) else { return Err("dropped".into()) };
@@ -1733,6 +1751,7 @@ pub fn all() -> Vec<Scenario> {
                     b.hands[1].pos = keys(t, &[(0.0, rest), (0.4, above + Vec3::Y * 0.2), (0.7, above), (0.85, above), (1.3, raised)]);
                     b.hands[1].rot = qkeys(t, &[(0.85, Quat::IDENTITY), (1.3, Quat::from_rotation_x(-45f32.to_radians()))]);
                     b.hands[1].squeeze = on(t, &[(0.75, 3.4)]);
+                    step_to(&mut b, t, [0.15, 0.6, 0.95, 1.2], above);
                     // The left hand to the blade's flat, 25 cm up it, from its side.
                     let rest = Body::rest().hands[0].pos;
                     let blade = live(see, s.id).filter(|_| t > 1.6).map(|now| now.at(Vec3::new(0.0, -0.04, 0.14)));
