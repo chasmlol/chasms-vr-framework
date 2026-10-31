@@ -23,13 +23,20 @@ pub struct Spec {
     pub aux_h: u32,
 }
 
+/// The most overscan there is (degrees). The eye grows fast with it, the outer edge of a wide
+/// headset's eye nearing 90 degrees: on a Quest through Virtual Desktop (54 degrees out) 11 is a
+/// 4669x5026 eye, 20 a 7249x7898 one (2.4 times the pixels), 30 an 11673x12468 one (6.2 times),
+/// for an edge a 128 degree desktop view only reaches in a fast turn (it needs about 10 still, 18
+/// behind a turning head).
+pub const MAX_OVERSCAN: f32 = 20.0;
+
 /// The field of view the game draws each eye with, from the headset's (tangents, as [`Fov`] has
 /// them): `overscan` degrees wider all round (the setting, `vr.overscan`). The headset turns each
 /// picture to where the head is when it shows it, a frame or two on (more over a stream, Virtual
 /// Desktop's): without some, a turning head sees round the picture's edge, undrawn there, the edges
 /// flickering and smearing as it turns. More lets the desktop view go wider on the aiming eye alone.
 pub fn render_fov(headset: [Fov; 2], overscan: f32) -> [Fov; 2] {
-    let m = overscan.clamp(0.0, 40.0).to_radians();
+    let m = overscan.clamp(0.0, MAX_OVERSCAN).to_radians();
     // (`sign`: the side's: left and down are negative tangents.)
     let wider = |t: f32, sign: f32| sign * ((sign * t).atan() + m).min(80f32.to_radians()).tan();
     headset.map(|f| Fov { left: wider(f.left, -1.0), right: wider(f.right, 1.0), up: wider(f.up, 1.0), down: wider(f.down, -1.0) })

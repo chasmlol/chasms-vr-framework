@@ -2219,7 +2219,7 @@ pub fn panel(ui: &mut egui::Ui, s: &mut Settings, status: &crate::menu::Status) 
         slider(ui, "Aiming zoom: out over", &mut s.spectator.aim_out, 0.05, 1.0, " s", 2);
     }
     // (More draws more, in the headset too: for a wider desktop view, in games that can spare it.)
-    slider(ui, "Overscan: the game drawn past the headset's view", &mut s.vr.overscan, 0.0, 30.0, " deg", 0);
+    slider(ui, "Overscan: the game drawn past the headset's view", &mut s.vr.overscan, 0.0, crate::targets::MAX_OVERSCAN, " deg", 0);
     if s.vr.overscan - status.overscan_shown > 0.5 {
         ui.label(egui::RichText::new(format!("The game can't change its size while it runs: {:.0} of the {:.0} degrees show now", status.overscan_shown, s.vr.overscan)).weak());
     }

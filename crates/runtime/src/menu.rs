@@ -606,7 +606,7 @@ fn display(ui: &mut egui::Ui, s: &mut Settings, status: &Status) {
         }
     });
     // (More draws more: for a wider desktop view when recording, in games that can spare it.)
-    slider(ui, "Overscan: drawn past the headset's view", &mut s.vr.overscan, 0.0, 30.0, " deg", 0);
+    slider(ui, "Overscan: drawn past the headset's view", &mut s.vr.overscan, 0.0, crate::targets::MAX_OVERSCAN, " deg", 0);
     if s.vr.overscan - status.overscan_shown > 0.5 {
         ui.label(format!(
             "The game can't change its size while it runs: {:.0} of the {:.0} degrees show now, all of them when it's restarted",

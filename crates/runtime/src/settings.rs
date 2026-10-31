@@ -492,7 +492,7 @@ pub struct Vr {
     /// How far past the headset's view the game draws every eye, all round (degrees,
     /// `targets::render_fov`). Some keeps a turning head from seeing an undrawn edge; more lets the
     /// desktop view go wider on the aiming eye's picture alone (for recording), at the cost of
-    /// drawing more.
+    /// drawing more. At most `targets::MAX_OVERSCAN` (20): more is taken as that.
     pub overscan: f32,
 }
 
@@ -1045,7 +1045,11 @@ impl SettingsStore {
             None => base,
         };
         match toml::Value::Table(merged).try_into::<Settings>() {
-            Ok(s) => self.current = s,
+            Ok(mut s) => {
+                // (A file from before the most was 20, its overscan up to 40.)
+                s.vr.overscan = s.vr.overscan.clamp(0.0, crate::targets::MAX_OVERSCAN);
+                self.current = s;
+            }
             Err(e) => tracing::warn!("settings: {e} (keeping the previous settings)"),
         }
         self.stamp = (mtime(&self.settings_path()), self.profile_path().and_then(|p| mtime(&p)));
@@ -1125,6 +1129,17 @@ mod tests {
         assert_eq!(store.current.weapon.pitch, 12.5);
         assert_eq!(store.current.comfort.turn_mode, TurnMode::Smooth, "base settings still apply");
         assert_eq!(store.current.comfort.snap_angle, Comfort::default().snap_angle, "missing keys keep defaults");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_overscan_past_the_most_is_the_most() {
+        let dir = std::env::temp_dir().join(format!("rustvr-settings-overscan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.toml"), "[vr]\noverscan = 30.0\n").unwrap();
+        assert_eq!(SettingsStore::open(&dir).current.vr.overscan, crate::targets::MAX_OVERSCAN);
+        std::fs::write(dir.join("settings.toml"), "[vr]\noverscan = 15.0\n").unwrap();
+        assert_eq!(SettingsStore::open(&dir).current.vr.overscan, 15.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
