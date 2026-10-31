@@ -1648,6 +1648,39 @@ mod tests {
     }
 
     #[test]
+    fn crouching_for_real_in_a_stick_crouch_keeps_it() {
+        let (mut m, s) = (Mechanics::default(), Settings::default());
+        let dom = s.dominant();
+        let (mut f, mut g) = (standing(), game());
+        let mut t = 0.0;
+        let mut step = |m: &mut Mechanics, f: &HmdFrame, g: &GameState, secs: f64| {
+            let mut out = MechOutput::default();
+            for _ in 0..(secs * 90.0) as usize {
+                t += 1.0 / 90.0;
+                out = run(m, f, g, &s, t);
+            }
+            out
+        };
+        let crouches = |o: &MechOutput| o.intents.presses[Action::Crouch as usize];
+        step(&mut m, &f, &g, 2.0);
+        // The stick: one crouch, and the game crouches.
+        f.hands[dom].buttons |= CTRL_STICK_CLICK;
+        step(&mut m, &f, &g, 0.05);
+        f.hands[dom].buttons = 0;
+        let o = step(&mut m, &f, &g, 0.3);
+        assert_eq!(crouches(&o), 1, "the stick crouches");
+        g.flags |= GS_CROUCHED;
+        g.eye_above_feet = 1.1;
+        // Crouching for real in it, and standing up again: nothing pressed, the game stays crouched.
+        f.hmd.pos[1] = 1.5;
+        let o = step(&mut m, &f, &g, 1.0);
+        assert!(m.debug.phys_crouch && crouches(&o) == 1, "crouched for real: no press");
+        f.hmd.pos[1] = 1.7;
+        let o = step(&mut m, &f, &g, 1.0);
+        assert!(!m.debug.phys_crouch && crouches(&o) == 1, "stood up: still the stick's crouch");
+    }
+
+    #[test]
     fn snap_turn_once_per_flick() {
         let mut m = Mechanics::default();
         let s = Settings::default();
