@@ -38,7 +38,7 @@ headset ◀─ OpenXR ─┐
                    │    session.rs          the frame loop
                    │    scenario.rs         scripted end-to-end tests
                    │
-                   │  shared memory "Local\RustVR_v16" (crates/protocol)
+                   │  shared memory "Local\RustVR_v17" (crates/protocol)
                    │  + D3D11 shared textures (NT handles, keyed mutex) + named events
                    │
                    │  game process

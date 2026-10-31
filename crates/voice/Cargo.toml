@@ -1,0 +1,23 @@
+[package]
+name = "rustvr-voice"
+description = "The voice plugin: talk to a game's characters out loud, and they answer in their own voices (the user's m8)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rustvr-voice"
+path = "src/main.rs"
+
+[dependencies]
+rustvr-protocol.workspace = true
+anyhow.workspace = true
+bytemuck.workspace = true
+serde.workspace = true
+toml.workspace = true
+serde_json = "1"
+# The brain: hearing (Silero, speech to text), the LLM, the cloned voice, every character's memory.
+m8 = { git = "https://github.com/chasmlol/m8", branch = "rustvr" }
+# The game's own voice clips (Oblivion's are MP3s) for the voices it clones.
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "pcm"] }

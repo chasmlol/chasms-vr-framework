@@ -48,11 +48,12 @@
 //! | [`OFF_STATIONS`], [`OFF_CARDS`] | [`Receptacles`]: bowls the hands make things in (see [`stations`]); [`Cards`]: cards made of a game's own interface (see [`cards`]) | adapter -> runtime | seqlock |
 //! | [`OFF_FACE_SCULPT`] | [`FaceSculpt`]: the face as the hands shape it (see [`avatar`]) | runtime -> adapter | seqlock |
 //! | [`OFF_MELEE_WEAPONS`] .. [`OFF_RT_MELEE`] | [`MeleeWeapons`], [`ActorItems`], [`MeleeRules`] (adapter -> runtime), [`RtMelee`] (runtime -> adapter): melee (see [`melee`]) | both | seqlock |
+//! | [`OFF_VOICE_SCENE`] .. [`OFF_VOICE_STREAM`] | [`VoiceScene`], [`VoiceEvents`] (adapter -> voice plugin), [`VoiceLines`], [`VoiceStream`] (voice plugin -> adapter): talking to the game's characters (see [`voice`]) | | seqlock, rings |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
 //! the item cards, the face, the magic, the ride, the gore, the creature grabs, the bows, the
 //! inventory with the body's slots, the creatures' pockets, the bowls, the cards, the face the
-//! hands shape and the melee (a new one goes after the last).
+//! hands shape, the melee and the voice (a new one goes after the last).
 //! Every region is listed in address order in `LAYOUT`, which the build checks: none overlaps the
 //! next, and all lie inside [`MAPPING_BYTES`].
 //!
@@ -94,6 +95,7 @@ pub mod magic;
 pub mod player;
 pub mod ride;
 pub mod pockets;
+pub mod voice;
 
 pub use archery::*;
 pub use avatar::*;
@@ -113,12 +115,14 @@ pub use magic::*;
 pub use player::*;
 pub use ride::*;
 pub use pockets::*;
+pub use voice::*;
 
 pub const MAGIC: u32 = 0x5256_5552; // "RUVR"
-pub const VERSION: u32 = 16;
-pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v16";
-/// (Grew by 64 KB in v16: the melee's regions after the face the hands shape.)
-pub const MAPPING_BYTES: usize = 0x0054_0000;
+pub const VERSION: u32 = 17;
+pub const DEFAULT_MAPPING: &str = "Local\\RustVR_v17";
+/// (Grew by 64 KB in v16: the melee's regions after the face the hands shape; by 64 KB more in v17:
+/// the voice's after the melee's.)
+pub const MAPPING_BYTES: usize = 0x0055_0000;
 
 // ---- region offsets ---------------------------------------------------------------------------
 pub const OFF_HEADER: usize = 0x0000;
@@ -427,6 +431,9 @@ pub const RT_DASHBOARD: u32 = 1 << 5;
 /// The runtime draws the player's body and hands over the game's picture (the game shouldn't draw
 /// its own first-person hands or arms).
 pub const RT_DRAWS_BODY: u32 = 1 << 6;
+/// The player has simple voice commands on: the adapter listens for its game's own phrases (a
+/// menu's words, "what have you got for sale") with the system's speech recognition, no servers.
+pub const RT_VOICE_COMMANDS: u32 = 1 << 7;
 
 /// How the adapter maps tracking space into the game world. The mapping itself lives in the
 /// adapter SDK because it must use the game's *current* anchor every game frame.
@@ -766,6 +773,9 @@ pub const GS_MIRROR: u32 = 1 << 12;
 /// The player has no body in the game yet (a title screen in the world, before a character is
 /// made or loaded): the runtime draws the hands alone.
 pub const GS_HANDS_ONLY: u32 = 1 << 13;
+/// The open menu is one the player can turn in (a conversation, its pieces with the speaker in the
+/// world): the turning stick's left and right turn them as out of a menu, not the menu's.
+pub const GS_MENU_TURNS: u32 = 1 << 14;
 
 /// Linear-light colours.
 #[repr(C)]
@@ -1130,6 +1140,10 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_ACTOR_ITEMS, size_of::<ActorItems>()),
     (OFF_MELEE_RULES, size_of::<MeleeRules>()),
     (OFF_RT_MELEE, size_of::<RtMelee>()),
+    (OFF_VOICE_SCENE, size_of::<VoiceScene>()),
+    (OFF_VOICE_EVENTS, size_of::<VoiceEvents>()),
+    (OFF_VOICE_LINES, size_of::<VoiceLines>()),
+    (OFF_VOICE_STREAM, size_of::<VoiceStream>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

@@ -39,6 +39,7 @@ pub mod spectator_fx;
 pub mod swim;
 pub mod targets;
 pub mod view_bob;
+pub mod voice;
 pub mod warp;
 pub mod held;
 pub mod locomotion;

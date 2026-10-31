@@ -670,6 +670,65 @@ impl Adapter {
         }
     }
 
+    /// Who's around to be talked to and who's listening ([`VoiceScene`], see
+    /// [`rustvr_protocol::voice`]): whenever it changes, while the voice plugin runs.
+    pub fn write_voice_scene(&self, scene: &VoiceScene) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.write_voice_scene(scene);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Something for the characters' memory ([`VoiceEvent`]): a save, a load, a happening.
+    pub fn push_voice_event(&self, event: &VoiceEvent) -> bool {
+        match &self.link {
+            Some(l) if self.connected => {
+                l.push_voice_event(event);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The voice plugin's lines after the `read` first ([`VoiceLine`]).
+    pub fn read_voice_lines(&self, read: &mut u64) -> Vec<VoiceLine> {
+        match &self.link {
+            Some(l) if self.connected => l.read_voice_lines(read),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The voice plugin is running (the player has Voice on).
+    pub fn voice_alive(&self) -> bool {
+        matches!(&self.link, Some(l) if self.connected && l.voice_alive())
+    }
+
+    /// How many lines the plugin has written (where to start reading after connecting).
+    pub fn voice_lines_written(&self) -> u64 {
+        self.link.as_ref().map_or(0, |l| l.voice_lines_written())
+    }
+
+    /// The streamed line `line`'s voice and mouth since what was taken ([`VoiceStream`]).
+    pub fn take_voice_stream(&self, line: u32, samples: &mut Vec<i16>, frames: &mut Vec<[f32; 16]>) {
+        if let Some(l) = &self.link
+            && self.connected
+        {
+            l.take_voice_stream(line, samples, frames);
+        }
+    }
+
+    /// How much of the streamed line `line` the game has played (samples).
+    pub fn set_voice_stream_played(&self, line: u32, played: u64) {
+        if let Some(l) = &self.link
+            && self.connected
+        {
+            l.set_voice_stream_played(line, played);
+        }
+    }
+
     /// The player's body as the game makes it up (see [`AvatarDesc`]): when it changes.
     pub fn write_avatar(&self, desc: &AvatarDesc) -> bool {
         match &self.link {

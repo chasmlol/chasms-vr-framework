@@ -4,7 +4,7 @@
 use crate::*;
 use bytemuck::Pod;
 use std::mem::offset_of;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering, fence};
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HLOCAL, LocalFree, WAIT_OBJECT_0};
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -167,6 +167,11 @@ impl Link {
     fn u32_at(&self, off: usize) -> &AtomicU32 {
         debug_assert!(off.is_multiple_of(4) && off + 4 <= MAPPING_BYTES);
         unsafe { &*(self.base.add(off) as *const AtomicU32) }
+    }
+
+    fn u16_at(&self, off: usize) -> &AtomicU16 {
+        debug_assert!(off.is_multiple_of(2) && off + 2 <= MAPPING_BYTES);
+        unsafe { &*(self.base.add(off) as *const AtomicU16) }
     }
 
     fn u64_at(&self, off: usize) -> &AtomicU64 {
@@ -383,6 +388,168 @@ impl Link {
     }
     pub fn read_bows_into(&self, out: &mut Bows) -> bool {
         unsafe { seq_read_into(self.base.add(OFF_BOWS), out) }
+    }
+    // ---- voice ([`crate::voice`]) ------------------------------------------------------------------
+    /// Adapter: who's around to be talked to and who's listening ([`VoiceScene`]).
+    pub fn write_voice_scene(&self, v: &VoiceScene) {
+        unsafe { seq_write(self.base.add(OFF_VOICE_SCENE), v) }
+    }
+    pub fn read_voice_scene_into(&self, out: &mut VoiceScene) -> bool {
+        unsafe { seq_read_into(self.base.add(OFF_VOICE_SCENE), out) }
+    }
+    /// The scene's seqlock word: it changed when this did.
+    pub fn voice_scene_seq(&self) -> u32 {
+        self.u32_at(OFF_VOICE_SCENE).load(Ordering::Acquire)
+    }
+    /// Adapter: something for the characters' memory ([`VoiceEvent`]).
+    pub fn push_voice_event(&self, ev: &VoiceEvent) {
+        let written = self.u64_at(OFF_VOICE_EVENTS + offset_of!(VoiceEvents, written));
+        let n = written.load(Ordering::Relaxed);
+        let slot = OFF_VOICE_EVENTS + offset_of!(VoiceEvents, events) + (n as usize % VOICE_EVENT_SLOTS) * size_of::<VoiceEvent>();
+        unsafe { plain_write(self.base.add(slot), ev) };
+        written.store(n + 1, Ordering::Release);
+    }
+    /// Voice plugin: the events after the `read` first ones (as [`Link::read_combat_events`]).
+    pub fn read_voice_events(&self, read: &mut u64) -> Vec<VoiceEvent> {
+        let written = self.u64_at(OFF_VOICE_EVENTS + offset_of!(VoiceEvents, written)).load(Ordering::Acquire);
+        if written < *read {
+            *read = written; // the adapter started again
+        }
+        let from = (*read).max(written.saturating_sub(VOICE_EVENT_SLOTS as u64));
+        let out = (from..written)
+            .map(|n| {
+                let slot = OFF_VOICE_EVENTS + offset_of!(VoiceEvents, events) + (n as usize % VOICE_EVENT_SLOTS) * size_of::<VoiceEvent>();
+                unsafe { plain_read(self.base.add(slot)) }
+            })
+            .collect();
+        *read = written;
+        out
+    }
+    /// Voice plugin: a line for the game ([`VoiceLine`]).
+    pub fn push_voice_line(&self, line: &VoiceLine) {
+        let written = self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, written));
+        let n = written.load(Ordering::Relaxed);
+        let slot = OFF_VOICE_LINES + offset_of!(VoiceLines, lines) + (n as usize % VOICE_LINE_SLOTS) * size_of::<VoiceLine>();
+        unsafe { plain_write(self.base.add(slot), line) };
+        written.store(n + 1, Ordering::Release);
+    }
+    /// Adapter: the lines after the `read` first ones (as [`Link::read_combat_events`]).
+    pub fn read_voice_lines(&self, read: &mut u64) -> Vec<VoiceLine> {
+        let written = self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, written)).load(Ordering::Acquire);
+        if written < *read {
+            *read = written; // the plugin started again
+        }
+        let from = (*read).max(written.saturating_sub(VOICE_LINE_SLOTS as u64));
+        let out = (from..written)
+            .map(|n| {
+                let slot = OFF_VOICE_LINES + offset_of!(VoiceLines, lines) + (n as usize % VOICE_LINE_SLOTS) * size_of::<VoiceLine>();
+                unsafe { plain_read(self.base.add(slot)) }
+            })
+            .collect();
+        *read = written;
+        out
+    }
+    /// Voice plugin: it's running (its pid, now).
+    pub fn heartbeat_voice(&self) {
+        self.u32_at(OFF_VOICE_LINES + offset_of!(VoiceLines, pid)).store(unsafe { GetCurrentProcessId() }, Ordering::Relaxed);
+        self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, heartbeat_ms)).store(now_ms(), Ordering::Release);
+    }
+    /// Adapter: the voice plugin beat within the last [`HEARTBEAT_TIMEOUT_MS`].
+    pub fn voice_alive(&self) -> bool {
+        let beat = self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, heartbeat_ms)).load(Ordering::Acquire);
+        beat != 0 && now_ms().saturating_sub(beat) <= HEARTBEAT_TIMEOUT_MS
+    }
+    /// The lines written so far (where an adapter that just connected starts reading).
+    pub fn voice_lines_written(&self) -> u64 {
+        self.u64_at(OFF_VOICE_LINES + offset_of!(VoiceLines, written)).load(Ordering::Acquire)
+    }
+    /// Voice plugin: a new streamed line, `line`, its voice at `rate` ([`VoiceStream`]): its rings
+    /// from the start (before its [`VL_STREAM`]).
+    pub fn begin_voice_stream(&self, line: u32, rate: u32) {
+        let s = OFF_VOICE_STREAM;
+        self.u64_at(s + offset_of!(VoiceStream, samples_written)).store(0, Ordering::Relaxed);
+        self.u64_at(s + offset_of!(VoiceStream, frames_written)).store(0, Ordering::Relaxed);
+        self.u32_at(s + offset_of!(VoiceStream, rate)).store(rate, Ordering::Relaxed);
+        self.u32_at(s + offset_of!(VoiceStream, line)).store(line, Ordering::Release);
+    }
+    /// Voice plugin: of the streamed line, the samples and frames the adapter has taken and the
+    /// samples the game has played (none of a line it hasn't started on).
+    pub fn voice_stream_progress(&self) -> (u64, u64, u64) {
+        let s = OFF_VOICE_STREAM;
+        let line = self.u32_at(s + offset_of!(VoiceStream, line)).load(Ordering::Relaxed);
+        if self.u32_at(s + offset_of!(VoiceStream, taken_line)).load(Ordering::Acquire) != line {
+            return (0, 0, 0);
+        }
+        let at = |field: usize| self.u64_at(s + field).load(Ordering::Acquire);
+        (at(offset_of!(VoiceStream, samples_taken)), at(offset_of!(VoiceStream, frames_taken)), at(offset_of!(VoiceStream, played)))
+    }
+    /// Voice plugin: as many of `samples` as the ring has room for (no further than a ring ahead
+    /// of what the adapter has taken), after those written so far; how many.
+    pub fn write_voice_samples(&self, samples: &[i16]) -> usize {
+        let s = OFF_VOICE_STREAM;
+        let written = self.u64_at(s + offset_of!(VoiceStream, samples_written));
+        let (taken, _, _) = self.voice_stream_progress();
+        let w = written.load(Ordering::Relaxed);
+        let n = samples.len().min((VOICE_STREAM_SAMPLES as u64).saturating_sub(w - taken.min(w)) as usize);
+        let ring = s + offset_of!(VoiceStream, samples);
+        for (i, &x) in samples[..n].iter().enumerate() {
+            self.u16_at(ring + ((w as usize + i) % VOICE_STREAM_SAMPLES) * 2).store(x as u16, Ordering::Relaxed);
+        }
+        written.store(w + n as u64, Ordering::Release);
+        n
+    }
+    /// Voice plugin: as many of the mouth's `frames` as its ring has room for; how many.
+    pub fn write_voice_frames(&self, frames: &[[f32; 16]]) -> usize {
+        let s = OFF_VOICE_STREAM;
+        let written = self.u64_at(s + offset_of!(VoiceStream, frames_written));
+        let (_, taken, _) = self.voice_stream_progress();
+        let w = written.load(Ordering::Relaxed);
+        let n = frames.len().min((VOICE_STREAM_FRAMES as u64).saturating_sub(w - taken.min(w)) as usize);
+        let ring = s + offset_of!(VoiceStream, frames);
+        for (i, frame) in frames[..n].iter().enumerate() {
+            let at = ring + ((w as usize + i) % VOICE_STREAM_FRAMES) * 64;
+            for (p, weight) in frame.iter().enumerate() {
+                self.u32_at(at + p * 4).store(weight.to_bits(), Ordering::Relaxed);
+            }
+        }
+        written.store(w + n as u64, Ordering::Release);
+        n
+    }
+    /// Adapter: the streamed line `line`'s voice and frames since what it took (from its start, the
+    /// first time), onto `samples` and `frames`. Nothing while the plugin isn't on that line.
+    pub fn take_voice_stream(&self, line: u32, samples: &mut Vec<i16>, frames: &mut Vec<[f32; 16]>) {
+        let s = OFF_VOICE_STREAM;
+        if line == 0 || self.u32_at(s + offset_of!(VoiceStream, line)).load(Ordering::Acquire) != line {
+            return;
+        }
+        let taken_line = self.u32_at(s + offset_of!(VoiceStream, taken_line));
+        let (samples_taken, frames_taken) = (self.u64_at(s + offset_of!(VoiceStream, samples_taken)), self.u64_at(s + offset_of!(VoiceStream, frames_taken)));
+        if taken_line.load(Ordering::Relaxed) != line {
+            samples_taken.store(0, Ordering::Relaxed);
+            frames_taken.store(0, Ordering::Relaxed);
+            self.u64_at(s + offset_of!(VoiceStream, played)).store(0, Ordering::Relaxed);
+            taken_line.store(line, Ordering::Release);
+        }
+        let written = self.u64_at(s + offset_of!(VoiceStream, samples_written)).load(Ordering::Acquire);
+        let ring = s + offset_of!(VoiceStream, samples);
+        for k in samples_taken.load(Ordering::Relaxed).max(written.saturating_sub(VOICE_STREAM_SAMPLES as u64))..written {
+            samples.push(self.u16_at(ring + (k as usize % VOICE_STREAM_SAMPLES) * 2).load(Ordering::Relaxed) as i16);
+        }
+        samples_taken.store(written, Ordering::Release);
+        let written = self.u64_at(s + offset_of!(VoiceStream, frames_written)).load(Ordering::Acquire);
+        let ring = s + offset_of!(VoiceStream, frames);
+        for k in frames_taken.load(Ordering::Relaxed).max(written.saturating_sub(VOICE_STREAM_FRAMES as u64))..written {
+            let at = ring + (k as usize % VOICE_STREAM_FRAMES) * 64;
+            frames.push(std::array::from_fn(|p| f32::from_bits(self.u32_at(at + p * 4).load(Ordering::Relaxed))));
+        }
+        frames_taken.store(written, Ordering::Release);
+    }
+    /// Adapter: how many of `line`'s samples the game has played.
+    pub fn set_voice_stream_played(&self, line: u32, played: u64) {
+        let s = OFF_VOICE_STREAM;
+        if self.u32_at(s + offset_of!(VoiceStream, taken_line)).load(Ordering::Relaxed) == line {
+            self.u64_at(s + offset_of!(VoiceStream, played)).store(played, Ordering::Release);
+        }
     }
     /// Adapter: the mount the player rides and the mounts near them ([`Ride`]), every game frame.
     pub fn write_ride(&self, v: &Ride) {

@@ -497,6 +497,15 @@ pub(crate) struct Shared {
     pub synth_plays: AtomicU64,
 }
 
+/// The names of the system's microphones (its input devices), as it shows them.
+pub fn input_devices() -> Vec<String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    cpal::default_host()
+        .input_devices()
+        .map(|devices| devices.filter_map(|d| d.description().ok().map(|d| d.name().to_owned())).collect())
+        .unwrap_or_default()
+}
+
 /// The runtime's interaction sounds: a sound library, a spatial mixer, and an output.
 pub struct Audio {
     commands: SyncSender<Command>,
