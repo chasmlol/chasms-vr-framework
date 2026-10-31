@@ -20,15 +20,18 @@ bodies' physics. The two meet through the protocol, as everything else in the fr
 * The game lists what its creatures hold (`ActorItems`): the runtime's hands and weapons meet
   those things as solid, block and parry them, and are struck by them.
 * The game says its rules for the player (`MeleeRules`): its strength, its stamina (when the game
-  keeps one: Oblivion's Fatigue), and whether the player may slow time, climb or use telekinesis.
+  keeps one: Oblivion's Fatigue), whether the player may slow time, climb or use telekinesis, and
+  whether the melee buttons are used.
 * The runtime tells the game, every frame (`RtMelee`): how fast the game's time should run, how
-  the arms are moving the player while climbing, what the swings spent of the stamina, which
-  weapons are filled with a spell.
+  the arms are moving the player while climbing, a jump off a climb, what the swings spent of the
+  stamina, which weapons are filled with a spell (held, and thrown, stuck or dropped).
 * Hits and the rest are events (`CombatEvent`): `CE_HIT` (a judged hit: its damage, damage type,
   push level, depth, the blade, whether it severs, whether it was thrown, imbued, two-handed),
-  `CE_WOUND` (a blade gone in deep, or out the far side), `CE_PULLED_OUT`, `CE_BLOCK` (a weapon met
-  a creature's, a parry if it was moving into it), `CE_STRUCK` (a creature's swing hit the player),
-  `CE_BROKE` (a breakable thing broke). The game decides what each does to its creatures.
+  `CE_WOUND` (a blade gone in deep, or out the far side), `CE_PULLED_OUT`, `CE_TOUCH` (a contact
+  that did nothing: a scratch, a scuff), `CE_BLOCK` (a weapon met a creature's, a parry if it was
+  moving into it), `CE_STRUCK` (a creature's swing hit the player), `CE_BROKE` (a breakable thing
+  broke). A creature's part held by telekinesis is a creature grab (`GRAB_TK`). The game decides
+  what each does to its creatures.
 
 The test range is the game that plays it all: `crates/range` (its dummies, its fighters, their
 brains, its weapons and its areas), and `crates/melee` (`rustvr-melee`) holds the tables, curves
@@ -38,60 +41,107 @@ and body rules, shared by the runtime and the range.
 
 * **Weight** (`rig/melee.rs`, `rig/physics.rs`'s `Joint`). A weapon hangs on its hand's joint: a
   spring of 5000 N/m and a damper of 100 from the controller to the point held, at most
-  3000 N; turning, 1000 N m a radian times a light or heavy handle's 1.1 or 0.9, a damper of 50
-  times 0.9, at most 250 N m. It keeps its mass and its weight, so a dagger keeps up with the hand
-  and an 8 kg maul lags a swing, swings on past a stop and is slow to turn. The joint is solved
-  implicitly each step (the velocity that lands the weapon where the spring and damper would put
-  it at the end of the step), so it's stable for any weight. The hand is drawn on the weapon,
-  held back with it; an empty hand follows its controller exactly.
-* **Two hands** double each hand's spring and force, one of them turns it twice as hard, and the
-  two pulls a distance apart turn it besides (k d²/2, F d/2): leverage, so two hands swing a heavy
-  weapon far better than one.
-* **Sliding.** A hand on a handle that slides (a spear's shaft, a staff, a mace's haft) slides along
-  it while its trigger is held, against a damper (300 at a light pull down to 20 at a full one);
-  at a handle's end it stops, or goes on to the handle that continues it (up the blade to
-  half-sword). Two-handed staffs slide through both hands.
-* **Handles.** A weapon's handles say where it can be held (a sword's grip, its pommel, its blade
-  for half-swording) and how the fingers close round them. A grab never moves the hand or the
-  weapon: the hand takes the weapon where it is (the user's rule; it isn't pulled into a
-  posed grip instead). The handle the hand is on only shapes the fingers and says whether the hold
-  is reversed.
-* A weapon stuck an arm's length (0.7 m) behind its hand, against something, is let go of (the stuck
-  rule).
+  3000 N; turning, 1000 N m a radian and a damper of 50 times the handle's multipliers, at most
+  250 N m. It keeps its mass and its weight, and the joint pulls at the grip: the weight at the
+  centre of mass, and the grip's own acceleration, turn it about the grip, so a heavy head sags (the
+  8 kg maul 2° at rest), trails a fast swing (60°) and swings on past a stop, while a dagger keeps
+  up. The joint is solved implicitly each step (the velocity that lands the weapon where the spring
+  and damper would put it at the end of the step), so it's stable for any weight. The hand is drawn
+  on the weapon, held back with it; an empty hand follows its controller exactly. Strength scales
+  the springs and caps, the dampers by half of it past 1.
+* **Handles** (`MeleeHandle::kind`). A light grip (one-handed weapons) turns it
+  about the handle and across it apart, each to its cap; a heavy one (long and
+  two-handed weapons) under one cap; a super heavy one x0.6 on everything; a supporting hand's (a
+  pommel, a ricasso) never takes the turning; a half-sword grip on the blade turns less and damps
+  more; a shield's and a throwing knife's their own. Off its handles a hand only grips the weapon
+  (the grip multipliers: x0.5 linear, x0.1 turning, at most 2000 N and 100 N m). A grab never
+  moves the hand or the weapon: the hand takes the weapon where it is, a second hand too (the user's
+  rule, rather than pulling the weapon into a posed grip); the fingers close round the handle the hand
+  is on.
+* **Two hands** on its handles are the two-handed hold: each hand's linear drive doubled (10000
+  N/m, at most 6000 N; damped x1.5 when both are on one handle), the turning on one hand only (the
+  dominant side's, unless that hand is on a supporting handle) at twice its one-hand value (a fifth,
+  hand over hand on one handle with the grips facing opposite ways). The other hand's pull at its
+  distance d also turns the weapon (its spring k d², its force F d): leverage, so two hands swing a
+  heavy weapon far better than one, and the weapon leans towards that hand by its share of the
+  turning.
+* **Sliding.** A hand on a handle that slides (a spear's shaft, a staff, a mace's haft, a sword's
+  grip) slides along it while its trigger is held, against a damper (300 at a light pull down to
+  20 at a full one). At a handle's end it goes on to the handle that one names
+  (`MeleeHandle::links`: a sword's grip on over its guard onto the blade,
+  to half-sword; the blade back down), crossing between them as the weapon slides through the fist,
+  or it stops there. One hand slides along a handle at a time; with both hands on the weapon, the
+  other holds it, so nothing falls through them.
+* **Stuck.** A weapon stopped by something, or stuck in it, with its grip further from the middle of
+  the player's shoulders than they reach (half their height x1.2), is let go of (the stuck rule); 6 m
+  off, anything held is.
+* A released weapon goes through the hand that let it go until a quarter second has passed and its
+  grip is 0.13 m clear of the palms. Weapons have air drag (1; a dagger's, a spear's and a
+  shield's 0.4; turning 0.05).
 
 ## Hitting
 
 * **Judging a hit** (`crates/runtime/src/combat.rs`, `rustvr_melee::judge`). Each damager is swept
   from where it was to where it is (for a held weapon, where the hand would have taken it this
-  step, so a blade stopped by a body is still judged at the speed it met it), against each
-  creature part's capsule; the first touch is found by a binary search back along the sweep, and
-  the contact is judged by the impact velocity's angles against the damager's frame
-  (slash 35°/90°/60°, axe 45°/80°/80°, pierce 35°/35°/60°), its damage curve, the damage table for
-  the damage type against the part's material and the weapon's tier, a bad angle falling back to a
-  light blunt hit. A weapon's points are tried before its edges before its blunt parts, and a
-  contact is one hit until it's lost; a collider isn't hit again within 0.1 s.
+  step, so a blade stopped by a body is still judged at the speed it met it), its points 6 to 8 cm
+  apart, against each creature part's capsule; the first touch is found by a binary search back
+  along the sweep, and the contact is judged by the impact velocity's angles against the
+  damager's frame (an edge's 35°/90°/60°, an axe's 45°/80°/80°, a point's 35°/35°/60°, the normal
+  either way round; a blunt damager and a fist hit from any way), its damage curve, the damage
+  table for the damage type against the part's material and the weapon's tier, a bad angle falling
+  back to the blade's own blunt blow (a sword's light 0.5, a dagger's very light 0.5, an axe's
+  blunt 2). A weapon's points are tried before its edges before its blunt parts. A
+  contact belongs to one body part and one of the weapon's collider groups (its edges and point;
+  each blunt part), and is one hit until it's been lost 5 frames; a damager doesn't hit the part it
+  last hit again within 0.1 s; each fist is its own.
+* A contact that does nothing (too slow for what it met, or at a bad angle with no blunt to fall back
+  on) is heard, softly, and on armour leaves a scratch or a scuff (`CE_TOUCH`).
+* A blow on an arm or a hand that went through the creature's shield on its way there is the
+  shield's.
 * **Damage types against materials**: the damage tables (slash, heavy slash, weak slash,
-  axe, pierce, fine pierce, blunt, light blunt, punch, kick...) against flesh, leather, chainmail
-  and plate, by tier: the minimum speed, the damage multiplier, the speed it goes in at, how deep,
-  its damper, the push levels, and the knockout speeds. A fire-filled blade is judged by the fire
-  rows first.
-* **Stabs that stick** (`rig/embed.rs`). A point that goes in stays in: as deep as the hand pushes
-  it against the dampers (with a hand on it going in and coming out, and with none), up to the
-  damager's depth. A point pressed on a body goes in by pressure. It goes in deeper as it's pushed,
-  it cuts as it's dragged (a slash slides along its cut 3 mm deep), it can be twisted, and it's
-  pulled out against its damper. In past the part's deep depth (a head's 4 cm, a torso's 10) it
-  deals the deep damage times the part's multiplier; out the far side, its skewer damage. A blade
-  can go through two bodies.
-* **Dismemberment.** An edge that went in at more than its dismemberment speed times the weapon's
-  tier factor (2.5, 1.5, 1, 0.9, 0.8, 0.8), within 4 cm of a severable joint and square enough to
-  the limb, severs it (`CEF_SEVER`); the game cuts it off and the runtime's gore makes the stump.
-* **Knockouts.** A blunt hit to the head past the knockout speed of its row knocks the creature out
-  (6 s), as the tables say (see the calls).
-* **Impact feedback.** A hit's sound is picked by the damage type and what it met (a cut, a stab, a
-  blunt thump, metal clashing, a blade into wood), as loud as it was hard (its intensity, 0.25 to
-  15 m/s); metal sparks above an intensity of 0.5; the controllers buzz.
-* **Blood.** Blood runs on the blade where it went in and drips from it; the game draws its wounds
-  and bruises.
+  axe, pierce, fine pierce, blunt, light blunt, very light blunt, punch, kick, energy, a body
+  slamming, a head slamming) against flesh, leather, chainmail and plate, by tier: the minimum
+  speed, the damage multiplier, the speed it goes in at, how deep, its damper, its draw cuts' and
+  pressure stabs' multiplier, the push levels, and the knockout speeds; a fire-filled blade's rows
+  first. The world's stone and metal are plate to an edge or a point and nothing to a blunt blow.
+* **Stabs that stick** (`rig/embed.rs`). A blade that went in stays in, jointed to the part it's in
+  (turning with it): as deep as its momentum and then the hand push it against the dampers (a
+  hand's going in, coming out; with none, its own weight against its free damper), up to the
+  damager's depth (an arming sword's point 0.64 m, its edge 1 cm). A point pressed on
+  a body goes in by pressure, and an edge pressed on and drawn along its length goes in too (a draw
+  cut: the pressure curves, the faster drawn the less push). A cut slides along its edge 3 mm deep
+  and comes out off the end of its edge; a back-edge cut goes in the way it cut. While it's shallow
+  the blade rocks on where it went in, up to 30°, stiffening to rigid at its short depth (a sword's
+  0.1 m, a dagger's 3 cm); it can't turn about its way in, so twisting it turns the part, and what
+  it can't follow pulls the part with the hand's own force. It's never torn out sideways: pulled
+  back past where it went in it's out. In past the part's deep depth (a head's 4 cm, a throat's 2,
+  a torso's 10) it deals the deep damage times the part's multiplier (a cut's as soon as it's
+  in); a point out the far side, its skewer damage. One blade can be in two bodies at once, run
+  through one into the next, each resisting and hurt by it. Held, it buzzes 0.9 each centimetre it
+  moves in or out and 0.8 each two it slides.
+* **Dismemberment.** An edge (or a point that cuts limbs off) that went in faster than its
+  dismemberment speed times its factor at the weapon's tier, square enough to the limb (each
+  damager's own angles), takes off the part whose cut is within 4 cm of the blow:
+  the part hit, else its parent, else one of its children (`rustvr_melee::sever_part`, by the
+  human body's cuts: an upper arm cut at the shoulder leaning 0.35 to the torso's way, a forearm, a
+  hand and a shin at their joints, a foot 3 cm up the shin, the head by its neck 2.8 cm up it; a
+  thigh, the torso never). The event names the part taken off (`CEF_SEVER`); the game cuts it off,
+  and it kills. The blade carries on through: it passes the creature until it's clear of it, and
+  doesn't go in again for a second.
+* **Knockouts.** A blunt hit to the head past the knockout speed of its row knocks the creature out,
+  as the tables say (see the calls).
+* **Impact feedback.** A hit's sound is picked by what hit what (a blade, a mace or a fist against
+  flesh, mail and plate, wood), as loud as it was hard (its intensity, 0.25 to 15 m/s, or the
+  damager's own after a damaging blow: a mace's 6 to 16); metal sparks above an intensity of 0.5;
+  the holding hands buzz a 0.3 s hit at the sound's volume.
+* **Blood.** A blade is bloodied off flesh, or where it went in: a stuck blade a mark each 6 cm it
+  goes in. A neck a blade came out of bleeds; a cut-off piece leaves at half its speed plus 3 m/s
+  along the limb (a head 3.5). The game draws its wounds (the range: reveal masks per armour,
+  cuts, stabs, bruises fainter, burns, scratches and scuffs on armour, a skewer's exit wound).
+* **The player struck**: a creature's blade is judged against each of the player's parts (0.1 s a
+  part), by its weapon's tier, at its speed against the player's own; a blow the player's
+  weapon or shield stopped doesn't go on into them; the game takes the head's x1.5 and the hands'
+  x0.5, clamped to 5..15.
 
 ## Defence
 
@@ -125,41 +175,53 @@ and body rules, shared by the runtime and the range.
 ## Grappling and unarmed
 
 * **Grabbing** any part of a creature (the framework's creature grabs): the throat to choke (a hand's
-  choke: one weapon dropped after 2 s, both after 5), a limb to drag or lift, letting go with a
-  throw. A held creature that's awake struggles (escape tries: a try every 2 to 3 s, 10% at
-  first, 5% more each time, at most 50%).
+  choke), a limb to drag or lift, letting go with a throw. A held creature that's awake struggles.
 * **Hands hit**: every empty hand carries a punch damager over its palm and fingers, open
-  or closed, judged by the same judge (Punch's curve, its table: 2 m/s on flesh at ×0.5, within 60°
-  of square, never going in). It's swept where the controller takes it, not where the drawn hand
-  stops on what it hits. Shoves are the hands' own contact pushes.
-* **Kicks** need tracked feet, which a headset and two controllers don't have: not done.
+  or closed, judged by the same judge (the punch's curve, its table: 2 m/s on flesh at x0.5, any way,
+  never going in). It's swept where the controller takes it, not where the drawn hand stops on what
+  it hits. Shoves are the hands' own contact pushes.
+* **Kicks** (`kick.rs`), untracked: with the melee buttons (`RULES_KICK`) the movement
+  stick's click, walking under 3 m/s, kicks at what the eyes see within 2 m (else straight ahead),
+  with the foot on its side: folded up over 0.2 s, driven out 1.2 legs' lengths from the hip over
+  0.2 s, out 0.1 s unless it met something, back over 0.4 s. The body's legs show it, and the foot
+  hits as a kick (its table; a body that's down shoved with 400).
 
 ## Extras
 
 * **Throwing** (`rig/melee.rs`): a weapon leaves as it was moving; let go of with the hand faster
   than 2 m/s (in the world's time) it's thrown at twice that speed. A weapon made to fly point
   first (`MW_FLIES`: a dagger within 145° of its
-  flight, a spear within 60°) is turned along its flight by 3 × its speed × the step of what's
-  left, until it first touches something; the rest tumble. In flight it's judged from its sweep
-  before the physics stepped (at the speed it met what it hit) with the thrown multipliers, and a
-  thrown point goes in all the way.
+  flight, a spear within 60°, a staff end first within 30°) is turned along its flight by its rate
+  (3; a staff's 5) × its speed × the step, until it first touches something; the rest tumble. In
+  flight it's judged from its sweep before the physics stepped (at the speed it met what it hit)
+  with the thrown multipliers, and a thrown point goes in all the way.
 * **Telekinesis** (`rig/telekinesis.rs`): in place of the gravity gloves when it's on. An
-  open empty hand raised to point picks out a loose thing (its ray turned towards the palm and
-  then the head's line through the hand, out to 6 m, a metre about it, within 40° of the gaze); the
-  grip catches it onto a soft spring (100 N/m, 10, at most 1000 N; turning 10, 1, 1000), weightless
-  and dragged, held where the hand points as far off as it was; the trigger pulls it in and the
-  bottom button pushes it away at up to 8 m/s, out to 12 m; at the hand it's taken where it
+  open empty hand raised to point picks out a loose thing or a creature's part (its ray turned
+  towards the palm and then the head's line through the hand, out to 6 m, a metre about it, within
+  40° of the gaze; for 5 s after a hand held a thing every other thing ranks 10° worse); the grip
+  catches it. A thing goes onto a soft spring (100 N/m, 10, at most 1000 N; turning 10, 1, 1000),
+  weightless and dragged, held where the hand points as far off as it was; the trigger pulls it in
+  and the bottom button pushes it away at up to 8 m/s, out to 12 m; at the hand it's taken where it
   touches; let go of with the hand moving it's thrown at 20 m/s, a weapon point first; a weapon
-  stuck in something is pulled out (recall).
-* **Slowed time** (`powers.rs`): the off hand's stick click slows the game's time to half on a
-  focus meter (it needs more than 10, drains 6 a second, comes back at 3, half while walking),
-  easing out over 0.7 s. The hands keep the player's real speed, so in it they swing twice as fast
-  and hit twice as hard. The runtime's world steps at the scale and the game is told to.
+  stuck in something is pulled out (recall). A creature's part is held by the game on a ragdoll
+  drive (`GRAB_TK`: 2000 N/m, 100, at most 2500 N; the neck's turn x5), its point following the hand
+  at up to 3 m/s (from nothing over 3 s), pulled and pushed at 3.2 m/s out to 6 m, thrown at 30 m/s;
+  two hands holding one body may tear its limbs off (3000 N on their joints).
+* **Slowed time** (`powers.rs`): the off hand's stick click (with the melee buttons, the dominant
+  hand's B) slows the game's time to half on a focus meter: it starts at 30 and holds 60, needs
+  more than 10, drains 6 a second of real time while slowed and comes back at 3 a second of the
+  game's always (half while walking): about 6.7 s from 30. It eases out over 0.7 s. The game may
+  give its own scale, meter length and refill (`MeleeRules`). The hands keep the player's real
+  speed, so in it they swing twice as fast and hit twice as hard. The runtime's world steps at the
+  scale and the game is told to.
 * **Imbuing** (`powers.rs`): a hand charging a fire or shock spell held within 0.2 m of a held
-  weapon's blade fills it (100 a second at full charge for a tier 1 to 3 blade), and it drains. Its
-  hits carry the spell (`CEF_IMBUED`): in the range a fire-filled blade heats what it hits (6 ×
-  the hit's intensity × the fill, 40 a second stuck in) until it catches fire at 100 and burns; a
-  shock over 4 m/s does 2 and may stun (always when stuck in, or in metal).
+  weapon's blade fills it, by tier: 50 a second at full charge x2 for a tier 1 to 3 blade,
+  x3 for tier 4 and 5, none for tier 0; it loses 2, 1, 0.45, 0.1 or 0.05 a second by tier (a
+  shock x0.4), 4, 3, 2, 0.5 or 0.1 a hit, 5 a second lying dropped. Its hits carry the spell
+  (`CEF_IMBUED`): in the range a fire-filled blade heats what it hits (6 × the hit's intensity × the
+  fill, 40 a second stuck in from the moment it goes in) until it catches fire at 100 and burns; a
+  shock over 4 m/s does 2 and may stun. A thrown or stuck weapon keeps its fill
+  (`RtMelee::loose_imbues`).
 * **Breakable things** (`rig/breaking.rs`): a thing marked `OBJF_BREAKABLE` breaks when
   something meets it hard enough (the hitter's mass weighed clamp(0.5 ln m, 1, 5) times the speed
   they meet at, squared, 20 or more); the runtime takes it out of its world
@@ -167,10 +229,13 @@ and body rules, shared by the runtime and the range.
   (`CE_BROKE`), which makes the pieces and puts it back. Weapons don't break, unless a game makes
   one break (`MW_BREAKABLE`).
 * **Climbing** (`rig/climbing.rs`): an empty hand gripping the static world where there's an edge
-  to close on holds there, and the player's body hangs from it on the player's joint (5000 N/m,
-  300, at most 2000 N a hand, a 70 kg body with its weight), so pulling the controllers down lifts
-  it; past an arm's length the hand lets go. The runtime tells the game how the arms move the player
-  (`RtMelee::climb`, `RTM_CLIMBING`) and the game moves them.
+  to close on holds there, and so does a hand holding a weapon stuck fast in the world (an axe in a
+  wall); the player's body hangs from it on the player's joint (5000 N/m, 300, at most 2000 N a
+  hand, a 70 kg body with its weight), so pulling the controllers down lifts it. A hand lets go held
+  beyond the player's reach from their shoulders (the stuck rule). With the melee buttons the
+  dominant stick's click jumps off (the climb jump: a jump force of 0.3 a 90th of a second eased
+  out over 0.6 s, up, and along the gaze x0.3; `RtMelee::jump`). The runtime tells the game how
+  the arms move the player (`RtMelee::climb`, `RTM_CLIMBING`) and the game moves them.
 * **Stamina** (`powers.rs`; an option, off by default): swinging hard costs it (the
   setting's seconds of an arming sword swung hard at 8 m/s empty it, a heavier weapon or faster
   swing sooner), and it comes back once the player has rested a second; a tired player's hands are
@@ -181,8 +246,10 @@ and body rules, shared by the runtime and the range.
 
 `settings.toml`'s `[melee]`: `strength` (1: the standard player), `stamina` (off), `stamina_time` (12 s),
 `stamina_refill` (6 s), `slow_time` (on), `telekinesis` (off), `climbing` (on). A game's
-`MeleeRules` override slowing time, climbing and telekinesis when they say (`RULES_SAYS_*`), and
-its stamina replaces the runtime's.
+`MeleeRules` override slowing time, climbing and telekinesis when they say (`RULES_SAYS_*`), turn on
+the melee buttons (`RULES_KICK`: the movement stick kicks, slowing time on the dominant B, the climb
+jump on the dominant stick), give their own slowing (`slow_scale`, `focus_time`, `focus_refill`),
+and their stamina replaces the runtime's.
 
 ## The calls
 
@@ -190,35 +257,48 @@ The choices that need a reason, and why:
 
 | What | Usual | Ours | Why |
 |---|---|---|---|
-| Taking a weapon | pulls it into a posed grip on the handle | taken where it is; the handle only shapes the fingers | the user's rule: grabs never snap |
-| The hold's solve | a configurable joint | the same spring, damper and caps, solved implicitly per step | stable at any weight in Rapier |
+| Taking a weapon | pulls it into a posed grip on the handle | taken where it is, by either hand; the handle only shapes the fingers | the user's rule: grabs never snap |
+| Drawn from a holster, or caught | into the hand by its grip | the same (into the grip) | a weapon in a holster or in the air has no "where the hand is on it" |
+| Sliding over the guard | the hand jumps to the linked handle | it crosses the gap, the weapon sliding through the fist | the user's rule: nothing snaps |
+| The hold's solve | a configurable joint | the same spring, damper and caps, solved implicitly per step, with the weight's turn at the grip | stable at any weight in Rapier |
+| Two hands | a joint at each hand | one joint at the holding hand: the other's drive at its distance as leverage, its pull leaning the target | one body, one joint |
 | Sliding's damper | against the hand's slide | against the slide relative to the controller's own motion | a steady swing doesn't slide the hand off |
 | Creature pins | joint drives | implicit drives on each part's mass and inertia | explicit drives on light hand parts blew up |
-| Knockouts | the tables carry knockout speeds nothing uses | a blunt head hit past them knocks out for 6 s | the user asked for knockouts; the speeds are in the tables |
+| A stuck blade's pull on the body | the joint's force on the part's rigidbody | the hand's force as the speed it gives the part's mass in a step, for the game to add (at most 4 m/s) | the protocol pushes by speed |
+| A blade's way between its samples | its colliders, the whole blade | points 6 to 8 cm apart along it | a sweep of points, as close as a hand's thickness |
+| Knockouts | the tables carry knockout speeds nothing uses | a blunt head hit past them knocks out | the user asked for knockouts; the speeds are in the tables |
 | Choking | a hand choke hurts nothing | 5 a second | a choke can kill |
 | Wrenching a weapon away | NPCs never let go to a pull | pulled 0.95 m from its holder's chest for 0.25 s, it lets go | the user asked for grab-and-wrench disarms |
 | Feints | fighters never feint | Medium one swing in ten, Hard one in five | the user asked for feints |
-| Focus | a most of 60 | 30 | reads as a slip against its other numbers |
 | Stamina | none | the option above | the user asked for one, game-drivable |
 | Burning to death | at 85% of a fire-death animation's clip | 4 s alight | we have no animation |
-| Bone | a material of effects only | cut and stabbed like wood | it needs a row in the tables |
-| A thrown point | its going-in damper is 0 for 0.5–1 s | goes in to its full depth at once | the same end, without timing the damper |
+| Bone | a material of effects only | cut and stabbed like wood, struck like plate | it needs a row in the tables |
+| A thrown point | its going-in damper is 0 (50 for sword stabs) for 0.5–1 s, then locked going out | goes in to its full depth at once | the same end, without timing the damper |
 | Breaking on the world | left to the hitter's rigid body | the thing's own mass is weighed | a world has no mass |
 | Telekinesis | always there | off by default, on when the game says or the settings ask | the gloves stay what a game gets unless it asks |
+| A telekinesis throw | a skill | always | the range has no skill tree; it was asked for |
+| Telekinesis on bodies | a skill (or a gravity spell's creature control) | always, with telekinesis | the same |
+| Tearing limbs off | skills (two telekinesis hands on a body, both hands on one); a body burned to a full char | all three, always | the same; it was asked for |
 | A hand by a held blade | the spell hand charges whatever it's near | the spell hand may charge beside the other hand's weapon, and while the gloves only mark something far off | so imbuing works, and casting isn't stolen by a highlight |
 | Climbing a top | the thumb-to-fingers cast must find an edge | an edge, or a ledge's top pressed on | a palm pushing down on a top holds as on its edge |
 | Climbing's body | the player's physical body | an integrated 70 kg body; the game's measured movement is taken only where it held the body back | the game's frames aren't the runtime's |
-| Stepping up | none (a climber jumps) | the range steps a climber let go within a metre below the block's top onto it | the range has no climb jump |
+| Stepping up | none (a climber jumps) | the range steps a climber let go within a metre below the block's top onto it, besides the climb jump | its block has no foothold to jump from |
+| Buttons | its own (kick on the movement stick, slow time on B, jump on the other stick) | the framework's, unless the game asks for the melee buttons (`RULES_KICK`); the range's melee areas do | a game's own buttons come first |
 | Spells in the range | chosen from a wheel | fire and shock alternate as they're cast | the range has no spell wheel |
+| Blood | its reveal masks, sparse drops and decals that fade in 30 s; only stumps and a neck bleed | the runtime's gore (its own design: wounds bleed a few seconds, blood runs and pools) with blade blood by depth and a bleeding neck | the gore is the framework's, made for every game |
+| The spear's points | two side points | its leaf point and edge only | the range's spear has no side points to put them on |
 
 ## Not done
 
-* Kicks (no tracked feet), an extra push on downed bodies, a karate chop
-  and special moves (punch spells, a telekinetic spin, chain lightning).
-* Telekinesis on creatures (lifting a body by a part); it takes loose things only.
-* The climb jump and feet placement (cosmetic IK).
-* A fighter's blade sometimes reads very fast right after a parry (its pose snapping back); the
-  player's damage from creatures is clamped to 5 to 15 anyway.
+* Spells as spells: thrown fire bolts and lightning, flame and lightning sprays, and the grip
+  casts (a burning or shocking grip). The range's fire and shock are for imbuing.
+* Special moves: a karate chop, punch spells, a telekinetic spin, a stronger
+  kick, a flying kick, chain lightning, a deeper slowed time.
+* Feet placed on walls while climbing (looks only).
+* Rubbing: sliding-blade loop sounds, sparks and a 0.8-each-2-cm buzz for a blade drawn along
+  something it isn't in (the runtime has no loop sounds).
+* A hit shaking a climbing grip loose (dagger points, rocks, spells, arrows; the range's fighters
+  carry none of those).
 
 ## Testing
 

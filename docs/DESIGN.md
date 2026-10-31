@@ -432,9 +432,11 @@ Melee is physical, its numbers tuned as one set (`docs/MELEE.md`).
 The runtime holds a game's melee weapons on a
 hand joint (their weight their own, two hands and leverage, hands sliding along handles), judges
 every contact by its physics (the impact's speed and angles against each damager, the damage tables
-by damage type, material and tier), keeps blades stuck in what they went into, and does the
-extras: throwing, telekinesis, slowed time, imbuing, breakable things, climbing by the hands, and
-an optional stamina. The game describes its weapons (`MeleeWeapons`), lists what its creatures
+by damage type, material and tier), keeps blades stuck in what they went into (rocking, sliding
+and running through), cuts limbs off at the body's joints, kicks with untracked feet
+as well, and does the extras: throwing, telekinesis (on things and on bodies), slowed time, imbuing,
+breakable things, climbing by the hands and the climb jump, and an optional stamina. A game may ask
+for the melee buttons (`RULES_KICK`). The game describes its weapons (`MeleeWeapons`), lists what its creatures
 hold (`ActorItems`), says its rules (`MeleeRules`), and is told the hits (`CombatEvent`) and the
 player's side (`RtMelee`); its creatures, their health and their brains are its own. The test
 range plays it all: ragdoll fighters with their pins, balance, reactions and brains,
