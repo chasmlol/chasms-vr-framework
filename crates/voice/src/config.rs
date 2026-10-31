@@ -30,7 +30,8 @@ max_tokens = 300
 url = "http://127.0.0.1:8083/v1/audio/transcriptions"
 
 [voice]
-# The cloned voice: a server with Breeze TTS 2's API (m8's start-breeze.ps1), and its noise seed.
+# The cloned voice: a server with Breeze TTS 2's API (Breeze-TTS-2.cpp's breeze-server, or the
+# Python one, m8's start-breeze.ps1), and its noise seed.
 server = "http://127.0.0.1:7860"
 seed = 42
 

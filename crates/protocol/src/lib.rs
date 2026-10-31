@@ -412,6 +412,9 @@ pub const RT_DASHBOARD: u32 = 1 << 5;
 /// The runtime draws the player's body and hands over the game's picture (the game shouldn't draw
 /// its own first-person hands or arms).
 pub const RT_DRAWS_BODY: u32 = 1 << 6;
+/// The player has simple voice commands on: the adapter listens for its game's own phrases (a
+/// menu's words, "what have you got for sale") with the system's speech recognition, no servers.
+pub const RT_VOICE_COMMANDS: u32 = 1 << 7;
 
 /// How the adapter maps tracking space into the game world. The mapping itself lives in the
 /// adapter SDK because it must use the game's *current* anchor every game frame.

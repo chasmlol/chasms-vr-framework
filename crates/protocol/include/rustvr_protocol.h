@@ -157,6 +157,12 @@
 #define RVR_RT_DRAWS_BODY (1 << 6)
 
 /**
+ * The player has simple voice commands on: the adapter listens for its game's own phrases (a
+ * menu's words, "what have you got for sale") with the system's speech recognition, no servers.
+ */
+#define RVR_RT_VOICE_COMMANDS (1 << 7)
+
+/**
  * The head may move away from the game body (roomscale).
  */
 #define RVR_TRK_ROOMSCALE (1 << 0)

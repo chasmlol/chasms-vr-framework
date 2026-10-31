@@ -1143,7 +1143,8 @@ impl Session {
                 | if self.opts.lockstep { RT_LOCKSTEP } else { 0 }
                 | if frame.dashboard { RT_DASHBOARD } else { 0 }
                 | if menu_pointer.is_some() { RT_RUNTIME_MENU } else { 0 }
-                | if self.draws_body { RT_DRAWS_BODY } else { 0 },
+                | if self.draws_body { RT_DRAWS_BODY } else { 0 }
+                | if self.settings.current.voice.commands { RT_VOICE_COMMANDS } else { 0 },
             frame_index: frame.index,
             display_time_ns: frame.display_time_ns,
             dt: frame.dt,

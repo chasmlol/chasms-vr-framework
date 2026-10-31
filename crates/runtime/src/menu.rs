@@ -505,6 +505,8 @@ fn voice(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
     let v = &mut s.voice;
     let r = ui.checkbox(&mut v.enabled, "Talk to the game's characters out loud");
     rects.push(("voice:on".into(), r.rect));
+    let r = ui.checkbox(&mut v.commands, "Simple voice commands: say a menu's words to pick them, \"what have you got for sale\" to trade (Windows' own speech recognition, no AI)");
+    rects.push(("voice:commands".into(), r.rect));
     ui.label("Look at someone a few steps away and talk. The servers and the LLM are in voice.toml, beside settings.toml.");
     ui.separator();
     ui.label("Microphone");

@@ -53,11 +53,15 @@ pub struct Voice {
     /// Their voice goes to the game as it's made, with its mouth (off: a sentence's clause at a
     /// time, each made whole first).
     pub stream: bool,
+    /// Simple voice commands with the system's own speech recognition, no servers or AI: a menu's
+    /// words said pick them (a dialogue's topic, "Goodbye"), "what have you got for sale" to
+    /// someone opens their trade (the game's adapter listens: `RT_VOICE_COMMANDS`).
+    pub commands: bool,
 }
 
 impl Default for Voice {
     fn default() -> Self {
-        Voice { enabled: false, mic: String::new(), volume: 2.5, act_out: true, barge_in: true, pause: 0.3, stream: true }
+        Voice { enabled: false, mic: String::new(), volume: 2.5, act_out: true, barge_in: true, pause: 0.3, stream: true, commands: true }
     }
 }
 
