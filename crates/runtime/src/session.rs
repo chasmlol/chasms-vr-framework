@@ -2196,7 +2196,7 @@ impl Session {
                 // depth, bloom and lens for that part.
                 let cropped = !moved && !same_fov(&info.fov[e], fov);
                 if cropped && let Some(srv) = slot.eyes[e].srv.as_ref() {
-                    background = crate::compositor::Background::Reprojected { first: (srv, info.eye_pose[e], info.fov[e]), second: None, second_depth: None, metres: 1.0 / wpm.max(1e-6) };
+                    background = crate::compositor::Background::Reprojected { first: (srv, info.eye_pose[e], info.fov[e]), second: None, second_depth: None, metres: 1.0 / wpm.max(1e-6), fog: None };
                     if info.flags & SLOT_DEPTH != 0
                         && let Some(d) = slot.depth.as_ref().and_then(|d| d[e].srv.as_ref())
                     {
@@ -2401,6 +2401,13 @@ impl Session {
                             second: b,
                             second_depth: (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[first ^ 1].srv.as_ref())).flatten(),
                             metres: 1.0 / wpm.max(1e-6),
+                            // Gamebryo's shaders fog by clip-space distance: where the other eye's
+                            // picture fills in, its fog is made this eye's (`refog` in the
+                            // compositor's shader).
+                            fog: (self.has_game_lighting && self.game_lighting.model == rustvr_protocol::lighting::LM_GAMEBRYO && self.game_lighting.fog_fade[1] != 0.0).then(|| {
+                                let (c, f) = (self.game_lighting.fog_color, self.game_lighting.fog_fade);
+                                crate::compositor::ClipFog { color: [c[0], c[1], c[2]], fade: [f[0], f[1]] }
+                            }),
                         },
                         (None, _) => crate::compositor::Background::Void,
                     }
