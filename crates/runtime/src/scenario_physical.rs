@@ -1016,7 +1016,7 @@ pub fn all() -> Vec<Scenario> {
         },
         Scenario {
             name: "spell",
-            about: "physical: the off hand holds the fire bolt (the game's selected spell); its trigger charges it (the game's casting time) and it's let go with the palm turned to the training dummy (palm casting, 60 degrees off the fingers): one cast, the bolt strikes the dummy; let go too soon: nothing",
+            about: "physical: the off hand holds the fire bolt (the game's selected spell); its trigger charges it (the game's casting time) and it's let go with the controller pointed at the training dummy: one cast, the bolt strikes the dummy; let go too soon: nothing",
             duration: 3.0,
             needs_game: true,
             lockstep: true,
@@ -1027,16 +1027,13 @@ pub fn all() -> Vec<Scenario> {
             input: || {
                 latched(|t, _, _| {
                     let mut b = Body::rest();
-                    // The palm towards the dummy's chest, from the left shoulder's height: the hand
-                    // turned 60 degrees left of the line so its palm casts along it.
+                    // The controller held out from the left shoulder's height, pointed at the
+                    // dummy's chest.
                     let shoulder = Vec3::new(-0.18, 1.7, 0.0);
                     let chest = Vec3::new(0.15, 1.25, 1.15);
                     let dir = (chest - shoulder).normalize();
                     let palm = shoulder + dir * 0.5 - Vec3::new(0.0, 0.0, 0.06);
-                    let right = Vec3::Y.cross(dir).normalize();
-                    let (c, s) = (60f32.to_radians().cos(), 60f32.to_radians().sin());
-                    let (fingers, face) = (dir * c - right * s, dir * s + right * c);
-                    let rot = Quat::from_mat3(&glam::Mat3::from_cols(face, fingers.cross(face), fingers)).normalize();
+                    let rot = look_rot(dir);
                     let rest = Body::rest().hands[0].pos;
                     b.hands[0].pos = keys(t, &[(0.0, rest), (0.4, palm)]);
                     b.hands[0].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.4, rot)]);

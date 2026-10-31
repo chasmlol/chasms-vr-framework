@@ -105,14 +105,14 @@ impl Default for Mirror {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Magic {
-    /// Degrees a spell leaves the hand from the fingers' way towards the palm's face: 0 aims with
-    /// the fingers (Skyrim VR's own "finger guns"), 90 straight out of the palm; 60 is the palm
-    /// casting the big Skyrim VR modlists ship.
-    pub palm_angle: f32,
+    /// Degrees a spell leaves the hand from where the controller points towards the palm's face: 0
+    /// straight where it points (its own pointing ray, as the laser), 90 straight out of the palm;
+    /// about 60 is the palm casting some Skyrim VR modlists ship.
+    pub palm_tilt: f32,
     /// A target spell is helped onto a creature near where it's aimed (a gentle cone: 10 degrees up
     /// or down, 15 across).
     pub aim_assist: bool,
-    /// The aim is smoothed over the last moments, longer for a harder spell (it feels heavier).
+    /// The aim is smoothed over the last moment (a little longer for a harder spell).
     pub aim_smoothing: bool,
     /// The charge is felt in the hand: faint and slow at first, a sharp ramp, a tick held ready.
     pub charge_haptics: bool,
@@ -120,7 +120,7 @@ pub struct Magic {
 
 impl Default for Magic {
     fn default() -> Self {
-        Magic { palm_angle: 60.0, aim_assist: true, aim_smoothing: true, charge_haptics: true }
+        Magic { palm_tilt: 0.0, aim_assist: true, aim_smoothing: true, charge_haptics: true }
     }
 }
 

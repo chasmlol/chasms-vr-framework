@@ -21,12 +21,16 @@
 //!   cast now (too little magicka, a power used today) doesn't charge: a long dull pulse (PLANCK's
 //!   failure), and the game says why ([`CE_CAST_REFUSED`]). After a cast the hand waits out the rest
 //!   of the game's cast before it charges again.
-//! * **Aim from the palm** (Magic Improvements' palm casting, which the big modlists ship): a target
-//!   spell leaves the palm between the fingers' way and the palm's face (`palm_angle` degrees from
-//!   the fingers), smoothed over the last moments as Magic Improvements smooths it, longer for a
-//!   harder spell (a tenth of a second for the easiest, nearly half a second for the hardest: heavier
-//!   spells feel heavier), and helped onto a creature in a gentle cone (Spell Auto-Aim VR's missiles:
-//!   10 degrees up or down, 15 across), foes first for a harmful spell.
+//! * **Aim where the controller points**: a target spell leaves the palm along the controller's own
+//!   pointing ray (its aim pose: the ray the headset's own pointer and the menus' laser use, which
+//!   each controller's runtime sets for pointing; Skyrim VR turns its hand 55 to 60 degrees up,
+//!   `fMagicRotationPitch`, to get the same). Hold the controller out and it goes where it points.
+//!   Palm casting (Magic Improvements', which some Skyrim VR lists ship) is a setting: `palm_tilt`
+//!   degrees from that ray towards the palm's face. The aim is smoothed over the last moment, a
+//!   little longer for a harder spell (40 ms for the easiest, 120 ms for the hardest: enough to
+//!   take out the trigger's jolt; Magic Improvements' own, up to half a second, trails behind a
+//!   quick point), and helped onto a creature in a gentle cone (Spell Auto-Aim VR's missiles: 10
+//!   degrees up or down, 15 across), foes first for a harmful spell.
 //! * **Touch** spells go into the first creature the charged hand touches, at once; let go in the
 //!   air, the game's own touch takes what's within its reach along the aim. **Self** spells go off
 //!   wherever the hand is.
@@ -67,9 +71,10 @@ const READY_AMPLITUDE: f32 = 0.05;
 const RELEASE: Pulse = Pulse { hand: 0, seconds: 0.1, frequency: 250.0, amplitude: 1.0 };
 /// PLANCK's failure: a long dull pulse.
 const FAILED: Pulse = Pulse { hand: 0, seconds: 0.3, frequency: 60.0, amplitude: 0.5 };
-/// Magic Improvements' aim smoothing: the last 10, 15, 20, 25 or 40 frames at 90 a second, by the
-/// spell's level (Novice .. Master), as seconds.
-const SMOOTHING: [f64; 5] = [10.0 / 90.0, 15.0 / 90.0, 20.0 / 90.0, 25.0 / 90.0, 40.0 / 90.0];
+/// The aim's smoothing by the spell's level (Novice .. Master): the last moment's way, as seconds.
+/// Weighted as Magic Improvements weights it (heavier for harder spells), but short: its own (10 to
+/// 40 frames at 90 a second) trails behind a hand pointed quickly and let go.
+const SMOOTHING: [f64; 5] = [0.04, 0.06, 0.08, 0.10, 0.12];
 /// Spell Auto-Aim VR's missile cone (degrees up or down, across) and its reach (Skyrim's 2000
 /// units, in metres).
 const ASSIST_UP: f32 = 10.0;
@@ -208,12 +213,15 @@ pub fn palm_frame(rot: Quat, hand: usize) -> (Vec3, Vec3) {
     (rot * Vec3::X * if hand == 0 { 1.0 } else { -1.0 }, rot * Vec3::Z)
 }
 
-/// The way a palm casts (tracking space): from the fingers' way `palm_angle` degrees towards the
-/// palm's face ([`palm_frame`]).
-pub fn palm_aim(rot: Quat, hand: usize, palm_angle: f32) -> Vec3 {
-    let (face, fingers) = palm_frame(rot, hand);
-    let a = palm_angle.clamp(0.0, 90.0).to_radians();
-    (fingers * a.cos() + face * a.sin()).normalize_or(fingers)
+/// The way a hand casts (tracking space): its controller's own pointing ray (`aim`: its aim pose,
+/// +Z where it points), turned `palm_tilt` degrees towards the palm's face (the grip's,
+/// [`palm_frame`]); 0: straight where it points.
+pub fn hand_aim(aim: Quat, grip: Quat, hand: usize, palm_tilt: f32) -> Vec3 {
+    let point = (aim * Vec3::Z).normalize_or(Vec3::Z);
+    let (face, _) = palm_frame(grip, hand);
+    let side = (face - point * face.dot(point)).normalize_or_zero();
+    let a = palm_tilt.clamp(0.0, 90.0).to_radians();
+    (point * a.cos() + side * a.sin()).normalize_or(point)
 }
 
 impl Magic {
@@ -360,7 +368,8 @@ impl Magic {
             Some(Source::Spell(_)) => {
                 // The art's +Z out of the palm, +Y along the fingers.
                 let rot = Quat::from_mat3(&Mat3::from_cols(fingers.cross(face), fingers, face)).normalize();
-                let aim = inp.map.rot(Quat::IDENTITY) * palm_aim(hq, h, inp.settings.palm_angle);
+                let pointing = Quat::from_array(inp.frame.hands[h].aim.rot);
+                let aim = inp.map.rot(Quat::IDENTITY) * hand_aim(pointing, hq, h, inp.settings.palm_tilt);
                 Some((palm, aim, Pose { pos: (palm_t + face * PALM_OUT).to_array(), valid: 1, rot: rot.to_array() }))
             }
             None => None,
@@ -573,14 +582,15 @@ mod tests {
     }
 
     #[test]
-    fn the_palm_casts_between_the_fingers_and_its_face() {
-        // The left hand held ahead (+Z), its palm to the right (+X): 60 degrees from the fingers
-        // towards the palm.
-        let aim = palm_aim(Quat::IDENTITY, 0, 60.0);
-        assert!((aim.dot(Vec3::Z) - 0.5).abs() < 1e-4 && aim.x > 0.8, "{aim:?}");
-        // The right hand's palm is to its left; at 0 it aims with the fingers.
-        assert!(palm_aim(Quat::IDENTITY, 1, 60.0).x < -0.8);
-        assert!((palm_aim(Quat::IDENTITY, 1, 0.0) - Vec3::Z).length() < 1e-4);
+    fn a_hand_casts_where_its_controller_points() {
+        // The controller pointing ahead and a little up (its aim pose), its grip tilted down along
+        // the handle: the spell goes where it points, not along the handle.
+        let aim = Quat::from_rotation_x(-0.3);
+        let grip = Quat::from_rotation_x(0.6);
+        assert!((hand_aim(aim, grip, 0, 0.0) - aim * Vec3::Z).length() < 1e-4);
+        // Palm casting: turned towards the palm (the left hand's to its right, +X; the right's -X).
+        assert!(hand_aim(Quat::IDENTITY, Quat::IDENTITY, 0, 60.0).x > 0.8);
+        assert!(hand_aim(Quat::IDENTITY, Quat::IDENTITY, 1, 60.0).x < -0.8);
     }
 
     #[test]
