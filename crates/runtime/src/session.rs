@@ -104,6 +104,8 @@ pub struct Session {
     spectator: Option<crate::spectator::Window>,
     /// The game's depth, bloom and lens as the desktop view's camera sees them.
     spectator_post: Option<crate::compositor::PostTargets>,
+    /// Its camera's bob as the player walks (`crate::view_bob`).
+    spectator_bob: crate::view_bob::Bob,
     /// And as the headset's view of an overscanned picture sees them.
     headset_post: Option<crate::compositor::PostTargets>,
     /// The game's eye textures as the settings ask for them, and how much smaller they're made
@@ -116,8 +118,13 @@ pub struct Session {
     overscan_shown: f32,
     overscan_said: f32,
     spectator_cam: crate::spectator::SteadyCamera,
+    /// Its zoom while the player aims.
+    spectator_zoom: crate::spectator::AimZoom,
     /// Tests: where the desktop view's frames are saved, and when one was last.
     spectator_capture: Option<(PathBuf, f64)>,
+    /// Its effects studio (`crate::spectator_fx`): motion blur, a lens, a grade, a smoothed camera,
+    /// the flat HUD; the headset's view never has them.
+    spectator_fx: crate::spectator_fx::Stage,
     physics_tris: Vec<([Vec3; 3], [f32; 3])>,
     /// The rig ran this step (there's a physics world to show).
     rig_active_last: bool,
@@ -295,8 +302,8 @@ impl Session {
             }
         }
         // The desktop view: off in tests on the emulated headset (RUSTVR_DESKTOP_VIEW=0, or
-        // `capture:<dir>`: off screen, a frame saved there every few seconds) and with the
-        // built-in simulator.
+        // `capture:<dir>`: off screen, a frame saved there every few seconds, or every
+        // RUSTVR_DESKTOP_EVERY seconds) and with the built-in simulator.
         let sp = &settings.current.spectator;
         let env = std::env::var("RUSTVR_DESKTOP_VIEW").unwrap_or_default();
         let capture = env.strip_prefix("capture:").map(PathBuf::from);
@@ -310,6 +317,7 @@ impl Session {
         Ok(Session {
             spectator,
             spectator_post: None,
+            spectator_bob: Default::default(),
             headset_post: None,
             target_wanted: None,
             target_shrink: 1.0,
@@ -317,10 +325,12 @@ impl Session {
             overscan_said: 0.0,
             spectator_capture: capture.map(|d| (d, 0.0)),
             spectator_cam: crate::spectator::SteadyCamera::default(),
+            spectator_zoom: crate::spectator::AimZoom::default(),
             comp: Compositor::new(&gpu)?,
             warp: crate::warp::Warp::new(&gpu)?,
             physics_view: crate::physics_view::PhysicsView::new(&gpu)?,
             pacing: crate::pacing::Pacing::new(&gpu)?,
+            spectator_fx: crate::spectator_fx::Stage::new(&gpu),
             physics_tris: Vec::new(),
             rig_active_last: false,
             menu: RuntimeMenu::new(&gpu)?,
@@ -575,6 +585,8 @@ impl Session {
         let mut rumble = None;
         let dom = self.settings.current.dominant();
         while let Some(ev) = self.link.pop_event() {
+            // (What shakes the desktop view's camera: the game's rumble, its explosions.)
+            self.spectator_fx.event(&ev);
             match ev.kind {
                 EV_HAPTIC => {
                     let hand = match ev.a {
@@ -1423,6 +1435,8 @@ impl Session {
                 game_size: self.targets.as_ref().map(|t| (t.spec.eye_w, t.spec.eye_h)),
                 mirror: self.mirror.shown(),
             };
+            // (The dominant stick scrolls it, as it does the game's menus.)
+            self.menu.scroll(frame.hands[dom].stick[1], frame.dt, self.settings.current.ui.menu_scroll);
             self.menu.update(&self.gpu, &mut self.settings.current, menu_pointer, &status)?;
             if std::mem::take(&mut self.menu.changed)
                 && let Err(e) = self.settings.save() {
@@ -2184,7 +2198,7 @@ impl Session {
                 // depth, bloom and lens for that part.
                 let cropped = !moved && !same_fov(&info.fov[e], fov);
                 if cropped && let Some(srv) = slot.eyes[e].srv.as_ref() {
-                    background = crate::compositor::Background::Reprojected { first: (srv, info.eye_pose[e], info.fov[e]), second: None, second_depth: None, metres: 1.0 / wpm.max(1e-6) };
+                    background = crate::compositor::Background::Reprojected { first: (srv, info.eye_pose[e], info.fov[e]), second: None, second_depth: None, metres: 1.0 / wpm.max(1e-6), fog: None };
                     if info.flags & SLOT_DEPTH != 0
                         && let Some(d) = slot.depth.as_ref().and_then(|d| d[e].srv.as_ref())
                     {
@@ -2286,8 +2300,10 @@ impl Session {
                 }
             }
         }
-        // The desktop view: the same frame from its steadied camera between the eyes.
-        if let Some(target) = self.spectator.as_ref().and_then(|w| w.target()) {
+        // The desktop view: the same frame from its steadied camera between the eyes (into the
+        // effects studio's own picture while it has effects to draw over it).
+        let desktop = self.spectator.as_ref().and_then(|w| w.target()).map(|w| self.spectator_fx.target(&self.gpu, w, &s.studio));
+        if let Some(target) = desktop.as_ref() {
             let sp = &s.spectator;
             let head = quat(frame.hmd.rot);
             let first = match sp.eye {
@@ -2301,11 +2317,57 @@ impl Session {
                 (Some((_, info)), false) => Vec3::from_array(info.eye_pose[first].pos),
                 _ => crate::spectator::between(&frame.eyes),
             };
+            // Narrowed while the player aims, as a flat game's view is down the sights: a bow drawn
+            // (an arrow on the string, the string hand at the face), else the gun in hand.
+            let bow = self.rig.drawn_arrow().and_then(|(bow, _, _, draw)| {
+                let hand = (0..2).find(|&h| self.rig.held(h) == Some(bow))?;
+                let (bow_hand, string_hand) = (&frame.hands[hand], &frame.hands[hand ^ 1]);
+                let pinch = Vec3::from_array(string_hand.grip.pos) + quat(string_hand.grip.rot) * crate::rig::bow::PINCH;
+                let connected = bow_hand.connected != 0 && string_hand.connected != 0;
+                connected.then(|| crate::spectator::Aim::Bow { draw, string: pinch, grip: Vec3::from_array(bow_hand.grip.pos) })
+            });
+            // (Firing as `mechanics` has it: the dominant hand's trigger.)
+            let firing = frame.hands[s.dominant()].trigger > 0.5;
+            let aim = bow.or(out.weapon.map(|w| crate::spectator::Aim::Gun { sight: w.sight_origin, dir: w.aim_dir, firing }));
+            let zoom = self.spectator_zoom.update(aim, Vec3::from_array(frame.eyes[first].pos), head, frame.dt, sp);
+            let sp = &crate::spectator::zoomed(sp, zoom);
             let cam = self.spectator_cam.update(head, at, frame.dt, sp);
             let fov = crate::spectator::fov(sp.fov, target.width as f32 / target.height.max(1) as f32);
+            // Bobbing as the player walks by the stick or the game, the steadied camera otherwise
+            // steady (`crate::view_bob`): the game's own bob, or the runtime's. Damped as far as the
+            // view is narrowed from its setting's (for aiming, as a flat game's view down its sights).
+            let bob = self.spectator_bob.update(
+                &crate::view_bob::BobInput {
+                    step: self.game.as_ref().map(|g| (crate::view_bob::seconds(g.time_qpc), WorldMap::from_state(&g.tracking))),
+                    crouched: self.game.as_ref().is_some_and(|g| g.flags & GS_CROUCHED != 0),
+                    swimming: self.game.as_ref().is_some_and(|g| g.water.flags & WATER_SWIMMING != 0),
+                    game: self.game.as_ref().map_or(ViewBob::default(), |g| g.view_bob),
+                    in_picture: s.comfort.head_bob,
+                    narrowed: sp.fov / s.spectator.fov.max(1.0),
+                },
+                frame.dt,
+                &s.desktop_bob,
+            );
+            // (Given to the effects studio, which turns the world with it: `crate::spectator_fx`.)
+            let bobbed = bob.apply(cam);
             // The game's depth (and its bloom and lens) as this camera sees them: the body hides
             // behind what the game drew in front of it (a gun in the hand) and gets its light, as in
             // the headset.
+            // (The camera first through the effects studio: turned after the chest, shaken, wider
+            // with speed; and `world`, its view of the game's world, turned through a snap turn
+            // being eased out.)
+            let shot = self.spectator_fx.shot(&crate::spectator_fx::ShotInput {
+                settings: s,
+                cam,
+                bobbed,
+                fov,
+                frame,
+                picture: stereo.as_ref().filter(|_| !framework).map(|(_, info)| (info, first)),
+                rig: self.rig_active_last.then_some(&self.rig_out),
+                feedback: if self.rig_active_last { &self.rig.feedback } else { &[] },
+                weapon: out.weapon.as_ref(),
+            });
+            let (cam, fov, world) = (shot.cam, shot.fov, shot.world);
             let mut post = None;
             if let (Some((slot, info)), false) = (&stereo, framework)
                 && info.flags & SLOT_DEPTH != 0
@@ -2326,7 +2388,7 @@ impl Session {
                         self.spectator_post = crate::compositor::PostTargets::new(&self.gpu, size.0, size.1).inspect_err(|e| tracing::warn!("desktop view: depth targets: {e:#}")).ok();
                     }
                     if let Some(p) = &self.spectator_post {
-                        self.comp.reproject_post(&self.gpu, p, &cam, &fov, &a, src(first ^ 1).as_ref(), 1.0 / wpm.max(1e-6));
+                        self.comp.reproject_post(&self.gpu, p, &world, &fov, &a, src(first ^ 1).as_ref(), 1.0 / wpm.max(1e-6));
                         post = Some(p);
                     }
                 }
@@ -2341,12 +2403,33 @@ impl Session {
                             second: b,
                             second_depth: (info.flags & SLOT_DEPTH != 0).then(|| slot.depth.as_ref().and_then(|d| d[first ^ 1].srv.as_ref())).flatten(),
                             metres: 1.0 / wpm.max(1e-6),
+                            // Gamebryo's shaders fog by clip-space distance: where the other eye's
+                            // picture fills in, its fog is made this eye's (`refog` in the
+                            // compositor's shader). Not once the adapter has its shaders fog by the
+                            // distance (`fog_fade.z`).
+                            fog: (self.has_game_lighting
+                                && self.game_lighting.model == rustvr_protocol::lighting::LM_GAMEBRYO
+                                && self.game_lighting.fog_fade[1] != 0.0
+                                && self.game_lighting.fog_fade[2] == 0.0)
+                                .then(|| {
+                                let (c, f) = (self.game_lighting.fog_color, self.game_lighting.fog_fade);
+                                crate::compositor::ClipFog { color: [c[0], c[1], c[2]], fade: [f[0], f[1]] }
+                            }),
                         },
                         (None, _) => crate::compositor::Background::Void,
                     }
                 }
                 _ => crate::compositor::Background::Void,
             };
+            // The game's world from `world` (and the picture from before a snap where the new one
+            // doesn't reach yet), and the game's HUD where a flat player has it, when the studio
+            // puts it there.
+            let flat_hud = locked
+                .as_ref()
+                .and_then(|(slot, _)| slot.hud.as_ref())
+                .zip(layout.hud.filter(|_| stereo.is_some() && !framework))
+                .map(|(tex, p)| crate::spectator_fx::FlatHud { tex, layout: &self.hud_layout, aspect: p.width / p.height.max(1e-4) });
+            let background = self.spectator_fx.background(&self.gpu, &self.comp, target, &world, &fov, background, &mut layers, flat_hud.as_ref());
             // (Placed by the picture it's drawn over: the first eye's.)
             let eye_map = stereo.as_ref().filter(|_| !framework).map(|(_, info)| WorldMap::from_slot(&info.eye_map[first]));
             self.held_objects.place(eye_map.as_ref().or(self.map_now.as_ref()));
@@ -2365,6 +2448,8 @@ impl Session {
                     body.draw(gpu, target, &cam, &fov, light, depth.take(), &held);
                 }
             });
+            let game_depth = post.and_then(|p| p.depth.srv.as_ref());
+            self.spectator_fx.drawn(&self.gpu, body, if draw_body { &held[..] } else { &[] }, game_depth, 1.0 / wpm.max(1e-6), flat_hud.as_ref());
         }
         if let Some((slot, info)) = &locked {
             slot.release();
@@ -2379,10 +2464,16 @@ impl Session {
         let t_wait = std::time::Instant::now();
         self.backend.submit(&self.gpu, &poses, &fovs)?;
         self.pacing.wait(crate::pacing::Wait::Submit, t_wait.elapsed().as_secs_f32() * 1000.0);
+        // The desktop view's effects and its flat HUD, now the headset has its frame.
+        self.spectator_fx.finish(&self.gpu);
         if let Some(w) = &self.spectator {
             let now = frame.display_time_ns as f64 * 1e-9;
+            // (Every five seconds, or as often as `RUSTVR_DESKTOP_EVERY` says: a walk's steps one
+            // after another.)
+            static EVERY: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+            let every = *EVERY.get_or_init(|| std::env::var("RUSTVR_DESKTOP_EVERY").ok().and_then(|s| s.parse().ok()).unwrap_or(5.0));
             if let Some((dir, last)) = &mut self.spectator_capture
-                && now - *last > 5.0
+                && now - *last > every
             {
                 *last = now;
                 let path = dir.join(format!("desktop_{:06}.png", frame.index));

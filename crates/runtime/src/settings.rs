@@ -25,10 +25,45 @@ pub struct Settings {
     pub body: Body,
     pub sound: Sound,
     pub spectator: Spectator,
+    pub studio: Studio,
     pub mirror: Mirror,
     pub archery: Archery,
     pub riding: Riding,
     pub holsters: Holsters,
+    pub desktop_bob: DesktopBob,
+}
+
+/// The desktop view's bob while the player moves by the stick or the game (`crate::view_bob`), so a
+/// recording looks like a flat game's walk and not a floating camera. Only the desktop view: the
+/// headset's never bobs (the player's real head moves as it does).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopBob {
+    pub mode: BobMode,
+    /// How strong it is: 1 as the game has it (or as the runtime's own is made), 0 none.
+    pub strength: f32,
+}
+
+impl Default for DesktopBob {
+    fn default() -> Self {
+        // (The game's own by default: what its flat game shows, the runtime's where it has none. At
+        // its own strength: the game's is the game's, and the runtime's is made to look like a flat
+        // game's walk at 1.)
+        DesktopBob { mode: BobMode::Game, strength: 1.0 }
+    }
+}
+
+/// Which bob the desktop view shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BobMode {
+    /// None: the camera glides.
+    Off,
+    /// The runtime's own, the same for every game: steps at the walk's pace, a landing's dip.
+    Generic,
+    /// The game's own first-person bob, when its adapter gives one (`rustvr_protocol::ViewBob`);
+    /// the runtime's where it doesn't.
+    Game,
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.
@@ -193,6 +228,180 @@ pub enum SlotEmpty {
     Any,
 }
 
+/// The desktop view's effects studio (`crate::spectator_fx`): what makes a recording or a stream
+/// look filmed, things nobody would want inside a headset (a blur that smears a turn, a view that
+/// shakes or widens by itself). None of it ever reaches the headset. Off (the `Clean` look) costs
+/// nothing; each effect is drawn only while it's on. The looks (`Look`) set everything but the
+/// viewers' own options (smoothed snap turns, the flat HUD), which stay as they're set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Studio {
+    /// The look last picked; `Custom` once anything's changed by hand.
+    pub look: Look,
+    /// Snap turns, a snap crouch or a recentre jump the headset's view at once; the desktop view
+    /// turns through the jump instead, as a head would (gathering speed, carrying it, landing),
+    /// so a viewer never sees a cut. `snap_speed`: how fast it turns through a 45 degree snap at its
+    /// fastest (degrees a second; bigger snaps a little faster, smaller ones slower).
+    pub smooth_snaps: bool,
+    pub snap_speed: f32,
+    /// Where the desktop view sees past the game's picture (a fast turn it lags behind, a wide
+    /// lens), the picture's edge is stretched out over the gap instead of leaving it black.
+    pub fill_edges: bool,
+    /// The game's own HUD over the desktop view where a flat player has it (its bars, compass and
+    /// subtitles at the screen's edges, from the game's own picture of them), instead of where the
+    /// headset floats it; `flat_hud_size` scales it (1: the size the game's text has on a flat
+    /// screen).
+    pub flat_hud: bool,
+    pub flat_hud_size: f32,
+    /// Motion blur, as a film camera's shutter makes it: open `shutter` degrees of each frame of a
+    /// recording at `recorded_fps` (180 at 24 is film's). `camera_blur` scales the blur of the
+    /// camera's own turns and moves, the centre of the view kept `centre_sharp` sharper (0: as
+    /// blurred as the edges); `object_blur` scales the blur of what the runtime draws as it moves
+    /// (the hands, a sword, a gun).
+    pub motion_blur: bool,
+    pub shutter: f32,
+    pub recorded_fps: f32,
+    pub camera_blur: f32,
+    pub centre_sharp: f32,
+    pub object_blur: f32,
+    /// The field of view widens with the player's speed through the world (running, galloping,
+    /// falling): by `speed_fov_deg` at `speed_full` metres a second, from nothing at `speed_from`.
+    pub speed_fov: bool,
+    pub speed_fov_deg: f32,
+    pub speed_from: f32,
+    pub speed_full: f32,
+    /// The camera shakes with what the runtime sees happen: a gun's recoil, a blow landing, an
+    /// explosion, a hard landing, the game's own rumble (`shake_strength` scales them all); and it
+    /// sways a little all the time as a camera held by hand does (`handheld`, 0..1).
+    pub shake: bool,
+    pub shake_strength: f32,
+    pub handheld: f32,
+    /// Depth of field: in focus where the player looks, aims, or at what they hold up close; the
+    /// rest blurred by its distance from that, at most `dof_blur` percent of the view's width
+    /// behind, `dof_near` as much in front (0: what's nearer than the focus stays sharp, the hands
+    /// too). The focus is pulled to a new distance over about `focus_seconds`.
+    pub dof: bool,
+    pub dof_blur: f32,
+    pub dof_near: f32,
+    pub focus_seconds: f32,
+    /// The lens. `lens_fov`: its field of view across (degrees; 0: the Display tab's). `fisheye`:
+    /// how far towards a fisheye's it bends (0..1: the middle magnified, the edges as wide as
+    /// ever). `chromatic`: colour fringes towards the edges. `vignette`: the corners darkened.
+    /// `glow`: highlights blooming into a soft halo as film's do. `grain`: film grain. `sharpen`:
+    /// contrast-adaptive sharpening. (No letterbox: the player doesn't want black bars.)
+    pub lens_fov: f32,
+    pub fisheye: f32,
+    pub chromatic: f32,
+    pub vignette: f32,
+    pub glow: f32,
+    pub grain: f32,
+    pub sharpen: f32,
+    /// The colour, over the game's own (its grading stays). `exposure` in stops; `contrast` and
+    /// `saturation` 1 as the game has them; `temperature` and `tint` -1..1 (warmer, greener).
+    /// `grade`: one of the studio's own grades, `grade_mix` of the way; `lut`: a `.cube` file's
+    /// name in the settings' `luts` folder, `lut_mix` of the way ("": none).
+    pub exposure: f32,
+    pub contrast: f32,
+    pub saturation: f32,
+    pub temperature: f32,
+    pub tint: f32,
+    pub grade: Grade,
+    pub grade_mix: f32,
+    pub lut: String,
+    pub lut_mix: f32,
+    /// A camera worn on the chest rather than the head (0..1 of the way): it turns after the body
+    /// lazily, a little down, and leans into turns, as a body camera's footage does.
+    pub chest_mount: f32,
+}
+
+/// The studio's looks (`crate::spectator_fx::look` has what each sets, and why).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Look {
+    /// The game's picture as it is: no effects.
+    Clean,
+    /// A film's: 24 frames at a 180 degree shutter, a shallow focus, warm and graded.
+    Cinematic,
+    /// A body camera's footage: a wide lens bent towards a fisheye, worn on the chest, a hard
+    /// sharpness and a cold, flat colour.
+    HyperReal,
+    /// An action film's: every hit and shot felt, the view widening at a run, punchy colour.
+    Action,
+    /// Old film stock: heavy grain, a soft glow, faded warm colour.
+    Vintage,
+    /// Anything else (set by hand).
+    Custom,
+}
+
+/// The studio's own colour grades (`crate::spectator_fx`'s shader has how each is made).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Grade {
+    None,
+    /// Shadows to teal, skin and highlights to orange: the blockbuster's.
+    TealOrange,
+    /// Bleach bypass: the silver left in, so colour is muted and contrast hard.
+    BleachBypass,
+    /// A warm print film's: golden highlights, soft blacks.
+    WarmFilm,
+    /// Cold and clinical, as a cheap sensor's daylight: cyan shadows, flat.
+    Bodycam,
+    /// Black and white with a red filter's skies.
+    Noir,
+}
+
+impl Default for Studio {
+    fn default() -> Self {
+        // The clean look, with snap turns smoothed for viewers (a cut every snap is the desktop
+        // view's worst habit, and smoothing them costs a copy of the picture a frame), and no black
+        // at its edges.
+        Studio {
+            look: Look::Clean,
+            smooth_snaps: true,
+            // (160 degrees a second: a 45 degree snap settled in about 0.6 s. Twice that, the first
+            // playtest's, was quicker than the player liked.)
+            snap_speed: 160.0,
+            fill_edges: true,
+            flat_hud: false,
+            flat_hud_size: 1.0,
+            motion_blur: false,
+            shutter: 180.0,
+            recorded_fps: 60.0,
+            camera_blur: 1.0,
+            centre_sharp: 0.5,
+            object_blur: 1.0,
+            speed_fov: false,
+            speed_fov_deg: 10.0,
+            speed_from: 3.0,
+            speed_full: 9.0,
+            shake: false,
+            shake_strength: 1.0,
+            handheld: 0.0,
+            dof: false,
+            dof_blur: 1.0,
+            dof_near: 0.0,
+            focus_seconds: 0.3,
+            lens_fov: 0.0,
+            fisheye: 0.0,
+            chromatic: 0.0,
+            vignette: 0.0,
+            glow: 0.0,
+            grain: 0.0,
+            sharpen: 0.0,
+            exposure: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
+            grade: Grade::None,
+            grade_mix: 1.0,
+            lut: String::new(),
+            lut_mix: 1.0,
+            chest_mount: 0.0,
+        }
+    }
+}
+
 /// Which eye.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -212,6 +421,15 @@ pub struct Spectator {
     pub eye: Eye,
     /// Degrees across the window.
     pub fov: f32,
+    /// Zoom in while aiming (`crate::spectator::AimZoom`): the field of view eases down to
+    /// `aim_fov` while a gun's sights are at the aiming eye or a bow is drawn to the cheek, and back
+    /// after. Only the desktop view: the headset's never changes.
+    pub aim_zoom: bool,
+    /// Degrees across the window while aiming.
+    pub aim_fov: f32,
+    /// Seconds the zoom takes going in, and coming back out.
+    pub aim_in: f32,
+    pub aim_out: f32,
     /// Seconds for the camera to turn half way to where the head looks (0 = no smoothing).
     pub smoothing: f32,
     /// Degrees the steadied camera may lag the head at most (it catches up on fast turns).
@@ -227,8 +445,25 @@ pub struct Spectator {
 
 impl Default for Spectator {
     fn default() -> Self {
-        // (105 degrees across: wide, still inside what the headset's two eyes see.)
-        Spectator { enabled: true, eye: Eye::Right, fov: 105.0, smoothing: 0.1, max_lag: 8.0, roll_lock: true, width: 1600, height: 900, fullscreen: true }
+        // (105 degrees across: wide, still inside what the headset's two eyes see. 65 while aiming:
+        // about what a monitor fills of a viewer's sight at a desk, so what's aimed at shows near
+        // the size the player sees it in the headset, twice as big in the middle as at 105, with
+        // the sights and what's round the target still in view.)
+        Spectator {
+            enabled: true,
+            eye: Eye::Right,
+            fov: 105.0,
+            aim_zoom: true,
+            aim_fov: 65.0,
+            aim_in: 0.25,
+            aim_out: 0.33,
+            smoothing: 0.1,
+            max_lag: 8.0,
+            roll_lock: true,
+            width: 1600,
+            height: 900,
+            fullscreen: true,
+        }
     }
 }
 

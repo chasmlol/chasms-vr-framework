@@ -135,7 +135,9 @@ pub struct GameLighting {
     pub envmap_color: [f32; 4],
     /// The game's fog (Metro's, in its combine): its colour towards the sun (`fog_color`), away
     /// from it (`clouds_dir`), and how it thickens with distance (`fade_params`: amount =
-    /// saturate(distance·y + x)); zeros: no fog.
+    /// saturate(distance·y + x)); zeros: no fog. For [`LM_GAMEBRYO`], `fog_fade.z` is 1 when the
+    /// game's shaders fog by that distance: Gamebryo's own take the length of a point's clip-space
+    /// position instead, unless the adapter has rewritten them (Oblivion's does).
     pub fog_color: [f32; 4],
     pub fog_color_away: [f32; 4],
     pub fog_fade: [f32; 4],

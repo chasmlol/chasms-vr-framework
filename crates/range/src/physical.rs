@@ -43,6 +43,8 @@ pub enum Kind {
     Throwable(usize),
     /// Valve `i` of `content::valves` (drawn with its wheel).
     Valve(usize),
+    /// The bow (`archery`), drawn bent as far as its string is drawn.
+    Bow,
 }
 
 /// A bullet to fire: world origin and direction, and the gun (weapon index, world pose and
@@ -789,6 +791,7 @@ impl Armory {
                     out.push((200, m, color, glow, false));
                 }
                 Kind::Valve(k) => out.push((600 + k, model, [1.0; 4], glow, false)),
+                Kind::Bow => out.extend(crate::archery::draws(model, s.slide, glow)),
                 Kind::Throwable(_) => {}
             }
         }
