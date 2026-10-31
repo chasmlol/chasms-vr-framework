@@ -118,6 +118,8 @@ pub struct Session {
     overscan_shown: f32,
     overscan_said: f32,
     spectator_cam: crate::spectator::SteadyCamera,
+    /// Its zoom while the player aims.
+    spectator_zoom: crate::spectator::AimZoom,
     /// Tests: where the desktop view's frames are saved, and when one was last.
     spectator_capture: Option<(PathBuf, f64)>,
     /// Its effects studio (`crate::spectator_fx`): motion blur, a lens, a grade, a smoothed camera,
@@ -323,6 +325,7 @@ impl Session {
             overscan_said: 0.0,
             spectator_capture: capture.map(|d| (d, 0.0)),
             spectator_cam: crate::spectator::SteadyCamera::default(),
+            spectator_zoom: crate::spectator::AimZoom::default(),
             comp: Compositor::new(&gpu)?,
             warp: crate::warp::Warp::new(&gpu)?,
             physics_view: crate::physics_view::PhysicsView::new(&gpu)?,
@@ -2312,6 +2315,20 @@ impl Session {
                 (Some((_, info)), false) => Vec3::from_array(info.eye_pose[first].pos),
                 _ => crate::spectator::between(&frame.eyes),
             };
+            // Narrowed while the player aims, as a flat game's view is down the sights: a bow drawn
+            // (an arrow on the string, the string hand at the face), else the gun in hand.
+            let bow = self.rig.drawn_arrow().and_then(|(bow, _, _, draw)| {
+                let hand = (0..2).find(|&h| self.rig.held(h) == Some(bow))?;
+                let (bow_hand, string_hand) = (&frame.hands[hand], &frame.hands[hand ^ 1]);
+                let pinch = Vec3::from_array(string_hand.grip.pos) + quat(string_hand.grip.rot) * crate::rig::bow::PINCH;
+                let connected = bow_hand.connected != 0 && string_hand.connected != 0;
+                connected.then(|| crate::spectator::Aim::Bow { draw, string: pinch, grip: Vec3::from_array(bow_hand.grip.pos) })
+            });
+            // (Firing as `mechanics` has it: the dominant hand's trigger.)
+            let firing = frame.hands[s.dominant()].trigger > 0.5;
+            let aim = bow.or(out.weapon.map(|w| crate::spectator::Aim::Gun { sight: w.sight_origin, dir: w.aim_dir, firing }));
+            let zoom = self.spectator_zoom.update(aim, Vec3::from_array(frame.eyes[first].pos), head, frame.dt, sp);
+            let sp = &crate::spectator::zoomed(sp, zoom);
             let cam = self.spectator_cam.update(head, at, frame.dt, sp);
             let fov = crate::spectator::fov(sp.fov, target.width as f32 / target.height.max(1) as f32);
             // Bobbing as the player walks by the stick or the game, the steadied camera otherwise

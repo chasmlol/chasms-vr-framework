@@ -9,7 +9,8 @@
 //! Physical mode (the default): guns, magazines and props are objects for the runtime's hands
 //! (see `physical`); the range draws them where the runtime puts them and fires the shots it
 //! counts. Grenades and throwing knives too (`throwables`): the runtime arms and throws them, the
-//! range makes their explosions. `--legacy` instead glues the current gun to the firing hand and
+//! range makes their explosions. And a bow on your back (`archery`), its arrows from the runtime's
+//! quiver. `--legacy` instead glues the current gun to the firing hand and
 //! drives it from intents, the way an adapter for a game without object support works.
 //!
 //! Either way the range shows what a game would (`effects`): muzzle flashes, smoke, tracers,
@@ -24,6 +25,7 @@
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+mod archery;
 mod combat;
 mod content;
 mod effects;
@@ -220,6 +222,8 @@ impl Game {
             scenery.push(renderer.upload(&gpu, &m)?);
             let names: Vec<&str> = throw_list.iter().map(|t| t.name.as_str()).collect();
             tracing::info!("range: {} throwables ({}), {} placed", throw_list.len(), names.join(", "), placed.len());
+            // The bow on your back over the left shoulder, and the arrows its quiver hands out.
+            a.add_objects(&archery::objects());
         }
         let throw_meshes = throw_list.iter().map(|t| t.parts.iter().map(|p| renderer.upload(&gpu, p)).collect::<Result<Vec<_>>>()).collect::<Result<Vec<_>>>()?;
         let fx_meshes = [Casing::Rifle, Casing::Pistol, Casing::Shell].iter().map(|c| renderer.upload(&gpu, &effects::casing_mesh(*c))).collect::<Result<Vec<_>>>()?;

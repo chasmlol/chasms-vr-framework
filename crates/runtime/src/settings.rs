@@ -421,6 +421,15 @@ pub struct Spectator {
     pub eye: Eye,
     /// Degrees across the window.
     pub fov: f32,
+    /// Zoom in while aiming (`crate::spectator::AimZoom`): the field of view eases down to
+    /// `aim_fov` while a gun's sights are at the aiming eye or a bow is drawn to the cheek, and back
+    /// after. Only the desktop view: the headset's never changes.
+    pub aim_zoom: bool,
+    /// Degrees across the window while aiming.
+    pub aim_fov: f32,
+    /// Seconds the zoom takes going in, and coming back out.
+    pub aim_in: f32,
+    pub aim_out: f32,
     /// Seconds for the camera to turn half way to where the head looks (0 = no smoothing).
     pub smoothing: f32,
     /// Degrees the steadied camera may lag the head at most (it catches up on fast turns).
@@ -436,8 +445,25 @@ pub struct Spectator {
 
 impl Default for Spectator {
     fn default() -> Self {
-        // (105 degrees across: wide, still inside what the headset's two eyes see.)
-        Spectator { enabled: true, eye: Eye::Right, fov: 105.0, smoothing: 0.1, max_lag: 8.0, roll_lock: true, width: 1600, height: 900, fullscreen: true }
+        // (105 degrees across: wide, still inside what the headset's two eyes see. 65 while aiming:
+        // about what a monitor fills of a viewer's sight at a desk, so what's aimed at shows near
+        // the size the player sees it in the headset, twice as big in the middle as at 105, with
+        // the sights and what's round the target still in view.)
+        Spectator {
+            enabled: true,
+            eye: Eye::Right,
+            fov: 105.0,
+            aim_zoom: true,
+            aim_fov: 65.0,
+            aim_in: 0.25,
+            aim_out: 0.33,
+            smoothing: 0.1,
+            max_lag: 8.0,
+            roll_lock: true,
+            width: 1600,
+            height: 900,
+            fullscreen: true,
+        }
     }
 }
 
