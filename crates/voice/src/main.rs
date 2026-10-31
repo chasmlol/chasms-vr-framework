@@ -12,6 +12,7 @@
 mod clips;
 mod config;
 mod scene;
+mod stream;
 
 use anyhow::Result;
 use bytemuck::Zeroable;
@@ -85,7 +86,7 @@ fn main() -> Result<()> {
     let (combat, radio) = (none("combat_prompt.txt")?, none("radio_prompt.txt")?);
 
     let transcriber = m8::listen::Transcriber::new(&m8cfg);
-    let scene = scene::Scene::new(link.clone(), first, template.clone(), transcriber.clone());
+    let scene = scene::Scene::new(link.clone(), first, template.clone(), transcriber.clone(), rustvr.stream);
     scene.update(first);
     scene.set_volume(rustvr.volume);
     let game: Arc<dyn Game> = scene.clone();

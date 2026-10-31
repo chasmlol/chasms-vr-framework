@@ -1837,6 +1837,18 @@
 #define RVR_VOICE_TEXT_BYTES 416
 
 /**
+ * A streamed line's rings: its voice (1.2 s at 24 kHz, mono 16-bit), its mouth's frames.
+ */
+#define RVR_VOICE_STREAM_SAMPLES 28800
+
+#define RVR_VOICE_STREAM_FRAMES 64
+
+/**
+ * The mouth's frames a second.
+ */
+#define RVR_VOICE_STREAM_FPS 30
+
+/**
  * [`VoiceScene::flags`]: the adapter can play lines (its game is in a state to).
  */
 #define RVR_VS_READY (1 << 0)
@@ -1891,6 +1903,17 @@
  * Stop talking at once: the player talked over them, or a save was loaded.
  */
 #define RVR_VL_STOP 5
+
+/**
+ * `speaker` says a line streamed as it's made ([`VoiceStream`]): `line` its number (no file of
+ * its own), said as `how`, its voice's sample rate `at`.
+ */
+#define RVR_VL_STREAM 6
+
+/**
+ * A sentence of the streamed line: its words (`text`), said as `how`, from sample `at`.
+ */
+#define RVR_VL_SUBTITLE 7
 
 #define RVR_SHOTS 0
 

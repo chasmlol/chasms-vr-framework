@@ -43,25 +43,29 @@ pub struct Voice {
     pub mic: String,
     /// The characters' voices against the game's own (1: as loud as its voices for them).
     pub volume: f32,
-    /// Lines said as their notes say ("[sneering]"): about twice the voice server's work.
+    /// Lines said as their notes say ("[sneering]"): Breeze's guidance, a quarter more of the voice
+    /// server's work.
     pub act_out: bool,
     /// Talking over someone cuts them off. For headphones: a headset's speakers are beside its
     /// mic, and they'd be heard as you.
     pub barge_in: bool,
     /// A pause this long (seconds) ends what you're saying.
     pub pause: f32,
+    /// Their voice goes to the game as it's made, with its mouth (off: a sentence's clause at a
+    /// time, each made whole first).
+    pub stream: bool,
 }
 
 impl Default for Voice {
     fn default() -> Self {
-        Voice { enabled: false, mic: String::new(), volume: 2.5, act_out: true, barge_in: false, pause: 0.3 }
+        Voice { enabled: false, mic: String::new(), volume: 2.5, act_out: true, barge_in: false, pause: 0.3, stream: true }
     }
 }
 
 impl Voice {
     /// What the plugin takes as it starts: a change starts it again.
     pub fn plugin_key(&self) -> String {
-        format!("{}|{}|{}|{:.2}", self.mic, self.act_out, self.barge_in, self.pause)
+        format!("{}|{}|{}|{:.2}|{}", self.mic, self.act_out, self.barge_in, self.pause, self.stream)
     }
 }
 

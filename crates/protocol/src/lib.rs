@@ -43,7 +43,7 @@
 //! | [`OFF_GORE`] | the game's blood, its creatures' stumps, limbs cut off (see [`gore`]) | adapter -> runtime | seqlock, SPSC ring |
 //! | [`OFF_ACTOR_BODIES`], [`OFF_CREATURE_GRABS`] | [`ActorBodies`] (adapter -> runtime), [`CreatureGrabs`] (runtime -> adapter): see [`grab`] | | seqlock |
 //! | [`OFF_BOWS`] | [`Bows`]: the bows' bend and their arrows' flight (see [`archery`]) | adapter -> runtime | seqlock |
-//! | [`OFF_VOICE_SCENE`] .. [`OFF_VOICE_LINES`] | [`VoiceScene`], [`VoiceEvents`] (adapter -> voice plugin), [`VoiceLines`] (voice plugin -> adapter): talking to the game's characters (see [`voice`]) | | seqlock, rings |
+//! | [`OFF_VOICE_SCENE`] .. [`OFF_VOICE_STREAM`] | [`VoiceScene`], [`VoiceEvents`] (adapter -> voice plugin), [`VoiceLines`], [`VoiceStream`] (voice plugin -> adapter): talking to the game's characters (see [`voice`]) | | seqlock, rings |
 //!
 //! The regions after the combat tables each follow the one before, 64-byte aligned: the avatar,
 //! the item cards, the face, the magic, the ride, the gore, the creature grabs and the bows (a new
@@ -1003,6 +1003,7 @@ const LAYOUT: &[(usize, usize)] = &[
     (OFF_VOICE_SCENE, size_of::<VoiceScene>()),
     (OFF_VOICE_EVENTS, size_of::<VoiceEvents>()),
     (OFF_VOICE_LINES, size_of::<VoiceLines>()),
+    (OFF_VOICE_STREAM, size_of::<VoiceStream>()),
     (OFF_HUD_LAYOUT, size_of::<HudLayout>()),
 ];
 

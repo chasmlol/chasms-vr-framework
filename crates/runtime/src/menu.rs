@@ -516,8 +516,10 @@ fn voice(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rec
     }
     ui.separator();
     slider(ui, "Their voices' volume (1: as loud as the game's own)", &mut v.volume, 0.25, 4.0, "x", 2);
-    let r = ui.checkbox(&mut v.act_out, "They act out how a line is said (twice the voice server's work: slower answers)");
+    let r = ui.checkbox(&mut v.act_out, "They act out how a line is said (a quarter more of the voice server's work)");
     rects.push(("voice:act_out".into(), r.rect));
+    let r = ui.checkbox(&mut v.stream, "Their voice streams as it's made (off: a few words at a time, each made whole first)");
+    rects.push(("voice:stream".into(), r.rect));
     let r = ui.checkbox(&mut v.barge_in, "Talk over them to cut them off (with headphones: the headset's speakers would set it off)");
     rects.push(("voice:barge_in".into(), r.rect));
     slider(ui, "A pause this long ends what you're saying", &mut v.pause, 0.15, 1.0, " s", 2);

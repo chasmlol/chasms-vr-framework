@@ -1,9 +1,12 @@
 //! The game, for m8: what the adapter says in the voice regions (who's around, who's listening,
-//! who they are), and m8's lines going back to it. Each sentence's voice is gathered whole, the
-//! mouth's shapes are made for it (when each word is said, from speech to text on the voice
-//! itself), and its files written where the game plays them from, before the adapter is told.
+//! who they are), and m8's lines going back to it. Streamed (RustVR's Voice setting, on by
+//! default), a line's voice goes to the game as it's made, with its mouth ([`crate::stream`]).
+//! Otherwise each sentence's voice is gathered whole, a clause at a time, the mouth's shapes are
+//! made for it (when each word is said, from speech to text on the voice itself), and its files
+//! written where the game plays them from, before the adapter is told.
 
 use crate::clips;
+use crate::stream::Piece;
 use m8::game::Game;
 use m8::listen::Transcriber;
 use rustvr_protocol::link::Link;
@@ -17,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// The mouth's frames a second (Oblivion's lip files are at 30).
-const LIPS_FPS: u32 = 30;
+pub(crate) const LIPS_FPS: u32 = VOICE_STREAM_FPS;
 /// A sentence's files are kept this many lines, then deleted (the game has long played them).
 const LINES_KEPT: u32 = 32;
 
@@ -68,7 +71,7 @@ const WORD_GAP: f32 = 0.04;
 
 /// A clip's loudness while it speaks: the RMS of its 10 ms windows louder than a tenth of its
 /// loudest (its pauses left out).
-fn speech_level(samples: &[f32], rate: u32) -> Option<f32> {
+pub(crate) fn speech_level(samples: &[f32], rate: u32) -> Option<f32> {
     let window = (rate / 100).max(1) as usize;
     let rms: Vec<f32> = samples.chunks_exact(window).map(|w| (w.iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt()).collect();
     let loud = rms.iter().copied().fold(0.0, f32::max);
@@ -93,31 +96,48 @@ fn as_loud(samples: &[f32], rate: u32, level: Option<f32>, volume: f32) -> Vec<f
         _ => volume,
     };
     let loud: Vec<f32> = samples.iter().map(|s| s * gain).collect();
-    let n = loud.len();
-    let ahead = ((LOOKAHEAD * rate as f32) as usize).max(1);
-    // (each sample's most it may be turned up; the least of those within `ahead` of each; their
-    // average across `ahead` either side, which is never more than any sample's own most, but
-    // ramps down to a peak and up from it)
-    let most: Vec<f32> = loud.iter().map(|x| if x.abs() > CEILING { CEILING / x.abs() } else { 1.0 }).collect();
-    let mut least = vec![1.0f32; n];
-    for (i, l) in least.iter_mut().enumerate() {
-        *l = most[i.saturating_sub(ahead)..(i + ahead + 1).min(n)].iter().copied().fold(1.0, f32::min);
+    Limiter::default().run(&loud, rate)
+}
+
+/// The limiter (see [`as_loud`]), over a line's voice piece by piece: how far it's turned down
+/// carries on from one piece to the next.
+pub(crate) struct Limiter {
+    turned: f32,
+}
+
+impl Default for Limiter {
+    fn default() -> Self {
+        Limiter { turned: 1.0 }
     }
-    let mut sums = vec![0.0f64; n + 1];
-    for i in 0..n {
-        sums[i + 1] = sums[i] + least[i] as f64;
+}
+
+impl Limiter {
+    pub(crate) fn run(&mut self, loud: &[f32], rate: u32) -> Vec<f32> {
+        let n = loud.len();
+        let ahead = ((LOOKAHEAD * rate as f32) as usize).max(1);
+        // (each sample's most it may be turned up; the least of those within `ahead` of each;
+        // their average across `ahead` either side, which is never more than any sample's own
+        // most, but ramps down to a peak and up from it)
+        let most: Vec<f32> = loud.iter().map(|x| if x.abs() > CEILING { CEILING / x.abs() } else { 1.0 }).collect();
+        let mut least = vec![1.0f32; n];
+        for (i, l) in least.iter_mut().enumerate() {
+            *l = most[i.saturating_sub(ahead)..(i + ahead + 1).min(n)].iter().copied().fold(1.0, f32::min);
+        }
+        let mut sums = vec![0.0f64; n + 1];
+        for i in 0..n {
+            sums[i + 1] = sums[i] + least[i] as f64;
+        }
+        let back = 1.0 - (-1.0 / (RELEASE * rate as f32)).exp();
+        loud.iter()
+            .enumerate()
+            .map(|(i, x)| {
+                let (from, to) = (i.saturating_sub(ahead), (i + ahead + 1).min(n));
+                let smooth = ((sums[to] - sums[from]) / (to - from) as f64) as f32;
+                self.turned = smooth.min(self.turned + (1.0 - self.turned) * back);
+                x * self.turned
+            })
+            .collect()
     }
-    let back = 1.0 - (-1.0 / (RELEASE * rate as f32)).exp();
-    let mut turned = 1.0f32;
-    loud.iter()
-        .enumerate()
-        .map(|(i, x)| {
-            let (from, to) = (i.saturating_sub(ahead), (i + ahead + 1).min(n));
-            let smooth = ((sums[to] - sums[from]) / (to - from) as f64) as f32;
-            turned = smooth.min(turned + (1.0 - turned) * back);
-            x * turned
-        })
-        .collect()
 }
 
 /// Where to cut the voice so far: the middle of its first pause after `clause` seconds (a pause:
@@ -174,12 +194,20 @@ pub struct Scene {
     levels: Mutex<HashMap<PathBuf, Option<f32>>>,
     /// The player's volume for the characters' voices (an `f32`'s bits), as RustVR's settings have it.
     volume: AtomicU32,
+    /// Lines streamed as they're made, to [`crate::stream`]'s thread (None: a clause at a time).
+    stream: Option<Mutex<Sender<(Piece, u64)>>>,
 }
 
 impl Scene {
-    pub fn new(link: Arc<Link>, first: VoiceScene, template: m8::site::PromptFile, transcriber: Transcriber) -> Arc<Scene> {
+    pub fn new(link: Arc<Link>, first: VoiceScene, template: m8::site::PromptFile, transcriber: Transcriber, streamed: bool) -> Arc<Scene> {
         let (jobs, queue) = mpsc::channel::<Job>();
         let stops = Arc::new(AtomicU64::new(0));
+        let stream = streamed.then(|| {
+            let (pieces, taken) = mpsc::channel::<(Piece, u64)>();
+            let (link, transcriber, stops) = (link.clone(), transcriber.clone(), stops.clone());
+            std::thread::spawn(move || crate::stream::run(link, transcriber, stops, taken));
+            Mutex::new(pieces)
+        });
         let playing_until = Arc::new(Mutex::new(Instant::now()));
         {
             let (link, stops, playing_until) = (link.clone(), stops.clone(), playing_until.clone());
@@ -239,6 +267,7 @@ impl Scene {
             playing_until,
             levels: Mutex::new(HashMap::new()),
             volume: AtomicU32::new(1.0f32.to_bits()),
+            stream,
         })
     }
 
@@ -367,11 +396,17 @@ impl Game for Scene {
 
     fn sentence(&self, speaker: &str, text: &str, how: &str) {
         let level = self.state(speaker)["voice"].as_str().map(PathBuf::from).and_then(|clip| self.level_of(&clip));
+        if self.streams(|| Piece::Sentence { speaker: game_id(speaker), text: text.to_string(), how: how.to_string(), level, volume: self.volume() }) {
+            return;
+        }
         *self.voicing.lock().unwrap() =
             Some(Voicing { speaker: speaker.to_string(), text: text.to_string(), how: how.to_string(), samples: Vec::new(), rate: 0, last: true, level, volume: self.volume() });
     }
 
     fn audio(&self, _speaker: &str, samples: &[f32], rate: u32) {
+        if self.streams(|| Piece::Audio(samples.to_vec(), rate)) {
+            return;
+        }
         let mut voicing = self.voicing.lock().unwrap();
         let Some(v) = voicing.as_mut() else { return };
         v.rate = rate;
@@ -394,6 +429,9 @@ impl Game for Scene {
     }
 
     fn sentence_end(&self, _speaker: &str) {
+        if self.streams(|| Piece::SentenceEnd) {
+            return;
+        }
         if let Some(voicing) = self.voicing.lock().unwrap().take().filter(|v| !v.samples.is_empty()) {
             self.fresh.store(false, Ordering::SeqCst);
             let _ = self.jobs.send(Job::Sentence(voicing, self.stops.load(Ordering::SeqCst)));
@@ -401,6 +439,9 @@ impl Game for Scene {
     }
 
     fn line_end(&self, speaker: &str) {
+        if self.streams(|| Piece::LineEnd) {
+            return;
+        }
         self.fresh.store(true, Ordering::SeqCst);
         let _ = self.jobs.send(Job::End(speaker.to_string(), self.stops.load(Ordering::SeqCst)));
     }
@@ -433,6 +474,13 @@ impl Game for Scene {
 }
 
 impl Scene {
+    /// A piece for the streamed line, if lines are streamed (with the stops' count now).
+    fn streams(&self, piece: impl FnOnce() -> Piece) -> bool {
+        let Some(stream) = &self.stream else { return false };
+        let _ = stream.lock().unwrap().send((piece(), self.stops.load(Ordering::SeqCst)));
+        true
+    }
+
     pub fn set_volume(&self, volume: f32) {
         self.volume.store(volume.clamp(0.0, 4.0).to_bits(), Ordering::Relaxed);
     }

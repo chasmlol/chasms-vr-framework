@@ -76,7 +76,8 @@ pub struct Speech {
 }
 
 /// RustVR's own Voice settings, as its menu sets them (its `settings.toml`'s `[voice]`): the mic,
-/// how it listens, whether lines are acted out, the voices' volume. The same defaults as RustVR's.
+/// how it listens, whether lines are acted out and streamed, the voices' volume. The same
+/// defaults as RustVR's.
 #[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct Rustvr {
@@ -85,11 +86,12 @@ pub struct Rustvr {
     pub act_out: bool,
     pub barge_in: bool,
     pub pause: f32,
+    pub stream: bool,
 }
 
 impl Default for Rustvr {
     fn default() -> Self {
-        Rustvr { mic: String::new(), volume: 2.5, act_out: true, barge_in: false, pause: 0.3 }
+        Rustvr { mic: String::new(), volume: 2.5, act_out: true, barge_in: false, pause: 0.3, stream: true }
     }
 }
 

@@ -602,6 +602,24 @@ impl Adapter {
         self.link.as_ref().map_or(0, |l| l.voice_lines_written())
     }
 
+    /// The streamed line `line`'s voice and mouth since what was taken ([`VoiceStream`]).
+    pub fn take_voice_stream(&self, line: u32, samples: &mut Vec<i16>, frames: &mut Vec<[f32; 16]>) {
+        if let Some(l) = &self.link
+            && self.connected
+        {
+            l.take_voice_stream(line, samples, frames);
+        }
+    }
+
+    /// How much of the streamed line `line` the game has played (samples).
+    pub fn set_voice_stream_played(&self, line: u32, played: u64) {
+        if let Some(l) = &self.link
+            && self.connected
+        {
+            l.set_voice_stream_played(line, played);
+        }
+    }
+
     /// The player's body as the game makes it up (see [`AvatarDesc`]): when it changes.
     pub fn write_avatar(&self, desc: &AvatarDesc) -> bool {
         match &self.link {

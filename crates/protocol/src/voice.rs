@@ -3,7 +3,7 @@
 //! mic, and the character they talk to answers in a voice cloned from the game's own, through the
 //! game: its lip sync, its sound.
 //!
-//! Three regions, after the bows. The plugin is a process of its own: it opens the mapping by
+//! Four regions, after the bows. The plugin is a process of its own: it opens the mapping by
 //! name and touches only these.
 //!
 //! * [`VoiceScene`] (adapter -> plugin, seqlock): who's around, who the player is talking to (the
@@ -13,7 +13,11 @@
 //!   goes with the saves), or something happened that the listener saw.
 //! * [`VoiceLines`] (plugin -> adapter, ring): the player started talking ([`VL_LISTEN`]: the one
 //!   addressed turns to listen), what was heard ([`VL_HEARD`]), a sentence to say ([`VL_SAY`]), the
-//!   end of a line ([`VL_END`]), stop talking ([`VL_STOP`]: the player talked over them).
+//!   end of a line ([`VL_END`]), stop talking ([`VL_STOP`]: the player talked over them), a
+//!   line streamed as it's made ([`VL_STREAM`]) and its sentences ([`VL_SUBTITLE`]).
+//! * [`VoiceStream`] (plugin -> adapter, rings): a streamed line's voice and its mouth's shapes as
+//!   they're made, which the adapter takes every frame (the plugin writes no further ahead of what
+//!   it has taken than the rings hold); and how much of it the game has played.
 //!
 //! # A sentence's files
 //!
@@ -26,6 +30,16 @@
 //!   1), little-endian. Frame 0 is the voice's start.
 //!
 //! The adapter makes of them what its game needs (Oblivion: its own `.lip` file beside the WAV).
+//!
+//! # A streamed line
+//!
+//! [`VL_STREAM`] starts one: its voice and mouth come in [`VoiceStream`]'s rings, from the line's
+//! start (sample 0, frame 0: frame `f` is samples `f * rate / VOICE_STREAM_FPS` on), the mouth's
+//! frames a little behind the voice, and the voice no further than its frames (they're made from
+//! it). Each sentence's words come as a [`VL_SUBTITLE`] at the sample it starts on ([`VoiceLine::at`]),
+//! before its voice; [`VL_END`] says the line's whole length ([`VoiceLine::at`]). The game plays the
+//! voice as it comes; with nothing more yet it waits (silence), and goes on with the rest when it
+//! comes.
 //!
 //! # A voice's clips
 //!
@@ -40,7 +54,8 @@ use bytemuck::{Pod, Zeroable};
 pub const OFF_VOICE_SCENE: usize = crate::OFF_BOWS_END.next_multiple_of(64);
 pub const OFF_VOICE_EVENTS: usize = (OFF_VOICE_SCENE + size_of::<VoiceScene>()).next_multiple_of(64);
 pub const OFF_VOICE_LINES: usize = (OFF_VOICE_EVENTS + size_of::<VoiceEvents>()).next_multiple_of(64);
-pub const OFF_VOICE_END: usize = OFF_VOICE_LINES + size_of::<VoiceLines>();
+pub const OFF_VOICE_STREAM: usize = (OFF_VOICE_LINES + size_of::<VoiceLines>()).next_multiple_of(64);
+pub const OFF_VOICE_END: usize = OFF_VOICE_STREAM + size_of::<VoiceStream>();
 
 pub const MAX_VOICE_SPEAKERS: usize = 8;
 pub const VOICE_NAME_BYTES: usize = 64;
@@ -53,6 +68,11 @@ pub const VOICE_EVENT_TEXT_BYTES: usize = 240;
 pub const VOICE_LINE_SLOTS: usize = 16;
 pub const VOICE_HOW_BYTES: usize = 64;
 pub const VOICE_TEXT_BYTES: usize = 416;
+/// A streamed line's rings: its voice (1.2 s at 24 kHz, mono 16-bit), its mouth's frames.
+pub const VOICE_STREAM_SAMPLES: usize = 28_800;
+pub const VOICE_STREAM_FRAMES: usize = 64;
+/// The mouth's frames a second.
+pub const VOICE_STREAM_FPS: u32 = 30;
 
 /// [`VoiceScene::flags`]: the adapter can play lines (its game is in a state to).
 pub const VS_READY: u32 = 1 << 0;
@@ -147,6 +167,11 @@ pub const VL_SAY: u32 = 3;
 pub const VL_END: u32 = 4;
 /// Stop talking at once: the player talked over them, or a save was loaded.
 pub const VL_STOP: u32 = 5;
+/// `speaker` says a line streamed as it's made ([`VoiceStream`]): `line` its number (no file of
+/// its own), said as `how`, its voice's sample rate `at`.
+pub const VL_STREAM: u32 = 6;
+/// A sentence of the streamed line: its words (`text`), said as `how`, from sample `at`.
+pub const VL_SUBTITLE: u32 = 7;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -156,7 +181,10 @@ pub struct VoiceLine {
     /// The sentence's number (its files' names), counting up; no two runs of the plugin share one.
     pub line: u32,
     pub duration_ms: u32,
-    pub _pad: [u32; 4],
+    /// A streamed line's: its sample rate ([`VL_STREAM`]), where a sentence starts (a sample,
+    /// [`VL_SUBTITLE`]), its length (samples, [`VL_END`]).
+    pub at: u32,
+    pub _pad: [u32; 3],
     pub how: [u8; VOICE_HOW_BYTES],
     pub text: [u8; VOICE_TEXT_BYTES],
 }
@@ -172,6 +200,27 @@ pub struct VoiceLines {
     pub pid: u32,
     pub _pad: [u32; 11],
     pub lines: [VoiceLine; VOICE_LINE_SLOTS],
+}
+
+/// Plugin <-> adapter: the streamed line's rings. The plugin writes the voice and the frames
+/// (`line`, then the counts written: the rings hold the latest); the adapter, on its own cache
+/// line, how many of `line`'s it has taken and how many samples the game has played.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct VoiceStream {
+    pub line: u32,
+    pub rate: u32,
+    pub samples_written: u64,
+    pub frames_written: u64,
+    pub _pad: [u32; 10],
+    pub taken_line: u32,
+    pub _pad_taken: u32,
+    pub samples_taken: u64,
+    pub frames_taken: u64,
+    pub played: u64,
+    pub _pad_played: [u32; 8],
+    pub samples: [i16; VOICE_STREAM_SAMPLES],
+    pub frames: [[f32; 16]; VOICE_STREAM_FRAMES],
 }
 
 impl VoiceScene {
@@ -299,6 +348,7 @@ const _: () = {
     assert!(size_of::<VoiceSpeaker>() == 160);
     assert!(size_of::<VoiceEvent>() == 256);
     assert!(size_of::<VoiceLine>() == 512);
+    assert!(std::mem::offset_of!(VoiceStream, taken_line) == 64 && std::mem::offset_of!(VoiceStream, samples) == 128);
     assert!(size_of::<VoiceScene>().is_multiple_of(4));
     assert!(OFF_VOICE_SCENE.is_multiple_of(64));
     assert!(OFF_VOICE_END <= crate::OFF_HUD_LAYOUT);
