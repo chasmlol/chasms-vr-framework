@@ -104,6 +104,8 @@ pub struct Session {
     spectator: Option<crate::spectator::Window>,
     /// The game's depth, bloom and lens as the desktop view's camera sees them.
     spectator_post: Option<crate::compositor::PostTargets>,
+    /// Its camera's bob as the player walks (`crate::view_bob`).
+    spectator_bob: crate::view_bob::Bob,
     /// And as the headset's view of an overscanned picture sees them.
     headset_post: Option<crate::compositor::PostTargets>,
     /// The game's eye textures as the settings ask for them, and how much smaller they're made
@@ -313,6 +315,7 @@ impl Session {
         Ok(Session {
             spectator,
             spectator_post: None,
+            spectator_bob: Default::default(),
             headset_post: None,
             target_wanted: None,
             target_shrink: 1.0,
@@ -2309,6 +2312,22 @@ impl Session {
             };
             let cam = self.spectator_cam.update(head, at, frame.dt, sp);
             let fov = crate::spectator::fov(sp.fov, target.width as f32 / target.height.max(1) as f32);
+            // Bobbing as the player walks by the stick or the game, the steadied camera otherwise
+            // steady (`crate::view_bob`): the game's own bob, or the runtime's. Damped as far as the
+            // view is narrowed from its setting's (for aiming, as a flat game's view down its sights).
+            let bob = self.spectator_bob.update(
+                &crate::view_bob::BobInput {
+                    step: self.game.as_ref().map(|g| (crate::view_bob::seconds(g.time_qpc), WorldMap::from_state(&g.tracking))),
+                    crouched: self.game.as_ref().is_some_and(|g| g.flags & GS_CROUCHED != 0),
+                    swimming: self.game.as_ref().is_some_and(|g| g.water.flags & WATER_SWIMMING != 0),
+                    game: self.game.as_ref().map_or(ViewBob::default(), |g| g.view_bob),
+                    in_picture: s.comfort.head_bob,
+                    narrowed: sp.fov / s.spectator.fov.max(1.0),
+                },
+                frame.dt,
+                &s.desktop_bob,
+            );
+            let cam = bob.apply(cam);
             // The game's depth (and its bloom and lens) as this camera sees them: the body hides
             // behind what the game drew in front of it (a gun in the hand) and gets its light, as in
             // the headset.

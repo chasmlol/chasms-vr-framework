@@ -30,6 +30,40 @@ pub struct Settings {
     pub archery: Archery,
     pub riding: Riding,
     pub holsters: Holsters,
+    pub desktop_bob: DesktopBob,
+}
+
+/// The desktop view's bob while the player moves by the stick or the game (`crate::view_bob`), so a
+/// recording looks like a flat game's walk and not a floating camera. Only the desktop view: the
+/// headset's never bobs (the player's real head moves as it does).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopBob {
+    pub mode: BobMode,
+    /// How strong it is: 1 as the game has it (or as the runtime's own is made), 0 none.
+    pub strength: f32,
+}
+
+impl Default for DesktopBob {
+    fn default() -> Self {
+        // (The game's own by default: what its flat game shows, the runtime's where it has none. At
+        // its own strength: the game's is the game's, and the runtime's is made to look like a flat
+        // game's walk at 1.)
+        DesktopBob { mode: BobMode::Game, strength: 1.0 }
+    }
+}
+
+/// Which bob the desktop view shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BobMode {
+    /// None: the camera glides.
+    Off,
+    /// The runtime's own, the same for every game: steps at the walk's pace, a landing's dip.
+    Generic,
+    /// The game's own first-person bob, when its adapter gives one (`rustvr_protocol::ViewBob`);
+    /// the runtime's where it doesn't.
+    Game,
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.

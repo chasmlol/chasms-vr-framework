@@ -439,7 +439,10 @@ An adapter is small because the SDK does the shared work. Per game it:
 4. **Drives the game:** look angles from `View::look_yaw/pitch`; actions from `Intents` (press
    counters via `actions::Presses`); the gun's viewmodel at `View::weapon_to_world`; shots from
    `View::point(sight_origin)` along `View::dir(aim_dir)`.
-5. **Reports** `GameState`: menu, loading, crouched, eye height, zoom, and the gun's `WeaponRig`.
+5. **Reports** `GameState`: menu, loading, crouched, eye height, zoom, and the gun's `WeaponRig`;
+   and its own first-person bob (`ViewBob`, the eye with bob against the eye without, in its
+   camera's frame), which the runtime's desktop view shows when the player picks the game's own
+   bob there. The headset never takes it.
 6. **Optionally hands its objects to the rig:** registers guns, magazine templates and props
    (`Adapter::write_objects`), streams its static collision (`push_collision`), draws objects
    where `read_object_states` says they are, fires a shot for each increment of a gun's `shots`,

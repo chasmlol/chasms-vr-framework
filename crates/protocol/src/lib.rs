@@ -728,6 +728,8 @@ pub struct GameState {
     /// The part of the game's menu picture its menu is in (u0, v0, u1, v1, 0..1 from the top left;
     /// all zero: the whole picture), for a menu shown in the world ([`GS_MENU_IN_WORLD`]).
     pub menu_uv: [f32; 4],
+    /// The game's own first-person view bob this frame, for the runtime's desktop view.
+    pub view_bob: ViewBob,
 }
 pub const GS_IN_GAME: u32 = 1 << 0;
 /// A game menu is open: the runtime shows the HUD texture as a big panel and points a laser at it.
@@ -795,6 +797,26 @@ pub const WATER_SWIMMING: u32 = 1 << 1;
 pub const WATER_HEAD_UNDER: u32 = 1 << 2;
 /// The player walks on water (the game's water walking): no swimming.
 pub const WATER_WALKING: u32 = 1 << 3;
+
+/// How the game's own first-person camera bobs this frame, as its flat game shows it: its walk's
+/// bob, a landing's dip, whatever its camera does with the player's steps. It's given apart from the
+/// eye the headset is anchored on ([`crate::GameState::view_bob`]; the adapter SDK's `Anchor::
+/// base_eye` is the eye without it). The runtime adds it to its desktop view only, when the player
+/// chooses the game's own bob there; the headset's view never moves with it (unless the player
+/// keeps the game's bob, [`TRK_HEAD_BOB`], when the eye has it already).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Pod, Zeroable)]
+pub struct ViewBob {
+    pub flags: u32, // BOB_*
+    /// Where it moves the view, in the view's own frame (metres: x right, y up, z forward of where
+    /// the game's camera looks).
+    pub offset: [f32; 3],
+    /// How it turns the view after where it looks (a quaternion `[x, y, z, w]`, in the same frame;
+    /// all zero: not at all).
+    pub rot: [f32; 4],
+}
+/// The game gives its bob: the desktop view's "the game's own" shows this one, not the runtime's.
+pub const BOB_GIVEN: u32 = 1 << 0;
 
 /// The adapter's tracking -> world mapping as it was last applied (written by the adapter SDK).
 #[repr(C)]
@@ -997,8 +1019,9 @@ const _: () = {
     assert!(size_of::<TrackingState>() == 64);
     assert!(size_of::<WeaponRig>() == 144);
     assert!(size_of::<TargetRequest>() == 32);
-    assert!(size_of::<GameState>() == 560);
+    assert!(size_of::<GameState>() == 592);
     assert!(size_of::<WaterState>() == 32);
+    assert!(size_of::<ViewBob>() == 32);
     assert!(size_of::<LightHint>() == 48);
     assert!(size_of::<SlotInfo>() == 256);
     assert!(size_of::<SlotMap>() == 32);
