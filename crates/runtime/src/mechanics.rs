@@ -172,19 +172,21 @@ const LONG_PRESS: f64 = 0.45;
 /// How long a lone stick click waits for the other stick (both together: the framework view).
 const STICK_CHORD: f64 = 0.12;
 /// The head's upright height (metres over the real floor): heights a worn headset's at, sat or
-/// stood (not on a desk); still within this for this long (s), it's worn; held more than this
-/// higher for this long (s), it's upright there now, reached at this speed (m/s).
+/// stood (not on a desk); still within this for this long (s), it's worn; held higher for this
+/// long (s), it's upright there now, reached at this speed (m/s).
 const UPRIGHT_LOW: f32 = 0.9;
 const UPRIGHT_HIGH: f32 = 2.3;
 const UPRIGHT_STILL: f32 = 0.05;
 const UPRIGHT_SETTLE: f32 = 1.5;
-const UPRIGHT_RISE: f32 = 0.03;
 const UPRIGHT_HOLD: f32 = 1.0;
 const UPRIGHT_SPEED: f32 = 0.1;
-/// The base of the neck from the head (its frame: x right, y up, z forward), metres. The head's
-/// height is measured there, as if the head were held level: looking down turns the head about the
-/// neck, so it lowers the eyes but isn't a crouch.
-const NECK: Vec3 = Vec3::new(0.0, -0.18, -0.09);
+/// A slouch (lower than upright by under half a crouch) settles in at this speed (m/s).
+const UPRIGHT_SETTLE_SPEED: f32 = 0.002;
+/// Where a nod turns the head (its frame: x right, y up, z forward), metres: the top of the neck,
+/// under and behind the eyes. The head's height is measured there, as if the head were held level:
+/// looking down lowers the eyes 10 cm or more, but it isn't a crouch (nor, measured there, does it
+/// lift the head's height and its upright with it).
+const NECK: Vec3 = Vec3::new(0.0, -0.11, -0.08);
 
 impl Btn {
     fn update(&mut self, d: bool, now: f64) {
@@ -934,12 +936,13 @@ impl Mechanics {
             // view's height is the head's over it (`upright_offset`), and ducking a good way under
             // it crouches. Until the headset's been still at a likely height a while (worn: not on
             // the desk, nor being put on), it follows the head. Then, held higher a second or more
-            // (stood up), it rises to there over a moment; a moment higher (a stretch, on tiptoe, a
-            // tracking glitch) doesn't count. Lower, it settles: a slouch soon, a crouch hardly at
-            // all, and not while crouched (a crouch held stays one). A recentre takes the head's
-            // height as it is.
+            // (stood up), it rises to there over a moment (to the lowest it was held at: a moment
+            // higher, a stretch, on tiptoe, a tracking glitch, doesn't count). Lower by a slouch (under half a crouch), it
+            // settles there slowly; lower than that (a crouch, made however slowly, or held), it
+            // stays. A recentre takes the head's height as it is.
             let h = (hmd_pos + hmd_rot * NECK).y - NECK.y;
             let dt = inp.dt;
+            let thr = c.input.stealth_crouch_amount.max(0.05);
             let likely = (UPRIGHT_LOW..UPRIGHT_HIGH).contains(&h);
             if std::mem::take(&mut self.recalibrate) && likely {
                 self.stand_h = h;
@@ -951,7 +954,7 @@ impl Mechanics {
                 self.upright_still = if likely && (h - self.stand_h).abs() < UPRIGHT_STILL { self.upright_still + dt } else { 0.0 };
                 self.stand_h = if self.stand_h == 0.0 { h } else { self.stand_h + (h - self.stand_h) * (dt / 0.25).min(1.0) };
                 self.upright_settled = self.upright_still >= UPRIGHT_SETTLE;
-            } else if h > self.stand_h + UPRIGHT_RISE {
+            } else if h > self.stand_h {
                 self.upright_above += dt;
                 self.upright_min = self.upright_min.min(h);
                 if self.upright_above >= UPRIGHT_HOLD {
@@ -960,13 +963,12 @@ impl Mechanics {
             } else {
                 self.upright_above = 0.0;
                 self.upright_min = f32::MAX;
-                if h < self.stand_h && !self.phys_crouch {
-                    // slouching or re-calibration
-                    self.stand_h -= if h > self.stand_h - 0.12 { 0.02 } else { 0.004 } * dt;
+                if h < self.stand_h && self.stand_h - h < thr * 0.5 && !self.phys_crouch {
+                    // slouching
+                    self.stand_h = (self.stand_h - UPRIGHT_SETTLE_SPEED * dt).max(h);
                 }
             }
             let was = self.phys_crouch;
-            let thr = c.input.stealth_crouch_amount.max(0.05);
             // (Not while the headset's still being put on: upright isn't known yet.)
             if !self.upright_settled {
                 self.phys_crouch = false;
@@ -976,7 +978,7 @@ impl Mechanics {
                 self.phys_crouch = false;
             }
             if self.phys_crouch != was {
-                tracing::info!("physical crouch: {} (the head {:.2} m under upright)", if self.phys_crouch { "crouched" } else { "stood up" }, self.stand_h - h);
+                tracing::info!("physical crouch: {} (the head {:.2} m under upright, {:.2} m)", if self.phys_crouch { "crouched" } else { "stood up" }, self.stand_h - h, self.stand_h);
             }
             // (Leaning down on a mount's neck isn't sneaking. Swimming, a head ducked is a face put
             // into the water, not a crouch. Nor could a crouch be kept in step there: a swimmer's
