@@ -1,8 +1,7 @@
 //! Combat: what the player's hands do to the game's creatures, judged from what they physically do.
 //! The game says where its creatures are ([`Actors`]), what each melee weapon's blade is
-//! ([`MeleeTable`]) and what spells the player has ([`Spells`]). The runtime sends back hits,
-//! blocks and casts ([`CombatEvent`]), and the game does the rest: damage, stagger, magicka,
-//! effects, projectiles.
+//! ([`MeleeTable`]). The runtime sends back hits and blocks ([`CombatEvent`]), and the game does
+//! the rest: damage, stagger, sounds.
 //!
 //! **Melee**: a weapon's damagers are swept from where they were last frame to where they are now,
 //! and a sweep that meets a creature's body capsule is a contact. Then:
@@ -22,22 +21,8 @@
 //! the world's wood and earth): [`Combat::embeds`], held there by the rig (`rig::embed`). An empty fist punches. The player's weapon meeting a creature's attacking weapon is a
 //! block, and a parry when it's moving into it.
 //!
-//! **Magic**: the off hand, empty, is the spell hand while the game has a spell ready. A finger
-//! resting on its trigger (or pulling it a little) readies the spell; pulling it charges the spell
-//! over the game's casting time; the charge is felt growing (faint and slow at first, then a sharp
-//! ramp, as Skyrim VR's best spellcasting mod does it), with a spike when it's ready and a soft tick
-//! while it's held ready. A held thing that casts ([`OBJF_CASTS`], a staff) is the same in whichever
-//! hand holds it, cast from its tip along its length. Each hand's casting goes to the game
-//! ([`Casters`]) for its own casting art; the runtime draws a glow of its own only for a game that
-//! has none ([`SPELLS_GAME_ART`]). Then the spell is delivered:
-//!
-//! * a spell on the player is released anywhere;
-//! * a touch spell goes into the first creature the charged hand touches, or wherever it's
-//!   released;
-//! * a target spell goes where the hand points when the trigger is released: the line from the
-//!   shoulder (raised to the eyes) through the palm (a staff's: along the staff from its tip). A
-//!   throw bends it towards the throw. The creature nearest that line within a few degrees is aimed
-//!   at exactly.
+//! **Magic** is `crate::magic`'s: the hands hold the player's spells ([`Spells`]), charge them and
+//! cast them, and it takes the creatures from here.
 
 use std::collections::HashMap;
 
@@ -74,32 +59,6 @@ const PARRY_SPEED: f32 = 2.0;
 const CHEST_BELOW_EYES: f32 = 0.35;
 /// A guard closer to the chest than this is the body itself being hit, not a block (metres).
 const BODY_SPARE: f32 = 0.15;
-/// The trigger charges past this and releases below that; a finger on it (or a pull past
-/// `TRIGGER_READY`) readies the spell.
-const TRIGGER_ON: f32 = 0.6;
-const TRIGGER_OFF: f32 = 0.3;
-const TRIGGER_READY: f32 = 0.05;
-/// A spell's art sits this far off the palm (m).
-const PALM_OUT: f32 = 0.06;
-/// The charge's haptics (after ISPVR): a pulse every `CHARGE_GAP_SLOW` seconds at the start down to
-/// every `CHARGE_GAP_FAST` when it's full, as strong as `CHARGE_FAINT + CHARGE_STRONG * charge^4`;
-/// held ready, a soft tick every `READY_TICK` seconds.
-const CHARGE_GAP_SLOW: f64 = 0.1;
-const CHARGE_GAP_FAST: f64 = 0.02;
-const CHARGE_FAINT: f32 = 0.06;
-const CHARGE_STRONG: f32 = 0.6;
-const READY_TICK: f64 = 0.3;
-/// A hand moving faster than this as the trigger goes is a throw.
-const THROW_SPEED: f32 = 1.0;
-/// Aim assist: a creature within this angle of the aim line and this far (a homing bolt could take
-/// 40 degrees; a game whose bolts fly straight wants it tighter).
-const AIM_ASSIST_DEG: f32 = 15.0;
-const AIM_ASSIST_RANGE: f32 = 25.0;
-/// The shoulder the aim line starts at: this far to the hand's side of the head (m).
-const SHOULDER_SIDE: f32 = 0.18;
-/// A charged hand touching a body: within this of a capsule's surface (m).
-const TOUCH: f32 = 0.08;
-
 /// The impact speed (m/s) a damage type needs against a material (the damage tables' four: flesh,
 /// leather, chainmail, plate; the rest as the nearest).
 pub fn min_speed(kind: u32, material: u32) -> f32 {
@@ -259,49 +218,12 @@ pub struct Pulse {
 pub struct CombatDebug {
     pub hits: u32,
     pub blocks: u32,
-    pub casts: u32,
     pub last: Option<CombatEvent>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Caster {
-    charging: bool,
-    charge: f32,
-    ready: bool,
-    /// The palm last frame (world) and the hand's velocity.
-    palm: Option<Vec3>,
-    vel: Vec3,
-    cooldown_until: f64,
-    /// A spell went off and the trigger is still held: the next one waits for it to be let go.
-    held_after_cast: bool,
-    /// What it was doing (`CAST_*`), since when; the next haptic pulse of the charge.
-    state: u32,
-    since: f64,
-    next_pulse: f64,
-}
-
-/// What a hand casts with: the spell selected, from the palm; or a held thing's own magic, from its
-/// tip.
-#[derive(Clone, Copy, Debug)]
-enum Source {
-    Spell(Spell),
-    Thing(ObjectDesc),
-}
-
-/// A hand's spell, as it's being charged (for drawing it in the hand).
-#[derive(Clone, Copy, Debug)]
-pub struct Charging {
-    pub spell: u32,
-    pub charge: f32,
-    pub color: [f32; 3],
-    /// The palm, tracking space.
-    pub palm: Vec3,
 }
 
 pub struct Combat {
     actors: Box<Actors>,
     melee: Box<MeleeTable>,
-    spells: Box<Spells>,
     /// Each held weapon's damager points last frame (world), by object (0, 1: the fists).
     prev: HashMap<u32, Vec<[Vec3; SAMPLES]>>,
     /// Each body part's centre last frame, by (actor, part index).
@@ -312,11 +234,7 @@ pub struct Combat {
     touching_now: std::collections::HashSet<(u32, u32, usize)>,
     hit_until: HashMap<(u32, u32), f64>,
     block_until: HashMap<u32, f64>,
-    casters: [Caster; 2],
     pub pulses: Vec<Pulse>,
-    pub charging: [Option<Charging>; 2],
-    /// Each hand's casting this frame, for the game to draw its art ([`Casters`]).
-    pub casting: [rustvr_protocol::Caster; 2],
     pub debug: CombatDebug,
     /// Blades that went in and stay in, this frame (for the rig).
     pub embeds: Vec<embed::Request>,
@@ -327,17 +245,13 @@ impl Default for Combat {
         Combat {
             actors: bytemuck::zeroed_box(),
             melee: bytemuck::zeroed_box(),
-            spells: bytemuck::zeroed_box(),
             prev: HashMap::new(),
             prev_parts: HashMap::new(),
             touching: Default::default(),
             touching_now: Default::default(),
             hit_until: HashMap::new(),
             block_until: HashMap::new(),
-            casters: Default::default(),
             pulses: Vec::new(),
-            charging: [None, None],
-            casting: Default::default(),
             debug: CombatDebug::default(),
             embeds: Vec::new(),
         }
@@ -431,25 +345,12 @@ impl Combat {
     pub fn read(&mut self, link: &rustvr_protocol::link::Link) {
         link.read_actors_into(&mut self.actors);
         link.read_melee_into(&mut self.melee);
-        link.read_spells_into(&mut self.spells);
     }
 
     /// For tests: the tables as given.
-    pub fn set_tables(&mut self, actors: &Actors, melee: &MeleeTable, spells: &Spells) {
+    pub fn set_tables(&mut self, actors: &Actors, melee: &MeleeTable) {
         *self.actors = *actors;
         *self.melee = *melee;
-        *self.spells = *spells;
-    }
-
-    /// The hand that casts this frame (its trigger is the spell's, not the game's "use").
-    pub fn spell_hands(&self, dominant: usize) -> [bool; 2] {
-        let off = dominant ^ 1;
-        let ready = self.selected().is_some();
-        [off == 0 && ready, off == 1 && ready]
-    }
-
-    fn selected(&self) -> Option<&Spell> {
-        self.spells.spells[..(self.spells.count as usize).min(MAX_SPELLS)].iter().find(|s| s.flags & SPELL_SELECTED != 0)
     }
 
     fn melee_desc(&self, id: u32) -> Option<&MeleeDesc> {
@@ -553,7 +454,6 @@ impl Combat {
         }
         self.prev = seen;
         self.touching = std::mem::take(&mut self.touching_now);
-        self.magic(inp, &bodies, &mut events);
         self.hit_until.retain(|_, &mut t| t > inp.now);
         self.block_until.retain(|_, &mut t| t > inp.now);
         events
@@ -743,224 +643,6 @@ impl Combat {
                 events.push(ev);
                 break;
             }
-        }
-    }
-
-    fn magic(&mut self, inp: &CombatInput, bodies: &[Body], events: &mut Vec<CombatEvent>) {
-        self.charging = [None, None];
-        self.casting = Default::default();
-        let spell = self.selected().copied();
-        let hands = self.spell_hands(inp.dominant);
-        let spell_time = if self.spells.cast_time > 0.05 { self.spells.cast_time } else { 0.5 };
-        let game_art = self.spells.flags & SPELLS_GAME_ART != 0;
-        for h in 0..2 {
-            let hs = inp.out.hands[h];
-            let (hp, hq) = (Vec3::from_array(hs.pose.pos), Quat::from_array(hs.pose.rot));
-            // The palm: along the hand from its joint (tracking), then the world.
-            let palm_t = hp + hq * Vec3::Y * 0.06;
-            let palm = inp.map.point(palm_t);
-            let c = &mut self.casters[h];
-            if let Some(last) = c.palm {
-                c.vel = (palm - last) / inp.dt.max(1e-4);
-            }
-            c.palm = Some(palm);
-            // What it casts with: a held thing that casts, else (the spell hand, empty) the spell.
-            let held = inp.rig.held(h);
-            let thing = held.and_then(|id| inp.objects.descs[..(inp.objects.count as usize).min(MAX_OBJECTS)].iter().find(|d| d.id == id && d.flags & OBJF_CASTS != 0 && d.casts != 0).copied());
-            let free = held.is_none() && !inp.out.hand_busy[h] && !inp.out.hand_targeting[h];
-            let source = match (thing, spell) {
-                (Some(d), _) => Some(Source::Thing(d)),
-                (None, Some(s)) if hands[h] && free && s.flags & SPELL_CASTABLE != 0 => Some(Source::Spell(s)),
-                _ => None,
-            };
-            // Where it comes from (world, and the way it points), and where its art goes (tracking:
-            // off the palm and out of it, or the thing's tip and along it).
-            let emitter = match source {
-                Some(Source::Thing(d)) => held.and_then(|id| inp.rig.object_world_pose(id)).map(|(p, q)| {
-                    let tip = p + q * Vec3::from_array(d.muzzle);
-                    (tip, q * Vec3::Z, Pose { pos: inp.map.inv_point(tip).to_array(), valid: 1, rot: inp.map.inv_rot(q).to_array() })
-                }),
-                Some(Source::Spell(_)) => {
-                    // The palm faces the hand's -X (left) or +X (right) in its joint's frame.
-                    let out = hq * Vec3::X * if h == 0 { -1.0 } else { 1.0 };
-                    let fingers = hq * Vec3::Y;
-                    let rot = Quat::from_mat3(&glam::Mat3::from_cols(fingers.cross(out), fingers, out)).normalize();
-                    Some((palm, inp.map.rot(hq) * Vec3::Y, Pose { pos: (palm_t + out * PALM_OUT).to_array(), valid: 1, rot: rot.to_array() }))
-                }
-                None => None,
-            };
-            let c = &mut self.casters[h];
-            let (Some(source), Some((from, along, at)), false) = (source, emitter, inp.paused) else {
-                c.charging = false;
-                c.charge = 0.0;
-                c.ready = false;
-                c.state = CAST_NONE;
-                continue;
-            };
-            let (id, cast_time, delivery, name) = match source {
-                Source::Spell(s) => (s.id, spell_time, s.delivery, s.name().to_owned()),
-                Source::Thing(d) => (d.casts, if d.cast_time > 0.05 { d.cast_time } else { spell_time }, DELIVER_TARGET, name_str(&d.name).to_owned()),
-            };
-            let trigger = inp.frame.hands[h].trigger;
-            let finger_on = inp.frame.hands[h].buttons & CTRL_TOUCH_TRIGGER != 0;
-            if trigger < TRIGGER_OFF {
-                c.held_after_cast = false;
-            }
-            if !c.charging && trigger > TRIGGER_ON && !c.held_after_cast && inp.now >= c.cooldown_until {
-                c.charging = true;
-                c.charge = 0.0;
-                c.ready = false;
-                c.next_pulse = inp.now;
-            }
-            let mut cast = None;
-            if c.charging {
-                c.charge = (c.charge + inp.dt / cast_time).min(1.0);
-                if c.charge >= 1.0 && !c.ready {
-                    c.ready = true;
-                    c.next_pulse = inp.now + READY_TICK;
-                    self.pulses.push(Pulse { hand: h, seconds: 0.03, frequency: 250.0, amplitude: 1.0 });
-                } else if inp.now >= c.next_pulse {
-                    let (seconds, amplitude) = if c.ready {
-                        c.next_pulse = inp.now + READY_TICK;
-                        (0.015, 0.1)
-                    } else {
-                        c.next_pulse = inp.now + CHARGE_GAP_SLOW + (CHARGE_GAP_FAST - CHARGE_GAP_SLOW) * c.charge as f64;
-                        (0.012, CHARGE_FAINT + CHARGE_STRONG * c.charge.powi(4))
-                    };
-                    self.pulses.push(Pulse { hand: h, seconds, frequency: 160.0, amplitude });
-                }
-                if !game_art {
-                    let color = match source {
-                        Source::Spell(s) => s.color,
-                        Source::Thing(_) => [0.8, 0.7, 1.0],
-                    };
-                    self.charging[h] = Some(Charging { spell: id, charge: c.charge, color, palm: Vec3::from_array(at.pos) });
-                }
-                // A charged touch spell goes into the first body the hand touches.
-                let touched = bodies
-                    .iter()
-                    .find(|b| {
-                        let (a, bb) = (Vec3::from_array(b.part.a), Vec3::from_array(b.part.b));
-                        let (_, t) = closest_segments(palm, palm, a, bb);
-                        palm.distance(a.lerp(bb, t)) <= b.part.radius + TOUCH
-                    })
-                    .map(|b| b.actor.id);
-                let released = trigger < TRIGGER_OFF;
-                let touch_now = delivery == DELIVER_TOUCH && c.ready && touched.is_some();
-                if released || touch_now {
-                    c.charging = false;
-                    // (Let go too soon: nothing.)
-                    if c.ready {
-                        cast = Some((released, touched));
-                    }
-                }
-            }
-            let state = if c.charging {
-                if c.ready { CAST_READY } else { CAST_CHARGING }
-            } else if (finger_on || trigger > TRIGGER_READY) && !c.held_after_cast && cast.is_none() {
-                CAST_READIED
-            } else {
-                CAST_NONE
-            };
-            if state != c.state {
-                c.state = state;
-                c.since = inp.now;
-            }
-            let charge = c.charge;
-            let vel = c.vel;
-            let mut out = rustvr_protocol::Caster {
-                state,
-                flags: if matches!(source, Source::Thing(_)) { CASTF_OBJECT } else { 0 },
-                spell: id,
-                object: if let Source::Thing(d) = source { d.id } else { 0 },
-                charge: if state == CAST_READIED { 0.0 } else { charge },
-                time: (inp.now - c.since) as f32,
-                at,
-                ..Default::default()
-            };
-            let aim = match source {
-                Source::Thing(_) => self.assist(along, from),
-                Source::Spell(s) => match s.delivery {
-                    DELIVER_SELF => (inp.map.rot(Quat::from_array(inp.frame.hmd.rot)) * Vec3::Z, 0),
-                    DELIVER_TOUCH => (vel.normalize_or(inp.map.rot(hq) * Vec3::Y), 0),
-                    _ => self.aim(inp, h, palm, vel),
-                },
-            };
-            out.aim = (inp.map.inv_rot(Quat::IDENTITY) * aim.0).normalize_or_zero().to_array();
-            let Some((released, touched)) = cast else {
-                self.casting[h] = out;
-                continue;
-            };
-            let (dir, actor) = if delivery == DELIVER_TOUCH { (aim.0, touched.unwrap_or(0)) } else { aim };
-            let c = &mut self.casters[h];
-            c.cooldown_until = inp.now + 0.25;
-            c.held_after_cast = !released;
-            out.flags |= CASTF_CAST;
-            self.casting[h] = out;
-            let ev = CombatEvent {
-                kind: CE_CAST,
-                actor,
-                what: id,
-                object: out.object,
-                hand: h as u32,
-                strength: charge,
-                speed: vel.length(),
-                point: from.to_array(),
-                dir: dir.to_array(),
-                ..Default::default()
-            };
-            self.debug.casts += 1;
-            self.debug.last = Some(ev);
-            tracing::info!("combat: cast {name} from the {} hand{} at {from:.2?} towards {dir:.2?} (on {actor})", if h == 0 { "left" } else { "right" }, if out.object != 0 { "'s staff" } else { "" });
-            self.pulses.push(Pulse { hand: h, seconds: 0.1, frequency: 90.0, amplitude: 1.0 });
-            events.push(ev);
-        }
-    }
-
-    /// Where a target spell goes from the palm (world): the line from the shoulder raised to the
-    /// eyes through the palm, bent towards a throw, and onto a creature near it.
-    fn aim(&self, inp: &CombatInput, hand: usize, palm: Vec3, vel: Vec3) -> (Vec3, u32) {
-        let head_rot = inp.map.rot(Quat::from_array(inp.frame.hmd.rot));
-        let head = inp.map.point(Vec3::from_array(inp.frame.hmd.pos));
-        let side = if hand == 0 { -1.0 } else { 1.0 };
-        let right = (head_rot * Vec3::X * Vec3::new(1.0, 0.0, 1.0)).normalize_or(Vec3::X);
-        let shoulder = head + right * side * SHOULDER_SIDE;
-        let mut dir = (palm - shoulder).normalize_or(head_rot * Vec3::Z);
-        if vel.length() > THROW_SPEED {
-            dir = (dir * 0.7 + vel.normalize() * 0.3).normalize();
-        }
-        self.assist(dir, palm)
-    }
-
-    /// Aim assist: the way to the creature whose body (the middle of a torso part: a chest or a
-    /// pelvis) is nearest the line from `palm` along `dir`, within a few degrees, and its id; else
-    /// `dir` itself.
-    fn assist(&self, dir: Vec3, palm: Vec3) -> (Vec3, u32) {
-        let n = (self.actors.count as usize).min(MAX_ACTORS);
-        let mut best: Option<(f32, Vec3, u32)> = None;
-        for a in &self.actors.actors[..n] {
-            if a.flags & ACT_ALIVE == 0 || a.count == 0 {
-                continue;
-            }
-            let parts = &a.parts[..a.count as usize];
-            let torso = parts.iter().filter(|p| p.kind == PART_TORSO);
-            let aimed: Vec<_> = if torso.clone().next().is_some() { torso.collect() } else { vec![&parts[0]] };
-            for part in aimed {
-                let c = (Vec3::from_array(part.a) + Vec3::from_array(part.b)) * 0.5;
-                let to = c - palm;
-                let d = to.length();
-                if d < 0.3 || d > AIM_ASSIST_RANGE {
-                    continue;
-                }
-                let angle = to.normalize().dot(dir).clamp(-1.0, 1.0).acos();
-                if angle <= AIM_ASSIST_DEG.to_radians() && best.is_none_or(|(b, ..)| angle < b) {
-                    best = Some((angle, to.normalize(), a.id));
-                }
-            }
-        }
-        match best {
-            Some((_, d, id)) => (d, id),
-            None => (dir, 0),
         }
     }
 }

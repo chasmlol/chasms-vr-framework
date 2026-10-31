@@ -1,12 +1,12 @@
 //! Magic as the game draws it: where the player's casting is, for the game to draw its own casting
 //! art there, and the game's own effect shaders on what the runtime draws.
 //!
-//! * [`Casters`] (runtime -> game, every frame): each hand's casting, as [`crate::combat`]'s magic
-//!   has it: a spell readied in the palm (the finger on the trigger), charging (the trigger
-//!   pulled), charged and ready; or a held thing that casts ([`crate::OBJF_CASTS`], a staff) doing
-//!   the same at its tip. With where its art goes, in tracking space (so it never lags the hand) and
-//!   which way it would go. A game with its own casting art draws it there and says so
-//!   ([`crate::SPELLS_GAME_ART`]): the runtime then draws none of its own.
+//! * [`Casters`] (runtime -> game, every frame): each hand's magic, as `crate::magic` has it: the
+//!   spell the hand holds (its art in the palm, small), charging (the trigger pulled), charged and
+//!   ready; or a held thing that casts ([`crate::OBJF_CASTS`], a staff) doing the same at its tip.
+//!   With where its art goes, in tracking space (so it never lags the hand) and which way it would
+//!   go. A game with its own casting art draws it there and says so ([`crate::SPELLS_GAME_ART`]):
+//!   the runtime then draws none of its own.
 //! * [`Overlays`] (game -> runtime, when they change): the game's effect shader on something the
 //!   runtime draws (an enchanted weapon's shimmer, a spell's shader on the player's own body): a
 //!   texture scrolled over the model's surface, coloured and pulsing, brighter at its edges, over
@@ -19,10 +19,10 @@ pub const OFF_CASTERS: usize = (crate::OFF_FACE + size_of::<crate::FaceDesc>()).
 
 /// Nothing in the hand.
 pub const CAST_NONE: u32 = 0;
-/// The spell is readied (the finger rests on the trigger, or pulls it a little): its art in the palm,
-/// small.
+/// The hand holds the spell (empty, its trigger not pulled): its art in the palm, small (with the
+/// player's magicka: smaller the less is left).
 pub const CAST_READIED: u32 = 1;
-/// The trigger is pulled: the spell is charging (`charge` grows to 1 over the game's casting time).
+/// The trigger is pulled: the spell is charging (`charge` grows to 1 over its casting time).
 pub const CAST_CHARGING: u32 = 2;
 /// Charged: let go (or touch, for a touch spell) and it's cast.
 pub const CAST_READY: u32 = 3;
@@ -43,7 +43,7 @@ pub struct Caster {
     pub spell: u32,
     /// The held thing it casts from ([`CASTF_OBJECT`]), else 0.
     pub object: u32,
-    /// How charged, 0..1 (1: ready).
+    /// How charged, 0..1 (1: ready); readied, the player's magicka (0..1 of its most).
     pub charge: f32,
     /// Seconds in this state.
     pub time: f32,

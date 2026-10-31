@@ -551,7 +551,7 @@
 #define RVR_SPELL_SELECTED (1 << 0)
 
 /**
- * Enough magicka (and nothing else stops it) to cast it now.
+ * The game would cast it now (enough magicka, not silenced, a power not yet used today).
  */
 #define RVR_SPELL_CASTABLE (1 << 1)
 
@@ -561,9 +561,14 @@
 #define RVR_SPELL_POWER (1 << 2)
 
 /**
- * The player has it on a quick slot (a favourite).
+ * The player has it on a quick slot (a favourite): it comes first on the spell wheel.
  */
 #define RVR_SPELL_FAVOURITE (1 << 3)
+
+/**
+ * It harms what it's cast at (the game's hostile effects): the aim helps it onto foes first.
+ */
+#define RVR_SPELL_HARMFUL (1 << 8)
 
 /**
  * The game draws its own casting art where the runtime's casting is ([`crate::Casters`]): the
@@ -587,10 +592,12 @@
 #define RVR_CE_BLOCK 2
 
 /**
- * A spell cast: `spell` from `hand` (0 left, 1 right), from `point` along `dir`; `actor` the one a
- * touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1). `object`:
- * the held thing it was cast from ([`crate::OBJF_CASTS`], a staff: `what` is then what it casts,
- * [`crate::ObjectDesc::casts`]), else 0.
+ * A spell cast: `what` (a [`Spell::id`]) from `hand` (0 left, 1 right), from `point` (the palm)
+ * along `dir` (where the hand aims it); `actor` the one a touch spell touched, or the creature a
+ * target spell was aimed onto (0: none); `strength` how charged (1: fully). `object`: the held
+ * thing it was cast from ([`crate::OBJF_CASTS`], a staff: `what` is then what it casts,
+ * [`crate::ObjectDesc::casts`]), else 0. The game casts it its own way (its cost, its skill, its
+ * projectile, its effects), or says why it won't.
  */
 #define RVR_CE_CAST 3
 
@@ -601,6 +608,26 @@
  * arrow.
  */
 #define RVR_CE_LOOSE 4
+
+/**
+ * The player put spell `what` in `hand` (from the spell wheel): the game makes it its selected
+ * spell its own way (as its magic menu does), so its interface shows it. (The hands keep their own
+ * spells: a cast from either hand casts that hand's.)
+ */
+#define RVR_CE_SELECT 16
+
+/**
+ * The trigger was pulled on spell `what` in `hand`, which the game won't cast now
+ * ([`SPELL_CASTABLE`] off): nothing charged, and the game says why its own way (its message, its
+ * sound).
+ */
+#define RVR_CE_CAST_REFUSED 17
+
+/**
+ * A cast ([`CE_CAST`]): `actor` is the creature the hand touched (a touch spell put into it), not
+ * one the aim was helped onto.
+ */
+#define RVR_CEF_TOUCHED (1 << 16)
 
 /**
  * A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
@@ -1956,13 +1983,13 @@
 #define RVR_CAST_NONE 0
 
 /**
- * The spell is readied (the finger rests on the trigger, or pulls it a little): its art in the palm,
- * small.
+ * The hand holds the spell (empty, its trigger not pulled): its art in the palm, small (with the
+ * player's magicka: smaller the less is left).
  */
 #define RVR_CAST_READIED 1
 
 /**
- * The trigger is pulled: the spell is charging (`charge` grows to 1 over the game's casting time).
+ * The trigger is pulled: the spell is charging (`charge` grows to 1 over its casting time).
  */
 #define RVR_CAST_CHARGING 2
 
@@ -2333,8 +2360,8 @@
 #define RVR_F_FX_LIVE 11
 
 /**
- * The runtime's melee hits on the dummy, those that were power hits, its casts, and those cast
- * at the dummy (`range/src/combat.rs`).
+ * The runtime's melee hits on the dummy, those that were power hits (`range/src/combat.rs`), the
+ * spells cast, and those that struck a dummy (a bolt, a touch: `range/src/magic.rs`).
  */
 #define RVR_F_MELEE_HITS 12
 

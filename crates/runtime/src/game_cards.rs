@@ -36,11 +36,11 @@ const FADE_OUT: f32 = 0.3;
 const FOLLOW: f32 = 0.06;
 
 /// A game font, ready to lay text out with: its glyphs and its atlas.
-struct LoadedFont {
-    font: rustvr_asset::Font,
-    atlas: egui::TextureHandle,
+pub(crate) struct LoadedFont {
+    pub(crate) font: rustvr_asset::Font,
+    pub(crate) atlas: egui::TextureHandle,
     /// The tallest glyph's top over the baseline: where a line's baseline is under its top.
-    ascent: f32,
+    pub(crate) ascent: f32,
 }
 
 /// One card on show (or fading).
@@ -61,7 +61,7 @@ struct Shown {
 }
 
 #[derive(Default)]
-struct Assets {
+pub(crate) struct Assets {
     images: HashMap<String, Option<egui::TextureHandle>>,
     fonts: HashMap<String, Option<LoadedFont>>,
 }
@@ -99,13 +99,13 @@ pub fn place_of(id: u32, states: &ObjectStates, objects: &ObjectTable, map: Opti
 }
 
 /// Text in the game's 8-bit characters (Latin-1, as Oblivion's): what isn't one is left out.
-fn bytes_of(text: &str) -> Vec<u8> {
+pub(crate) fn bytes_of(text: &str) -> Vec<u8> {
     text.chars().filter_map(|c| u8::try_from(c as u32).ok()).collect()
 }
 
 /// The lines `text` wraps into at `width` (0: one line), each with its width: broken at spaces,
 /// as the game wraps.
-fn wrap(font: &rustvr_asset::Font, text: &[u8], width: f32) -> Vec<(Vec<u8>, f32)> {
+pub(crate) fn wrap(font: &rustvr_asset::Font, text: &[u8], width: f32) -> Vec<(Vec<u8>, f32)> {
     let measure = |w: &[u8]| w.iter().map(|&c| font.advance(c)).sum::<f32>();
     let mut lines: Vec<(Vec<u8>, f32)> = Vec::new();
     let mut line: Vec<u8> = Vec::new();
@@ -258,7 +258,7 @@ impl GameCards {
 
     /// An image piece's texture, loaded from the asset cache the first time it's asked for (one
     /// that won't load is said once).
-    fn image(ctx: &egui::Context, assets: &mut Assets, name: &str) -> Option<egui::TextureHandle> {
+    pub(crate) fn image(ctx: &egui::Context, assets: &mut Assets, name: &str) -> Option<egui::TextureHandle> {
         if let Some(t) = assets.images.get(name) {
             return t.clone();
         }
@@ -279,7 +279,7 @@ impl GameCards {
     }
 
     /// A text piece's font, loaded (with its atlas) the first time.
-    fn font<'a>(ctx: &egui::Context, assets: &'a mut Assets, name: &str) -> Option<&'a LoadedFont> {
+    pub(crate) fn font<'a>(ctx: &egui::Context, assets: &'a mut Assets, name: &str) -> Option<&'a LoadedFont> {
         if !assets.fonts.contains_key(name) {
             let loaded = (|| -> Result<LoadedFont> {
                 let (game, key) = name.split_once('/').ok_or_else(|| anyhow::anyhow!("{name:?} isn't <game>/<key>"))?;
@@ -323,30 +323,7 @@ impl GameCards {
                     }
                     PIECE_TEXT => {
                         let Some(f) = Self::font(&ctx, assets, piece.asset()) else { continue };
-                        let mut mesh = egui::Mesh::with_texture(f.atlas.id());
-                        let mut top = r[1];
-                        for (line, w) in wrap(&f.font, &bytes_of(piece.text_str()), r[2]) {
-                            let mut x = if piece.flags & PIECEF_CENTRE != 0 {
-                                r[0] + (r[2] - w) * 0.5
-                            } else if piece.flags & PIECEF_RIGHT != 0 {
-                                r[0] + r[2] - w
-                            } else {
-                                r[0]
-                            };
-                            let baseline = top + f.ascent;
-                            for c in line {
-                                let Some(g) = f.font.glyphs.get(c as usize) else { continue };
-                                x += g.before;
-                                if g.width > 0.0 && g.height > 0.0 {
-                                    let at = egui::Rect::from_min_size(egui::pos2(x * scale, (baseline - g.top) * scale), egui::vec2(g.width * scale, g.height * scale));
-                                    let uv = egui::Rect::from_min_max(egui::pos2(g.uv[0], g.uv[1]), egui::pos2(g.uv[2], g.uv[3]));
-                                    mesh.add_rect_with_uv(at, uv, tint);
-                                }
-                                x += g.width + g.after;
-                            }
-                            top += f.font.height;
-                        }
-                        painter.add(egui::Shape::mesh(mesh));
+                        painter.add(egui::Shape::mesh(text_mesh(f, piece.text_str(), r, piece.flags, scale, tint)));
                     }
                     _ => {}
                 }
@@ -357,8 +334,39 @@ impl GameCards {
     }
 }
 
+/// `text` laid out the way the game lays out text, glyph by glyph along the line (the space before
+/// each, its width, the space after it), its top that far over the baseline, wrapped at `r`'s width
+/// (0: one line), from `r`'s top left or centred or to its right ([`PIECEF_CENTRE`],
+/// [`PIECEF_RIGHT`]); `r` in card units, painted at `scale` pixels a unit.
+pub(crate) fn text_mesh(f: &LoadedFont, text: &str, r: [f32; 4], flags: u32, scale: f32, tint: egui::Color32) -> egui::Mesh {
+    let mut mesh = egui::Mesh::with_texture(f.atlas.id());
+    let mut top = r[1];
+    for (line, w) in wrap(&f.font, &bytes_of(text), r[2]) {
+        let mut x = if flags & PIECEF_CENTRE != 0 {
+            r[0] + (r[2] - w) * 0.5
+        } else if flags & PIECEF_RIGHT != 0 {
+            r[0] + r[2] - w
+        } else {
+            r[0]
+        };
+        let baseline = top + f.ascent;
+        for c in line {
+            let Some(g) = f.font.glyphs.get(c as usize) else { continue };
+            x += g.before;
+            if g.width > 0.0 && g.height > 0.0 {
+                let at = egui::Rect::from_min_size(egui::pos2(x * scale, (baseline - g.top) * scale), egui::vec2(g.width * scale, g.height * scale));
+                let uv = egui::Rect::from_min_max(egui::pos2(g.uv[0], g.uv[1]), egui::pos2(g.uv[2], g.uv[3]));
+                mesh.add_rect_with_uv(at, uv, tint);
+            }
+            x += g.width + g.after;
+        }
+        top += f.font.height;
+    }
+    mesh
+}
+
 /// A cache texture as egui's image: 8-bit RGBA only (the extractor writes interface art so).
-fn color_image(t: &rustvr_asset::Texture) -> Result<egui::ColorImage> {
+pub(crate) fn color_image(t: &rustvr_asset::Texture) -> Result<egui::ColorImage> {
     anyhow::ensure!(t.format == rustvr_asset::TexFormat::Rgba8, "{} isn't RGBA ({:?})", t.source, t.format);
     let px = t.mips.first().ok_or_else(|| anyhow::anyhow!("{} has no pixels", t.source))?;
     anyhow::ensure!(px.len() >= (t.width * t.height * 4) as usize, "{} is short", t.source);

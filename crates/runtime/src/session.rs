@@ -156,6 +156,8 @@ pub struct Session {
     pub rig: Rig,
     pub rig_out: RigOutput,
     combat: crate::combat::Combat,
+    /// The hands' magic: the spells they hold, the wheel, charging and casting (crate::magic).
+    magic: crate::magic::Magic,
     /// Blood and limbs cut off (crate::gore).
     gore: crate::gore::Gore,
     /// Hands whose trigger casts a spell this frame (`crate::combat`).
@@ -354,6 +356,7 @@ impl Session {
             rig: Rig::default(),
             rig_out: RigOutput::default(),
             combat: crate::combat::Combat::default(),
+            magic: crate::magic::Magic::default(),
             gore: crate::gore::Gore::default(),
             spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
@@ -1064,10 +1067,32 @@ impl Session {
             for ev in &combat {
                 self.link.push_combat_event(ev);
             }
+            // The hands' magic: the spells they hold, the wheel, the casts (crate::magic).
+            self.magic.read(&self.link);
+            self.magic.update(&crate::magic::MagicInput {
+                rig: &self.rig,
+                out: &self.rig_out,
+                map: &rig_map,
+                frame: &frame,
+                objects: &self.objects,
+                actors: self.combat.actors(),
+                settings: &self.settings.current.magic,
+                dominant: self.settings.current.dominant(),
+                now,
+                dt: frame.dt,
+                paused: rig_paused || menu_mode,
+                riding,
+            });
+            for ev in &self.magic.events {
+                self.link.push_combat_event(ev);
+            }
+            for p in &self.magic.pulses {
+                self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
+            }
             // Each hand's casting, for the game's own casting art.
             let mut casters: Casters = bytemuck::Zeroable::zeroed();
             casters.frame = frame.index;
-            casters.hands = self.combat.casting;
+            casters.hands = self.magic.casting;
             self.link.write_casters(&casters);
             // The arrows loosed: the game fires its own, from where they were along the bow.
             for l in std::mem::take(&mut self.rig.loosed) {
@@ -1089,7 +1114,7 @@ impl Session {
             for p in &self.combat.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
-            self.spell_hands = self.combat.spell_hands(self.settings.current.dominant());
+            self.spell_hands = self.magic.spell_hands(&self.rig, &self.rig_out);
             // Where the hands push the game's own props.
             self.game_pushes.count = self.rig.game_pushes.len().min(MAX_GAME_PUSHES) as u32;
             for (i, p) in self.rig.game_pushes.iter().take(MAX_GAME_PUSHES).enumerate() {
@@ -1134,6 +1159,10 @@ impl Session {
         });
         for h in self.mech.haptics.drain(..) {
             self.backend.haptic(h.hand, h.seconds, h.frequency, h.amplitude);
+        }
+        // A spell hand's trigger tapped: the game's Activate (crate::magic).
+        if rig_active && std::mem::take(&mut self.magic.activate) {
+            out.intents.presses[Action::Use as usize] = out.intents.presses[Action::Use as usize].wrapping_add(1);
         }
 
         // ---- riding: the reins, getting on and off (crate::riding)
@@ -1788,6 +1817,7 @@ impl Session {
             }
         };
         let obs_panel = self.obs.update(&self.gpu, s.ui.obs_view, Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot), left, frame.display_time_ns as f64 * 1e-9);
+        self.magic.wheel.paint(&self.gpu)?;
         let mut layers = Layers { comfort: self.comfort, ..Default::default() };
         // A mount's reins, from its bit to the hands holding them (the game's mount has none): of
         // the game's own leather, drawn with the body; without it, flat ribbons over the picture.
@@ -2009,13 +2039,21 @@ impl Session {
                 }
             }
         }
-        // A spell held ready: its light gathering in the palm (the spell's own colour), growing as it
-        // charges, with a flicker.
-        for c in self.combat.charging.iter().flatten() {
+        // A spell in a palm, for a game with no casting art of its own: its light gathering there (the
+        // spell's own colour), faint while it's only held, growing as it charges, with a flicker.
+        for c in &self.magic.glows {
             let t = (frame.display_time_ns as f64 * 1e-9 % 1000.0) as f32;
             let flicker = 1.0 + 0.12 * (t * 23.0).sin() + 0.08 * (t * 37.0 + 1.3).sin();
             let color = Vec3::from_array(c.color).max(Vec3::splat(0.05));
-            layers.glows.push(Glow { at: c.palm, radius: (0.03 + 0.06 * c.charge) * flicker, color: color * (0.6 + 1.6 * c.charge) });
+            let (radius, bright) = if c.state == CAST_READIED { (0.018, 0.35) } else { (0.03 + 0.06 * c.charge, 0.6 + 1.6 * c.charge) };
+            layers.glows.push(Glow { at: c.at, radius: radius * flicker, color: color * bright });
+        }
+        // The spell wheel, and each hand's pointer on it (crate::spell_wheel).
+        if let Some((panel, srv)) = self.magic.wheel.shown() {
+            layers.panels.push(PanelLayer::whole(panel, srv));
+        }
+        for (a, b, on) in self.magic.wheel.pointers(&frame) {
+            layers.ribbons.push(crate::compositor::Ribbon { a, b, width: 0.003, color: if on { Laser::GLOW.extend(0.9) } else { Laser::GLOW.extend(0.35) } });
         }
         // While the slots' editor is open, each slot of the player's things shows where it is and
         // how far out it takes from, the one picked in the editor bright, the rest faint (in the

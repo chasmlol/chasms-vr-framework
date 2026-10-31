@@ -29,6 +29,7 @@ pub struct Settings {
     pub archery: Archery,
     pub riding: Riding,
     pub holsters: Holsters,
+    pub magic: Magic,
 }
 
 /// Riding a mount (`crate::riding`): the reins in the hands, the view on the mount's back.
@@ -97,6 +98,29 @@ pub struct Mirror {
 impl Default for Mirror {
     fn default() -> Self {
         Mirror { distance: 1.2, width: 0.95, height: 2.0, lift: 0.02, gesture: true, game_world: true }
+    }
+}
+
+/// The hands' magic (`crate::magic`): how a spell is aimed and felt.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Magic {
+    /// Degrees a spell leaves the hand from the fingers' way towards the palm's face: 0 aims with
+    /// the fingers (Skyrim VR's own "finger guns"), 90 straight out of the palm; 60 is the palm
+    /// casting the big Skyrim VR modlists ship.
+    pub palm_angle: f32,
+    /// A target spell is helped onto a creature near where it's aimed (a gentle cone: 10 degrees up
+    /// or down, 15 across).
+    pub aim_assist: bool,
+    /// The aim is smoothed over the last moments, longer for a harder spell (it feels heavier).
+    pub aim_smoothing: bool,
+    /// The charge is felt in the hand: faint and slow at first, a sharp ramp, a tick held ready.
+    pub charge_haptics: bool,
+}
+
+impl Default for Magic {
+    fn default() -> Self {
+        Magic { palm_angle: 60.0, aim_assist: true, aim_smoothing: true, charge_haptics: true }
     }
 }
 

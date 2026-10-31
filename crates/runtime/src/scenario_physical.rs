@@ -1016,7 +1016,7 @@ pub fn all() -> Vec<Scenario> {
         },
         Scenario {
             name: "spell",
-            about: "physical: the off hand charges the fire bolt with its trigger (half a second) and lets go pointing at the training dummy: one cast, aimed at the dummy; let go too soon: nothing",
+            about: "physical: the off hand holds the fire bolt (the game's selected spell); its trigger charges it (the game's casting time) and it's let go with the palm turned to the training dummy (palm casting, 60 degrees off the fingers): one cast, the bolt strikes the dummy; let go too soon: nothing",
             duration: 3.0,
             needs_game: true,
             lockstep: true,
@@ -1027,22 +1027,28 @@ pub fn all() -> Vec<Scenario> {
             input: || {
                 latched(|t, _, _| {
                     let mut b = Body::rest();
-                    // The palm on the line from the left shoulder (at the eyes) to the dummy's chest.
+                    // The palm towards the dummy's chest, from the left shoulder's height: the hand
+                    // turned 60 degrees left of the line so its palm casts along it.
                     let shoulder = Vec3::new(-0.18, 1.7, 0.0);
                     let chest = Vec3::new(0.15, 1.25, 1.15);
                     let dir = (chest - shoulder).normalize();
                     let palm = shoulder + dir * 0.5 - Vec3::new(0.0, 0.0, 0.06);
+                    let right = Vec3::Y.cross(dir).normalize();
+                    let (c, s) = (60f32.to_radians().cos(), 60f32.to_radians().sin());
+                    let (fingers, face) = (dir * c - right * s, dir * s + right * c);
+                    let rot = Quat::from_mat3(&glam::Mat3::from_cols(face, fingers.cross(face), fingers)).normalize();
                     let rest = Body::rest().hands[0].pos;
                     b.hands[0].pos = keys(t, &[(0.0, rest), (0.4, palm)]);
-                    b.hands[0].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.4, look_rot(dir))]);
-                    // Charged 0.8 s and let go; then a short tap (0.2 s, not charged).
+                    b.hands[0].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.4, rot)]);
+                    // Charged 0.8 s and let go; then a short tap (0.2 s, not charged: the game's
+                    // Activate).
                     b.hands[0].trigger = on(t, &[(0.5, 1.3), (2.0, 2.2)]);
                     b
                 })
             },
             checks: vec![
-                check(1.5, "one fire bolt, aimed at the dummy", |c| {
-                    ensure(c.stat_f(rs::F_CASTS) == 1.0 && c.stat_f(rs::F_CASTS_AT_DUMMY) == 1.0, || format!("casts {}, at the dummy {}", c.stat_f(rs::F_CASTS), c.stat_f(rs::F_CASTS_AT_DUMMY)))
+                check(1.5, "one fire bolt, and it struck the dummy", |c| {
+                    ensure(c.stat_f(rs::F_CASTS) == 1.0 && c.stat_f(rs::F_CASTS_AT_DUMMY) == 1.0, || format!("casts {}, struck {}", c.stat_f(rs::F_CASTS), c.stat_f(rs::F_CASTS_AT_DUMMY)))
                 }),
                 check(2.9, "a tap isn't a cast", |c| ensure(c.stat_f(rs::F_CASTS) == 1.0, || format!("casts {}", c.stat_f(rs::F_CASTS)))),
             ],

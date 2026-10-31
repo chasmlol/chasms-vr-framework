@@ -1125,8 +1125,8 @@ pub mod range_stats {
     pub const F_KNIFE_HITS: usize = 10;
     /// Visual effects alive (muzzle flashes, smoke, tracers, bullet holes, casings, debris).
     pub const F_FX_LIVE: usize = 11;
-    /// The runtime's melee hits on the dummy, those that were power hits, its casts, and those cast
-    /// at the dummy (`range/src/combat.rs`).
+    /// The runtime's melee hits on the dummy, those that were power hits (`range/src/combat.rs`), the
+    /// spells cast, and those that struck a dummy (a bolt, a touch: `range/src/magic.rs`).
     pub const F_MELEE_HITS: usize = 12;
     pub const F_MELEE_POWER: usize = 13;
     pub const F_CASTS: usize = 14;

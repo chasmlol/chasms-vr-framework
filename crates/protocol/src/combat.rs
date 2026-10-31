@@ -177,6 +177,9 @@ pub struct MeleeTable {
 }
 
 // ---- spells -------------------------------------------------------------------------------------
+// The player's spells (game -> runtime, when they change): each one the hands can hold and cast,
+// with what the game says of it (how it's delivered, what it costs now, whether the game would cast
+// it now, its mastery level, its icon). The hands' magic is `crate::magic`'s.
 pub const OFF_SPELLS: usize = OFF_MELEE + size_of::<MeleeTable>();
 pub const MAX_SPELLS: usize = 96;
 
@@ -189,12 +192,14 @@ pub const DELIVER_TARGET: u32 = 2;
 
 /// The spell the game has ready (its "selected" or "equipped" one).
 pub const SPELL_SELECTED: u32 = 1 << 0;
-/// Enough magicka (and nothing else stops it) to cast it now.
+/// The game would cast it now (enough magicka, not silenced, a power not yet used today).
 pub const SPELL_CASTABLE: u32 = 1 << 1;
 /// A power (once a day) or a lesser power: no magicka.
 pub const SPELL_POWER: u32 = 1 << 2;
-/// The player has it on a quick slot (a favourite).
+/// The player has it on a quick slot (a favourite): it comes first on the spell wheel.
 pub const SPELL_FAVOURITE: u32 = 1 << 3;
+/// It harms what it's cast at (the game's hostile effects): the aim helps it onto foes first.
+pub const SPELL_HARMFUL: u32 = 1 << 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -208,8 +213,20 @@ pub struct Spell {
     pub cost: f32,
     /// The colour its magic glows in the hand (linear RGB), and how strongly.
     pub color: [f32; 3],
+    /// Its mastery level as the game ranks it, 0 (the easiest) to 4 (the hardest): the higher, the
+    /// heavier its aim feels (smoothed over longer).
+    pub level: u32,
+    /// How long it charges in the hand (seconds); 0: the table's [`Spells::cast_time`].
+    pub cast_time: f32,
+    /// After it's cast, how long before that hand can charge again (seconds); 0: the table's
+    /// [`Spells::recover`].
+    pub recover: f32,
+    pub _pad: u32,
     /// UTF-8, NUL-terminated.
     pub name: [u8; 32],
+    /// Its icon: `<game>/<asset key>` of the game's own art for it in the runtime's asset cache
+    /// (as a card's image is named); empty: none.
+    pub icon: [u8; 48],
 }
 
 #[repr(C)]
@@ -223,7 +240,18 @@ pub struct Spells {
     /// ready (the game's cast animation's time to its release).
     pub cast_time: f32,
     pub flags: u32, // SPELLS_*
-    pub _pad: [u32; 10],
+    /// After a cast, how long before the hand can charge again (seconds): the rest of the game's
+    /// cast animation after its release.
+    pub recover: f32,
+    /// The player picked a spell in the game's own interface (its magic menu, a quick key): this
+    /// counts the picks, and `picked` is the last one's id. The runtime puts each pick in a hand.
+    pub picks: u32,
+    pub picked: u32,
+    pub _p0: [u32; 3],
+    /// The spell wheel's art (`<game>/<asset key>`): the game's font for its words, and the art
+    /// behind its entries; empty: the runtime's own.
+    pub font: [u8; 32],
+    pub back: [u8; 48],
     pub spells: [Spell; MAX_SPELLS],
 }
 
@@ -242,17 +270,30 @@ pub const CE_HIT: u32 = 1;
 /// The player's weapon or shield (`object`; 0 a hand) met `actor`'s attacking weapon: a block, or
 /// with `CEF_PARRY` a parry (the player's weapon moving into it).
 pub const CE_BLOCK: u32 = 2;
-/// A spell cast: `spell` from `hand` (0 left, 1 right), from `point` along `dir`; `actor` the one a
-/// touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1). `object`:
-/// the held thing it was cast from ([`crate::OBJF_CASTS`], a staff: `what` is then what it casts,
-/// [`crate::ObjectDesc::casts`]), else 0.
+/// A spell cast: `what` (a [`Spell::id`]) from `hand` (0 left, 1 right), from `point` (the palm)
+/// along `dir` (where the hand aims it); `actor` the one a touch spell touched, or the creature a
+/// target spell was aimed onto (0: none); `strength` how charged (1: fully). `object`: the held
+/// thing it was cast from ([`crate::OBJF_CASTS`], a staff: `what` is then what it casts,
+/// [`crate::ObjectDesc::casts`]), else 0. The game casts it its own way (its cost, its skill, its
+/// projectile, its effects), or says why it won't.
 pub const CE_CAST: u32 = 3;
 /// An arrow loosed from the bow `object` (`hand`: the string hand): `what` the arrow (its template's
 /// id), from `point` (its tip) along `dir`; `strength` the draw (0..1 of the bow's full draw);
 /// `speed` how fast the bow's table says the game's arrow flies at that draw. The game fires its own
 /// arrow.
 pub const CE_LOOSE: u32 = 4;
+/// The player put spell `what` in `hand` (from the spell wheel): the game makes it its selected
+/// spell its own way (as its magic menu does), so its interface shows it. (The hands keep their own
+/// spells: a cast from either hand casts that hand's.)
+pub const CE_SELECT: u32 = 16;
+/// The trigger was pulled on spell `what` in `hand`, which the game won't cast now
+/// ([`SPELL_CASTABLE`] off): nothing charged, and the game says why its own way (its message, its
+/// sound).
+pub const CE_CAST_REFUSED: u32 = 17;
 
+/// A cast ([`CE_CAST`]): `actor` is the creature the hand touched (a touch spell put into it), not
+/// one the aim was helped onto.
+pub const CEF_TOUCHED: u32 = 1 << 16;
 /// A hit with an edge or point at a bad angle: it's a glancing blow (the flat), weak and blunt.
 pub const CEF_GLANCING: u32 = 1 << 0;
 /// A stab that went in.
@@ -303,7 +344,8 @@ const _: () = {
     assert!(size_of::<Actor>() == 64 + 48 * MAX_ACTOR_PARTS);
     assert!(size_of::<Damager>() == 64);
     assert!(size_of::<MeleeDesc>() == 16 + 64 * MAX_DAMAGERS);
-    assert!(size_of::<Spell>() == 64);
+    assert!(size_of::<Spell>() == 128);
+    assert!(size_of::<Spells>() == 128 + 128 * MAX_SPELLS);
     assert!(size_of::<CombatEvent>() == 80);
     assert!(OFF_COMBAT >= crate::OFF_GAME_HULLS + size_of::<crate::GameHulls>());
     assert!(OFF_COMBAT_END <= crate::OFF_HUD_LAYOUT);
@@ -322,5 +364,35 @@ impl Spell {
             n -= 1;
         }
         self.name[..n].copy_from_slice(&s.as_bytes()[..n]);
+    }
+
+    pub fn icon(&self) -> &str {
+        crate::name_str(&self.icon)
+    }
+
+    pub fn set_icon(&mut self, s: &str) {
+        crate::set_name(&mut self.icon, s);
+    }
+}
+
+impl Spells {
+    pub fn entries(&self) -> &[Spell] {
+        &self.spells[..(self.count as usize).min(MAX_SPELLS)]
+    }
+
+    pub fn get(&self, id: u32) -> Option<&Spell> {
+        self.entries().iter().find(|s| s.id == id && id != 0)
+    }
+
+    pub fn selected(&self) -> Option<&Spell> {
+        self.entries().iter().find(|s| s.flags & SPELL_SELECTED != 0)
+    }
+
+    pub fn font(&self) -> &str {
+        crate::name_str(&self.font)
+    }
+
+    pub fn back(&self) -> &str {
+        crate::name_str(&self.back)
     }
 }

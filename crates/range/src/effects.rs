@@ -518,6 +518,31 @@ impl Effects {
         self.push(Self::particle(self.sprites.glow, FxBlend::Add, at, 0.05, 0.02, [color[0], color[1], color[2], 1.0]));
     }
 
+    /// A spell's bolt flying at `at` (call every frame it flies): its glow, a little trail, its light.
+    pub fn bolt(&mut self, at: Vec3, color: [f32; 3]) {
+        let c = Vec3::from_array(color);
+        self.push(Self::particle(self.sprites.glow, FxBlend::Add, at, 0.16, 0.03, [c.x * 2.5, c.y * 2.5, c.z * 2.5, 1.0]));
+        let mut t = Self::particle(self.sprites.glow, FxBlend::Add, at, 0.07, 0.25, [c.x * 1.4, c.y * 1.4, c.z * 1.4, 1.0]);
+        t.vel = self.unit() * 0.15;
+        self.push(t);
+        if self.flashes.iter().all(|f| f.light.pos.distance(at) > 0.3 || f.t > 0.0) {
+            self.light(at, c * 2.0, 3.0, 0.03, true);
+        }
+    }
+
+    /// A spell going off at `at` (a bolt striking, a touch, a spell on the player): a flash of its
+    /// colour, its light, sparks.
+    pub fn burst(&mut self, at: Vec3, color: [f32; 3]) {
+        let c = Vec3::from_array(color);
+        self.light(at, c * 1.5, 2.0, 0.3, false);
+        self.push(Self::particle(self.sprites.glow, FxBlend::Add, at, 0.25, 0.2, [c.x * 1.5, c.y * 1.5, c.z * 1.5, 1.0]));
+        for _ in 0..18 {
+            let v = self.unit() * self.range(1.0, 4.0);
+            let life = self.range(0.25, 0.6);
+            self.push(Particle { vel: v, drag: 2.0, streak: 0.02, ..Self::particle(self.sprites.dot, FxBlend::Add, at, 0.012, life, [c.x * 3.0, c.y * 3.0, c.z * 3.0, 1.0]) });
+        }
+    }
+
     /// Something blew up at `at` (on or near the ground).
     pub fn explosion(&mut self, at: Vec3, kind: Blast) {
         self.stats.explosions += 1;

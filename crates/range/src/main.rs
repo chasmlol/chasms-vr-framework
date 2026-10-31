@@ -28,6 +28,7 @@ mod combat;
 mod content;
 mod effects;
 mod hits;
+mod magic;
 mod physical;
 mod ragdoll;
 mod render;
@@ -126,6 +127,8 @@ struct Game {
     world: hits::World,
     /// The training dummies: people the player's hands meet, hit, push and stab.
     dummies: ragdoll::Dummies,
+    /// The player's spells and what their casts do (`magic`).
+    magic: magic::RangeMagic,
 }
 
 fn main() -> Result<()> {
@@ -285,6 +288,7 @@ impl Game {
             gun_fx,
             world,
             dummies: combat::dummies(),
+            magic: magic::RangeMagic::default(),
         })
     }
 
@@ -527,7 +531,7 @@ impl Game {
     /// The loose objects a bullet can hit, as boxes (not what the hands hold or wear).
     /// The dummies, the sword's blade and the fire bolt for the runtime; its hits and casts counted.
     /// The dummies are pushed by the hands (and what they hold), hit, then stepped and published.
-    fn combat(&mut self, _now: f64, dt: f32) {
+    fn combat(&mut self, now: f64, dt: f32) {
         let mut pushes: GamePushes = bytemuck::Zeroable::zeroed();
         if self.adapter.read_game_pushes(&mut pushes) {
             self.dummies.push(&pushes);
@@ -540,7 +544,7 @@ impl Game {
             self.combat_for = self.adapter.connections();
             let swords: Vec<u32> = self.armory.as_ref().map(|a| a.ids_of_kind(OBJ_MELEE)).unwrap_or_default();
             self.adapter.write_melee(&combat::melee_table(&swords));
-            self.adapter.write_spells(&combat::spells());
+            self.adapter.write_spells(&self.magic.table());
         }
         for ev in self.adapter.combat_events() {
             tracing::info!(
@@ -549,6 +553,8 @@ impl Game {
                     CE_HIT => "hit",
                     CE_BLOCK => "block",
                     CE_CAST => "cast",
+                    CE_SELECT => "select",
+                    CE_CAST_REFUSED => "refused",
                     _ => "?",
                 },
                 ev.actor,
@@ -569,13 +575,24 @@ impl Game {
                     }
                 }
                 CE_CAST => {
-                    self.stats_f[rs::F_CASTS] += 1.0;
-                    if ev.actor == combat::DUMMY_ID {
+                    let (cast, into_dummy) = self.magic.cast(&ev, &mut self.effects, &mut self.dummies);
+                    if cast {
+                        self.stats_f[rs::F_CASTS] += 1.0;
+                    }
+                    if into_dummy {
                         self.stats_f[rs::F_CASTS_AT_DUMMY] += 1.0;
                     }
                 }
+                CE_SELECT => self.magic.select(ev.what),
+                CE_CAST_REFUSED => self.magic.refused(ev.what),
                 _ => {}
             }
+        }
+        // The spells' bolts flying on, the magicka coming back.
+        let struck = self.magic.update(dt, &mut self.effects, &mut self.dummies, &self.world);
+        self.stats_f[rs::F_CASTS_AT_DUMMY] += struck as f32;
+        if let Some(t) = self.magic.table_due(now) {
+            self.adapter.write_spells(&t);
         }
         self.dummies.step(dt);
         self.adapter.write_actors(&self.dummies.actors());

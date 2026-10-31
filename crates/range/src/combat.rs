@@ -1,7 +1,7 @@
 //! The range's combat: training dummies (people the hands can hit, push and stab: `crate::ragdoll`,
 //! published as capsules every frame), a sword on the throwables' table (its edges cut both ways, its point stabs, its pommel
-//! bludgeons) and one spell, a fire bolt, so the runtime's melee and magic can be played and tested
-//! without a game (`rustvr_protocol::combat`).
+//! bludgeons), so the runtime's melee can be played and tested without a game
+//! (`rustvr_protocol::combat`); its spells are `crate::magic`'s.
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::*;
@@ -13,9 +13,6 @@ use crate::throwables::Throwable;
 pub const DUMMY_ID: u32 = 7001;
 /// Where it stands (its feet), in front of the player's start.
 pub const DUMMY_AT: Vec3 = Vec3::new(0.15, 0.0, 1.15);
-/// The fire bolt's id.
-pub const FIRE_BOLT: u32 = 1;
-
 /// The second dummy: off to the left, turned a little towards the player, behind the throwables'
 /// table (clear of the sword's blade lying across it).
 pub const DUMMY_LEFT_AT: Vec3 = Vec3::new(-0.85, 0.0, 1.88);
@@ -87,21 +84,4 @@ pub fn melee_table(ids: &[u32]) -> MeleeTable {
     }
     t.count = ids.len().min(MAX_MELEE) as u32;
     t
-}
-
-pub fn spells() -> Spells {
-    let mut s: Spells = bytemuck::Zeroable::zeroed();
-    let mut bolt: Spell = bytemuck::Zeroable::zeroed();
-    bolt.id = FIRE_BOLT;
-    bolt.delivery = DELIVER_TARGET;
-    bolt.flags = SPELL_SELECTED | SPELL_CASTABLE;
-    bolt.cost = 10.0;
-    bolt.color = [1.0, 0.45, 0.1];
-    bolt.set_name("Fire bolt");
-    s.spells[0] = bolt;
-    s.count = 1;
-    s.magicka = 100.0;
-    s.magicka_max = 100.0;
-    s.cast_time = 0.5;
-    s
 }
