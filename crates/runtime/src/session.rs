@@ -2412,6 +2412,8 @@ impl Session {
             self.reins.place(glam::Mat4::IDENTITY);
             let mut held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
             held.extend(self.reins.draw().filter(|_| draw_body && !framework));
+            // (The copy of the head the hands shape, as in the headset.)
+            held.extend(sculpt_draw.as_ref().map(|d| rustvr_avatar::HeldDraw { model: d.model, parts: d.parts, key: d.key, overlay: None, bend: 0.0 }));
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");
