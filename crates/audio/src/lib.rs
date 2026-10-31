@@ -169,10 +169,14 @@ pub enum Event {
     /// swallowing (the runtime has no sound of its own for them).
     Bite,
     Gulp,
+    /// A face taken hold of to pull into shape (a character creator's, by hand), and let go of: a
+    /// game's own sounds (the runtime has none of its own for them).
+    FaceTake,
+    FaceLetGo,
 }
 
 impl Event {
-    pub const COUNT: usize = 34;
+    pub const COUNT: usize = 36;
     pub const ALL: [Event; Event::COUNT] = [
         Event::Grab,
         Event::Release,
@@ -208,6 +212,8 @@ impl Event {
         Event::KnifeStick,
         Event::Bite,
         Event::Gulp,
+        Event::FaceTake,
+        Event::FaceLetGo,
     ];
 
     /// Its key in `sounds.toml`.
@@ -247,6 +253,8 @@ impl Event {
             Event::KnifeStick => "knife_stick",
             Event::Bite => "bite",
             Event::Gulp => "gulp",
+            Event::FaceTake => "face_take",
+            Event::FaceLetGo => "face_let_go",
         }
     }
 
@@ -287,7 +295,7 @@ impl Event {
             Event::GrenadeThrow | Event::KnifeThrow => Sound::GloveFlick,
             Event::Explosion => Sound::ShotShotgun,
             Event::KnifeStick => Sound::Impact,
-            Event::FireTail | Event::Casing | Event::Bite | Event::Gulp => return None,
+            Event::FireTail | Event::Casing | Event::Bite | Event::Gulp | Event::FaceTake | Event::FaceLetGo => return None,
         })
     }
 
@@ -319,6 +327,8 @@ impl Event {
             Event::FireTail => 0.25,
             Event::Casing => 0.2,
             Event::Bite | Event::Gulp => 0.25,
+            Event::FaceTake => 0.22,
+            Event::FaceLetGo => 0.16,
         }
     }
 }

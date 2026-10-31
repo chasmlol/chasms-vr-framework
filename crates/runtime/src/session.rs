@@ -144,6 +144,10 @@ pub struct Session {
     /// The mirror the player or the game's character creator has up (`crate::mirror`), and whether
     /// where the game's menu stands beside it was said.
     mirror: crate::mirror::Mirror,
+    /// The face shaped by hand in the game's character creator, and the copy of the head's place to
+    /// draw.
+    sculpt: crate::sculpt::Sculpt,
+    sculpt_parts: [Option<glam::Mat4>; 1],
     menu_beside_said: bool,
     cards: [Option<(panels::Panel, f32)>; 2],
     /// The bow's crosshair (the Hands tab's option), and this frame's place for it.
@@ -341,6 +345,8 @@ impl Session {
             receptacles: bytemuck::zeroed_box(),
             obs: crate::obs_view::ObsView::default(),
             mirror: crate::mirror::Mirror::default(),
+            sculpt: Default::default(),
+            sculpt_parts: [None],
             menu_beside_said: false,
             cards: [None; 2],
             crosshair: Default::default(),
@@ -686,7 +692,8 @@ impl Session {
                 let m = map?;
                 physics.ray_world(m.point(from), m.rot(Quat::IDENTITY) * dir, reach * m.world_per_meter).map(|d| d / m.world_per_meter)
             };
-            let empty = [0, 1].map(|i| self.rig_out.hands[i].flags & HAND_HOLDING == 0);
+            let sculpting = self.sculpt.busy();
+            let empty = [0, 1].map(|i| self.rig_out.hands[i].flags & HAND_HOLDING == 0 && !sculpting[i]);
             self.mirror.update(&crate::mirror::MirrorInput {
                 settings: &self.settings.current.mirror,
                 game_flags: gflags,
@@ -731,12 +738,16 @@ impl Session {
         // The laser from the dominant hand, unless it's holding a menu (a book, the map): then from
         // the other, free one, for what floats (a question over the map). What's held in the hands
         // has no laser: its buttons are pressed with the fingers (`crate::held_menus`).
-        let pointer = if self.held.holding[dom] && !self.held.holding[dom ^ 1] { dom ^ 1 } else { dom };
+        // A hand on the face shaped in the character creator (`crate::sculpt`) has no laser either:
+        // its trigger is the pull's (asymmetry), not a click.
+        let sculpting = self.sculpt.busy();
+        let busy = [0, 1].map(|i| self.held.holding[i] || sculpting[i]);
+        let pointer = if busy[dom] && !busy[dom ^ 1] { dom ^ 1 } else { dom };
         self.pointer = pointer;
         let hand = &frame.hands[pointer];
         let laser_origin = Vec3::from_array(hand.aim.pos);
         let laser_dir = quat(hand.aim.rot) * Vec3::Z;
-        let mut pick = if hand.connected != 0 && (layout.game_menu.is_some() || layout.runtime_menu.is_some()) {
+        let mut pick = if hand.connected != 0 && !sculpting[pointer] && (layout.game_menu.is_some() || layout.runtime_menu.is_some()) {
             layout.pick(laser_origin, laser_dir)
         } else {
             None
@@ -1050,8 +1061,47 @@ impl Session {
             // The game's own cards beside its objects.
             self.game_cards.read(&self.link);
             self.game_card_panels = self.game_cards.update(&self.gpu, &self.states, &self.objects, self.map_now.as_ref(), Vec3::from_array(frame.hmd.pos), frame.dt)?;
-            // The body the game makes up, when it changes.
-            self.body.read_game_body(&self.link);
+            // The body the game makes up, when it changes (a face shaped by hand drawn live meanwhile).
+            self.body.face_live = self.sculpt.active();
+            self.body.read_game_body(&self.link, now);
+            // The face shaped by hand in the game's character creator: the hands on it, the face they
+            // make (drawn live on the body), and where the face holds them.
+            if let Some(kit) = self.body.take_face() {
+                self.sculpt.set_face(kit);
+            }
+            let own_head = self.sculpt.head_bone().and_then(|b| self.body.bone_skin(&b));
+            self.sculpt.update(
+                &self.link,
+                &crate::sculpt::SculptInput {
+                    frame: &frame,
+                    hands: self.rig_out.hands.map(|h| (Vec3::from_array(h.pose.pos), quat(h.pose.rot))),
+                    head: (Vec3::from_array(frame.hmd.pos), quat(frame.hmd.rot)),
+                    own_head,
+                    now,
+                    dt: frame.dt,
+                },
+            );
+            self.body.set_face_now(self.sculpt.face_now());
+            for i in 0..2 {
+                if let Some(o) = self.sculpt.hand_out(i) {
+                    let h = &mut self.rig_out.hands[i];
+                    // Drawn where the face holds it (the controller's ghost where it is, with ghost hands on).
+                    if o.moved.length() > 0.004 && self.settings.current.interaction.ghost_hands {
+                        self.rig_out.ghosts[i] = Some(frame.hands[i].grip);
+                        h.flags |= HAND_BLOCKED;
+                    }
+                    h.pose.pos = (Vec3::from_array(h.pose.pos) + o.moved).to_array();
+                }
+            }
+            for (h, secs, freq, amp) in self.sculpt.haptics.drain(..) {
+                self.backend.haptic(h, secs, freq, amp);
+            }
+            for (take, at) in self.sculpt.sounds.drain(..) {
+                if let (Some(a), true) = (&self.audio, self.settings.current.sound.enabled) {
+                    let event = if take { rustvr_audio::Event::FaceTake } else { rustvr_audio::Event::FaceLetGo };
+                    a.play_event(event, rustvr_audio::SetKey::NONE, None, at, 1.0);
+                }
+            }
             // Combat: the hands' hits, blocks and casts, for the game (crate::combat).
             self.combat.read(&self.link);
             // The game's effect shaders over what the runtime draws, when they change.
@@ -1143,6 +1193,7 @@ impl Session {
             game_shots: std::mem::take(&mut self.game_shots),
             held_kicks: &self.held_kicks,
             riding,
+            sculpting: self.sculpt.busy(),
         });
         for h in self.mech.haptics.drain(..) {
             self.backend.haptic(h.hand, h.seconds, h.frequency, h.amplitude);
@@ -1296,7 +1347,11 @@ impl Session {
                 ghosts,
                 holds,
                 held,
-                grasps: if rig_active { [self.rig.grasps()[0].as_ref(), self.rig.grasps()[1].as_ref()] } else { [None; 2] },
+                grasps: if rig_active {
+                    [0, 1].map(|i| self.sculpt.hand_out(i).and_then(|o| o.grasp.as_ref()).or(self.rig.grasps()[i].as_ref()))
+                } else {
+                    [None; 2]
+                },
                 finger_give: if rig_active { self.rig_out.finger_give } else { [[0.0; 5]; 2] },
                 locomotion,
                 swim: self.swim_out.swimming.then(|| {
@@ -1489,7 +1544,10 @@ impl Session {
         let framework_shown = self.mech.framework_view && self.rig_active_last;
         self.pacing.cpu(ms(t_rig, t_end), framework_shown);
         if let Some(line) = self.pacing.report(now) {
-            tracing::info!("runtime: {line}");
+            // (With its video memory: past its budget, what a frame uses is copied in and out of
+            // the system's memory, and every GPU command waits on it.)
+            let video = self.gpu.video_memory().map(|(used, budget)| format!("; video memory {used} of {budget} MB{}", if used > budget { " (over its budget)" } else { "" }));
+            tracing::info!("runtime: {line}{}", video.unwrap_or_default());
         }
         let budget = 1500.0 / self.backend.refresh_hz().max(30.0);
         if ms(t_rig, t_end) > budget && now - self.slow_logged > 1.0 {
@@ -2108,6 +2166,8 @@ impl Session {
                 tracing::warn!("combat debug view: {e:#}");
             }
         }
+        self.sculpt.prepare(&self.gpu);
+        let sculpt_draw = if draw_body && !framework { self.sculpt.draw(&mut self.sculpt_parts) } else { None };
         let body = &mut self.body;
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
@@ -2254,6 +2314,7 @@ impl Session {
             reins.place(picture);
             let mut held = if draw_body && !framework { held_objects.draws() } else { Vec::new() };
             held.extend(reins.draw().filter(|_| draw_body && !framework));
+            held.extend(sculpt_draw.as_ref().map(|d| rustvr_avatar::HeldDraw { model: d.model, parts: d.parts, key: d.key, overlay: None, bend: 0.0 }));
             // The blood, where this eye's picture has the world (set before the mirror's reflection,
             // so the player and the world in the glass have this eye's blood too).
             let gore = (draw_body && !framework && self.gore.active()).then(|| {
@@ -2436,6 +2497,8 @@ impl Session {
             self.reins.place(glam::Mat4::IDENTITY);
             let mut held = if draw_body && !framework { self.held_objects.draws() } else { Vec::new() };
             held.extend(self.reins.draw().filter(|_| draw_body && !framework));
+            // (The copy of the head the hands shape, as in the headset.)
+            held.extend(sculpt_draw.as_ref().map(|d| rustvr_avatar::HeldDraw { model: d.model, parts: d.parts, key: d.key, overlay: None, bend: 0.0 }));
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");

@@ -100,6 +100,9 @@ pub struct MechInput<'a> {
     /// after the head), the mount turns the view (the turning stick steers it instead), and the
     /// trigger of a hand off the reins is riding's (getting off), not the game's "use".
     pub riding: bool,
+    /// Hands on the face shaped in a character creator (`crate::sculpt`): their trigger is the
+    /// pull's, not the game's menu's.
+    pub sculpting: [bool; 2],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1298,7 +1301,7 @@ impl Mechanics {
         }
         if !inp.runtime_menu {
             // A on either hand accepts; so does a trigger pull (the natural "continue").
-            let trigger = (0..2).any(|h| self.btn_trig[h].pressed()) && inp.cursor.is_none();
+            let trigger = (0..2).any(|h| self.btn_trig[h].pressed() && !inp.sculpting[h]) && inp.cursor.is_none();
             if self.btn_a[dom].pressed() || self.btn_a[off].pressed() || trigger {
                 self.press(Action::MenuAccept);
             }
@@ -1423,6 +1426,7 @@ mod tests {
             game_shots,
             held_kicks,
             riding: false,
+            sculpting: [false; 2],
         })
     }
 

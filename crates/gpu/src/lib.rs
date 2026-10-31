@@ -116,6 +116,19 @@ impl Gpu {
         }
     }
 
+    /// This process's video memory (MB): what it has on the GPU now, and how much Windows lets it
+    /// have there before it moves some out to the system's memory (`QueryVideoMemoryInfo`, the GPU's
+    /// own memory). The budget shrinks as other programs take the GPU's memory.
+    pub fn video_memory(&self) -> Option<(u64, u64)> {
+        use windows::Win32::Graphics::Dxgi::{DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3, IDXGIDevice};
+        unsafe {
+            let adapter: IDXGIAdapter3 = self.device.cast::<IDXGIDevice>().ok()?.GetAdapter().ok()?.cast().ok()?;
+            let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+            adapter.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info).ok()?;
+            Some((info.CurrentUsage >> 20, info.Budget >> 20))
+        }
+    }
+
     pub fn flush(&self) {
         unsafe { self.ctx.Flush() }
     }
