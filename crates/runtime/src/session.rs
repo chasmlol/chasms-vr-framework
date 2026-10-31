@@ -1258,7 +1258,9 @@ impl Session {
             };
             let mv = Vec2::from_array(out.intents.move_xy);
             let locomotion = Quat::from_rotation_y(head_yaw) * Vec3::new(mv.x, 0.0, mv.y) * 2.5;
-            let stand = self.mech.debug.stand_h;
+            // The body is sized standing: while the game crouches its eye is a crouch's, and with it
+            // the floor under the head.
+            let stand = if gflags & GS_CROUCHED == 0 { self.mech.debug.stand_h } else { 0.0 };
             let floor = self.floor;
             // Hands holding a gun the game has its own hand pose for are drawn in it, where the rig
             // holds the gun (tracking space).

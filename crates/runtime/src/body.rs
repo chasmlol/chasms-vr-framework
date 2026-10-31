@@ -38,7 +38,8 @@ pub struct BodyInput<'a> {
     pub locomotion: Vec3,
     /// The player is swimming in the game's water: the body floats.
     pub swim: Option<rustvr_ik::Swimming>,
-    /// Standing head height as measured in tracking space (0: not known yet).
+    /// Standing head height as measured in tracking space (0: not known yet, or the game is
+    /// crouching: the body keeps the size it had).
     pub eye_height: f32,
     /// Where the game's floor is in tracking space (the body stands on it, whatever the real
     /// floor's height: the game puts your eyes at its own eye height).
