@@ -320,6 +320,24 @@ pub fn solve_leg(p: &BodyParams, skel: &Skeleton, hip: Vec3, foot: &Foot, lift: 
     LegPose { hip, knee: solved.elbow, ankle, toes, rot: [upper, lower, foot_rot, toes_rot] }
 }
 
+/// A kicking leg: from its hip joint towards where the kick has the ankle (as far as the leg
+/// reaches), the knee bent forward, the foot along the kick, its sole leading.
+pub fn solve_kick(skel: &Skeleton, hip: Vec3, ankle: Vec3, hips_fwd: Vec3) -> LegPose {
+    let (a, b) = (skel.thigh, skel.shin);
+    let way = (ankle - hip).normalize_or(-UP);
+    let ankle = hip + way * ankle.distance(hip).min(a + b);
+    let fwd = flat(hips_fwd).normalize_or(Vec3::Z);
+    let solved = two_bone(hip, ankle, [a, b], fwd, [KNEE_MIN_FLEXION, PI * 0.8], f32::MAX);
+    let thigh_dir = (solved.elbow - hip).normalize_or(-UP);
+    let upper = frame_yz(thigh_dir, fwd, fwd);
+    let lower = frame_yz(solved.forearm, fwd, fwd);
+    // The toes up the kick, the sole along it.
+    let toes_way = UP.reject_from(way).normalize_or(fwd);
+    let foot_rot = frame_yz(toes_way, way, UP);
+    let toes = ankle + toes_way * skel.toe_forward.max(0.1);
+    LegPose { hip, knee: solved.elbow, ankle, toes, rot: [upper, lower, foot_rot, foot_rot] }
+}
+
 /// A rider's leg astride a mount: from its hip joint to the ankle where the game puts it (in the
 /// stirrup, or round the mount's body), the knee bent towards where the game puts the knee (out
 /// round the mount's side). A shorter leg hangs just short of it; without the game's places

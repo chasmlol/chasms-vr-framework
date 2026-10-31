@@ -39,6 +39,8 @@ pub fn hit(people: &mut crate::arena::People, ev: &CombatEvent, weapons: &MeleeW
         (Some(b), true) => rustvr_melee::bad_angle(&b).0,
         (None, true) => rustvr_melee::MOD_BLUNT_LIGHT,
         (Some(b), _) => rustvr_melee::modifier_of(&b),
+        // (A hand's blow, or a foot's: "hands" 2 and 3 are the feet.)
+        (None, _) if ev.object == 0 && ev.hand >= 2 => rustvr_melee::MOD_KICK,
         (None, _) if ev.object == 0 => rustvr_melee::MOD_PUNCH,
         _ => rustvr_melee::MOD_BLUNT,
     };

@@ -90,9 +90,11 @@ pub struct MeleeRig {
     /// The climbing body's velocity (m/s), and the player's as the game moved them, averaged.
     pub climb_v: Vec3,
     pub climb_seen: Vec3,
-    /// What each hand holds by telekinesis, and whether telekinesis is on (`telekinesis`).
+    /// What each hand holds by telekinesis, and whether telekinesis is on (`telekinesis`); the
+    /// creature's part each open hand marks.
     pub tk: [Option<super::telekinesis::Tk>; 2],
     pub tk_on: bool,
+    pub tk_marked: [Option<(u32, usize)>; 2],
     /// Weapons thrown and still flying or tumbling, by id.
     pub thrown: std::collections::HashMap<u32, Thrown>,
     /// Weapons that cut a limb off, carrying on through the creature (its id) until they're clear

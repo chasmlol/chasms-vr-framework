@@ -81,6 +81,12 @@ pub const GRAB_THROAT: u32 = 1 << 1;
 pub const GRAB_TWO_HANDS: u32 = 1 << 2;
 /// The grip slipped (the hand was pulled past its reach): let go without a throw.
 pub const GRAB_SLIPPED: u32 = 1 << 3;
+/// Held by telekinesis, from afar: the game holds the point on the telekinesis drive for bodies
+/// (2000 N/m, 100 N s/m, at most 2500 N; the neck's turn x5), not the hand's; let go of with a
+/// throw, the part held gets 30 m/s of it and the rest of the body 8. Two hands holding one
+/// creature this way (with [`GRAB_TWO_HANDS`]): its limbs that can tear off do past 3000 N on
+/// their joints (over the time scale).
+pub const GRAB_TK: u32 = 1 << 4;
 
 /// One hand's grab of a creature's part.
 #[repr(C)]

@@ -13,6 +13,12 @@
 //! hand takes it where it touches it. Let go of with the hand moving faster than 1 m/s, it's thrown
 //! at 20 m/s the way the hand went, a weapon point first; let go of gently, it falls. A thrown
 //! weapon is caught and pulled back the same way: a recall.
+//!
+//! A creature's part is picked out the same way (by its ragdoll handles): caught, the game holds
+//! it towards where the hand sends it on the ragdoll drive ([`GRAB_TK`]); the point follows the
+//! hand at up to 3 m/s (from nothing over 3 s; at once for the dead), pulled and pushed at 3.2 m/s
+//! (0.4 of a thing's), out to 6 m. Thrown, it's flung at 30 m/s. Two hands holding one body
+//! that way may tear its limbs off.
 
 use glam::{Quat, Vec3};
 use rustvr_protocol::*;
@@ -53,11 +59,23 @@ pub const TK_THROW_HAND: f32 = 1.0;
 pub const TK_THROW: f32 = 20.0;
 /// It's at the hand (taken) this near (m).
 pub const TK_AT_HAND: f32 = 0.15;
+/// A creature held by telekinesis (its ragdoll handles' x2.5 force cap of 1000: at most 2500 N):
+/// its point follows the hand at up to this (m/s), reached over this long (s); pulled and pushed at
+/// this share of a thing's speed and out to this share of its distance; thrown, the part held at
+/// this (m/s).
+pub const TK_BODY_FORCE: f32 = 2500.0;
+pub const TK_BODY_FOLLOW: f32 = 3.0;
+pub const TK_BODY_FOLLOW_RAMP: f32 = 3.0;
+pub const TK_BODY_PULL: f32 = 0.4;
+pub const TK_BODY_FAR: f32 = 0.5;
+pub const TK_BODY_THROW: f32 = 30.0;
 
-/// A thing a hand holds by telekinesis.
+/// A thing a hand holds by telekinesis (or a creature's part: then `id` is 0).
 #[derive(Clone, Copy, Debug)]
 pub struct Tk {
     pub id: u32,
+    /// The creature and its part held, and the point held (the part's frame).
+    pub body: Option<(u32, usize, Vec3)>,
     /// How far from the hand it's held (m), and where it's sent now (world).
     pub distance: f32,
     pub point: Vec3,
@@ -104,8 +122,39 @@ impl Rig {
         (p, d.lerp(arm, TK_ARM).normalize_or(arm))
     }
 
-    /// The thing hand `i` would catch, `current` the one already marked.
-    fn tk_target(&self, i: usize, head: (Vec3, Quat), current: Option<u32>) -> Option<u32> {
+    /// The creature's part hand `i` would catch (its nearest to the ray, of those in reach), and how
+    /// far off the ray it is (degrees, as [`Rig::tk_target`] ranks things).
+    fn tk_body_target(&self, i: usize, head: (Vec3, Quat), current: Option<(u32, usize)>) -> Option<((u32, usize), f32)> {
+        let w = self.map.world_per_meter;
+        let (from, ray) = self.tk_ray(i, head);
+        let look = head.1 * Vec3::Z;
+        let ranked = ray.lerp(look, TK_LOOK).normalize_or(ray);
+        let within = |d: Vec3| d.angle_between(look).to_degrees() <= TK_ANGLE;
+        if !within(ray) || !within(from - head.0) {
+            return None;
+        }
+        let mut best: Option<((u32, usize), f32)> = None;
+        for (&(actor, part), &(a, b, radius)) in &self.actor_parts {
+            if !self.bodies.get(&actor).is_some_and(|bd| bd.grabbable()) {
+                continue;
+            }
+            let p = super::creatures::surface(a, b, radius, from + ray * (from.distance((a + b) * 0.5))).0;
+            let to = p - from;
+            let along = to.dot(ray);
+            if along <= 0.0 || along > TK_REACH * w || (to - ray * along).length() > TK_SPHERE * w || !within(p - head.0) {
+                continue;
+            }
+            let angle = (p - from).angle_between(ranked).to_degrees() + if Some((actor, part)) == current { 0.0 } else { TK_STICKY };
+            if best.is_none_or(|b| angle < b.1) {
+                best = Some(((actor, part), angle));
+            }
+        }
+        best
+    }
+
+    /// The thing hand `i` would catch, `current` the one already marked, and how far off the ray it
+    /// is (degrees).
+    fn tk_target(&self, i: usize, head: (Vec3, Quat), current: Option<u32>) -> Option<(u32, f32)> {
         let w = self.map.world_per_meter;
         let (from, ray) = self.tk_ray(i, head);
         let look = head.1 * Vec3::Z;
@@ -134,7 +183,7 @@ impl Rig {
                 best = Some((*id, angle));
             }
         }
-        best.map(|b| b.0)
+        best
     }
 
     /// Hand `i`, once a frame, in telekinesis's place of the gloves: an open empty hand marks what
@@ -142,6 +191,22 @@ impl Rig {
     pub(super) fn telekinesis(&mut self, i: usize, inp: &super::RigInput) {
         let head = (inp.map.point(super::v3(inp.frame.hmd.pos)), inp.map.rot(super::q4(inp.frame.hmd.rot)));
         let w = self.map.world_per_meter;
+        if let Some(tk) = self.melee.tk[i]
+            && let Some((actor, part, _)) = tk.body
+        {
+            // A creature's part: pulled in and pushed off slower and nearer (its ragdoll handles).
+            if !self.actor_parts.contains_key(&(actor, part)) {
+                self.tk_let_go(i);
+                return;
+            }
+            let c = &inp.frame.hands[i];
+            let pull = c.trigger.clamp(0.0, 1.0);
+            let push = if c.buttons & CTRL_A != 0 { 1.0 } else { 0.0 };
+            let dt = inp.dt.max(1e-4);
+            let distance = (tk.distance + (push - pull) * TK_PULL * TK_BODY_PULL * dt).clamp(0.0, TK_FAR * TK_BODY_FAR);
+            self.melee.tk[i].as_mut().unwrap().distance = distance;
+            return;
+        }
         if let Some(tk) = self.melee.tk[i] {
             let Some(o) = self.objects.get(&tk.id).filter(|o| o.holder == Holder::Free) else {
                 self.melee.tk[i] = None;
@@ -179,15 +244,46 @@ impl Rig {
             return;
         }
         let current = if let Glove::Hover(id) = h.glove { Some(id) } else { None };
-        match self.tk_target(i, head, current) {
-            Some(id) if Some(id) != current => {
+        // A thing or a creature's part, whichever's nearer the ray (a ragdoll's handles take
+        // telekinesis as any thing's do).
+        let thing = self.tk_target(i, head, current);
+        let body = self.tk_body_target(i, head, self.melee.tk_marked[i]);
+        match (thing, body) {
+            (_, Some((b, a))) if thing.is_none_or(|t| a < t.1) => {
+                if self.melee.tk_marked[i] != Some(b) {
+                    let palm = self.hands.as_ref().unwrap()[i].target.0;
+                    self.emit(super::feedback::Cue::GloveHover, Some(i), None, palm, 0.4);
+                }
+                self.melee.tk_marked[i] = Some(b);
+                self.set_glove(i, Glove::Idle);
+            }
+            (Some((id, _)), _) if Some(id) != current => {
+                self.melee.tk_marked[i] = None;
                 let palm = self.hands.as_ref().unwrap()[i].target.0;
                 self.emit(super::feedback::Cue::GloveHover, Some(i), Some(id), palm, 0.4);
                 self.set_glove(i, Glove::Hover(id));
             }
-            Some(_) => {}
-            None => self.set_glove(i, Glove::Idle),
+            (Some(_), _) => self.melee.tk_marked[i] = None,
+            (None, _) => {
+                self.melee.tk_marked[i] = None;
+                self.set_glove(i, Glove::Idle);
+            }
         }
+    }
+
+    /// Hand `i`'s grip on the creature's part it marks: caught where it is, the point held where
+    /// the ray meets it.
+    pub(super) fn tk_catch_body(&mut self, i: usize, actor: u32, part: usize) {
+        let w = self.map.world_per_meter;
+        let (Some(frame), Some(&(a, b, radius))) = (self.part_frame(actor, part), self.actor_parts.get(&(actor, part))) else { return };
+        let (hp, hq) = self.hands.as_ref().unwrap()[i].target;
+        let at = super::creatures::surface(a, b, radius, hp).0;
+        let point = frame.1.inverse() * (at - frame.0);
+        self.melee.tk[i] = Some(Tk { id: 0, body: Some((actor, part, point)), distance: at.distance(hp) / w, point: at, turn: hq.inverse() * frame.1, since: self.now });
+        self.melee.tk_marked[i] = None;
+        self.grab_serial += 1;
+        tracing::info!("rig: hand {i} holds creature {actor:#x} part {part} by telekinesis, {:.1} m off", at.distance(hp) / w);
+        self.emit(super::feedback::Cue::GloveLock, Some(i), None, hp, 0.8);
     }
 
     /// Hand `i`'s grip on what it marks: caught, held off where it is.
@@ -205,7 +301,7 @@ impl Rig {
         self.physics.set_gravity(body, 0.0);
         self.physics.set_linear_damping(body, TK_DRAG);
         self.physics.set_angular_damping(body, TK_TURN_DRAG);
-        self.melee.tk[i] = Some(Tk { id, distance: p.distance(hp) / w, point: p, turn: hq.inverse() * q, since: self.now });
+        self.melee.tk[i] = Some(Tk { id, body: None, distance: p.distance(hp) / w, point: p, turn: hq.inverse() * q, since: self.now });
         self.melee.thrown.remove(&id);
         self.set_glove(i, Glove::Locked(id));
         tracing::info!("rig: hand {i} holds {id:#x} by telekinesis, {:.1} m off", p.distance(hp) / w);
@@ -223,6 +319,17 @@ impl Rig {
 
     /// Out of telekinesis's hold, going at `throw` (world; zero: as it is).
     fn tk_drop(&mut self, i: usize, throw: Vec3) {
+        // A creature: let go, flung at 30 m/s if thrown (the game gives its body the rest).
+        if let Some(Tk { body: Some((actor, _, _)), .. }) = self.melee.tk[i] {
+            self.melee.tk[i] = None;
+            let w = self.map.world_per_meter;
+            let fling = throw.normalize_or_zero() * TK_BODY_THROW * w;
+            let g = &mut self.grabs[i];
+            g.flags &= !GRAB_HELD;
+            g.vel = fling.to_array();
+            tracing::info!("rig: hand {i} lets go of creature {actor:#x} by telekinesis{}", if throw != Vec3::ZERO { ", thrown" } else { "" });
+            return;
+        }
         let Some(tk) = self.tk_let_go(i) else { return };
         let Some(o) = self.objects.get(&tk.id) else { return };
         let body = o.body;
@@ -246,6 +353,10 @@ impl Rig {
     fn tk_let_go(&mut self, i: usize) -> Option<Tk> {
         let tk = self.melee.tk[i].take()?;
         self.set_glove(i, Glove::Idle);
+        // (A creature's part: the game's told it's let go.)
+        if tk.body.is_some() {
+            self.grabs[i].flags &= !GRAB_HELD;
+        }
         if let Some(o) = self.objects.get(&tk.id).filter(|o| o.holder == Holder::Free) {
             let body = o.body;
             let collider = o.collider;
@@ -263,6 +374,34 @@ impl Rig {
         let head = (inp.map.point(super::v3(inp.frame.hmd.pos)), inp.map.rot(super::q4(inp.frame.hmd.rot)));
         for i in 0..2 {
             let Some(tk) = self.melee.tk[i] else { continue };
+            // A creature's part: where the hand sends it, for the game to hold it there.
+            if let Some((actor, part, held)) = tk.body {
+                let (hp, hq) = self.hands.as_ref().unwrap()[i].target;
+                let shoulder = self.tk_shoulder(i, head);
+                let goal = hp + (hp - shoulder).normalize_or(hq * Vec3::Y) * tk.distance * w;
+                let dead = self.bodies.get(&actor).is_some_and(|b| b.flags & BODY_CONSCIOUS == 0);
+                let ramp = if dead { 1.0 } else { ((self.now - tk.since) as f32 / TK_BODY_FOLLOW_RAMP).clamp(0.0, 1.0) };
+                let point = tk.point + (goal - tk.point).clamp_length_max(TK_BODY_FOLLOW * ramp * w * dt);
+                self.melee.tk[i].as_mut().unwrap().point = point;
+                let both = self.melee.tk[i ^ 1].is_some_and(|o| o.body.is_some_and(|b| b.0 == actor));
+                let held_at = self.part_frame(actor, part).map_or(point, |f| f.0 + f.1 * held);
+                self.grabs[i] = CreatureGrab {
+                    serial: self.grab_serial,
+                    flags: GRAB_HELD | GRAB_TK | if both { GRAB_TWO_HANDS } else { 0 },
+                    actor,
+                    part: part as u32,
+                    point: held.to_array(),
+                    force: TK_BODY_FORCE,
+                    target: point.to_array(),
+                    squeeze: 0.0,
+                    target_rot: (hq * tk.turn).normalize().to_array(),
+                    vel: Vec3::ZERO.to_array(),
+                    stretch: held_at.distance(point),
+                    ang_vel: Vec3::ZERO.to_array(),
+                    _p0: 0.0,
+                };
+                continue;
+            }
             let Some(o) = self.objects.get(&tk.id) else { continue };
             let body = o.body;
             let (hp, hq) = self.hands.as_ref().unwrap()[i].target;

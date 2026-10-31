@@ -12,6 +12,7 @@ pub mod body;
 pub mod compositor;
 pub mod crosshair;
 pub mod gore;
+pub mod kick;
 pub mod mechanics;
 pub mod menu;
 pub mod mirror;

@@ -548,8 +548,14 @@ impl Gore {
         }
         self.splat_blood = blood;
         if ev.object == 0 {
-            let h = (ev.hand as usize).min(1);
-            self.splat_body(inp, if h == 0 { Joint::LeftHand as usize } else { Joint::RightHand as usize }, inp.map.inv_point(point), 0.035, out, inp.now);
+            // (A fist's knuckles, or a kicking foot: "hands" 2 and 3.)
+            let joint = match ev.hand {
+                0 => Joint::LeftHand,
+                1 => Joint::RightHand,
+                2 => Joint::LeftFoot,
+                _ => Joint::RightFoot,
+            };
+            self.splat_body(inp, joint as usize, inp.map.inv_point(point), 0.035, out, inp.now);
             return;
         }
         // (In the weapon's own space as the combat judged the blow: where the hand swung it, which a

@@ -3232,9 +3232,11 @@ impl Rig {
                     self.emit(Cue::Grab, Some(i), None, palm, 0.6);
                     return;
                 }
-                // Telekinesis catches what the hand marks.
+                // Telekinesis catches what the hand marks (a thing, or a creature's part).
                 if self.melee.tk_on {
-                    if let Glove::Hover(id) = self.hands.as_ref().unwrap()[i].glove {
+                    if let Some((actor, part)) = self.melee.tk_marked[i] {
+                        self.tk_catch_body(i, actor, part);
+                    } else if let Glove::Hover(id) = self.hands.as_ref().unwrap()[i].glove {
                         self.tk_catch(i, id);
                     }
                     return;

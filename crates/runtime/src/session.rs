@@ -160,6 +160,9 @@ pub struct Session {
     melee_weapons_seq: u32,
     /// Slowing time, stamina, imbuing (crate::powers).
     powers: crate::powers::Powers,
+    /// The player's kicks ([`crate::kick`]), and where the last frame's had the feet.
+    foot_kicks: crate::kick::Kicks,
+    kick_out: crate::kick::KickOut,
     /// Blood and limbs cut off (crate::gore).
     gore: crate::gore::Gore,
     /// Hands whose trigger casts a spell this frame (`crate::combat`).
@@ -360,6 +363,8 @@ impl Session {
             combat: crate::combat::Combat::default(),
             melee_weapons_seq: 0,
             powers: Default::default(),
+            foot_kicks: Default::default(),
+            kick_out: Default::default(),
             gore: crate::gore::Gore::default(),
             spell_hands: [false; 2],
             objects: bytemuck::zeroed_box(),
@@ -1089,6 +1094,28 @@ impl Session {
             self.rig.set_actor_bodies(self.combat.actors(), &self.actor_bodies);
             // What the creatures' weapons can strike: the player's body as capsules (world).
             let player = crate::combat::player_capsules(&self.body.body.joints, &rig_map);
+            // A kick (the melee buttons, the game's say): the movement stick's click, at what the
+            // eyes see, the foot driven out by the body's legs and judged with the Kick damager.
+            self.kick_out = if self.combat.rules.flags & RULES_KICK != 0 {
+                let targets: Vec<(Vec3, Vec3, f32)> = self.combat.actor_parts().into_iter().map(|(_, (a, b, r))| (rig_map.inv_point(a), rig_map.inv_point(b), r / rig_map.world_per_meter)).collect();
+                let off = self.settings.current.dominant() ^ 1;
+                self.foot_kicks.update(&crate::kick::KickInput {
+                    frame: &frame,
+                    stick_hand: off,
+                    now,
+                    joints: &self.body.body.joints,
+                    floor: self.floor,
+                    walking: self.locomotion.walk().0.length() / rig_map.world_per_meter,
+                    targets: &targets,
+                    paused: rig_paused || menu_mode,
+                })
+            } else {
+                crate::kick::KickOut::default()
+            };
+            let kick = self.kick_out.striking.and_then(|(foot, way)| {
+                let toes = Vec3::from_array(self.body.body.joints[if foot == 0 { Joint::LeftToes } else { Joint::RightToes } as usize].pos);
+                self.kick_out.ankles[foot].map(|a| (foot, rig_map.point(a), rig_map.point(toes), rig_map.rot(Quat::IDENTITY) * way))
+            });
             self.rig.set_actor_items(&self.combat.items);
             let combat = self.combat.update(&crate::combat::CombatInput {
                 rig: &self.rig,
@@ -1101,7 +1128,11 @@ impl Session {
                 dt: world_dt,
                 paused: rig_paused || menu_mode,
                 player: &player,
+                kick,
             });
+            if self.combat.kicked {
+                self.foot_kicks.met(now);
+            }
             for ev in &combat {
                 self.link.push_combat_event(ev);
             }
@@ -1395,6 +1426,7 @@ impl Session {
                 }),
                 eye_height: if stand > 0.5 { stand } else { 0.0 },
                 floor,
+                kicks: self.kick_out.ankles,
                 saddle: self.saddle(),
                 settings: &self.settings.current,
             });

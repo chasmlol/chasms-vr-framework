@@ -310,6 +310,10 @@ pub const RULES_CLIMB: u32 = 1 << 4;
 /// Telekinesis in place of the gravity gloves is the game's to say ([`RULES_TELEKINESIS`]).
 pub const RULES_SAYS_TELEKINESIS: u32 = 1 << 5;
 pub const RULES_TELEKINESIS: u32 = 1 << 6;
+/// The melee buttons: the movement stick's click kicks (an untracked kick, the runtime's `kick`),
+/// and slowing time goes on the dominant hand's B. Without it, the movement stick's click is the
+/// game's and slowing time the off hand's stick click.
+pub const RULES_KICK: u32 = 1 << 7;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -375,7 +379,16 @@ pub struct RtMelee {
     pub _p0: [u32; 3],
     /// The weapons being imbued, and how full: one per hand.
     pub imbue: [Imbue; 2],
-    pub _pad: [u32; 12],
+    /// Filled weapons out of the hands (thrown, stuck in something, dropped), the fullest first.
+    pub loose_imbues: [Imbue; 2],
+    pub _pad: [u32; 4],
+}
+
+impl RtMelee {
+    /// How full weapon `id` is with its spell, in a hand or out of them.
+    pub fn imbue_of(&self, id: u32) -> Option<Imbue> {
+        self.imbue.iter().chain(self.loose_imbues.iter()).find(|i| i.object == id && i.charge > 0.0).copied()
+    }
 }
 
 pub const OFF_MELEE_END: usize = OFF_RT_MELEE + size_of::<RtMelee>();

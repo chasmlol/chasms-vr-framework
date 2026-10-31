@@ -105,6 +105,24 @@ fn punch() -> MeleeBlade {
     b
 }
 
+/// A foot's Kick damager (the Kick table, 2 -> 1, 20 -> 5, x2 thrown, any way; a body that's down
+/// shoved with 400 for 0.15 s, x2 and x0.5; its effects 2 to 4 m/s).
+fn kick() -> MeleeBlade {
+    let mut b: MeleeBlade = bytemuck::Zeroable::zeroed();
+    b.kind = DMG_BLUNT;
+    b.modifier = rustvr_melee::modifiers::MOD_KICK;
+    b.radius = KICK_RADIUS;
+    b.tier = 1.0;
+    b.thrown = 2.0;
+    b.curve = [2.0, 1.0, 20.0, 5.0];
+    b.push = [400.0, 0.15, 2.0, 0.5];
+    b.intensity = [2.0, 4.0];
+    b
+}
+
+/// How thick a foot is to its Kick damager (m).
+const KICK_RADIUS: f32 = 0.05;
+
 /// How thick a hand is to its Punch damager (m).
 const PUNCH_RADIUS: f32 = 0.045;
 /// The damagers' angle limits (degrees): a sword's, an axe's.
@@ -461,6 +479,8 @@ pub struct Combat {
     pub embeds: Vec<embed::Request>,
     /// Weapons that cut a limb off this frame, and whose: they carry on through it (for the rig).
     pub cuts: Vec<(u32, u32)>,
+    /// A kicking foot met something this frame (it stops there).
+    pub kicked: bool,
     /// When each damager (weapon, blade) last cut something off.
     sliced: HashMap<(u32, usize), f64>,
 }
@@ -497,6 +517,7 @@ impl Default for Combat {
             debug: CombatDebug::default(),
             embeds: Vec::new(),
             cuts: Vec::new(),
+            kicked: false,
             sliced: HashMap::new(),
         }
     }
@@ -516,6 +537,8 @@ pub struct CombatInput<'a> {
     pub paused: bool,
     /// The player's body as capsules (world: ends, radius, `PART_*`), for the creatures' blows.
     pub player: &'a [(Vec3, Vec3, f32, u32)],
+    /// A foot kicking now ([`crate::kick`]): which, its ankle and toes (world), and the kick's way.
+    pub kick: Option<(usize, Vec3, Vec3, Vec3)>,
 }
 
 /// A damager's hit on a body part: whose, which part (its index, kind and radius), where, how
@@ -767,6 +790,20 @@ impl Combat {
         // hand that threw them.
         for (id, hand) in inp.rig.thrown_melee() {
             self.judge_weapon(inp, &bodies, hand, id, dt, &mut events, &mut seen);
+        }
+        // A kicking foot (as "hand" 2 or 3, no object), from its ankle to its toes.
+        self.kicked = false;
+        if let Some((foot, ankle, toes, way)) = inp.kick {
+            let blade = kick();
+            let now: [Vec3; SAMPLES] = std::array::from_fn(|k| ankle.lerp(toes, k as f32 / (SAMPLES - 1) as f32));
+            let key = 2 + foot as u32;
+            if !inp.paused
+                && let Some(prev) = self.prev.get(&key).filter(|p| p.len() == 1).cloned()
+                && self.judge_sweep(inp, &bodies, 2 + foot, 0, 2 + foot, &blade, 1, way, way, &prev[0], &now, dt, false, &[], &mut events).is_some()
+            {
+                self.kicked = true;
+            }
+            seen.insert(key, vec![now]);
         }
         self.prev = seen;
         self.touching = std::mem::take(&mut self.touching_now);
@@ -1277,7 +1314,7 @@ impl Combat {
         // sound: 0.3 s, at the sound's volume, 0.2 to 1 over the blow's intensity).
         let k = rustvr_melee::blow_intensity(b, judged.speed, judged.damage > 0.0);
         for h in [hand, hand ^ 1] {
-            if h == hand || two {
+            if (h == hand || two) && h < 2 {
                 self.pulses.push(Pulse { hand: h, seconds: HIT_BUZZ, frequency: if judged.kind == DMG_BLUNT { 70.0 } else { 120.0 }, amplitude: 0.2 + 0.8 * k });
             }
         }

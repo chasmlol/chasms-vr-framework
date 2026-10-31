@@ -816,6 +816,15 @@
  */
 #define RVR_GRAB_SLIPPED (1 << 3)
 
+/**
+ * Held by telekinesis, from afar: the game holds the
+ * point on the telekinesis drive for bodies (2000 N/m, 100 N s/m, at most 2500 N; the neck's turn
+ * x5), not the hand's; let go of with a throw, the part held gets 30 m/s of it and the rest of the
+ * body 8. Two hands holding one creature this way (with [`GRAB_TWO_HANDS`]): its limbs that can
+ * tear off do past 3000 N on their joints (over the time scale).
+ */
+#define RVR_GRAB_TK (1 << 4)
+
 
 
 #define RVR_MAX_HUD_ELEMENTS 48
@@ -1396,6 +1405,13 @@
 #define RVR_RULES_SAYS_TELEKINESIS (1 << 5)
 
 #define RVR_RULES_TELEKINESIS (1 << 6)
+
+/**
+ * The melee buttons: the movement stick's click kicks (an untracked kick, the runtime's
+ * `kick`), and slowing time goes on the dominant hand's B. Without it, the
+ * movement stick's click is the game's and slowing time the off hand's stick click.
+ */
+#define RVR_RULES_KICK (1 << 7)
 
 /**
  * Time is slowed: run the game's world at `time_scale`.

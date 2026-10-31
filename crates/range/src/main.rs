@@ -537,7 +537,9 @@ impl Game {
         self.feet.z = self.feet.z.clamp(content::ROOM_MIN.z, content::ROOM_MAX.z);
         // Jump and gravity, down to the floor (or the block's top) under the feet.
         let floor = arenas::floor_under(self.feet, 0.25);
-        let jump = held(it, Action::Jump);
+        // (With the melee buttons in its melee areas, the dominant stick's click jumps:
+        // its B slows time.)
+        let jump = if self.melee { pressed(presses, Action::Crouch) } else { held(it, Action::Jump) };
         if jump && !self.jump_was_held && self.feet.y <= floor && !climbing {
             self.vel_y = 4.0;
             self.stats[rs::JUMPS] += 1;
@@ -653,7 +655,7 @@ impl Game {
             self.adapter.write_spells(&combat::spells_with(self.spell));
             if self.melee {
                 let mut rules: MeleeRules = bytemuck::Zeroable::zeroed();
-                rules.flags = RULES_SAYS_TELEKINESIS | RULES_TELEKINESIS;
+                rules.flags = RULES_SAYS_TELEKINESIS | RULES_TELEKINESIS | RULES_KICK;
                 self.adapter.write_melee_rules(&rules);
             }
             let mut bloods = combat::bloods();
@@ -672,7 +674,7 @@ impl Game {
         // A blade filled with a spell, stuck in someone, keeps working on them (40 heat a second
         // times its fill; a shock's re-shocking).
         for (&object, &actor) in &self.stuck {
-            if let Some(i) = self.rt_melee.imbue.iter().find(|i| i.object == object && i.charge > 0.0) {
+            if let Some(i) = self.rt_melee.imbue_of(object) {
                 combat::imbued_stuck(&mut self.people, actor, i.spell, i.charge, dt);
             }
         }
@@ -718,10 +720,15 @@ impl Game {
             match ev.kind {
                 CE_HIT => {
                     let bled = combat::hit(&mut self.people, &ev, &self.melee_weapons);
+                    // In from the blow (a cut 3 mm, a stab as deep as it went): what its spell does
+                    // while it's in starts now.
+                    if ev.flags & CEF_PENETRATED != 0 {
+                        self.stuck.insert(ev.object, ev.actor);
+                    }
                     // An imbued blade's spell: fire heats what it hits until it burns, a shock may
                     // stun it.
                     if ev.flags & CEF_IMBUED != 0 {
-                        let charge = (0..2).map(|h| self.rt_melee.imbue[h]).find(|i| i.object == ev.object).map_or(0.5, |i| i.charge);
+                        let charge = self.rt_melee.imbue_of(ev.object).map_or(0.0, |i| i.charge);
                         combat::imbued_hit(&mut self.people, &ev, charge);
                     }
                     self.stats_f[rs::F_MELEE_HITS] += 1.0;
