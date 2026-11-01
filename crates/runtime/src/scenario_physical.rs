@@ -587,7 +587,8 @@ pub fn all() -> Vec<Scenario> {
             range_args: vec![],
             physical: true,
             start: Body::rest,
-            settings: |_| {},
+            // (Its hand is keyed for a blade along it: not the settings' lean forward.)
+            settings: |s| s.melee.grip_angle = 0.0,
             input: || {
                 latched(|t, objs, _| {
                     let mut b = Body::rest();
@@ -628,7 +629,8 @@ pub fn all() -> Vec<Scenario> {
             range_args: vec![],
             physical: true,
             start: Body::rest,
-            settings: |_| {},
+            // (A blade along the hand, as the sword's.)
+            settings: |s| s.melee.grip_angle = 0.0,
             input: || {
                 latched(|t, objs, _| {
                     let mut b = Body::rest();
@@ -669,7 +671,8 @@ pub fn all() -> Vec<Scenario> {
             range_args: vec![],
             physical: true,
             start: Body::rest,
-            settings: |_| {},
+            // (A blade along the hand, as the sword's.)
+            settings: |s| s.melee.grip_angle = 0.0,
             input: || {
                 latched(|t, objs, _| {
                     let mut b = Body::rest();
