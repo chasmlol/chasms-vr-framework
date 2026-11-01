@@ -915,11 +915,12 @@ impl Game {
         }
         // The fighters see the player and their weapons.
         let sight = self.sight(f, dt);
-        // The duel's rules while the player's in its ring (the melee buttons in the melee areas).
+        // The duel's rules while the player's in its ring, with no slowing time there (the melee buttons
+        // in the melee areas).
         let duel = arenas::in_duel(sight.feet);
         if self.adapter.connected() && self.duel_rules != Some(duel) {
             let mut rules: MeleeRules = bytemuck::Zeroable::zeroed();
-            rules.flags = if self.melee { RULES_KICK } else { 0 };
+            rules.flags = if self.melee { RULES_KICK } else { 0 } | if duel { RULES_SAYS_SLOW } else { 0 };
             rules.mode = if duel { MELEE_DUEL } else { MELEE_PHYSICS };
             self.adapter.write_melee_rules(&rules);
             self.duel_rules = Some(duel);
