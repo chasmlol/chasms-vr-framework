@@ -123,6 +123,8 @@ const STEP_IN: f32 = 1.2;
 const LUNGE: f32 = 0.6;
 const LUNGE_TO: f32 = 0.95;
 const TEST_SPACING: f32 = 1.45;
+/// A blade's hits on it within this long are one blow (s).
+const ONE_BLOW: f64 = 0.4;
 /// What it guards with its parries (its own space): its chest to its head, this thick (m).
 const BODY: (Vec3, Vec3, f32) = (Vec3::new(0.0, 0.95, 0.0), Vec3::new(0.0, 1.75, 0.0), 0.25);
 
@@ -196,6 +198,8 @@ pub struct Think {
     pub face_to: Option<Vec3>,
     /// Its sword hurts what it meets (its release).
     pub attacking: bool,
+    /// How its sword lies (its own space): as keyed, past what its wrist would turn to.
+    pub sword: Quat,
 }
 
 pub struct Duelist {
@@ -214,11 +218,13 @@ pub struct Duelist {
     rng: u32,
     /// The cue (the tests) was up last frame.
     cue_was: bool,
+    /// The last blow that landed on it: by what, when (a blow lands once).
+    last_blow: Option<(u32, f64)>,
 }
 
 impl Duelist {
     pub fn new(person: usize, id: u32, drive: Drive, now: f64) -> Duelist {
-        Duelist { person, id, drive, state: State::Guard, since: now, last: KeyAt::of(GUARD, 0.0), next_swing: now + 2.0, last_side: None, seen: VecDeque::new(), reaction: tune::REACTION, rng: 0x9E37_79B9 ^ id, cue_was: false }
+        Duelist { person, id, drive, state: State::Guard, since: now, last: KeyAt::of(GUARD, 0.0), next_swing: now + 2.0, last_side: None, seen: VecDeque::new(), reaction: tune::REACTION, rng: 0x9E37_79B9 ^ id, cue_was: false, last_blow: None }
     }
 
     fn roll(&mut self) -> f32 {
@@ -281,6 +287,16 @@ impl Duelist {
         } else if !parried && !its_swing_parried {
             tracing::info!("duelist {:#x}: beat the player's blade aside", self.id);
         }
+    }
+
+    /// Whether a blow of `object`'s lands on it now: one a swing (the player's blade meeting its
+    /// parts one after another in a swing is one blow).
+    pub fn takes(&mut self, object: u32, now: f64) -> bool {
+        if self.last_blow.is_some_and(|(o, t)| o == object && now - t < ONE_BLOW) {
+            return false;
+        }
+        self.last_blow = Some((object, now));
+        true
     }
 
     /// Its sword struck the player.
@@ -439,10 +455,11 @@ impl Duelist {
         self.last = key;
         let mut pose = Pose::default();
         crouch(&mut pose, CROUCH);
-        pose.turn[anim::TORSO] = Quat::from_rotation_y(key.twist);
+        let torso = Quat::from_rotation_y(key.twist);
+        pose.turn[anim::TORSO] = torso;
         pose.arm(1, key.wrist, key.key().turn(), 0.0);
         pose.arm(0, OFF_HAND, Quat::IDENTITY, 0.0);
-        Think { pose, walk, face_to: (dist > 0.05).then_some(to_player), attacking }
+        Think { pose, walk, face_to: (dist > 0.05).then_some(to_player), attacking, sword: (torso * key.key().turn()).normalize() }
     }
 
     /// A side to swing from: any but the last one twice running.

@@ -1,0 +1,90 @@
+# Run: rustvr-xrsim run --dir runs/duel_parry --script tools/xrsim/duel_parry.toml -- rustvr-play.exe -- --arena duel --duel-test cue:right (docs/DUEL.md)
+# The duel, cue mode (--duel-test cue:right): the duelist swings from its right (the player's left)
+# (Stage space: forward is -Z; a hand is placed [right, up, forward] from the head.)
+# each time a hand is raised over the head. The left hand takes the sword and holds it upright on
+# the left.
+# 1) Cue at 12: its wind-up (0.8 s, stepping in), its release from ~12.8. A push into it at 12.95-13.05
+#    (inside the window it opens): a parry; then a step in and a forehand counter at 13.35-13.47.
+# 2) Cue at 19: the push at 19.25 (0.6 s early: its window and recovery are over when the swing
+#    comes at ~19.9); the blade held still in its way is beaten aside and the player struck.
+duration = 24
+capture_width = 960
+
+[[key]]
+t = 0
+head = { pos = [0, 1.7, 0], yaw = 0, pitch = -30 }
+left = { pos = [-0.4, -0.6, 0.2], squeeze = 0 }
+right = { pos = [0.3, -0.6, 0.2] }
+[[key]]
+t = 5
+left = { pos = [-0.32, -0.83, 0.25], squeeze = 0 }
+[[key]]
+t = 6
+left = { squeeze = 1 }
+[[key]]
+t = 7.5
+head = { pitch = -5 }
+left = { pos = [-0.3, -0.35, 0.35], yaw = 0, pitch = 80 }
+
+# 1) the cue, the parry, the counter
+[[key]]
+t = 11.9
+right = { pos = [0.3, -0.6, 0.2] }
+[[key]]
+t = 12.0
+right = { pos = [0.2, 0.4, 0.1] }
+[[key]]
+t = 12.5
+right = { pos = [0.3, -0.6, 0.2] }
+[[key]]
+t = 12.95
+left = { pos = [-0.3, -0.35, 0.35], pitch = 80 }
+[[key]]
+t = 13.05
+left = { pos = [-0.38, -0.3, 0.62], pitch = 75 }
+[[key]]
+t = 13.2
+head = { pos = [0, 1.7, 0] }
+left = { pos = [-0.32, -0.32, 0.5], yaw = 0, pitch = 75 }
+[[key]]
+t = 13.35
+head = { pos = [0, 1.7, -0.25] }
+left = { pos = [-0.35, -0.3, 0.45], yaw = -30, pitch = 60 }
+[[key]]
+t = 13.47
+left = { pos = [0.25, -0.4, 0.6], yaw = 70, pitch = 0 }
+[[key]]
+t = 15
+head = { pos = [0, 1.7, 0] }
+left = { pos = [-0.3, -0.35, 0.35], yaw = 0, pitch = 80 }
+
+# 2) the cue, the push too early, the blade held still: beaten aside, struck
+[[key]]
+t = 18.9
+right = { pos = [0.3, -0.6, 0.2] }
+[[key]]
+t = 19.0
+right = { pos = [0.2, 0.4, 0.1] }
+[[key]]
+t = 19.5
+right = { pos = [0.3, -0.6, 0.2] }
+[[key]]
+t = 19.25
+left = { pos = [-0.3, -0.35, 0.35], pitch = 80 }
+[[key]]
+t = 19.35
+left = { pos = [-0.38, -0.3, 0.62], pitch = 75 }
+[[key]]
+t = 19.55
+left = { pos = [-0.3, -0.35, 0.35], pitch = 80 }
+
+[[film]]
+t = 12.6
+frames = 90
+every = 3
+name = "parry"
+[[film]]
+t = 19.6
+frames = 72
+every = 3
+name = "early"

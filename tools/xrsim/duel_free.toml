@@ -1,0 +1,26 @@
+# Run: rustvr-xrsim run --dir runs/duel_free --script tools/xrsim/duel_free.toml -- rustvr-play.exe -- --arena duel (docs/DUEL.md)
+# The duel ring as it plays (no --duel-test): the left hand takes the sword and holds it upright;
+# the duelist comes in from across the ring and fights of its own will. Nothing parried.
+duration = 34
+capture_width = 960
+[[key]]
+t = 0
+head = { pos = [0, 1.7, 0], yaw = 0, pitch = -30 }
+left = { pos = [-0.4, -0.6, 0.2], squeeze = 0 }
+right = { pos = [0.3, -0.6, 0.2] }
+[[key]]
+t = 5
+left = { pos = [-0.32, -0.83, 0.25], squeeze = 0 }
+[[key]]
+t = 6
+left = { squeeze = 1 }
+[[key]]
+t = 7.5
+head = { pitch = -5 }
+left = { pos = [-0.3, -0.35, 0.35], yaw = 0, pitch = 80 }
+[[capture]]
+t = 14
+name = "free14"
+[[capture]]
+t = 20
+name = "free20"

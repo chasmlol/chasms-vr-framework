@@ -5,6 +5,10 @@ that stick, limbs that come off, creatures that are ragdolls held up by their mu
 extras (throwing, telekinesis, slowed time, imbuing, breakable things, climbing). Its numbers are
 tuned as one set, and every choice that needs a reason is written down here, under "The calls".
 
+This is the **physics sandbox**, one of the framework's two melee modes. The other, the **duel**
+(slow, weighty swings, parry windows, ripostes, staggers), is [DUEL.md](DUEL.md): the player picks
+one in the menu (Controls: Melee), and a game may choose its default (`MeleeRules::mode`).
+
 ## Who does what
 
 The runtime owns the hands and judges physics: what a weapon in the hand does when it meets a
@@ -314,9 +318,10 @@ and body rules, shared by the runtime and the range.
 
 ## Settings and the game's say
 
-`settings.toml`'s `[melee]`: `strength` (1: the standard player), `stamina` (off), `stamina_time`
-(12 s), `stamina_refill` (6 s), `slow_time` (on), `telekinesis` (off), `climbing` (on),
-`easy_dismemberment` (on); they're in the file only, not the in-headset menu. A game's
+`settings.toml`'s `[melee]`: `strength` (1: the standard player), `stamina` (off), `stamina_time` (12 s),
+`stamina_refill` (6 s), `slow_time` (on), `telekinesis` (off), `climbing` (on), `easy_dismemberment`
+(on); they're in the file only, not the in-headset menu. Its `mode` (`game`, `physics`, `duel`) is
+in the menu too ([DUEL.md](DUEL.md)). A game's
 `MeleeRules` override slowing time, climbing and telekinesis when they say (`RULES_SAYS_*`), turn on
 the melee buttons (`RULES_KICK`: the movement stick kicks, slowing time on the dominant B, the climb
 jump on the dominant stick), give their own slowing (`slow_scale`, `focus_time`, `focus_refill`),

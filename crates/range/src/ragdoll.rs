@@ -710,16 +710,18 @@ impl Dummies {
     }
 
     /// The item in person `who`'s hand `hand` led to where `pose` (its animation, where it stands and
-    /// faces) puts that hand, the hand following it (the duel's duelist: its swings land where and
-    /// when they're keyed, not lagging on a soft hold); or (None) held by its hand's joint again.
-    pub fn lead_item(&mut self, who: usize, hand: usize, pose: Option<&Pose>) {
+    /// faces) puts that hand, turned `turn` (its own space), the hand following it (the duel's
+    /// duelist: its swings land where and when they're keyed, not lagging on a soft hold); or
+    /// (None) held by its hand's joint again.
+    pub fn lead_item(&mut self, who: usize, hand: usize, lead: Option<(&Pose, Q)>) {
         let Some(k) = self.people[who].hands[hand].filter(|&k| !self.items[k].players) else { return };
         let body = self.items[k].body;
-        match pose {
-            Some(pose) => {
+        match lead {
+            Some((pose, turn)) => {
                 let p = &self.people[who];
                 let rest: [V3; PARTS] = std::array::from_fn(|i| p.parts[i].rest);
-                let (hp, hq) = pose.targets(p.at.0, p.at.1, &rest)[anim::HAND[hand]];
+                let (hp, _) = pose.targets(p.at.0, p.at.1, &rest)[anim::HAND[hand]];
+                let hq = (p.at.1 * turn).normalize();
                 let grip = self.items[k].grip;
                 let rb = &mut self.world.bodies[body];
                 if rb.body_type() != RigidBodyType::KinematicPositionBased {

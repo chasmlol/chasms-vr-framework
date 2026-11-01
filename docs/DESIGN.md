@@ -544,6 +544,13 @@ creatures, their health and their brains are its own. A game that writes only th
 plays it all: ragdoll fighters with their pins, balance, reactions and brains, a
 bench of dummies in armour, a melee rack, a block to climb.
 
+That's the **physics sandbox**; the second melee mode is the **duel** ([DUEL.md](DUEL.md)): slow,
+weighty swings, a parry window opened by pushing the blade into the blow, ripostes and staggers,
+no passive block, a heavier hold and a slower walk with a weapon drawn (`duel.rs`, `rig/duel.rs`,
+every number in `rustvr_melee::duel`). The player picks one (`[melee] mode`, the menu's Controls
+tab), a game may choose its default (`MeleeRules::mode`); the range's duel ring has one duelist
+in Oblivion's iron armour (from the user's own files) to fight by it.
+
 ## 6g. Gore
 
 `crates/runtime/src/gore.rs` makes the blood of the player's blows and the creatures' stumps;
@@ -686,7 +693,7 @@ each change as it's made.
 | `[riding]` | `turn` smooth (or steps of `turn_step` 30), `vignette` 0.5, `fade_on_off`, the reins' `rein_dead` 0.05, `rein_travel` 0.30 and `rein_pull` 0.15 m, `cruise` 0.7, `spur_fade` 8 s, `flick`, `coast` 2.5 s, `stride_haptics` |
 | `[mirror]` | `distance` 1.2, `width` 0.95, `height` 2, `lift` 0.02, `gesture` on, `game_world` on |
 | `[holsters]` | `mouth_time` 0.5, `read_time` 0.8, `coat_time` 0.3, `edit_hold` 1.5, and each game's slots as the player set them up (`[[holsters.games.<game>]]`) |
-| `[melee]` | `strength` 1, `stamina` off (`stamina_time` 12, `stamina_refill` 6), `slow_time` on, `telekinesis` off, `climbing` on, `easy_dismemberment` on |
+| `[melee]` | `strength` 1, `stamina` off (`stamina_time` 12, `stamina_refill` 6), `slow_time` on, `telekinesis` off, `climbing` on, `easy_dismemberment` on, `mode` game (or physics, duel) |
 | `[voice]` | `enabled` off, `mic`, `volume` 2.5, `act_out`, `barge_in`, `pause` 0.3, `stream`, `commands` on (§6j) |
 | `[spectator]` | the desktop view: `enabled` on, `eye` right, `fov` 105, `aim_zoom` to `aim_fov` 65, `smoothing` 0.1, `max_lag` 8, `roll_lock`, 1600 x 900, `fullscreen` |
 | `[desktop_bob]` | `mode` game (or generic, off), `strength` 1 |
@@ -705,7 +712,7 @@ and the frame rate. Tabs, in order:
 | Hands | physics and ghost hands, the grab, grip toggling, holstering, the gravity gloves, magazines, the virtual stock, recoil, the laser sight, weight, mechanisms, throwing, strength on creatures, grenades, knives, eating and reading, the holsters' editor, the quiver and the bow, and the sounds |
 | Voice | talking to the characters, voice commands, the microphone, their volume, acting out, streaming, barging in, the pause |
 | Body | height (seated, real height, measure it), arms (span, measure them), what's shown (hands, arms, full body), the game's lighting on it, tracked elbows, hand size, and the mirror |
-| Controls | the weapon hand, two-handed aiming, gestures, reloading by hand or by slap, ability flicks, melee swings, the stick's dead zone, swimming |
+| Controls | the weapon hand, two-handed aiming, gestures, reloading by hand or by slap, ability flicks, melee swings, the melee mode (the game's, the physics sandbox, the duel), the stick's dead zone, swimming |
 | Weapon | the glued gun's offsets and angles, picture-in-picture scopes and their refresh |
 | Display | supersampling, world scale, moving the game's picture, prediction, the headset's depth, refresh rate, overscan, the HUD and subtitles, the menu, the desktop view, OBS in the headset |
 | Studio | the desktop view's looks, camera, bob and effects (§6i) |
@@ -892,7 +899,7 @@ for the incendiary, and pushes the props within 6 m; the grenade back on its tab
 valves on your right (`content.rs`), a bow on your back with its arrows from the runtime's quiver
 (`archery.rs`), and two spells, a fire bolt and a shock (`combat.rs`).
 
-The range is also the game for the melee (`--arena range|rack|arena|bench|climb`
+The range is also the game for the framework's melee (`--arena range|rack|arena|bench|climb|duel`
 starts the player in one of its areas, `arenas.rs`): two training dummies near the start, a melee
 rack (dagger, mace, axe, longsword, maul, shield, spear; `arsenal.rs`), an arena of fighters in
 waves from easy to hard with their brains and ragdolls (`arena.rs`, `brain.rs`, `ragdoll.rs`), a

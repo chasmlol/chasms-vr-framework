@@ -179,6 +179,12 @@ impl People {
         tracing::info!("range: the duelist {id:#x} stands in the ring ({:?})", self.duel_drive);
     }
 
+    /// Whether a blow of the player's (`CE_HIT`) lands on the duelist: one a swing.
+    pub fn duelist_takes(&mut self, ev: &CombatEvent) -> bool {
+        let now = self.dummies.time;
+        self.duelist.as_mut().filter(|d| d.id == ev.actor).is_none_or(|d| d.takes(ev.object, now))
+    }
+
     /// Whether `id` is the duelist.
     pub fn is_duelist(&self, id: u32) -> bool {
         self.duelist.as_ref().is_some_and(|d| d.id == id)
@@ -233,11 +239,11 @@ impl People {
         let seen = if near { sight.clone() } else { Sight { feet: at + face * Vec3::Z * 3.0, ..Default::default() } };
         let t = d.think(now, dt, at, face, &seen, self.duel_cue);
         // Its sword goes where its keys put it, its hand with it.
-        self.dummies.lead_item(d.person, 1, Some(&t.pose));
+        self.dummies.lead_item(d.person, 1, Some((&t.pose, t.sword)));
         let p = &mut self.dummies.people[d.person];
         p.pose = t.pose;
         p.doing = if t.attacking { Doing::Attacking } else { Doing::Combat };
-        // Its sword arm firm in its guard and its parries, firmer swinging (the ragdoll's pins).
+        // Its sword arm firm in its guard and its parries, firmer swinging (the fighters' pins).
         p.arms = [(1.0, 1.0, 1.0), if t.attacking { ragdoll::ATTACK_ARM } else { ragdoll::GUARD_ARM }];
         let (lo, hi) = arenas::DUEL;
         let mut at = at + face * t.walk * dt;

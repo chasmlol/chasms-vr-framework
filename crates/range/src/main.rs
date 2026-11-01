@@ -814,6 +814,9 @@ impl Game {
                 ev.dir
             );
             match ev.kind {
+                // (A blow lands on the duelist once a swing: its blade's other parts it met are
+                // touches.)
+                CE_HIT if !self.people.duelist_takes(&ev) => combat::touch(&mut self.people, &ev),
                 CE_HIT => {
                     // (A duelist's limbs stay on: a cut through one is a cut.)
                     let ev = if self.people.is_duelist(ev.actor) { CombatEvent { flags: ev.flags & !CEF_SEVER, ..ev } } else { ev };
