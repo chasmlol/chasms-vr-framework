@@ -42,10 +42,11 @@
 //! | a thing in the world | at its distance (0.9 to 1.4 m: the laser's comfortable range), 10 degrees under the eyes, beside it on its side wherever it would otherwise cover it (never more than 40 degrees round) |
 //! | the player | 1.1 m ahead of where they faced, 8 degrees under the eyes; it comes round after a turn of 65 degrees |
 //! | a pop-up | 0.8 m ahead of where the eyes look, nearer than what's behind it |
-//! | over a view (a title screen in the world) | 5 m out towards the view's subject, beside it on its side (6 degrees clear), its middle 6 degrees under the horizon; fixed in the game's world (the world's turns carry it, never the head), and where it was again after a menu over it |
+//! | over a view (a title screen in the world) | 5 m out towards the view's subject, beside it on its side (6 degrees clear), its middle 6 degrees under the horizon; where it was again after a menu over it |
 //!
-//! Once placed a group stays put in the world (it's placed again only when its thing moves, or the
-//! head walks away from where it was, gliding over 0.3 s). Its pieces lie on an upright cylinder
+//! Once placed a group stays put in the game's world: the world's turns (the stick's in a
+//! conversation, a mount's) and recentres carry it, the head never does. It's placed again only
+//! when its thing moves, or the head walks away from where it was, gliding over 0.3 s. Its pieces lie on an upright cylinder
 //! round the eye it was placed for, each turned to face it, so a wide menu keeps its text at one
 //! distance. Every group is sized from the game's own text (`HudLayout::text_height`) so a line of
 //! it is `menu_text_deg` degrees tall wherever the group is.
@@ -149,14 +150,30 @@ struct Placed {
     distance: f32,
     /// Metres per group unit (the HUD texture's height at the group's size).
     unit: f32,
-    /// A title over a view ([`ANCHOR_VISTA`]): tracking -> the game's world when it was placed, and
-    /// what it was placed beside (the world's). It stays fixed in the game's world: the world's
-    /// turns and recentres carry it, the head never does.
+    /// Tracking -> the game's world when it was placed (or last carried, [`Placed::carry`]): it
+    /// stays where it is in the game's world, the world's turns (the stick's in a conversation, a
+    /// mount's) and recentres carry it, the head never does. And what it was placed beside (the
+    /// world's).
     world: Option<Mat4>,
     at: Vec3,
 }
 
 impl Placed {
+    /// Into tracking space as it is now (`now`: tracking -> the game's world), from as it was when
+    /// it was placed or last carried: where it is in the game's world, it stays.
+    fn carry(&mut self, now: Mat4) {
+        let Some(then) = self.world.replace(now) else { return };
+        let c = now.inverse() * then;
+        if c.abs_diff_eq(Mat4::IDENTITY, 1e-6) {
+            return;
+        }
+        let z = c.transform_vector3(Vec3::Z);
+        self.height = c.transform_point3(Vec3::new(self.eye.x, self.height, self.eye.z)).y;
+        self.eye = c.transform_point3(self.eye);
+        self.yaw += z.x.atan2(z.z);
+        self.thing = self.thing.map(|t| c.transform_point3(t));
+    }
+
     /// Part of the way from `self` to `to`.
     fn lerp(&self, to: &Placed, t: f32) -> Placed {
         Placed {
@@ -247,6 +264,18 @@ impl HudPlacer {
         // (A title over a view is kept while another menu covers it, the options or the credits
         // over the main menu: back, it's where it was.)
         self.groups.retain(|(p, _)| p.anchor == ANCHOR_VISTA || groups.iter().any(|g| g.id == p.id && g.anchor == p.anchor));
+        // Each where it was in the game's world: a turn or a recentre moves the world round the
+        // player, and what floats in it goes with it (a conversation beside its speaker, as the
+        // stick turns the player).
+        if let Some(m) = map {
+            let now = m.matrix();
+            for (p, glide) in &mut self.groups {
+                p.carry(now);
+                if let Some(gl) = glide {
+                    gl.from.carry(now);
+                }
+            }
+        }
         let fwd = head_rot * Vec3::Z;
         let head_yaw = fwd.x.atan2(fwd.z);
         let head_pitch = -(fwd.y.clamp(-1.0, 1.0)).asin();
@@ -258,24 +287,17 @@ impl HudPlacer {
             let Some(fp) = footprint(layout, n, aspect) else { continue };
             let thing = map.map(|m| m.inv_point(Vec3::from_array(g.at)));
             let slot = self.groups.iter().position(|(p, _)| p.id == g.id && p.anchor == g.anchor);
-            // Tracking where it was placed -> tracking now (a title over a view, fixed in the world).
-            let carried = |p: &Placed| match (p.world, map) {
-                (Some(then), Some(now)) => now.matrix().inverse() * then,
-                _ => Mat4::IDENTITY,
-            };
             let stale = slot.map(|k| &self.groups[k].0).is_none_or(|p| match g.anchor {
                 ANCHOR_WORLD => thing.zip(p.thing).is_some_and(|(t, then)| t.distance(then) > 0.3) || eye.distance(p.eye) > 0.8,
                 ANCHOR_PLAYER => crate::wrap_angle(head_yaw - p.yaw).abs() > 65f32.to_radians() || eye.distance(p.eye) > 0.8,
                 // (A title over a view stays where it is in the world while the player looks round
                 // it: placed again only beside a new view, or once the player is well away.)
-                ANCHOR_VISTA => p.at.distance(Vec3::from_array(g.at)) > 1.0 || (p.world.is_none() && map.is_some()) || eye.distance(carried(p).transform_point3(p.eye)) > 1.5,
+                ANCHOR_VISTA => p.at.distance(Vec3::from_array(g.at)) > 1.0 || (p.world.is_none() && map.is_some()) || eye.distance(p.eye) > 1.5,
                 _ => false,
             });
             if stale {
                 let mut placed = place_group(g, fp, thing, eye, head_yaw, head_pitch, per_metre);
-                if g.anchor == ANCHOR_VISTA {
-                    placed.world = map.map(|m| m.matrix());
-                }
+                placed.world = map.map(|m| m.matrix());
                 match slot {
                     // (Placed again: it glides there from where it was.)
                     Some(k) => {
@@ -300,8 +322,6 @@ impl HudPlacer {
                 }
                 None => *to,
             };
-            // (A title over a view: carried with the world since it was placed.)
-            let fixed = p.world.is_some().then(|| carried(&p));
             for e in layout.entries().iter().filter(|e| e.group == n) {
                 let (w, h) = piece_size(e, aspect);
                 let (w, h) = (w * p.unit, h * p.unit);
@@ -313,11 +333,6 @@ impl HudPlacer {
                 let pitch = (p.eye.y - y).atan2(r);
                 let mut panel = Panel::facing(c, yaw, pitch, w, w / h.max(1e-4));
                 panel.height = h;
-                if let Some(m) = fixed {
-                    panel.center = m.transform_point3(panel.center);
-                    panel.right = m.transform_vector3(panel.right).normalize_or(panel.right);
-                    panel.up = m.transform_vector3(panel.up).normalize_or(panel.up);
-                }
                 let opacity = if e.opacity > 0.0 { e.opacity } else { 1.0 } * s.ui.menu_opacity;
                 out.push(HudPiece { panel, uv: e.uv, opacity, role: e.role, flags: e.flags });
             }
