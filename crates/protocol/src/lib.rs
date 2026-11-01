@@ -221,6 +221,12 @@ pub const TGT_BLOOM: u32 = 1 << 4;
 /// The aux view's depth ([`TexKind::AuxDepth`]: `R32_FLOAT`, linear metres along its view axis), as
 /// the mirror's world needs it ([`MirrorView`]).
 pub const TGT_AUX_DEPTH: u32 = 1 << 5;
+/// Each eye's hand art ([`TexKind::ArtLeft`], the eyes' size and colour format, premultiplied
+/// alpha): what the game draws of the player's casting art ([`Casters`]: a spell in the palm, a
+/// staff's at its tip), apart from the eye's picture, where the world doesn't hide it. The runtime
+/// lays it over the hands it draws wherever it's nearer than they are ([`SLOT_ART`]): drawn into
+/// the picture, a hand drawn over it would hide it even in front of the palm.
+pub const TGT_ART: u32 = 1 << 6;
 
 /// The bloom and lens textures' size for eyes `w` x `h`: half each way (bloom is blurry; the lens
 /// dirt it shows and the visor's warp less so).
@@ -250,10 +256,13 @@ pub enum TexKind {
     LensRight = 10,
     /// The aux view's depth (see [`TGT_AUX_DEPTH`]).
     AuxDepth = 11,
+    /// The hand art of each eye (see [`TGT_ART`]).
+    ArtLeft = 12,
+    ArtRight = 13,
 }
 
 impl TexKind {
-    pub const ALL: [TexKind; 12] = [
+    pub const ALL: [TexKind; 14] = [
         TexKind::EyeLeft,
         TexKind::EyeRight,
         TexKind::DepthLeft,
@@ -266,6 +275,8 @@ impl TexKind {
         TexKind::LensLeft,
         TexKind::LensRight,
         TexKind::AuxDepth,
+        TexKind::ArtLeft,
+        TexKind::ArtRight,
     ];
 
     pub fn tag(self) -> &'static str {
@@ -282,6 +293,8 @@ impl TexKind {
             TexKind::LensLeft => "lensL",
             TexKind::LensRight => "lensR",
             TexKind::AuxDepth => "auxDepth",
+            TexKind::ArtLeft => "artL",
+            TexKind::ArtRight => "artR",
         }
     }
 }
@@ -977,6 +990,9 @@ pub const SLOT_MIRROR: u32 = 1 << 6;
 /// moves through it, the player's walk and the game's teleport don't move it), holds a copy of it,
 /// and when the game draws again fades from it as [`SlotInfo::held_over`] says.
 pub const SLOT_HELD: u32 = 1 << 7;
+/// Both eyes' art textures hold this picture's hand art, left out of the eyes' pictures
+/// ([`TGT_ART`]): drawn for the casting of the runtime's frame [`SlotInfo::frame_index`].
+pub const SLOT_ART: u32 = 1 << 8;
 
 /// Depth holds linear view distance in metres.
 pub const DEPTH_LINEAR: u32 = 1 << 0;

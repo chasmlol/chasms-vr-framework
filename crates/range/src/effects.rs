@@ -744,6 +744,13 @@ impl Effects {
     }
 
     /// The sprites to draw this frame.
+    /// A casting hand's art (a game's own casting art, as the range draws it): a glow `size` m
+    /// across in the spell's `color` at `at` (world).
+    pub fn hand_art(&self, at: Vec3, color: [f32; 3], size: f32) -> FxDraw {
+        let c = Vec3::from_array(color) * 1.6;
+        FxDraw { tex: self.sprites.glow.tex, pos: at, size: Vec2::splat(size), shape: FxShape::Billboard { roll: 0.0 }, color: c.extend(1.0).to_array(), uv: self.sprites.glow.frame(0), blend: FxBlend::Add }
+    }
+
     pub fn sprites(&self) -> Vec<FxDraw> {
         let mut out = Vec::with_capacity(self.particles.len() + self.decals.len() + self.tracers.len());
         for p in &self.particles {

@@ -57,6 +57,8 @@ pub struct SlotTextures {
     /// The game's bloom and lens per eye (`R16G16B16A16_FLOAT`, [`rustvr_protocol::TGT_BLOOM`]).
     pub bloom: Option<[Texture; 2]>,
     pub lens: Option<[Texture; 2]>,
+    /// Each eye's hand art (premultiplied, [`rustvr_protocol::TGT_ART`]).
+    pub art: Option<[Texture; 2]>,
 }
 
 impl SlotTextures {
@@ -70,6 +72,7 @@ impl SlotTextures {
             .chain(self.lights.iter())
             .chain(self.bloom.iter().flatten())
             .chain(self.lens.iter().flatten())
+            .chain(self.art.iter().flatten())
     }
 }
 
@@ -904,7 +907,8 @@ fn open_targets(gpu: &Gpu, mapping: &str, t: &Targets) -> anyhow::Result<Vec<Slo
         } else {
             (None, None)
         };
-        slots.push(SlotTextures { eyes, depth, hud, aux, aux_depth, lights, bloom, lens });
+        let art = if t.flags & TGT_ART != 0 { Some([open(TexKind::ArtLeft, unorm)?, open(TexKind::ArtRight, unorm)?]) } else { None };
+        slots.push(SlotTextures { eyes, depth, hud, aux, aux_depth, lights, bloom, lens, art });
     }
     Ok(slots)
 }

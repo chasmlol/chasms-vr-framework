@@ -415,6 +415,23 @@ impl Renderer {
         Ok(())
     }
 
+    /// Effects drawn apart from the picture just rendered (`fx` into `target`, cleared first,
+    /// premultiplied), in its depth: what's in front hides them, they hide nothing.
+    pub fn render_apart(&mut self, gpu: &Gpu, target: &ID3D11RenderTargetView, w: u32, h: u32, eye: Vec3, fx: &[FxDraw]) {
+        let Some(depth) = self.depth.get(&(w, h)).and_then(|d| d.dsv.clone()) else { return };
+        let ctx = &gpu.ctx;
+        unsafe {
+            ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &depth);
+            ctx.ClearRenderTargetView(target, &[0.0; 4]);
+        }
+        pipeline::viewport(ctx, w, h);
+        self.draw_fx(gpu, eye, fx);
+        unsafe {
+            ctx.PSSetShaderResources(0, Some(&[None]));
+            ctx.OMSetRenderTargets(None, None);
+        }
+    }
+
     /// The effects: smoke and holes back to front, then the light (additive) ones.
     fn draw_fx(&mut self, gpu: &Gpu, eye: Vec3, fx: &[FxDraw]) {
         let ctx = &gpu.ctx;

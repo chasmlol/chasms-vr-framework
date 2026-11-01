@@ -157,6 +157,28 @@ pub struct PlayerSource<'a> {
     pub fov: Fov,
 }
 
+/// The game's hand art for the eye being drawn ([`rustvr_protocol::TGT_ART`]): its picture of the
+/// player's casting art (premultiplied, the art alone), laid over the player wherever it's nearer
+/// than the player is ([`Avatar::draw_art`]).
+pub struct ArtInput<'a> {
+    pub srv: &'a ID3D11ShaderResourceView,
+    /// The eye the game drew it from (tracking space), and that eye's field of view.
+    pub drawn: (Pose, Fov),
+    /// Each hand's art, if it has any.
+    pub hands: [Option<ArtHand>; 2],
+}
+
+/// One hand's art ([`ArtInput`]), tracking space.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ArtHand {
+    /// Where it is now (the palm, a staff's tip).
+    pub at: [f32; 3],
+    /// How far it has moved since the game drew it (now less then): its picture is carried along.
+    pub moved: [f32; 3],
+    /// How far round `at` its art reaches (m).
+    pub reach: f32,
+}
+
 /// The game's depth for the eye being drawn (and its bloom).
 pub struct DepthInput<'a> {
     /// `R32_FLOAT` linear depth along the view axis, in game units. 0 means nothing was drawn.
@@ -419,6 +441,16 @@ impl Avatar {
         special: Option<&mut dyn FnMut(&SpecialDraw)>,
     ) -> Result<()> {
         self.renderer.draw(gpu, target, width, height, eye, fov, frame, depth, &mut self.body, self.arms.as_mut(), body, held, special)
+    }
+
+    /// The game's hand art (`art`) over what's in `target` (the eye's picture with the player drawn
+    /// on it, from `eye`), where the art is nearer than the player: each hand's in a plane facing the
+    /// eye just in front of where it is, so a palm turned to the eye shows its art and the back of a
+    /// hand turned to the eye hides it. In the player's depth as the last draw left it for this size
+    /// (`drawn`: the player was drawn into this target just now; else nothing hides the art).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_art(&mut self, gpu: &Gpu, target: &ID3D11RenderTargetView, width: u32, height: u32, eye: &Pose, fov: &Fov, art: &ArtInput, drawn: bool) -> Result<()> {
+        self.renderer.draw_art(gpu, target, width, height, eye, fov, art, drawn)
     }
 
     /// The view depth (metres) of the player `frame` poses (with `held`) where it shows from `eye`,

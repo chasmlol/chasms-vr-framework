@@ -123,6 +123,8 @@ impl RangeMagic {
         t.magicka_max = MAGICKA;
         t.cast_time = 0.4;
         t.recover = 0.5;
+        // (It draws its own casting art, apart from the eyes' pictures: `crate::effects::Effects::hand_art`.)
+        t.flags |= SPELLS_GAME_ART;
         t
     }
 

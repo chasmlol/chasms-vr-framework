@@ -108,7 +108,7 @@ impl Spec {
             eye_w,
             eye_h,
             color_format: typeless.0,
-            flags: req.flags & (TGT_DEPTH | TGT_HUD | TGT_AUX | TGT_LIGHTS | TGT_BLOOM | TGT_AUX_DEPTH),
+            flags: req.flags & (TGT_DEPTH | TGT_HUD | TGT_AUX | TGT_LIGHTS | TGT_BLOOM | TGT_AUX_DEPTH | TGT_ART),
             hud_w: if req.hud_w > 0 { req.hud_w } else { 1920 },
             hud_h: if req.hud_h > 0 { req.hud_h } else { 1080 },
             aux_w,
@@ -127,6 +127,8 @@ pub struct Slot {
     pub lights: Option<Texture>,
     pub bloom: Option<[Texture; 2]>,
     pub lens: Option<[Texture; 2]>,
+    /// Each eye's hand art ([`TGT_ART`]).
+    pub art: Option<[Texture; 2]>,
 }
 
 impl Slot {
@@ -140,6 +142,7 @@ impl Slot {
             .chain(self.lights.iter())
             .chain(self.bloom.iter().flatten())
             .chain(self.lens.iter().flatten())
+            .chain(self.art.iter().flatten())
     }
 
     /// Takes every texture's keyed mutex; on failure releases what it took.
@@ -205,7 +208,8 @@ impl SharedTargets {
             } else {
                 (None, None)
             };
-            slots.push(Slot { eyes, depth, hud, aux, aux_depth, lights, bloom, lens });
+            let art = if spec.flags & TGT_ART != 0 { Some([make(TexKind::ArtLeft, s, color(spec.eye_w, spec.eye_h))?, make(TexKind::ArtRight, s, color(spec.eye_w, spec.eye_h))?]) } else { None };
+            slots.push(Slot { eyes, depth, hud, aux, aux_depth, lights, bloom, lens, art });
         }
         Ok(SharedTargets { spec, generation, slots })
     }

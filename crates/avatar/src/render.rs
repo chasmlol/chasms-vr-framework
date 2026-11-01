@@ -26,7 +26,7 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 
 use crate::rig::{MAX_BONES, PoseInput, Posed, PosedFingers, Rig, Show};
 use crate::metro::{self, Class};
-use crate::{AvatarFrame, DepthInput, GameShading, Source};
+use crate::{ArtInput, AvatarFrame, DepthInput, GameShading, Source};
 
 /// Near and far planes of the avatar's own depth buffer; the near plane matches the compositor's,
 /// so the body clips where everything else the runtime draws does.
@@ -39,6 +39,11 @@ const FAR: f32 = 200.0;
 /// thickness of a gun's grip, or fingers wrapped behind it show through.
 pub(crate) const DEPTH_BIAS: f32 = 0.0015;
 pub(crate) const DEPTH_BIAS_PER_METER: f32 = 0.002;
+
+/// A hand's art is laid over the player in a plane this far in front of where it is (m, towards
+/// the eye): a palm turned to the eye is behind it, the back of a hand (a hand's breadth nearer) in
+/// front of it.
+const ART_IN_FRONT: f32 = 0.015;
 
 /// The ghost hands' colour (linear) and opacity.
 const GHOST: [f32; 4] = [0.30, 0.62, 1.0, 0.35];
@@ -985,6 +990,69 @@ const LASER_TEXTURES: [&str; 2] = ["fx__fx_laser1", "light__light_radial_falloff
 
 /// The player's layer over the game's picture, through the game's lens: at each pixel, the layer
 /// where the lens takes the picture from (its warp: the bloom and lens textures' alphas).
+/// The game's hand art over the player ([`Renderer::draw_art`]): each pixel's ray meets each hand's
+/// plane (facing the eye at `at`, as far as `at.w` round it); the nearest hand's point there, carried
+/// back to where its hand was when the game drew it, is looked up in the game's picture of the art
+/// from the eye it drew from, and laid over in the plane's depth (the player in front hides it).
+const ART_OVER: &str = r#"
+Texture2D art : register(t0);
+SamplerState lin : register(s0);
+cbuffer C : register(b0) {
+    float4x4 inv_view_proj;
+    float4x4 view_proj;
+    float4x4 drawn_view_proj;
+    float4 eye_pos;
+    float4 size;
+    float4 at[2];
+    float4 moved[2];
+};
+float4 VSMain(uint id : SV_VertexID) : SV_Position {
+    float2 uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+}
+struct ArtOut { float4 color : SV_Target; float depth : SV_Depth; };
+ArtOut PSMain(float4 p : SV_Position) {
+    float2 ndc = float2(p.x / size.x * 2 - 1, 1 - p.y / size.y * 2);
+    float4 f = mul(inv_view_proj, float4(ndc, 1, 1));
+    float3 dir = normalize(f.xyz / f.w - eye_pos.xyz);
+    int best = -1;
+    float rim = 1;
+    float3 q = 0;
+    [unroll] for (int h = 0; h < 2; h++) {
+        if (at[h].w <= 0) continue;
+        float3 n = eye_pos.xyz - at[h].xyz;
+        float d = dot(dir, n);
+        if (d >= 0) continue;
+        float3 x = eye_pos.xyz + dir * (dot(at[h].xyz - eye_pos.xyz, n) / d);
+        float r = length(x - at[h].xyz) / at[h].w;
+        if (r < rim) { rim = r; best = h; q = x; }
+    }
+    if (best < 0) discard;
+    float3 then = q - (best == 0 ? moved[0].xyz : moved[1].xyz);
+    float4 c = mul(drawn_view_proj, float4(then, 1));
+    if (c.w <= 0) discard;
+    float2 uv = float2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
+    if (any(uv < 0) || any(uv > 1)) discard;
+    ArtOut o;
+    o.color = art.SampleLevel(lin, uv, 0) * saturate((1 - rim) * 5);
+    float4 z = mul(view_proj, float4(q, 1));
+    o.depth = z.z / z.w;
+    return o;
+}
+"#;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ArtCb {
+    inv_view_proj: [f32; 16],
+    view_proj: [f32; 16],
+    drawn_view_proj: [f32; 16],
+    eye_pos: [f32; 4],
+    size: [f32; 4],
+    at: [[f32; 4]; 2],
+    moved: [[f32; 4]; 2],
+}
+
 const THROUGH_LENS: &str = r#"
 Texture2D layer : register(t0);
 Texture2D bloom_tex : register(t1);
@@ -1841,6 +1909,9 @@ pub struct Renderer {
     through_lens: Program,
     lens_cb: ConstantBuffer<[f32; 4]>,
     premultiplied: ID3D11BlendState,
+    /// The game's hand art laid over the player ([`Renderer::draw_art`]).
+    art_over: Program,
+    art_cb: ConstantBuffer<ArtCb>,
     /// Blood (gore.rs): over the world, on the stumps, in the air, and on the player.
     gore: Option<crate::gore::GoreGpu>,
     /// Sheets of a texture on what the hands hold ([`Renderer::set_sheets`]), and their pass.
@@ -1903,6 +1974,8 @@ impl Renderer {
             through_lens: Program::new(gpu, THROUGH_LENS, "avatar_lens", &[])?,
             lens_cb: ConstantBuffer::new(gpu)?,
             premultiplied: pipeline::blend_state(gpu, Blend::Premultiplied)?,
+            art_over: Program::new(gpu, ART_OVER, "avatar_art", &[])?,
+            art_cb: ConstantBuffer::new(gpu)?,
             gore: crate::gore::GoreGpu::new(gpu, &format!("{}{}{SHADER}{}", metro::HLSL, crate::gamebryo::HLSL, crate::gore::HLSL)).map_err(|e| tracing::warn!("avatar: no blood: {e:#}")).ok(),
             sheets: Vec::new(),
             sheet_program: Program::with_entries(gpu, &source, "avatar", "VSSheet", "PSSheet", &[])?,
@@ -2056,6 +2129,53 @@ impl Renderer {
                 ctx.PSSetShaderResources(0, Some(&[None, None, None, None, None, None, None]));
                 ctx.OMSetRenderTargets(None, None);
             }
+        }
+        Ok(())
+    }
+
+    /// The game's hand art over `target` where it's nearer than the player ([`crate::Avatar::draw_art`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_art(&mut self, gpu: &Gpu, target: &ID3D11RenderTargetView, width: u32, height: u32, eye: &Pose, fov: &Fov, art: &ArtInput, drawn: bool) -> Result<()> {
+        if art.hands.iter().all(Option::is_none) {
+            return Ok(());
+        }
+        let dsv = self.depth_for(gpu, width, height)?;
+        let view_proj = projection(fov) * view_matrix(eye);
+        let eye_pos = Vec3::from_array(eye.pos);
+        let mut cb = ArtCb {
+            inv_view_proj: view_proj.inverse().to_cols_array(),
+            view_proj: view_proj.to_cols_array(),
+            drawn_view_proj: (projection(&art.drawn.1) * view_matrix(&art.drawn.0)).to_cols_array(),
+            eye_pos: eye_pos.extend(1.0).to_array(),
+            size: [width as f32, height as f32, 0.0, 0.0],
+            at: [[0.0; 4]; 2],
+            moved: [[0.0; 4]; 2],
+        };
+        for (h, a) in art.hands.iter().enumerate() {
+            let Some(a) = a.filter(|a| a.reach > 0.0) else { continue };
+            let at = Vec3::from_array(a.at);
+            cb.at[h] = (at + (eye_pos - at).normalize_or_zero() * ART_IN_FRONT).extend(a.reach).to_array();
+            cb.moved[h] = Vec3::from_array(a.moved).extend(0.0).to_array();
+        }
+        let ctx = &gpu.ctx;
+        self.art_cb.update(ctx, &cb);
+        unsafe {
+            ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv);
+            if !drawn {
+                ctx.ClearDepthStencilView(&dsv, D3D11_CLEAR_DEPTH.0, 1.0, 0);
+            }
+            pipeline::viewport(ctx, width, height);
+            ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            self.art_over.bind(ctx);
+            ctx.PSSetShaderResources(0, Some(&[Some(art.srv.clone())]));
+            ctx.PSSetSamplers(0, Some(&[Some(self.clamp_sampler.clone())]));
+            ctx.PSSetConstantBuffers(0, Some(&[Some(self.art_cb.buf.clone())]));
+            ctx.OMSetBlendState(&self.premultiplied, Some(&[0.0; 4]), 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(&self.depth_test, 0);
+            ctx.RSSetState(None);
+            ctx.Draw(3, 0);
+            ctx.PSSetShaderResources(0, Some(&[None]));
+            ctx.OMSetRenderTargets(None, None);
         }
         Ok(())
     }
@@ -2907,5 +3027,7 @@ mod tests {
             rustvr_gpu::shader::compile(&source, "avatar", vs, "vs_5_0").unwrap_or_else(|e| panic!("{vs}: {e:#}"));
             rustvr_gpu::shader::compile(&source, "avatar", ps, "ps_5_0").unwrap_or_else(|e| panic!("{ps}: {e:#}"));
         }
+        rustvr_gpu::shader::compile(super::ART_OVER, "avatar_art", "VSMain", "vs_5_0").unwrap();
+        rustvr_gpu::shader::compile(super::ART_OVER, "avatar_art", "PSMain", "ps_5_0").unwrap_or_else(|e| panic!("the hand art: {e:#}"));
     }
 }

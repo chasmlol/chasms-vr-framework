@@ -60,6 +60,9 @@ const TAP: f64 = 0.25;
 const PALM: f32 = 0.035;
 /// A spell's art stays in the hand this long after the trigger last held it (seconds).
 pub const SHOWN: f64 = 30.0;
+/// How far round a hand the game's own art for it reaches (m): its picture apart from the eye's
+/// (`TGT_ART`) is laid over the hands that far round each.
+pub const ART_REACH: f32 = 0.25;
 /// A shoulder off the head when the headset doesn't track it (m, the right one; the head's yaw):
 /// to the side, below the eyes, a little behind them (an adult's).
 const SHOULDER: Vec3 = Vec3::new(0.18, -0.22, -0.08);

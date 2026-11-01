@@ -1070,6 +1070,34 @@ pub fn all() -> Vec<Scenario> {
             captures: vec![(1.0, "spell_charging")],
         },
         Scenario {
+            name: "spell_art",
+            about: "physical: the off hand charges the fire bolt held up in front of the face, the palm to the eye (its art, drawn by the range apart from the eyes' pictures, shows over the palm), then turned the back of the hand to the eye (the hand hides it)",
+            duration: 2.4,
+            needs_game: true,
+            lockstep: true,
+            range_args: vec![],
+            physical: true,
+            start: Body::rest,
+            settings: |_| {},
+            input: || {
+                latched(|t, _, _| {
+                    let mut b = Body::rest();
+                    // Fingers up, the palm to the eye; then turned about the fingers, the back of
+                    // the hand to the eye (a left hand's palm is its +X).
+                    let palm_in = Quat::from_mat3(&glam::Mat3::from_cols(Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y));
+                    let back_in = Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Z, Vec3::X, Vec3::Y));
+                    let up = Vec3::new(-0.04, 1.42, 0.32);
+                    let rest = Body::rest().hands[0].pos;
+                    b.hands[0].pos = keys(t, &[(0.0, rest), (0.3, up)]);
+                    b.hands[0].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.3, palm_in), (1.2, palm_in), (1.6, back_in)]);
+                    b.hands[0].trigger = on(t, &[(0.35, 2.4)]);
+                    b
+                })
+            },
+            checks: vec![],
+            captures: vec![(1.0, "spell_art_palm"), (2.0, "spell_art_back")],
+        },
+        Scenario {
             name: "game_dynamite",
             about: "physical: Metro's dynamite from the throwables' table, the other hand pulls its fuse to light it, a throw down range: Metro's own sounds for the fuse lit, the throw and the explosion",
             duration: 6.6,

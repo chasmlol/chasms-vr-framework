@@ -699,6 +699,16 @@ impl PlayerBody {
     /// isn't inside it), what the hands hold, no ghost hands; hidden behind the game's world as it
     /// shows there (`depth`). The eyes look at `gaze` (the wearer's own eyes' reflection: they meet
     /// your eyes in the mirror).
+    /// The game's hand art over the eye's picture with the body drawn on it, where it's nearer than
+    /// the body ([`rustvr_avatar::Avatar::draw_art`]; `drawn`: the body was drawn into `target` just
+    /// now).
+    pub fn draw_art(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, art: &rustvr_avatar::ArtInput, drawn: bool) {
+        let Some(avatar) = self.avatar.as_mut() else { return };
+        if let Err(e) = avatar.draw_art(gpu, &target.rtv, target.width, target.height, eye, fov, art, drawn) {
+            tracing::warn!("runtime: the game's hand art: {e:#}");
+        }
+    }
+
     pub fn draw_reflection(&mut self, gpu: &Gpu, target: &EyeTarget, eye: &Pose, fov: &Fov, light: LightHint, depth: Option<DepthInput>, holding: &[rustvr_avatar::HeldDraw], gaze: Option<Vec3>) {
         let body = self.body;
         let held = self.held;

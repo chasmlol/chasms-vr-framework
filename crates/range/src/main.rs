@@ -340,7 +340,7 @@ impl Game {
         let mut cfg = AdapterConfig::new("range");
         cfg.request = TargetRequest {
             color_format: DXGI_FORMAT_R8G8B8A8_UNORM.0 as u32,
-            flags: TGT_HUD | TGT_AUX | TGT_DEPTH,
+            flags: TGT_HUD | TGT_AUX | TGT_DEPTH | TGT_ART,
             eye_w: 0,
             eye_h: 0,
             hud_w: 1280,
@@ -1283,6 +1283,24 @@ impl Game {
         let weapon = self.weapon;
         let fx = self.effects.sprites();
         let lights = self.effects.lights();
+        // The casting art, as a game draws its own: a glow in each casting hand's palm (or at a
+        // staff's tip), apart from the eyes' pictures, for the runtime to lay over its hands.
+        let arts: Option<Vec<_>> = slot.art.as_ref().map(|a| a.iter().map(|t| t.rtv.clone().unwrap()).collect());
+        let mut casters: Casters = bytemuck::Zeroable::zeroed();
+        let art_fx: Vec<_> = if arts.is_some() && self.adapter.read_casters(&mut casters) {
+            let table = self.magic.table();
+            casters.hands.iter().filter(|c| c.state != CAST_NONE && c.flags & CASTF_CAST == 0).map(|c| {
+                let color = table.get(c.spell).map_or([0.8, 0.7, 1.0], |s| s.color);
+                let size = match c.state {
+                    CAST_READIED => 0.04,
+                    CAST_CHARGING => 0.05 + 0.08 * c.charge,
+                    _ => 0.13,
+                };
+                self.effects.hand_art(v.point(Vec3::from_array(c.at.pos)), color, size)
+            }).collect()
+        } else {
+            Vec::new()
+        };
 
         let mut flags = SLOT_HUD;
         if !paused {
@@ -1294,9 +1312,19 @@ impl Game {
                 let list = to_draws(&self.scene, weapon, &draws);
                 let depth = depths.as_ref().map(|d| &d[e]);
                 self.renderer.render_scene(&self.gpu, rtv, depth, *w, *h, vp, eye_world, eye_rot * Vec3::Z, &list, &fx, &lights)?;
+                if let (Some(arts), false) = (&arts, art_fx.is_empty()) {
+                    self.renderer.render_apart(&self.gpu, &arts[e], *w, *h, eye_world, &art_fx);
+                }
             }
             if depths.is_some() {
                 flags |= SLOT_DEPTH;
+            }
+            if arts.is_some() && !art_fx.is_empty() {
+                flags |= SLOT_ART;
+            }
+            static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !art_fx.is_empty() && !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!("range: the casting art drawn apart from the eyes ({} hands, textures {})", art_fx.len(), arts.is_some());
             }
             if let (true, Some((rtv, w, h))) = (scope, &slot_aux) {
                 let (p, r) = v.pose(&it.scope_cam);
