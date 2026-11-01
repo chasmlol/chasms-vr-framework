@@ -212,6 +212,7 @@ fn main() -> Result<()> {
     let mut metro_hud = false;
     let mut arena = String::from("range");
     let mut duel_test: Option<duel::Drive> = None;
+    let mut duelist = true;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -221,6 +222,7 @@ fn main() -> Result<()> {
             "--runtime-draws" => runtime_draws = true,
             "--metro-hud" => metro_hud = true,
             "--arena" => arena = args.next().unwrap_or_default(),
+            "--no-duelist" => duelist = false,
             "--duel-test" => {
                 let v = args.next().unwrap_or_default();
                 duel_test = Some(match v.strip_prefix("cue:").and_then(duel::Side::parse) {
@@ -242,6 +244,9 @@ fn main() -> Result<()> {
     (game.feet, game.yaw) = (feet, yaw);
     if let Some(drive) = duel_test {
         game.people.drive_duelist(drive);
+    }
+    if !duelist {
+        game.people.no_duelist();
     }
     // The melee areas play with the melee buttons (the gravity gloves stay: telekinesis is
     // the settings' to turn on, as in the gun range).

@@ -406,7 +406,13 @@ impl Rig {
         let strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05);
         let (joint, lever) = self.melee_joint(id, hand, pivot, strength, inp.settings.dominant());
         // (In a duel, swung easily and stopped hard: a swing carries on.)
-        let joint = if self.melee.duel.on { self.duel_joint(id, hand, joint, strength, map.rot(Quat::IDENTITY) * tv, map.rot(Quat::IDENTITY) * ta) } else { joint };
+        let (joint, target) = if self.melee.duel.on {
+            let turned = physics::scaled_axis((target.1 * now_rot.inverse()).normalize());
+            let (joint, carrying) = self.duel_joint(id, hand, joint, strength, map.rot(Quat::IDENTITY) * tv, map.rot(Quat::IDENTITY) * ta, turned);
+            (joint, self.duel_target(id, target, (now_pos, now_rot), pivot, tv.length(), ta.length(), carrying, dt))
+        } else {
+            (joint, target)
+        };
         // The other hand on it pulls its own hold towards its controller: the turn it would have
         // (its hold lying towards that hand, about this one's) shares the target with this hand's
         // own, by how much of the turning is its pull (no filtering: the hands pull as they are).

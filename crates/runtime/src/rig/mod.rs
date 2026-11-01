@@ -6929,7 +6929,7 @@ impl Rig {
             let target = self.hands.as_ref().unwrap()[i].target.0;
             let on_it = wp + wr * sup.at;
             let ctrl = self.hands.as_ref().unwrap()[i].target;
-            if on_it.distance(ctrl.0 + ctrl.1 * sup.reach) > FOREGRIP_BREAK * self.map.world_per_meter {
+            if on_it.distance(ctrl.0 + ctrl.1 * sup.reach) > self.support_slack(FOREGRIP_BREAK) * self.map.world_per_meter {
                 self.hands.as_mut().unwrap()[i].support = None;
                 self.physics.set_groups(self.hands.as_ref().unwrap()[i].collider, groups_hand(i));
                 self.emit(Cue::Release, Some(i), Some(sup.id), target, 0.6);

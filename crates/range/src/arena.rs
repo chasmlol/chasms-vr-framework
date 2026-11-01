@@ -181,6 +181,14 @@ impl People {
         tracing::info!("range: the duelist {id:#x} stands in the ring ({:?})", self.duel_drive);
     }
 
+    /// No duelist from now on (`--no-duelist`: the duel's handling of a weapon alone).
+    pub fn no_duelist(&mut self) {
+        if let Some(d) = self.duelist.take() {
+            self.remove_people(vec![d.person]);
+            tracing::info!("range: no duelist");
+        }
+    }
+
     /// Whether a blow of the player's (`CE_HIT`) lands on the duelist: one a swing.
     pub fn duelist_takes(&mut self, ev: &CombatEvent) -> bool {
         let now = self.dummies.time;

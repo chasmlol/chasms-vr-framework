@@ -47,29 +47,38 @@ pub const CLASH_COOLDOWN: f64 = 0.35;
 /// **Momentum.** In a duel the hands swing a weapon easily but stop it hard. On top of what holds it
 /// level against its weight, a hand bringing it after itself pushes with at most [`HAND_FORCE_ONE`] N
 /// and turns it with at most [`HAND_TORQUE_ONE`] N m (two hands on its handles [`HAND_FORCE_TWO`],
-/// [`HAND_TORQUE_TWO`]); but a weapon going faster than the hands that hold it (they've stopped, or
-/// slowed, and it hasn't) is braked with at most [`BRAKE_FORCE_ONE`] N and [`BRAKE_TORQUE_ONE`] N m
-/// ([`BRAKE_FORCE_TWO`], [`BRAKE_TORQUE_TWO`]). So a committed swing carries on past where the hands
-/// stop, pulling them (and the body drawn after them) along until they've braked it, by its own mass
-/// and length: a longsword far further than a dagger. Its hold settles at [`SWING_SETTLE`] rad/s,
-/// damped to [`SWING_DAMPING`] of critical (its grip [`GRIP_SETTLE`], [`GRIP_DAMPING`]).
+/// [`HAND_TORQUE_TWO`]). A weapon going faster than the hands that hold it (they've stopped, or slowed,
+/// and it hasn't) carries on: it's braked with only [`BRAKE_FORCE`] N and [`BRAKE_TORQUE`] N m, and
+/// going down only [`FALL_SUPPORT`] of its weight is held up, so its weight carries it on down; it
+/// pulls the hands (and the arms and body drawn after them) away from the controllers until they're
+/// [`CARRY`] m behind it, and from there the arms take it back, to the hands' full strength
+/// [`CARRY_RAMP`] m further on. Spent, it comes back to the controllers no faster than the arms
+/// would bring it: [`RETURN_SPEED`] m/s and [`RETURN_TURN`] rad/s, and the hands' own speed on top
+/// (times [`RETURN_WITH_HANDS`]) once they move. Its hold settles at [`SWING_SETTLE`] rad/s, damped
+/// to [`SWING_DAMPING`] of critical (its grip [`GRIP_SETTLE`], [`GRIP_DAMPING`]).
 pub const HAND_FORCE_ONE: f32 = 150.0;
 pub const HAND_FORCE_TWO: f32 = 250.0;
 pub const HAND_TORQUE_ONE: f32 = 20.0;
 pub const HAND_TORQUE_TWO: f32 = 35.0;
-pub const BRAKE_FORCE_ONE: f32 = 20.0;
-pub const BRAKE_FORCE_TWO: f32 = 35.0;
-pub const BRAKE_TORQUE_ONE: f32 = 6.0;
-pub const BRAKE_TORQUE_TWO: f32 = 12.0;
+pub const BRAKE_FORCE: f32 = 8.0;
+pub const BRAKE_TORQUE: f32 = 2.0;
+pub const FALL_SUPPORT: f32 = 0.3;
+pub const CARRY: f32 = 0.3;
+pub const CARRY_RAMP: f32 = 0.35;
+pub const RETURN_SPEED: f32 = 0.6;
+pub const RETURN_TURN: f32 = 1.5;
+pub const RETURN_WITH_HANDS: f32 = 3.0;
 pub const SWING_SETTLE: f32 = 18.0;
 pub const SWING_DAMPING: f32 = 0.6;
 pub const GRIP_SETTLE: f32 = 40.0;
 pub const GRIP_DAMPING: f32 = 0.9;
 /// A weapon is braked once it's going this much faster than the hands (m/s at its grip, rad/s).
-pub const BRAKING_FROM: (f32, f32) = (0.5, 1.0);
+pub const BRAKING_FROM: (f32, f32) = (0.3, 0.8);
 /// A held weapon stopped against something lets go further from the shoulders in a duel than the
-/// sandbox's reach (its swing has carried the hands on): this much further.
+/// sandbox's reach (its swing has carried the hands on): this much further. A second hand on it lets
+/// go once it's this far from its controller (m: past the furthest a swing carries it).
 pub const STUCK_SLACK: f32 = 1.6;
+pub const SUPPORT_BREAK: f32 = 0.9;
 /// Of the hands' strength bringing a weapon after them: a duel's as they are, staggered (the weapon
 /// heavy, barely swung), and in a riposte (lighter).
 pub const DRIVE: f32 = 1.0;

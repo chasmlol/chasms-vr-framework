@@ -93,18 +93,23 @@ Sources: [Mordhau patch notes (parry, recovery, riposte windows)](https://steamd
   it releases, it does nothing to the swing. A blow lands once.
 * **Momentum.** The hands swing a weapon easily but stop it hard. On top of holding it level
   against its weight, a hand bringing it after itself pushes with up to 150 N and turns it with up
-  to 20 N m (two hands on its handles 250 N and 35 N m); but a weapon going faster than the hands
-  (they've stopped or slowed, and it hasn't) is braked with only 20 N and 6 N m (35 N and 12 N m
-  with two). So a committed swing carries on past where the hands stop, pulling them (and the arms
-  and body drawn after them: a tracked elbow goes with its hand) away from the controllers until
-  they've braked it, by the weapon's own mass and length. Staggered, the hands bring it after them
-  with a quarter of their strength; in a riposte, a quarter more. The stick walks you at 0.55 of
-  its speed with a melee weapon in hand. Started in the duel area, the range plays the duel's rules
-  across the whole room.
+  to 20 N m (two hands on its handles 250 N and 35 N m), so it follows them closely. A weapon going
+  faster than the hands and away from them (they've stopped or slowed, and it hasn't) carries on:
+  braked with only 8 N and 2 N m, and going down only 0.3 of its weight held up, so its weight
+  carries it on down. It pulls the hands (and the arms and body drawn after them: a tracked elbow
+  goes with its hand; a second hand stays on to 0.9 m) away from the controllers freely for 0.3 m,
+  then the arms take it back, to their full strength 0.35 m further. Spent, it comes back up to the
+  controllers no faster than 0.6 m/s and 1.5 rad/s (more once the hands move), smoothly rather than
+  snapping. Checked headless: the longsword in two hands, chopped down from overhead at 1 m/s and
+  the hands stopped dead, carries on 0.4 m and 65° past them, the arms reaching after it, and comes
+  back up over 0.7 s. Staggered, the hands bring it after them with a quarter of their strength; in
+  a riposte, a quarter more. The stick walks you at 0.55 of its speed with a melee weapon in hand.
+  Started in the duel area, the range plays the duel's rules across the whole room
+  (`--no-duelist` leaves its duelist out).
 * **The grip's angle** (every melee, not only the duel): a weapon leans forward in the hand from the
-  controller's handle (30° by default, the Controls tab's *Sword angle in the hand*), turned about
-  the knuckles away from the controller's aim ray, as a hilt held upright sits in a fist; along the
-  handle it leaned back. It's set as the weapon is taken.
+  controller's handle (25° by default, the Controls tab's *Sword angle in the hand*), turned about
+  the palm's normal towards the knuckles (a held pistol's barrel), as a hilt held upright sits in a
+  fist; along the handle it leaned back. It's set as the weapon is taken.
 * **Drags and accels need no system.** The blade is yours: a hit lands when it really reaches the
   creature, so turning your body away really delays it and turning into it really speeds it up.
 * **The creature is fooled by them.** It reads your blade as a person would: it sees it 0.22 s late
