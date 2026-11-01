@@ -2214,6 +2214,16 @@
 #define RVR_COL_MESH_MATERIALS 4
 
 /**
+ * [`ColMesh`] (`id` an object's [`ObjectDesc::id`]) + `count` x [`ColTriangle`] in the object's
+ * own space (metres): the object's drawn shape, what the hands and the world meet of it. The
+ * runtime makes the object's collision the mesh's convex parts, whatever its
+ * [`ObjectDesc::shape`] (worked out off the frame, once for each mesh: until then it keeps its own
+ * shape), and keeps it the object's until replaced, whenever the object is offered. 0 triangles:
+ * its own shape again.
+ */
+#define RVR_COL_OBJECT_MESH 5
+
+/**
  * The region (after the HUD layout's place before it grew the mapping).
  */
 #define RVR_OFF_GAME_LIGHTING 4915200

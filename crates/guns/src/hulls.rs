@@ -21,12 +21,19 @@ const CONCAVITY: f32 = 0.004;
 /// The convex parts of the triangles (each part its corner points, at most `max_points` of them),
 /// at most `max_parts` of them, the biggest first.
 pub fn convex_parts(triangles: &[[Vec3; 3]], max_parts: usize, max_points: usize) -> Vec<Vec<Vec3>> {
+    convex_parts_with(triangles, max_parts, max_points, RESOLUTION, CONCAVITY)
+}
+
+/// [`convex_parts`] on a voxel grid of `resolution` across the triangles' longest side, each part at
+/// most `concavity` (a share of their size) from convex: coarser is much quicker (a thing worked
+/// out as it's offered, not a gun before the game starts).
+pub fn convex_parts_with(triangles: &[[Vec3; 3]], max_parts: usize, max_points: usize, resolution: u32, concavity: f32) -> Vec<Vec<Vec3>> {
     if triangles.is_empty() {
         return Vec::new();
     }
     let points: Vec<Vector> = triangles.iter().flatten().map(|p| Vector::new(p.x, p.y, p.z)).collect();
     let indices: Vec<[u32; 3]> = (0..triangles.len() as u32).map(|t| [3 * t, 3 * t + 1, 3 * t + 2]).collect();
-    let params = VHACDParameters { resolution: RESOLUTION, concavity: CONCAVITY, max_convex_hulls: max_parts.max(1) as u32, ..Default::default() };
+    let params = VHACDParameters { resolution, concavity, max_convex_hulls: max_parts.max(1) as u32, ..Default::default() };
     let parts = VHACD::decompose(&params, &points, &indices, false).compute_convex_hulls(4);
     let mut out: Vec<Vec<Vec3>> = parts
         .into_iter()

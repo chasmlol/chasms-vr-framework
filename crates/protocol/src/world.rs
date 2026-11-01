@@ -1012,6 +1012,13 @@ pub const COL_BOX: u32 = 3;
 /// [`ColMesh`] + `count` bytes: each triangle's material (`MAT_*`, [`crate::combat`]), in the order
 /// of mesh `id`'s triangles as last sent (after its [`COL_MESH`]). What a blade can bite into.
 pub const COL_MESH_MATERIALS: u32 = 4;
+/// [`ColMesh`] (`id` an object's [`ObjectDesc::id`]) + `count` x [`ColTriangle`] in the object's
+/// own space (metres): the object's drawn shape, what the hands and the world meet of it. The
+/// runtime makes the object's collision the mesh's convex parts, whatever its
+/// [`ObjectDesc::shape`] (worked out off the frame, once for each mesh: until then it keeps its own
+/// shape), and keeps it the object's until replaced, whenever the object is offered. 0 triangles:
+/// its own shape again.
+pub const COL_OBJECT_MESH: u32 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]

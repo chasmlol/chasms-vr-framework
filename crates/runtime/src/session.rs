@@ -862,8 +862,8 @@ impl Session {
         let t_rig = std::time::Instant::now();
         let mut t_collision = 0.0f32;
         if alive {
-            let physics = &mut self.rig.physics;
-            self.link.drain_collision(|kind, payload| physics.apply_collision(kind, payload));
+            let rig = &mut self.rig;
+            self.link.drain_collision(|kind, payload| if kind == COL_OBJECT_MESH { rig.set_drawn_shape(payload) } else { rig.physics.apply_collision(kind, payload) });
             t_collision = t_rig.elapsed().as_secs_f32() * 1000.0;
             let seq = self.link.objects_seq();
             if seq != self.objects_seq && self.link.read_objects_into(&mut self.objects) {

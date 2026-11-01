@@ -30,6 +30,7 @@ pub mod kick;
 pub mod melee;
 pub mod breaking;
 pub mod climbing;
+pub mod drawn;
 pub mod telekinesis;
 pub mod physics;
 pub mod pickpocket;
@@ -835,6 +836,9 @@ pub struct Rig {
     pub game_pushes: Vec<GamePush>,
     /// The game's convex collision for its objects ([`SHAPE_HULL`]), object space.
     game_hulls: HashMap<u32, Vec<Vec<Vec3>>>,
+    /// The game's drawn shapes for its objects ([`COL_OBJECT_MESH`]): their collision before
+    /// anything else.
+    drawn: drawn::Drawn,
     hands: Option<[Hand; 2]>,
     anchor: BodyAnchor,
     slots: [Option<u32>; SLOT_COUNT_BODY],
@@ -941,6 +945,7 @@ impl Default for Rig {
             grab_serial: 0,
             game_pushes: Vec::new(),
             game_hulls: HashMap::new(),
+            drawn: drawn::Drawn::default(),
             templates: Vec::new(),
             feedback: Vec::new(),
             debug: RigDebug::default(),
@@ -1268,11 +1273,39 @@ impl Rig {
             if let Some(o) = self.objects.get(&id)
                 && o.desc.shape == SHAPE_HULL
                 && !self.bowls.contains_key(&id)
+                && self.drawn.parts(id).is_none()
             {
                 let (c, mass) = (o.collider, o.desc.mass);
                 self.physics.set_hulls(c, &parts, mass);
             }
             self.game_hulls.insert(id, parts);
+            self.weigh_valve(id);
+        }
+    }
+
+    /// A [`COL_OBJECT_MESH`]: an object's drawn shape, made its collision once its parts are worked
+    /// out (or its own shape again).
+    pub fn set_drawn_shape(&mut self, payload: &[u8]) {
+        match self.drawn.set(payload) {
+            Some(drawn::Change::Ready(id, parts)) => self.give_drawn(id, &parts),
+            Some(drawn::Change::Cleared(id)) => {
+                if let Some(o) = self.objects.get(&id).filter(|o| !self.bowls.contains_key(&id) && !matches!(o.holder, Holder::InBowl { .. })) {
+                    let (c, d) = (o.collider, o.desc);
+                    let hulls = self.game_hulls.get(&id).cloned().unwrap_or_default();
+                    self.physics.set_object_shape(c, &d, &hulls);
+                    self.weigh_valve(id);
+                }
+            }
+            Some(drawn::Change::Asked(_)) | None => {}
+        }
+    }
+
+    /// An object's collision made its drawn shape's convex parts (not while it's a bowl or in one:
+    /// those have shapes of their own then).
+    fn give_drawn(&mut self, id: u32, parts: &[Vec<Vec3>]) {
+        let Some(o) = self.objects.get(&id).filter(|o| !self.bowls.contains_key(&id) && !matches!(o.holder, Holder::InBowl { .. })) else { return };
+        let (c, mass) = (o.collider, o.desc.mass);
+        if self.physics.set_hulls(c, parts, mass) {
             self.weigh_valve(id);
         }
     }
@@ -1375,6 +1408,10 @@ impl Rig {
 
     fn add(&mut self, d: ObjectDesc, draw_desc: u32, spawned: bool, pos: Vec3, rot: Quat) {
         let (body, collider) = self.physics.add_object(&d, pos, rot, self.game_hulls.get(&d.id).map(Vec::as_slice).unwrap_or(&[]));
+        // (Its drawn shape, if the game gave it one: its collision before its own.)
+        if let Some(parts) = self.drawn.parts(d.id) {
+            self.physics.set_hulls(collider, &parts, d.mass);
+        }
         let weapon = (d.kind == OBJ_WEAPON).then(|| {
             let mut w = WeaponState::for_desc(&d);
             w.recoil = recoil::Recoil::new(d.id.wrapping_mul(2654435761));
@@ -1615,6 +1652,9 @@ impl Rig {
             let (c, d) = (o.collider, o.desc);
             let hulls = self.game_hulls.get(&id).cloned().unwrap_or_default();
             self.physics.set_object_shape(c, &d, &hulls);
+            if let Some(parts) = self.drawn.parts(id) {
+                self.physics.set_hulls(c, &parts, d.mass);
+            }
         }
         self.grinds.remove(&id);
     }
@@ -1701,6 +1741,9 @@ impl Rig {
         let (c, d) = (o.collider, o.desc);
         let hulls = self.game_hulls.get(&id).cloned().unwrap_or_default();
         self.physics.set_object_shape(c, &d, &hulls);
+        if let Some(parts) = self.drawn.parts(id) {
+            self.physics.set_hulls(c, &parts, d.mass);
+        }
     }
 
     /// The bowl's grinder lies where it rests in it.
@@ -1939,6 +1982,10 @@ impl Rig {
     // ---- the frame ------------------------------------------------------------------------------
     pub fn update(&mut self, inp: &RigInput) -> RigOutput {
         self.now = inp.now;
+        // The drawn shapes worked out since, given their objects.
+        for (id, parts) in self.drawn.poll() {
+            self.give_drawn(id, &parts);
+        }
         let prev = self.map;
         self.map = inp.map;
         // What the hands hold goes where the player goes (walking, turning): a thing's weight
