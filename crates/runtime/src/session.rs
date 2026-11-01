@@ -751,6 +751,18 @@ impl Session {
             hud_panel,
             if runtime_menu_open { Some(self.menu.aspect()) } else { None },
         );
+        // The game's floor in tracking space: the adapter maps the tracking origin onto the game's
+        // eye (plus the height compensation and offset the runtime asked for). (Before the mirror:
+        // a character creator's stands on it from its first frame.)
+        let floor = match &self.game {
+            Some(g) if alive && g.eye_above_feet > 0.3 => {
+                let t = &self.last_out.tracking;
+                let wpm = if g.tracking.world_per_meter > 0.0 { g.tracking.world_per_meter } else { 1.0 };
+                g.tracking.origin[1] - (g.eye_above_feet + t.height_comp + t.height_offset) / wpm
+            }
+            _ => 0.0,
+        };
+        self.floor = floor;
         // The mirror: called up or put away (the gesture, the menu, the game's character creator),
         // where it stands now. A menu shown in the world stands beside it, the part of the game's
         // picture its menu is in (`GameState::menu_uv`).
@@ -917,17 +929,6 @@ impl Session {
         self.update_sound_pack(alive);
         let rig_active = alive && self.game.as_ref().is_some_and(|g| self.rig.has_objects() || g.flags & GS_PLAYER_RIG != 0);
         self.rig_active_last = rig_active;
-        // The game's floor in tracking space: the adapter maps the tracking origin onto the game's
-        // eye (plus the height compensation and offset the runtime asked for).
-        let floor = match &self.game {
-            Some(g) if alive && g.eye_above_feet > 0.3 => {
-                let t = &self.last_out.tracking;
-                let wpm = if g.tracking.world_per_meter > 0.0 { g.tracking.world_per_meter } else { 1.0 };
-                g.tracking.origin[1] - (g.eye_above_feet + t.height_comp + t.height_offset) / wpm
-            }
-            _ => 0.0,
-        };
-        self.floor = floor;
         if rig_active {
             // Where the game has its own simulated props now.
             if self.link.read_game_hulls_into(&mut self.game_hulls) {

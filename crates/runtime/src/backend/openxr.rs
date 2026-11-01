@@ -476,8 +476,11 @@ impl Backend for OpenXrBackend {
         self.frame_state = Some(state);
         self.session.sync_actions(&[xr::ActiveActionSet::new(&self.hands.set)])?;
         let (flags, views) = self.session.locate_views(VIEW_TYPE, time, &self.stage)?;
-        let valid = flags.contains(xr::ViewStateFlags::POSITION_VALID | xr::ViewStateFlags::ORIENTATION_VALID);
         let head = self.view.locate(&self.stage, time)?;
+        // (The head as well as the eyes: a runtime just connected can say the eyes are placed while
+        // the head is still nowhere, at the stage's origin. The view would be fixed to that.)
+        let valid = flags.contains(xr::ViewStateFlags::POSITION_VALID | xr::ViewStateFlags::ORIENTATION_VALID)
+            && head.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID);
         let t_ns = time.as_nanos();
         let dt = self.last_time.map(|l| ((t_ns - l) as f32 * 1e-9).clamp(0.0, 0.1)).unwrap_or(1.0 / self.refresh);
         self.last_time = Some(t_ns);
@@ -533,6 +536,9 @@ impl Backend for OpenXrBackend {
             return None;
         }
         let head = self.view.locate(&self.stage, time).ok()?;
+        if !head.location_flags.contains(xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID) {
+            return None;
+        }
         let mut l = Located { hmd: from_xr(&head.pose, true), ..Default::default() };
         for e in 0..2 {
             l.eyes[e] = from_xr(&views[e].pose, true);

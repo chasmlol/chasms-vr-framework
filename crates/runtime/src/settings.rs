@@ -617,10 +617,10 @@ pub struct Comfort {
     /// Fade the view out when the head pushes into a wall.
     pub wall_fade: bool,
     /// Seated play: you see from standing height, your body is drawn standing, and ducking
-    /// doesn't crouch.
+    /// doesn't crouch. Where your head is when it's turned on (or the game starts with it on) is
+    /// standing height, and again at each recentre.
     pub seated: bool,
-    /// See from your own eye height (from `body.height`, or as measured standing) instead of the
-    /// game character's.
+    /// See from your own eye height (from `body.height`) instead of the game character's.
     pub real_height: bool,
 }
 
@@ -824,9 +824,8 @@ impl Default for Sound {
 #[serde(default)]
 pub struct Body {
     pub visibility: BodyVisibility,
-    /// Metres, the player's real height (0 = measure it as you stand). Set, playing standing,
-    /// their eyes' height under it is upright: sat or ducked under that is a crouch, however the
-    /// game started.
+    /// Metres, the player's real height (0 = a typical grown-up's, 1.75 m). Playing standing, their
+    /// eyes' height under it is upright: sat or ducked under that is a crouch.
     pub height: f32,
     /// Metres, controller grip to controller grip with the arms straight out (0 = automatic: an
     /// estimate from the height that grows whenever your real arms reach further).

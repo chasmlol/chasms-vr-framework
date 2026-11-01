@@ -342,7 +342,7 @@ fn body(ui: &mut egui::Ui, s: &mut Settings, status: &Status, rects: &mut Vec<(S
     let r = ui.checkbox(&mut s.comfort.seated, "Seated mode (you see from standing height; ducking doesn't crouch)");
     rects.push(("body:seated".into(), r.rect));
     ui.checkbox(&mut s.comfort.real_height, "Play at my real height (otherwise the game character's)");
-    slider(ui, "Your height (0 = measure as you stand)", &mut s.body.height, 0.0, 2.2, " m", 2);
+    slider(ui, "Your height (0 = a typical 1.75 m)", &mut s.body.height, 0.0, 2.2, " m", 2);
     ui.horizontal(|ui| {
         let r = ui.add_enabled(!s.comfort.seated, egui::Button::new("Measure my height (stand up straight)"));
         rects.push(("body:measure_height".into(), r.rect));

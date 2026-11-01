@@ -206,8 +206,8 @@ const FACE_STILL: f64 = 0.5;
 /// Wrist to the middle finger's knuckle against a person's height (palm length: about 10.3 cm in
 /// a 1.75 m adult).
 const HAND_PER_HEIGHT: f32 = 0.059;
-/// A grown-up's height (metres), for the hands when the player hasn't said theirs.
-const TYPICAL_HEIGHT: f32 = 1.75;
+/// A grown-up's height (metres), when the player hasn't said theirs.
+pub(crate) const TYPICAL_HEIGHT: f32 = 1.75;
 
 /// Grip-to-grip distance with the arms out, estimated from the eye height: the arm span about
 /// equals the height (eyes 11 cm below the top of the head), less most of the hands beyond the
