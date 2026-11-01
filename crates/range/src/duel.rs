@@ -123,8 +123,10 @@ const STEP_IN: f32 = 1.2;
 const LUNGE: f32 = 0.6;
 const LUNGE_TO: f32 = 0.95;
 const TEST_SPACING: f32 = 1.45;
-/// A blade's hits on it within this long are one blow (s).
+/// A blade's hits on it within this long are one blow (s); a blow landing on it in its guard
+/// brings its next swing this soon at the latest (s).
 const ONE_BLOW: f64 = 0.4;
+const ANSWER: f64 = 0.4;
 /// What it guards with its parries (its own space): its chest to its head, this thick (m).
 const BODY: (Vec3, Vec3, f32) = (Vec3::new(0.0, 0.95, 0.0), Vec3::new(0.0, 1.75, 0.0), 0.25);
 
@@ -311,8 +313,14 @@ impl Duelist {
         if let State::WindUp { side, riposte, from, held } = self.state {
             tracing::info!("duelist {:#x}: hit winding up: it flinches", self.id);
             self.state = State::WindUp { side, riposte, from, held: (held + tune::FLINCH).min(now - self.since) };
+        } else if let State::Release { .. } = self.state {
+            tracing::info!("duelist {:#x}: hit as it swings: its swing goes on", self.id);
         } else {
-            tracing::info!("duelist {:#x}: hit while it {}: its swing goes on", self.id, Self::name(&self.state));
+            tracing::info!("duelist {:#x}: hit (it {})", self.id, Self::name(&self.state));
+            // It answers a blow that lands: a swing back soon.
+            if self.state == State::Guard {
+                self.next_swing = self.next_swing.min(now + ANSWER);
+            }
         }
     }
 
@@ -364,8 +372,10 @@ impl Duelist {
                 } else if dist < spacing - 0.3 {
                     walk = -Vec3::Z * tune::WALK * 0.6;
                 }
+                // (A blow coming too soon to parry doesn't hold its own swing back.)
+                let held_back = threat.is_some_and(|(when, ..)| when - now > tune::PARRY_LEAD + 0.25);
                 let swing = match self.drive {
-                    Drive::Free => (now >= self.next_swing && dist <= tune::SWING_RANGE && threat.is_none()).then(|| self.pick_side()),
+                    Drive::Free => (now >= self.next_swing && dist <= tune::SWING_RANGE && !held_back).then(|| self.pick_side()),
                     Drive::Cue(side) => cue_now.then_some(side),
                     Drive::Guard => None,
                 };

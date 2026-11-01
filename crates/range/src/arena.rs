@@ -237,7 +237,11 @@ impl People {
         // (It fights only someone in its ring; outside it, it stands in its guard.)
         let near = arenas::in_duel(sight.feet) || d.drive != Drive::Free;
         let seen = if near { sight.clone() } else { Sight { feet: at + face * Vec3::Z * 3.0, ..Default::default() } };
-        let t = d.think(now, dt, at, face, &seen, self.duel_cue);
+        let mut t = d.think(now, dt, at, face, &seen, self.duel_cue);
+        if !near {
+            // (No one on its ground: it holds its place.)
+            t.walk = Vec3::ZERO;
+        }
         // Its sword goes where its keys put it, its hand with it.
         self.dummies.lead_item(d.person, 1, Some((&t.pose, t.sword)));
         let p = &mut self.dummies.people[d.person];

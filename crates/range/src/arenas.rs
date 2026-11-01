@@ -12,9 +12,10 @@
 //!   a dagger.
 //! * `climb`: the far right corner: a block as tall as you to climb onto with the hands: grip its
 //!   top edge, pull yourself up, push down on it, and let go to step up onto it.
-//! * `duel`: the left side of the room before the bench: a ring with one duelist (`crate::duel`) to
-//!   fight by the duel's rules (the range asks for them while you're in it), and a table at your
-//!   left with a sword and a longsword.
+//! * `duel`: the left side of the room before the bench: a ground with one duelist (`crate::duel`)
+//!   to fight by the duel's rules (the range asks for them while you're on it), and a table at your
+//!   left with a sword and a longsword. It's large (six metres by twelve), so stepping about in a
+//!   play area or walking back with the stick doesn't take you off it.
 //!
 //! The areas are fixed in the room (clear of the firing lane and its rails, the targets and the
 //! crates), so the scenarios that shoot down the lane don't see them.
@@ -35,8 +36,9 @@ pub const ARENA_TABLE: (Vec3, Vec3) = (Vec3::new(4.6, 0.0, 11.0), Vec3::new(5.8,
 pub const BENCH_TABLE: (Vec3, Vec3) = (Vec3::new(-7.3, 0.0, 18.4), Vec3::new(-6.7, 0.85, 19.6));
 /// A wooden post on the bench, to chop and stab (min, max).
 pub const POST: (Vec3, Vec3) = (Vec3::new(-4.3, 0.0, 22.6), Vec3::new(-4.0, 1.9, 22.9));
-/// The duel ring's floor (min, max): left of the long table, clear of the shot at the left target.
-pub const DUEL: (Vec3, Vec3) = (Vec3::new(-9.3, 0.0, 3.4), Vec3::new(-5.3, 0.0, 9.8));
+/// The duel ground's floor (min, max): the room's left side from the armory bench to before the
+/// left target, left of the long table and the melee rack.
+pub const DUEL: (Vec3, Vec3) = (Vec3::new(-9.4, 0.0, -0.4), Vec3::new(-3.4, 0.0, 12.0));
 /// Where the player starts in it, and where its duelist stands waiting (facing the player).
 pub const DUEL_START: Vec3 = Vec3::new(-7.3, 0.0, 4.3);
 pub const DUELIST_AT: Vec3 = Vec3::new(-7.3, 0.0, 8.0);
