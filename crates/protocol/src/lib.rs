@@ -535,6 +535,11 @@ pub const INT_MAG_OUT: u32 = 1 << 7;
 pub const INT_HOLDING_MAG: u32 = 1 << 8;
 /// The player is in the game's water and the runtime swims them by the arms ([`Intents::swim`]).
 pub const INT_SWIM: u32 = 1 << 9;
+/// What the game picks to use (its crosshair: what it activates, its card of it) is along this
+/// hand's pointer, not the eyes': a free hand (holding, pulling, casting nothing), the one reached
+/// out furthest in front. Neither: the eyes' (both hands busy).
+pub const INT_POINT_LEFT: u32 = 1 << 10;
+pub const INT_POINT_RIGHT: u32 = 1 << 11;
 
 /// Game actions the runtime can ask for. The adapter maps each to the game's own input.
 #[repr(u32)]

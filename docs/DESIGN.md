@@ -493,7 +493,10 @@ its alchemy menu's own parchment, icons and fonts. Two more cards follow what a 
 runtime's own (`item_card.rs`), from what the game says of the thing (`ItemInfos`: its name and
 count, its numbers, whether taking it is stealing), beside a thing in the hand, flying to it or under
 the fingers in a pocket; and the game's own card of it (`HUD_HELD`, `held_cards.rs`), cut from its
-HUD while it was of that hand's thing, so both hands have theirs.
+HUD while it was of that hand's thing, so both hands have theirs. What a free hand put up in front
+points at has the game's card too, over that hand (`HUD_POINTED`): the runtime says which hand
+points (`INT_POINT_LEFT`, `INT_POINT_RIGHT`: free, 30 cm or more in front of the head, the one
+reached out furthest) and the game picks what to use along it.
 
 A card can also be a page (`OBJF_SHEET`): its object is a thin box the hands take up and put down,
 and the card is drawn on its face (`rustvr_avatar::HeldModel::sheet`, the card's texture on a quad,

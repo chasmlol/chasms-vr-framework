@@ -96,12 +96,18 @@ pub struct Attach {
     pub held: bool,
     /// Tracking space -> the game's world (for the things pieces float over).
     pub map: Option<WorldMap>,
+    /// Each hand's controller grip (tracking space), while it's tracked.
+    pub hands: [Option<Vec3>; 2],
 }
 
 /// How wide the game's whole HUD would be at the scale of its own card of a thing in a hand
 /// (metres): the card is drawn at one scale however much of the HUD it takes, so its lines keep
 /// their size as they change (a third of the HUD across is 20 cm).
 pub const HELD_SCALE: f32 = 0.6;
+/// A card of what a hand points at stands this far over the hand's grip and towards the eyes
+/// (metres): clear of the fingers.
+const POINTED_ABOVE: f32 = 0.08;
+const POINTED_TOWARDS: f32 = 0.04;
 
 /// A head-following anchor with a dead zone: it holds still while the head turns less than `dead`
 /// away from it, then catches up until it's within a couple of degrees, and stops.
@@ -439,6 +445,12 @@ impl HudPlacer {
                     Some((panel, 1.0))
                 }
                 HUD_HELD if at.held => None,
+                // (Standing just over the hand, a little towards the eyes, as a held thing's card
+                // stands over it.)
+                HUD_POINTED => at.hands.get(e.hand as usize).copied().flatten().map(|hand| {
+                    let toward = (head_pos - hand).normalize_or(Vec3::Z);
+                    (held_card(hand + Vec3::Y * POINTED_ABOVE + toward * POINTED_TOWARDS, head_pos, du, du * aspect / dv), 1.0)
+                }),
                 HUD_COMPASS => {
                     // Low in front of the body: the head's lazy turn, a fixed angle under the
                     // horizon (not the head's pitch: looking down finds it).
@@ -664,7 +676,7 @@ mod tests {
         // (A left hand's palm is its grip's +X: turned up, +X is up.)
         let palm_up = Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
         let wrist_ahead = (Vec3::new(-0.05, 1.45, 0.35), palm_up);
-        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), off_left: true, held: false, map: None };
+        let at = Attach { gun: Some((gun, sight, Vec3::Z)), off_hand: Some(wrist_ahead), off_left: true, held: false, map: None, hands: [None; 2] };
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at);
         let ammo = p.iter().find(|p| p.role == HUD_AMMO).unwrap();
         assert!(ammo.panel.center.distance(sight) < 0.15 && ammo.panel.center.x < sight.x, "{:?}", ammo.panel.center);

@@ -171,6 +171,13 @@ struct Btn {
 }
 
 const LONG_PRESS: f64 = 0.45;
+/// A free hand points (the game picks what to use along it) once it's reached out this far in
+/// front of the head (metres): put up towards something, not hanging at the side; it stops once
+/// it's back this much nearer. The other free hand takes over once it's reached out this much
+/// further.
+const POINT_OUT: f32 = 0.3;
+const POINT_BACK: f32 = 0.05;
+const POINT_SWITCH: f32 = 0.1;
 /// How long a lone stick click waits for the other stick (both together: the framework view).
 const STICK_CHORD: f64 = 0.12;
 /// Heights a worn headset's at (metres over the real floor), sat or stood (not on a desk): seated
@@ -365,6 +372,8 @@ pub struct Mechanics {
     crouch_by_phys: bool,
     crouch_pending: i32,
     crouch_cooldown: f64,
+    /// The hand the game picks what to use along ([`INT_POINT_LEFT`]), if one's free.
+    point_hand: Option<usize>,
     stand_eye: f32,
     // roomscale follow
     following: bool,
@@ -415,6 +424,7 @@ impl Default for Mechanics {
             crouch_by_phys: false,
             crouch_pending: -1,
             crouch_cooldown: 0.0,
+            point_hand: None,
             stand_eye: 1.8,
             following: false,
             prev_mag_rel: None,
@@ -862,6 +872,27 @@ impl Mechanics {
         }
         if rig_mode {
             self.rig_controls(inp, dom, busy, targeting, &mut held);
+        }
+        // The hand the game picks what to use along (a door, a person: what its trigger uses, its
+        // card over the hand): a free one (holding, pulling, casting nothing) put up in front, the
+        // one reached out furthest, the other taking over only once it's a good way further. With
+        // none, the eyes'.
+        let ahead = Vec3::new(head_fwd.x, 0.0, head_fwd.z).normalize_or(Vec3::Z);
+        let out_by = |h: usize| (v3(f.hands[h].aim.pos) - hmd_pos).dot(ahead);
+        let was = self.point_hand;
+        let put_up = |h: usize| out_by(h) > if was == Some(h) { POINT_OUT - POINT_BACK } else { POINT_OUT };
+        let free = |h: usize| rig_mode && f.hands[h].connected != 0 && f.hands[h].aim.valid != 0 && !busy[h] && !targeting[h] && !inp.spell_hands[h] && !inp.riding && put_up(h);
+        self.point_hand = match (free(0), free(1)) {
+            (false, false) => None,
+            (true, false) => Some(0),
+            (false, true) => Some(1),
+            (true, true) => match was {
+                Some(h) if out_by(h ^ 1) < out_by(h) + POINT_SWITCH => Some(h),
+                _ => Some(if out_by(0) >= out_by(1) { 0 } else { 1 }),
+            },
+        };
+        if let Some(h) = self.point_hand {
+            out.intents.flags |= if h == 0 { INT_POINT_LEFT } else { INT_POINT_RIGHT };
         }
         // Firing hand. A: reload, or with full manual reloads, eject the magazine (and rack the gun if a
         // new one is seated but the charging handle is out of reach).
