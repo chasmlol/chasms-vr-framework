@@ -109,6 +109,10 @@ pub const HELD_SCALE: f32 = 0.6;
 /// (metres): clear of the fingers.
 const POINTED_ABOVE: f32 = 0.08;
 const POINTED_TOWARDS: f32 = 0.04;
+/// Between that card and the loot list past it (metres); and how far over or under the middle of
+/// the view (the direction's height, about a radian) the hand goes before they change sides.
+const POINTED_GAP: f32 = 0.01;
+const POINTED_SIDE_GIVE: f32 = 0.05;
 
 /// A head-following anchor with a dead zone: it holds still while the head turns less than `dead`
 /// away from it, then catches up until it's within a couple of degrees, and stops.
@@ -218,6 +222,8 @@ pub struct HudPlacer {
     anchor: Option<(Lazy, Lazy)>,
     groups: Vec<(Placed, Option<Glide>)>,
     gaze: Option<Gaze>,
+    /// A pointing hand's card and list go under it (else over it): it's over the middle of the view.
+    pointed_under: bool,
 }
 
 /// The extent of group `group`'s pieces (x0, y0, x1, y1 in its units, y up).
@@ -371,6 +377,26 @@ impl HudPlacer {
         if layout.flags & HUDL_REST_HIDDEN == 0 {
             out.push(HudPiece { panel: screen, uv: full, opacity: 1.0, role: 0, flags: 0 });
         }
+        // What a pointing hand's card and loot list stand on (`HUD_POINTED`, `HUD_LOOT`): the side of
+        // the hand nearer the middle of the view (under a hand above it, a few degrees' give), the
+        // card next to the hand and the list past it.
+        let pointed = layout.entries().iter().find(|e| e.group == 0 && matches!(e.role, HUD_POINTED | HUD_LOOT)).and_then(|e| at.hands.get(e.hand as usize).copied().flatten());
+        if let Some(hand) = pointed {
+            let up = (hand - head_pos).normalize_or(fwd).y - fwd.y;
+            if up > POINTED_SIDE_GIVE {
+                self.pointed_under = true;
+            } else if up < -POINTED_SIDE_GIVE {
+                self.pointed_under = false;
+            }
+        }
+        let under = self.pointed_under;
+        let card_h = layout.entries().iter().find(|e| e.group == 0 && e.role == HUD_POINTED).map_or(0.0, |e| (e.uv[3] - e.uv[1]).max(1e-4) * HELD_SCALE / aspect);
+        // (Standing on `c` over the hand, or hanging from it under the hand: `h` tall, `gap` clear.)
+        let beside = |hand: Vec3, gap: f32, h: f32| {
+            let toward = (head_pos - hand).normalize_or(Vec3::Z);
+            let c = hand + toward * POINTED_TOWARDS;
+            if under { c - Vec3::Y * (gap + h) } else { c + Vec3::Y * gap }
+        };
         // The caption strip: the whole layer would be `caption_width_deg` wide at its distance.
         let cd = u.caption_distance;
         let strip_full = 2.0 * cd * (u.caption_width_deg.to_radians() * 0.5).tan() * by_height;
@@ -462,9 +488,11 @@ impl HudPlacer {
                 HUD_HELD if at.held => None,
                 // (Standing just over the hand, a little towards the eyes, as a held thing's card
                 // stands over it.)
-                HUD_POINTED => at.hands.get(e.hand as usize).copied().flatten().map(|hand| {
-                    let toward = (head_pos - hand).normalize_or(Vec3::Z);
-                    (held_card(hand + Vec3::Y * POINTED_ABOVE + toward * POINTED_TOWARDS, head_pos, du, du * aspect / dv), 1.0)
+                HUD_POINTED => at.hands.get(e.hand as usize).copied().flatten().map(|hand| (held_card(beside(hand, POINTED_ABOVE, card_h), head_pos, du, du * aspect / dv), 1.0)),
+                HUD_LOOT => at.hands.get(e.hand as usize).copied().flatten().map(|hand| {
+                    let h = dv * HELD_SCALE / aspect;
+                    let gap = POINTED_ABOVE + if card_h > 0.0 { card_h + POINTED_GAP } else { 0.0 };
+                    (held_card(beside(hand, gap, h), head_pos, du, du * aspect / dv), 1.0)
                 }),
                 HUD_COMPASS => {
                     // Low in front of the body: the head's lazy turn, a fixed angle under the

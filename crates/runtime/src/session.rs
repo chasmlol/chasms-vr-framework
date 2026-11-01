@@ -2242,7 +2242,7 @@ impl Session {
                             // (What floats out in front, beyond the hands, is drawn before them, so a hand in
                             // front of it covers it; what's on the body or the face is drawn over it.)
                             let layer = PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive, soft: [0.0; 2], solid: false };
-                            if matches!(piece.role, HUD_STATUS | HUD_AMMO | HUD_HELD | HUD_POINTED | HUD_OVERLAY) {
+                            if matches!(piece.role, HUD_STATUS | HUD_AMMO | HUD_HELD | HUD_POINTED | HUD_LOOT | HUD_OVERLAY) {
                                 layers.panels.push(layer);
                             } else {
                                 layers.world_panels.push(layer);

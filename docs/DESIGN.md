@@ -496,7 +496,11 @@ the fingers in a pocket; and the game's own card of it (`HUD_HELD`, `held_cards.
 HUD while it was of that hand's thing, so both hands have theirs. What a free hand put up in front
 points at has the game's card too, over that hand (`HUD_POINTED`): the runtime says which hand
 points (`INT_POINT_LEFT`, `INT_POINT_RIGHT`: free, 30 cm or more in front of the head, the one
-reached out furthest) and the game picks what to use along it.
+reached out furthest) and the game picks what to use along it. What's in what that hand points at
+can be listed beside it to take there (`GS_QUICK_LOOT`, the piece `HUD_LOOT`): the card and the
+list stand on the side of the hand nearer the middle of the view, the card next to the hand; the
+firing-hand stick's up and down step through the list (`MenuUp`, `MenuDown`, repeating while
+held), the trigger takes (`Use`), that hand's A takes everything (`LootAll`).
 
 A card can also be a page (`OBJF_SHEET`): its object is a thin box the hands take up and put down,
 and the card is drawn on its face (`rustvr_avatar::HeldModel::sheet`, the card's texture on a quad,

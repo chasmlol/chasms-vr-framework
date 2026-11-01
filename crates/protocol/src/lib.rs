@@ -600,6 +600,8 @@ pub enum Action {
     /// (swept leftwards across it), or back.
     PageNext = 36,
     PagePrev = 37,
+    /// Everything in what a hand is looting ([`GS_QUICK_LOOT`]) taken at once.
+    LootAll = 38,
     /// Adapter-defined actions, picked from the radial menu.
     Custom0 = 40,
     Custom1 = 41,
@@ -653,6 +655,7 @@ impl Action {
         Action::GestureWipe,
         Action::PageNext,
         Action::PagePrev,
+        Action::LootAll,
         Action::Custom0,
         Action::Custom1,
         Action::Custom2,
@@ -707,6 +710,7 @@ impl Action {
             Action::GestureWipe => "gesture_wipe",
             Action::PageNext => "page_next",
             Action::PagePrev => "page_prev",
+            Action::LootAll => "loot_all",
             Action::Custom0 => "custom0",
             Action::Custom1 => "custom1",
             Action::Custom2 => "custom2",
@@ -781,6 +785,11 @@ pub const GS_HANDS_ONLY: u32 = 1 << 13;
 /// The open menu is one the player can turn in (a conversation, its pieces with the speaker in the
 /// world): the turning stick's left and right turn them as out of a menu, not the menu's.
 pub const GS_MENU_TURNS: u32 = 1 << 14;
+/// The game's things in what a free hand points at (a chest, a body) are listed beside that hand
+/// ([`crate::HUD_LOOT`]), the game playing on: the turning stick's up and down move through them
+/// ([`Action::MenuUp`], [`Action::MenuDown`]), the trigger takes one ([`Action::Use`]), that
+/// hand's A takes them all ([`Action::LootAll`]).
+pub const GS_QUICK_LOOT: u32 = 1 << 15;
 
 /// Linear-light colours.
 #[repr(C)]

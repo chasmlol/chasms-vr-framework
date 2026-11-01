@@ -68,6 +68,10 @@ pub const HUD_GAZE: u32 = 13;
 /// What a hand points at that it can use (the game's card of it: "Locked Gate", a name): over that
 /// hand ([`HudElement::hand`]), turned to the eyes, as a held thing's card is over it.
 pub const HUD_POINTED: u32 = 14;
+/// What's in what a hand points at, to take there ([`crate::GS_QUICK_LOOT`]): beside that hand
+/// ([`HudElement::hand`]), past its [`HUD_POINTED`] card, both on the side of the hand nearer the
+/// middle of the view (under a hand reaching up to a shelf, over one reaching down to a body).
+pub const HUD_LOOT: u32 = 15;
 
 // ---- element flags ------------------------------------------------------------------------------
 /// The laser points at it: where it hits is where the game's cursor goes (and the trigger clicks).
@@ -176,7 +180,8 @@ pub struct HudElement {
     pub offset: [f32; 3],
     /// How opaque it's drawn (0 means 1).
     pub opacity: f32,
-    /// For [`HUD_POINTED`]: the hand it's over ([`crate::HAND_LEFT`], [`crate::HAND_RIGHT`]).
+    /// For [`HUD_POINTED`] and [`HUD_LOOT`]: the hand it's beside ([`crate::HAND_LEFT`],
+    /// [`crate::HAND_RIGHT`]).
     pub hand: u32,
     pub _pad: [u32; 3],
 }

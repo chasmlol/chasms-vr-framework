@@ -178,6 +178,10 @@ const LONG_PRESS: f64 = 0.45;
 const POINT_OUT: f32 = 0.3;
 const POINT_BACK: f32 = 0.05;
 const POINT_SWITCH: f32 = 0.1;
+/// Held up or down, the stick steps through a looted thing's list again after this long (s), then
+/// every this long.
+const LOOT_REPEAT_AFTER: f64 = 0.4;
+const LOOT_REPEAT: f64 = 0.12;
 /// How long a lone stick click waits for the other stick (both together: the framework view).
 const STICK_CHORD: f64 = 0.12;
 /// Heights a worn headset's at (metres over the real floor), sat or stood (not on a desk): seated
@@ -374,6 +378,8 @@ pub struct Mechanics {
     crouch_cooldown: f64,
     /// The hand the game picks what to use along ([`INT_POINT_LEFT`]), if one's free.
     point_hand: Option<usize>,
+    /// When the stick held up or down steps through a looted thing's list next.
+    loot_step_at: f64,
     stand_eye: f32,
     // roomscale follow
     following: bool,
@@ -425,6 +431,7 @@ impl Default for Mechanics {
             crouch_pending: -1,
             crouch_cooldown: 0.0,
             point_hand: None,
+            loot_step_at: 0.0,
             stand_eye: 1.8,
             following: false,
             prev_mag_rel: None,
@@ -845,10 +852,40 @@ impl Mechanics {
         self.turn(c, if inp.riding { 0.0 } else { dc.stick[0] }, now, inp.dt);
         out.tracking.turn_total = self.turn_total;
 
+        // The hand the game picks what to use along (a door, a person: what its trigger uses, its
+        // card over the hand): a free one (holding, pulling, casting nothing) put up in front, the
+        // one reached out furthest, the other taking over only once it's a good way further. With
+        // none, the eyes'.
+        let ahead = Vec3::new(head_fwd.x, 0.0, head_fwd.z).normalize_or(Vec3::Z);
+        let out_by = |h: usize| (v3(f.hands[h].aim.pos) - hmd_pos).dot(ahead);
+        let was = self.point_hand;
+        let put_up = |h: usize| out_by(h) > if was == Some(h) { POINT_OUT - POINT_BACK } else { POINT_OUT };
+        let free = |h: usize| rig_mode && f.hands[h].connected != 0 && f.hands[h].aim.valid != 0 && !busy[h] && !targeting[h] && !inp.spell_hands[h] && !inp.riding && put_up(h);
+        self.point_hand = match (free(0), free(1)) {
+            (false, false) => None,
+            (true, false) => Some(0),
+            (false, true) => Some(1),
+            (true, true) => match was {
+                Some(h) if out_by(h ^ 1) < out_by(h) + POINT_SWITCH => Some(h),
+                _ => Some(if out_by(0) >= out_by(1) { 0 } else { 1 }),
+            },
+        };
+        if let Some(h) = self.point_hand {
+            out.intents.flags |= if h == 0 { INT_POINT_LEFT } else { INT_POINT_RIGHT };
+        }
+        // What a pointing hand is looting, listed beside it (`GS_QUICK_LOOT`): the firing-hand stick's
+        // up and down step through it, a step a flick and more while it's held.
+        let quick_loot = rig_mode && self.point_hand.is_some() && gflags & GS_QUICK_LOOT != 0;
         // Firing-hand stick Y: next / previous weapon.
         let ty = deadzone(dc.stick[1], 0.25);
         let ydir = if ty > 0.7 { 1 } else if ty < -0.7 { -1 } else { 0 };
-        if ydir != 0 && ydir != self.last_stick_y_dir {
+        if quick_loot {
+            let step = ydir != 0 && (ydir != self.last_stick_y_dir || now >= self.loot_step_at);
+            if step {
+                self.press(if ydir > 0 { Action::MenuUp } else { Action::MenuDown });
+                self.loot_step_at = now + if ydir != self.last_stick_y_dir { LOOT_REPEAT_AFTER } else { LOOT_REPEAT };
+            }
+        } else if ydir != 0 && ydir != self.last_stick_y_dir {
             if !rig_mode {
                 self.press(if ydir > 0 { Action::NextWeapon } else { Action::PrevWeapon });
             } else if ydir < 0 && !inp.riding {
@@ -871,28 +908,7 @@ impl Mechanics {
             held |= Action::Fire.bit();
         }
         if rig_mode {
-            self.rig_controls(inp, dom, busy, targeting, &mut held);
-        }
-        // The hand the game picks what to use along (a door, a person: what its trigger uses, its
-        // card over the hand): a free one (holding, pulling, casting nothing) put up in front, the
-        // one reached out furthest, the other taking over only once it's a good way further. With
-        // none, the eyes'.
-        let ahead = Vec3::new(head_fwd.x, 0.0, head_fwd.z).normalize_or(Vec3::Z);
-        let out_by = |h: usize| (v3(f.hands[h].aim.pos) - hmd_pos).dot(ahead);
-        let was = self.point_hand;
-        let put_up = |h: usize| out_by(h) > if was == Some(h) { POINT_OUT - POINT_BACK } else { POINT_OUT };
-        let free = |h: usize| rig_mode && f.hands[h].connected != 0 && f.hands[h].aim.valid != 0 && !busy[h] && !targeting[h] && !inp.spell_hands[h] && !inp.riding && put_up(h);
-        self.point_hand = match (free(0), free(1)) {
-            (false, false) => None,
-            (true, false) => Some(0),
-            (false, true) => Some(1),
-            (true, true) => match was {
-                Some(h) if out_by(h ^ 1) < out_by(h) + POINT_SWITCH => Some(h),
-                _ => Some(if out_by(0) >= out_by(1) { 0 } else { 1 }),
-            },
-        };
-        if let Some(h) = self.point_hand {
-            out.intents.flags |= if h == 0 { INT_POINT_LEFT } else { INT_POINT_RIGHT };
+            self.rig_controls(inp, dom, busy, targeting, quick_loot, &mut held);
         }
         // Firing hand. A: reload, or with full manual reloads, eject the magazine (and rack the gun if a
         // new one is seated but the charging handle is out of reach).
@@ -1209,10 +1225,15 @@ impl Mechanics {
     /// The buttons the rig leaves to the game. A hand holding a gun keeps A (eject) and B (slide
     /// release) for the rig; an empty hand's A/X jumps and its trigger uses what you look at (when
     /// it isn't reaching for an object). Holding the dominant B opens the weapon wheel.
-    fn rig_controls(&mut self, inp: &MechInput, dom: usize, busy: [bool; 2], targeting: [bool; 2], held: &mut u64) {
+    fn rig_controls(&mut self, inp: &MechInput, dom: usize, busy: [bool; 2], targeting: [bool; 2], quick_loot: bool, held: &mut u64) {
         let gun_hand = |h: usize| inp.rig.and_then(|r| r.primary_weapon).is_some() && busy[h];
         for h in 0..2 {
-            if self.btn_a[h].down && !gun_hand(h) {
+            // (The A of a hand looting what it points at takes it all, rather than jumping.)
+            if quick_loot && self.point_hand == Some(h) {
+                if self.btn_a[h].pressed() {
+                    self.press(Action::LootAll);
+                }
+            } else if self.btn_a[h].down && !gun_hand(h) {
                 *held |= Action::Jump.bit();
             }
             // (On a mount the game's "use" gets off, which riding does by a held trigger.)
