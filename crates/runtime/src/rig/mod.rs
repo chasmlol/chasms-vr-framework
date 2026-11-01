@@ -2302,13 +2302,16 @@ impl Rig {
         self.hands.as_mut().unwrap()[i].returning = Some((from.0, from.1, self.now, time));
     }
 
-    /// The palms and fingers in the game's own free props, as pushes for the game: at each prop,
-    /// the deepest touch, asking the point to move along with the hand at least as fast as the
-    /// hand moves (plus enough to undo the overlap within a few frames).
+    /// The palms and fingers, and what the hands hold, in the game's own free props, as pushes for
+    /// the game: at each prop, the deepest touch, asking the point to move along with the hand (or
+    /// the held thing) at least as fast as it moves (plus enough to undo the overlap within a few
+    /// frames): a plate knocked off a table by a hand or a sword.
     fn pushes(&self) -> Vec<GamePush> {
         let Some(hands) = &self.hands else { return Vec::new() };
         let mut out = self.actor_pushes();
         out.extend(self.item_pushes());
+        // (What the hands hold pushes as a hand does: not a bowl, which its pestle grinds in.)
+        let held: Vec<(ColliderHandle, Vec3)> = self.objects.values().filter(|o| matches!(o.holder, Holder::Held(_))).map(|o| (o.collider, self.physics.velocity(o.body).0)).collect();
         for (id, o) in &self.objects {
             let constrained = o.desc.flags & OBJF_CONSTRAINED != 0;
             let game_free = o.desc.flags & OBJF_GAME_SIMULATED != 0 && o.holder == Holder::Free && (constrained || self.now - o.free_since > GAME_HANDBACK as f64);
@@ -2332,7 +2335,9 @@ impl Rig {
                 let fingers = h.fingers.iter().zip(h.finger_vel).filter(|_| h.fingers_on).map(|(f, v)| (self.physics.collider_of(*f), v));
                 let palm = (h.holding.is_none() && h.support.is_none()).then_some((Some(h.collider), palm_vel));
                 let pushers = palm.into_iter().chain(fingers);
-                for (c, vel) in pushers {
+                // (What the hands hold, with the first hand: once for each thing.)
+                let held = held.iter().filter(|_| std::ptr::eq(h, &hands[0]) && !self.bowls.contains_key(id)).map(|&(c, v)| (Some(c), v));
+                for (c, vel) in pushers.chain(held) {
                     let Some((point, normal, depth)) = c.and_then(|c| self.physics.overlap(c, o.collider)) else { continue };
                     // A moving hand pushes the way it moves (deep in a thin cable, the shortest
                     // way out can be backwards); one held still, straight out of it.
@@ -7126,9 +7131,11 @@ impl Rig {
 
     /// What each hand's fingers close on: the handle it's on, or the whole thing where it has it
     /// anywhere (tracking space), closing over [`GRASP_TIME`] as it takes hold and opening as it
-    /// lets go.
+    /// lets go; and, holding nothing, what's under the hand to take, which the fingers stop on as
+    /// they close (closing onto it not at all: weight 0).
     fn update_grasps(&mut self, out: &RigOutput) {
         let now_g: [Option<((u32, On), rustvr_avatar::Grasp)>; 2] = [0, 1].map(|i| self.grasp_now(i));
+        let under: [Option<rustvr_avatar::Grasp>; 2] = [0, 1].map(|i| self.grasp_under(i));
         let (map, now) = (self.map, self.now);
         let Some(hands) = self.hands.as_mut() else { return };
         for (i, g) in now_g.into_iter().enumerate() {
@@ -7161,7 +7168,7 @@ impl Rig {
                         }
                         _ => {
                             st.fading = None;
-                            None
+                            under[i].clone().map(|g| grasp_in_tracking(&map, g))
                         }
                     }
                 }
@@ -7226,6 +7233,24 @@ impl Rig {
             None => self.physics.grasp_solids(o.collider, &mut g),
         }
         Some(((id, on), g))
+    }
+
+    /// What's under empty hand `i` to take (a thing, a handle or a foregrip it's at), all its
+    /// fingers on it at weight 0: they stop on its surface as they close, before the hand has
+    /// hold of it (world space).
+    fn grasp_under(&self, i: usize) -> Option<rustvr_avatar::Grasp> {
+        let h = &self.hands.as_ref()?[i];
+        if h.holding.is_some() || h.support.is_some() || h.creature.is_some() {
+            return None;
+        }
+        let id = match h.hover {
+            Hover::Object(id) | Hover::Foregrip(id) | Hover::Handle(id) => id,
+            _ => return None,
+        };
+        let o = self.objects.get(&id)?;
+        let mut g = rustvr_avatar::Grasp { fingers: rustvr_avatar::grasp::ALL_FINGERS, weight: 0.0, ..Default::default() };
+        self.physics.grasp_solids(o.collider, &mut g);
+        (!g.solids.is_empty()).then_some(g)
     }
 
     /// Where hand `i`'s index fingertip is (world), as the drawn hand has it (straight when the

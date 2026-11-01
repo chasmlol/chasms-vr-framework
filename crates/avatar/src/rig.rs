@@ -537,13 +537,16 @@ impl Rig {
                         let c = own.curl[f];
                         let mut curls = [c.clamp(-LIFT[f], 1.0), c.clamp(0.0, 1.0), c.clamp(0.0, 1.0)];
                         let mut splay = own.splay;
-                        // Holding something: the finger closes on it, as far as the grasp has.
-                        let grasp = input.grasp[side].filter(|g| g.fingers & (1 << f) != 0 && g.weight > 0.0);
+                        // At something (held, or under the hand about to take it): the finger stops on
+                        // it as it closes, never through it, and closes onto it as far as the grasp
+                        // has (from where it stopped, not from the fist the controller asks for).
+                        let grasp = input.grasp[side].filter(|g| g.fingers & (1 << f) != 0);
                         if let (Some(g), Some(hand)) = (grasp, joint(HAND[side])) {
                             let wrapped = self.wrap(side, f, hand, hand_scale[side], g);
-                            let w = g.weight.min(1.0);
+                            let w = g.weight.clamp(0.0, 1.0);
                             for (c, t) in curls.iter_mut().zip(wrapped) {
-                                *c += (t - *c) * w;
+                                let stopped = c.min(t);
+                                *c = stopped + (t - stopped) * w;
                             }
                             splay += (WRAP_SPLAY - splay) * w;
                         }

@@ -2759,13 +2759,14 @@ fn the_fingers_close_on_what_the_hand_holds_and_open_as_it_lets_go() {
     assert_eq!(g.fingers, rustvr_avatar::grasp::ALL_FINGERS);
     s.step(20);
     assert!((s.rig.grasps()[0].as_ref().unwrap().weight - 1.0).abs() < 1e-4);
-    // Let go, it opens off it and is gone.
+    // Let go, it opens off it: closing on it no more (the fingers only stop on it, the hand still
+    // over it).
     s.grip(0, 0.0);
     s.step(3);
     let w = s.rig.grasps()[0].as_ref().map(|g| g.weight).unwrap_or(0.0);
     assert!(w > 0.3 && w < 1.0, "opening: {w}");
     s.step(20);
-    assert!(s.rig.grasps()[0].is_none());
+    assert!(s.rig.grasps()[0].as_ref().is_none_or(|g| g.weight == 0.0));
 }
 
 #[test]
