@@ -676,7 +676,8 @@ each change as it's made.
 **The menu** (`crates/runtime/src/menu.rs`, egui) floats beside the game's pause menu (beside a
 menu in pieces only when its layout asks, `HUDL_SETTINGS`), or in front of the player when no game
 is connected; the laser
-points at it, the trigger clicks, the dominant stick scrolls. Its header says the game, the backend
+points at it, the trigger clicks (as it's pulled, where it pressed: held and moved, it drags), the
+dominant stick scrolls. Its header says the game, the backend
 and the frame rate. Tabs, in order:
 
 | Tab | What's on it |

@@ -85,6 +85,21 @@ pub struct World {
 const RIDE_FULL_TURN: f32 = 1.0;
 /// The fade while getting on or off a mount is held this long after (seconds).
 const RIDE_FADE_AFTER: f64 = 0.35;
+/// A trigger pull on a menu clicks where it pressed, the button down this long (s) and up again;
+/// held on and moved this far (m) over the menu from there, it drags.
+const MENU_CLICK: f64 = 0.08;
+const MENU_DRAG: f32 = 0.03;
+
+/// A trigger pull on a menu: the panel and the point in it pressed, where the laser hit it, when;
+/// and since when it's been a drag.
+#[derive(Clone, Copy)]
+struct MenuPress {
+    id: PanelId,
+    uv: Vec2,
+    at: Vec3,
+    since: f64,
+    drag: Option<f64>,
+}
 
 pub struct Session {
     pub gpu: Gpu,
@@ -268,6 +283,7 @@ pub struct Session {
     reins: crate::reins::Reins,
     ride_fade_until: f64,
     menu_trigger_was: bool,
+    menu_press: Option<MenuPress>,
     /// The player's body (IK) and its avatar.
     pub body: crate::body::PlayerBody,
     /// Swimming by the arms in the game's water (`crate::swim`), and what it did this frame.
@@ -447,6 +463,7 @@ impl Session {
             reins: Default::default(),
             ride_fade_until: f64::MIN,
             menu_trigger_was: false,
+            menu_press: None,
             body: crate::body::PlayerBody::default(),
             swim: Default::default(),
             swim_out: Default::default(),
@@ -849,12 +866,37 @@ impl Session {
             }
         }
         let trigger_down = hand.trigger > 0.6;
-        let mut cursor = match pick {
-            Some((PanelId::GameMenu, _, uv)) => Some(Cursor { uv, down: trigger_down }),
+        // A pull clicks where it pressed, as it presses: the button down a moment there and up
+        // again, whatever the hand does as the finger squeezes (a click that waited for the release
+        // where the laser was then would miss a small button). Held on and moved a few centimetres
+        // over the menu, it's a drag from where it pressed: the button down there again, then
+        // following the laser.
+        if trigger_down && !self.menu_trigger_was {
+            self.menu_press = pick.map(|(id, t, uv)| MenuPress { id, uv, at: laser_origin + laser_dir * t, since: now, drag: None });
+        } else if !trigger_down {
+            self.menu_press = None;
+        }
+        if let (Some(p), Some((id, t, _))) = (self.menu_press.as_mut(), pick)
+            && p.drag.is_none()
+            && id == p.id
+            && (laser_origin + laser_dir * t).distance(p.at) > MENU_DRAG
+        {
+            p.drag = Some(now);
+        }
+        let (point, down) = match self.menu_press {
+            Some(p) => match p.drag {
+                Some(d) if now - d >= MENU_CLICK => (pick.map(|(id, _, uv)| (id, uv)), true),
+                Some(_) => (Some((p.id, p.uv)), true),
+                None => (Some((p.id, p.uv)), now - p.since < MENU_CLICK),
+            },
+            None => (pick.map(|(id, _, uv)| (id, uv)), false),
+        };
+        let mut cursor = match point {
+            Some((PanelId::GameMenu, uv)) => Some(Cursor { uv, down }),
             _ => None,
         };
-        let menu_pointer = match pick {
-            Some((PanelId::RuntimeMenu, _, uv)) => Some((uv, trigger_down)),
+        let menu_pointer = match point {
+            Some((PanelId::RuntimeMenu, uv)) => Some((uv, down)),
             _ => None,
         };
         let snd = &self.settings.current.sound;
@@ -2106,6 +2148,21 @@ impl Session {
                 // The game's menus in pieces, floating in the world (placed before pointing): their
                 // edges soft over a few texels where the adapter cut them out of a bigger picture.
                 let (tex_w, tex_h) = (hud.width as f32, hud.height as f32);
+                // A menu nobody described, whole: over the world as the game drew it (its alpha),
+                // or on its own outside it. (First: what floats with it, a question's box or a
+                // keyboard over a character creator, is drawn over it.)
+                if menu_mode
+                    && let Some(p) = layout.game_menu
+                {
+                    // (Shown in the world, the part of the picture its menu is in.)
+                    let uv = self.game.as_ref().map(|g| g.menu_uv).filter(|uv| menu_in_world && uv[2] > uv[0] && uv[3] > uv[1]);
+                    let whole = PanelLayer { uv: uv.unwrap_or([0.0, 0.0, 1.0, 1.0]), ..PanelLayer::whole(p, srv) };
+                    if floating || menu_in_world {
+                        layers.world_panels.push(PanelLayer { opacity: self.settings.current.ui.menu_opacity, ..whole });
+                    } else {
+                        layers.panels.push(whole);
+                    }
+                }
                 for piece in self.menu_pieces.iter().filter(|_| menu_mode) {
                     let texels = 6.0;
                     let soft = if piece.flags & HUDE_SOFT != 0 {
@@ -2133,20 +2190,8 @@ impl Session {
                         layers.world_panels.push(PanelLayer { panel: piece.panel, srv, opacity: piece.opacity, uv: piece.uv, additive: false, soft, solid: piece.flags & HUDE_SOLID != 0 });
                     }
                 }
-                if menu_mode {
-                    // A menu nobody described, whole: over the world as the game drew it (its
-                    // alpha), or on its own outside it.
-                    if let Some(p) = layout.game_menu {
-                        // (Shown in the world, the part of the picture its menu is in.)
-                        let uv = self.game.as_ref().map(|g| g.menu_uv).filter(|uv| menu_in_world && uv[2] > uv[0] && uv[3] > uv[1]);
-                        let whole = PanelLayer { uv: uv.unwrap_or([0.0, 0.0, 1.0, 1.0]), ..PanelLayer::whole(p, srv) };
-                        if floating || menu_in_world {
-                            layers.world_panels.push(PanelLayer { opacity: self.settings.current.ui.menu_opacity, ..whole });
-                        } else {
-                            layers.panels.push(whole);
-                        }
-                    }
-                } else if info.flags & SLOT_HUD != 0
+                if !menu_mode
+                    && info.flags & SLOT_HUD != 0
                     && let Some(p) = layout.hud {
                         // The HUD in pieces: each where VR games put it (see `hud.rs`).
                         let dom = s.dominant();
