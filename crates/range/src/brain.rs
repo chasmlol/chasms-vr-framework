@@ -47,7 +47,7 @@ pub enum Tier {
 /// What a tier changes (every field that differs between the tiers).
 #[derive(Clone, Copy, Debug)]
 pub struct Difficulty {
-    /// Its moves are filtered by this (`difficulty`: Easy 1, Medium 2, Hard 3).
+    /// Its moves are filtered by this (Easy 1, Medium 2, Hard 3).
     pub level: u32,
     /// Seconds after its last attack's end before the next (checked only when its least is over 0,
     /// so Hard's 0 to 0.5 never holds it back).
@@ -184,8 +184,8 @@ pub enum Stance {
     SwordShield,
 }
 
-/// The idle a stance stands in (`SimpleStance`, `ThrustingStance`, `HighStance`): its guard, and
-/// which moves it can open with from there.
+/// The idle a stance stands in (simple, thrusting, high): its guard, and which moves it can open
+/// with from there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Idle {
     Simple,
@@ -428,7 +428,7 @@ pub struct Move {
     pub start: f32,
     pub peak: f32,
     pub end: f32,
-    /// Its clip's length (s) and its own speed.
+    /// Its length at speed 1 (s), and its own speed.
     pub seconds: f32,
     speed: f32,
     /// How far it carries its body forward (its root's curve, m): the furthest, when (a share of
@@ -615,8 +615,7 @@ impl Stance {
 
 impl Move {
     /// Where the wrist is at `t` (its share, 0..1) for hand `hand`: its shape, wound up a little
-    /// before its blow starts to hurt (ours), striking at its
-    /// peak, followed through at its end.
+    /// before its blow starts to hurt, striking at its peak, followed through at its end.
     fn key(&self, t: f32, hand: usize) -> Key {
         let [w, p, e] = self.shape.marks;
         let marks = [(0.0, 0.0), (self.start * WOUND_UP, w), (self.peak, p), (self.end, e), (1.0, 1.0)];

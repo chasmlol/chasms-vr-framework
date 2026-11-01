@@ -1,7 +1,7 @@
 //! Pockets on the game's creatures (`rustvr_protocol::pockets`): a hand reaching into one, feeling
 //! what's there, closing on one thing and pulling it out, or letting a thing go in one.
 //!
-//! The research (`docs/research/pickpocket.md` in a game's adapter, Oblivion's first) shapes it:
+//! The research (`docs/design/pickpocket.md` in a game's adapter, Oblivion's first) shapes it:
 //!
 //! * A pocket is found by touch: a soft brush as the hand goes in, then a tick for the thing it's on,
 //!   each kind of thing its own (coins, a key, glass, paper, cloth, something hard). Every few

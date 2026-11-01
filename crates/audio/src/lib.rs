@@ -2,7 +2,7 @@
 //!
 //! A flat game has no grab, holster or magazine-seat sounds of its own, so the runtime makes
 //! them: a small, consistent library played at the hand on the same frame as the haptic. See
-//! "Haptics and sound must land as a single event" in `reports/VR player controller design.md`.
+//! "Haptics and sound must land as a single event" in `docs/design/vr-player-controller.md`.
 //!
 //! * Every [`Sound`] is synthesised at startup, four variations each, no sample files.
 //! * A game that has sounds of its own hands the runtime a **sound pack** (see [`pack`]): its

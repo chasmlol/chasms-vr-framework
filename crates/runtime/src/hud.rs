@@ -2,7 +2,7 @@
 //!
 //! A flat game draws its HUD over the whole screen. Hung in front of the face as one sheet, it
 //! covers the view and chases the head; none of the well-liked VR shooters do that (see
-//! `research_notes/VR throwables and UI/ui.md`). When the adapter describes its HUD
+//! `docs/design/vr-throwables-and-ui/ui.md`). When the adapter describes its HUD
 //! ([`HudLayout`]: which rectangle of the HUD texture is the subtitles, the hints, the ammo
 //! counter...), each piece goes where native VR games put it:
 //!

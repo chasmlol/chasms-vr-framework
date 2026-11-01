@@ -62,9 +62,8 @@ use std::collections::HashMap;
 /// How strong the player is on creatures with the melee buttons: a 3000 N grip, over the runtime's
 /// own 1500 N for an average person.
 const MELEE_GRIP: f32 = 2.0;
-/// The jump with the melee buttons (a force of 0.3, a velocity change each 90th
-/// of a second, eased to none over 0.6 s), and the body's drag in the
-/// air.
+/// The jump with the melee buttons (a force of 0.3, a velocity change each 90th of a second, eased
+/// to none over 0.6 s), and the body's drag in the air.
 const B_JUMP_FORCE: f32 = 0.3;
 const B_JUMP_TIME: f32 = 0.6;
 const B_AIR_DRAG: f32 = 0.3;
@@ -576,9 +575,8 @@ impl Game {
         self.feet.z = self.feet.z.clamp(content::ROOM_MIN.z, content::ROOM_MAX.z);
         // Jump and gravity, down to the floor (or the block's top) under the feet.
         let floor = arenas::floor_under(self.feet, 0.25);
-        // (With the melee buttons in its melee areas, the dominant stick's click jumps
-        // (its B slows time), with its force eased out over 0.6 s; off a climb, the
-        // runtime's climb jump.)
+        // (With the melee buttons in the melee areas, the dominant stick's click jumps (its B slows
+        // time), its force eased out over 0.6 s; off a climb, the runtime's climb jump.)
         let jump = if self.melee { pressed(presses, Action::Crouch) } else { held(it, Action::Jump) };
         if jump && !self.jump_was_held && self.feet.y <= floor && !climbing {
             if self.melee {

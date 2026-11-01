@@ -67,7 +67,7 @@ pub struct Mesh {
 
 /// How the game shades a surface: its shading model, the textures it binds beside the base
 /// colour, and its constants, all as the game's own shaders take them (Metro: the `surf_*`
-/// constants, see docs/research/metro-viewmodel-lighting.md section 2.4).
+/// constants, see docs/design/metro-viewmodel-lighting.md section 2.4).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Material {
     pub shader: Shader,
@@ -121,7 +121,7 @@ pub enum Shader {
     /// game draws as forward tint (5732). `Material::params.x` is the distance (metres, along the
     /// sight's axis) from the camera the game aims the sight with to the quad's plane, which sets
     /// the reticle's angular size once it is collimated (0: unknown); `yzw` are 0. See
-    /// docs/research/metro-collimator.md.
+    /// docs/design/metro-collimator.md.
     Reticle,
     /// Gamebryo's per-pixel lighting (Oblivion's `ShadowLightShader`): the base texture lit by the
     /// ambient and each light through the normal map ([`Material::bump`], tangent space, its alpha

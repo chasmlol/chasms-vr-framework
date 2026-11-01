@@ -8,7 +8,7 @@
 //! The network is a three-layer perceptron (ReLU) over 30 features of the head and hands, in the
 //! head's yaw frame and scaled to the player, with their recent motion as running averages
 //! (frame-rate independent, so the same at any headset rate). It's trained only on CMU's motion
-//! capture, which is free for any use (`docs/research/ik.md`), mirrored left for right; the
+//! capture, which is free for any use (`docs/design/ik.md`), mirrored left for right; the
 //! evaluation's subjects and LaFAN1 are held out. The weights are `prior.bin`, made by the
 //! evaluation tools (kept outside the repository, with the motion capture they train on).
 

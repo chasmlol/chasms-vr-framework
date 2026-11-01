@@ -151,7 +151,7 @@ pub const PISTOL: Round = Round { damage: 15.0, level: 1, speed: 3.0, through: f
 pub const RIFLE: Round = Round { damage: 30.0, level: 2, speed: 4.0, through: true };
 pub const SHOTGUN: Round = Round { damage: 45.0, level: 3, speed: 6.0, through: false };
 
-/// What armour leaves of a round (our call): leather most of it, chainmail more than half, plate
+/// What armour leaves of a round: leather most of it, chainmail more than half, plate
 /// less than half (and it sparks).
 fn armour_lets_through(material: u32) -> f32 {
     match material {

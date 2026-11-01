@@ -1,5 +1,5 @@
 //! Throwables: grenades and throwing knives, the hand side of them (the game owns what happens
-//! when one goes off or hits). From `research_notes/VR throwables and UI/throwables.md`:
+//! when one goes off or hits). From `docs/design/vr-throwables-and-ui/throwables.md`:
 //!
 //! * **Grenades** ([`THROW_GRENADE`]). The fuse is the game's (`ObjectDesc::fuse`), else 4 s (real
 //!   UZRGM and M67 fuses, HL:A and Metro Awakening's). Two ways to arm, a setting:

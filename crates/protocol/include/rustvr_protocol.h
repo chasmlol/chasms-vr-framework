@@ -612,8 +612,8 @@
 #define RVR_DMGF_GUARD (1 << 1)
 
 /**
- * An axe's edge: an axe's limits (the cut within 45 degrees of the edge, into the
- * surface within 80, at 3 m/s whatever the armour) instead of a sword's (35, 60, by armour).
+ * An axe's edge: an axe's limits (the cut within 45 degrees of the edge, into the surface within
+ * 80, at 3 m/s whatever the armour) instead of a sword's (35, 60, by armour).
  */
 #define RVR_DMGF_AXE (1 << 2)
 
@@ -655,9 +655,9 @@
 #define RVR_SPELL_FAVOURITE (1 << 3)
 
 /**
- * Fire, or shock: a hand charged with it held to a blade fills the blade with it
- * (imbuing, [`crate::RtMelee::imbue`]), and the blade's hits carry it (the fire rows of the damage
- * tables; burning, a shock's stun, for the game).
+ * Fire, or shock: a hand charged with it held to a blade fills the blade with it (imbuing,
+ * [`crate::RtMelee::imbue`]), and the blade's hits carry it (the fire rows of the damage tables;
+ * burning, a shock's stun, for the game).
  */
 #define RVR_SPELL_FIRE (1 << 4)
 
@@ -763,8 +763,8 @@
 #define RVR_CEF_BACK (1 << 5)
 
 /**
- * A blow that went in fast enough, and square enough at a joint, to cut through it (a limb's
- * dismemberment): the event's `part` is the one it takes off (the part hit, or the one
+ * A blow that went in fast enough, and square enough at a joint, to cut through it
+ * (dismemberment): the event's `part` is the one it takes off (the part hit, or the one
  * beside it whose joint it crossed: a forearm cut at the wrist takes the hand), and the game cuts
  * it off, and what hangs from it, at its joint. The cut kills. The blade doesn't stay in: it
  * carries on through.
@@ -893,11 +893,11 @@
 #define RVR_GRAB_SLIPPED (1 << 3)
 
 /**
- * Held by telekinesis, from afar: the game holds the
- * point on the telekinesis drive for bodies (2000 N/m, 100 N s/m, at most 2500 N; the neck's turn
- * x5), not the hand's; let go of with a throw, the part held gets 30 m/s of it and the rest of the
- * body 8. Two hands holding one creature this way (with [`GRAB_TWO_HANDS`]): its limbs that can
- * tear off do past 3000 N on their joints (over the time scale).
+ * Held by telekinesis, from afar: the game holds the point on the telekinesis drive for bodies
+ * (2000 N/m, 100 N s/m, at most 2500 N; the neck's turn x5), not the hand's; let go of with a
+ * throw, the part held gets 30 m/s of it and the rest of the body 8. Two hands holding one
+ * creature this way (with [`GRAB_TWO_HANDS`]): its limbs that can tear off do past 3000 N on
+ * their joints (over the time scale).
  */
 #define RVR_GRAB_TK (1 << 4)
 
@@ -1335,8 +1335,7 @@
 #define RVR_HANDLE_MAIN (1 << 0)
 
 /**
- * A loosened grip slides along it (a spear's shaft, a staff, a long haft): the
- * sliding handles.
+ * A loosened grip slides along it (a spear's shaft, a staff, a long haft).
  */
 #define RVR_HANDLE_SLIDE (1 << 1)
 
@@ -1351,9 +1350,9 @@
 #define RVR_HANDLE_BLADE (1 << 3)
 
 /**
- * What a handle is: how strongly a hand holds and turns the
- * weapon by it ([`MeleeHandle::kind`]). A one-handed weapon's grip (a light handle: its turn
- * driven about the handle and across it apart, each to its cap).
+ * What a handle is: how strongly a hand holds and turns the weapon by it ([`MeleeHandle::kind`]).
+ * A one-handed weapon's grip (its turn driven about the handle and across it apart, each to its
+ * cap).
  */
 #define RVR_GRIP_LIGHT 0
 
@@ -1368,8 +1367,7 @@
 #define RVR_GRIP_SUPER_HEAVY 2
 
 /**
- * A second hand's place (a pommel, a ricasso): it never takes the
- * turning when both hands hold it.
+ * A second hand's place (a pommel, a ricasso): it never takes the turning when both hands hold it.
  */
 #define RVR_GRIP_SUPPORTING 3
 
@@ -1399,20 +1397,18 @@
 #define RVR_DMGF_SLIDES (1 << 4)
 
 /**
- * Goes right through at its depth rather than stopping there: an
- * arrow, a thin spear point.
+ * Goes right through at its depth rather than stopping there: an arrow, a thin spear point.
  */
 #define RVR_DMGF_THROUGH (1 << 5)
 
 /**
- * At a bad angle it's still a hit, a blunt one:
- * without it, a bad angle does nothing.
+ * At a bad angle it's still a hit, a blunt one: without it, a bad angle does nothing.
  */
 #define RVR_DMGF_BLUNT_BAD (1 << 6)
 
 /**
- * Its shove on a body that isn't standing ([`MeleeBlade::push`]) is an impulse each frame
- * and not an acceleration.
+ * Its shove on a body that isn't standing ([`MeleeBlade::push`]) is an impulse each frame, not an
+ * acceleration.
  */
 #define RVR_DMGF_PUSH_IMPULSE (1 << 7)
 
@@ -1491,9 +1487,9 @@
 #define RVR_RULES_TELEKINESIS (1 << 6)
 
 /**
- * The melee buttons: the movement stick's click kicks (an untracked kick, the runtime's
- * `kick`), and slowing time goes on the dominant hand's B. Without it, the
- * movement stick's click is the game's and slowing time the off hand's stick click.
+ * The melee buttons: the movement stick's click kicks (an untracked kick, the runtime's `kick`),
+ * and slowing time goes on the dominant hand's B. Without it, the movement stick's click is the
+ * game's and slowing time the off hand's stick click.
  */
 #define RVR_RULES_KICK (1 << 7)
 
@@ -1812,9 +1808,9 @@
 #define RVR_OBJF_SHEET (1 << 18)
 
 /**
- * It breaks when something meets it hard enough (a pot, a crate, a
- * stool): the hitter's mass weighed clamp(0.5 ln m, 1, 5) times the speed they meet at, squared,
- * 20 or more (about 4.5 m/s for anything up to 7 kg). The runtime takes it out of its world
+ * It breaks when something meets it hard enough (a pot, a crate, a stool): the hitter's mass
+ * weighed clamp(0.5 ln m, 1, 5) times the speed they meet at, squared, 20 or more (about 4.5 m/s
+ * for anything up to 7 kg). The runtime takes it out of its world
  * ([`OS_BROKEN`]) and tells the game ([`crate::CE_BROKE`]), which makes its pieces and puts it
  * back when it likes (a new `spawn_seq`).
  */
@@ -2296,7 +2292,7 @@
 
 /**
  * Gamebryo's forward per-pixel lighting, as Oblivion's `ShadowLightShader` and `SkinShader` do it
- * (the Oblivion adapter's docs/research/oblivion-lighting.md): in the display's 0..1 range, each
+ * (the Oblivion adapter's docs/design/oblivion-lighting.md): in the display's 0..1 range, each
  * light's diffuse capped at 1 and attenuated, summed with the ambient and capped at 1, lighting the
  * base texture (times the vertex colour); each light's specular (the normal map's alpha) added;
  * then the fog. The terms used:

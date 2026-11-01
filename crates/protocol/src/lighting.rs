@@ -13,7 +13,7 @@
 //! ([`TexKind::Lights`](crate::TexKind::Lights), see [`LIGHT_TILE`]).
 //!
 //! Which game's shading model the terms are for is [`GameLighting::model`]: Metro 2033 Redux's
-//! ([`LM_METRO`], docs/research/metro-viewmodel-lighting.md), or Gamebryo's forward per-pixel
+//! ([`LM_METRO`], docs/design/metro-viewmodel-lighting.md), or Gamebryo's forward per-pixel
 //! lighting as Oblivion's shaders do it ([`LM_GAMEBRYO`], see there). A game whose renderer differs
 //! adds its model here.
 
@@ -65,7 +65,7 @@ pub const GL_AMBIENT: u32 = 5;
 /// Metro 2033 Redux's deferred shading (everything above).
 pub const LM_METRO: u32 = 0;
 /// Gamebryo's forward per-pixel lighting, as Oblivion's `ShadowLightShader` and `SkinShader` do it
-/// (the Oblivion adapter's docs/research/oblivion-lighting.md): in the display's 0..1 range, each
+/// (the Oblivion adapter's docs/design/oblivion-lighting.md): in the display's 0..1 range, each
 /// light's diffuse capped at 1 and attenuated, summed with the ambient and capped at 1, lighting the
 /// base texture (times the vertex colour); each light's specular (the normal map's alpha) added;
 /// then the fog. The terms used:

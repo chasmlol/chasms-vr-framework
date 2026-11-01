@@ -1,6 +1,6 @@
 //! Every tunable of the body solver, with defaults from the research's Tier 5 table
-//! (`reports/VR player controller design.md`) and the notes in
-//! `research_notes/VR player controller design/full_body_ik.md`. "Est." marks values no source
+//! (`docs/design/vr-player-controller.md`) and the notes in
+//! `docs/design/vr-player-controller/full_body_ik.md`. "Est." marks values no source
 //! publishes. Lengths are metres for the reference body and scale with the player; angles are
 //! degrees; time constants are seconds.
 

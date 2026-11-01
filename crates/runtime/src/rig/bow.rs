@@ -1,5 +1,5 @@
 //! Bows ([`OBJ_BOW`]) and the arrows they shoot ([`OBJ_ARROW`]), the way the best-liked VR bows
-//! do them (the research is in Oblivion's adapter, `docs/research/archery.md`): an arrow from the
+//! do them (the research is in Oblivion's adapter, `docs/design/archery.md`): an arrow from the
 //! quiver, nocked by bringing it to the string, the string drawn back by the hand that nocked it,
 //! the bow turning so the arrow points from the string hand through its rest, loosed by letting go.
 //!
