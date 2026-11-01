@@ -99,16 +99,16 @@ Sources: [Mordhau patch notes (parry, recovery, riposte windows)](https://steamd
   leaves it behind, and it comes on after the hands along their way at its top turn rate, carries
   on a little past where they stopped, and settles on them. The top rate is so much energy in its
   turn (and its grip's motion), so a heavy blade turns slower than a light one: the longsword in two
-  hands at most about 310 degrees a second, a half turn in 0.6 s. Its grip settles at 10 rad/s (0.9
-  of critical damping), with at most 60 N (80 N in two hands) and 4 J of motion (6 J); the turn
-  settles at 14 rad/s about the grip (0.6), with at most 4 N m (8 N m) and 2.5 J of turn (4 J). In
+  hands at most about 620 degrees a second, a half turn in 0.3 s. Its grip settles at 10 rad/s (0.9
+  of critical damping), with at most 150 N (200 N in two hands) and 12 J of motion (18 J); the turn
+  settles at 14 rad/s about the grip (0.6), with at most 10 N m (20 N m) and 10 J of turn (16 J). In
   two hands its handle lies along the line from one hand to the other (the first hand's wrist only
   rolls it about that line): put the hands sideways and it turns sideways. The drawn hands stay on
   its grip, so they come after your real hands too (a tracked elbow goes with its hand; a second
   hand stays on to 0.9 m). Checked headless: the longsword in two hands chopped from overhead in
-  0.25 s falls 70 degrees behind the hands, carries on 10 degrees past their stop and is with them
-  0.5 s after it; chopped in 0.6 s it trails 8 degrees and carries on 11; the hands put sideways
-  over a second, it turns with them 14 degrees behind. The menu's *Strength on a weapon*
+  0.25 s falls 34 degrees behind the hands, carries on 27 degrees past their stop and is with them
+  0.45 s after it; chopped in 0.6 s it trails 8 degrees and carries on 8; the hands put sideways
+  over a second, it turns with them 11 degrees behind. The menu's *Strength on a weapon*
   (Controls) scales the most force, torque and energy: less is heavier, slower to turn and more
   carry. Staggered, the hands have a quarter of their strength; in a riposte, a quarter more. The
   stick walks you at 0.55 of its speed with a melee weapon in hand. Started in the duel area, the
