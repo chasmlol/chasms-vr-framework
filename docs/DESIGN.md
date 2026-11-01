@@ -126,7 +126,8 @@ share a machine without crossing. `RUSTVR_DESKTOP_VIEW=0` turns the desktop view
 (`capture:<dir>` draws it off screen and saves a frame there every 5 s, or every
 `RUSTVR_DESKTOP_EVERY` seconds); `RUSTVR_SILENT=1` mixes the sounds offline instead of playing
 them; `RUSTVR_WARP` uses the WARP software device; `RUSTVR_ASSETS` names the `local_assets/`
-folder.
+folder. `RUSTVR_SHOW_COLLISION=1` draws the static world's collision within reach of the head as
+lines over the game's picture (what the hands meet, held up to what's drawn).
 
 ## 3. Spaces
 
@@ -178,7 +179,7 @@ The table goes by subject, not by address.
 | `RtPlayerDraw`: the player as the runtime posed it, for an adapter that draws it in its own frame (the runtime doesn't write it now) | runtime -> adapter | seqlock |
 | `ObjectTable`: the objects the player can handle (guns, magazines, grenades, knives, melee weapons, bows and arrows, hinges and slides, props, templates), and how a gun is worked (`action`: self-loading, bolt, pump, break, swing; loaded into its chambers; air) | adapter -> runtime | seqlock |
 | `ObjectStates`: where each object is, who holds it, rounds, shots fired, what's in a gun's chambers and where its action is (a slide, a bolt's lift, open barrels, an air gun's pressure), a grenade's fuse and when it went off | runtime -> adapter | seqlock |
-| Collision ring: static collision (boxes, triangle meshes with their materials) for the runtime's physics | adapter -> runtime | SPSC byte ring |
+| Collision ring: static collision (boxes, triangle meshes with their materials, as many meshes as the adapter likes, each replaced or taken out by its id) for the runtime's physics | adapter -> runtime | SPSC byte ring |
 | `GamePoses`: where the game's own simulated objects are; `GameHulls`: their convex collision; `GamePushes`: where the hands push them, or a creature's part | `GamePushes` runtime -> adapter, the rest adapter -> runtime | seqlock |
 | `Actors`: the creatures near the player as capsules on their skeletons; `MeleeTable`: the blades of the player's melee weapons; `Spells`: the player's spells and magicka; `CombatEvents`: a hit, a block or parry, a spell cast, an arrow loosed, the player struck, a blade pulled out or cutting on, a thing broken, a touch that did nothing | `CombatEvents` runtime -> adapter (ring), the rest adapter -> runtime | seqlock, ring |
 | `MeleeWeapons`, `ActorItems`, `MeleeRules`: the melee (each weapon's handles and damagers, what the creatures hold, the game's numbers for the player); `RtMelee`: the player's side (time's pace, climbing, stamina spent, imbuing) | `RtMelee` runtime -> adapter, the rest adapter -> runtime | seqlock |

@@ -2365,6 +2365,22 @@ impl Session {
                 tracing::warn!("combat debug view: {e:#}");
             }
         }
+        // Testing (`RUSTVR_SHOW_COLLISION=1`): the world's collision within reach of the head, as
+        // lines over the game's picture (what the hands meet, held up to what's drawn).
+        static SHOW_COLLISION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let show_collision = !framework && !debug_combat && *SHOW_COLLISION.get_or_init(|| std::env::var("RUSTVR_SHOW_COLLISION").is_ok_and(|v| v == "1"));
+        if show_collision {
+            const REACH: f32 = 2.5;
+            self.physics_tris.clear();
+            if let Some(map) = self.map_now {
+                self.rig.physics.world_triangles_near(map.point(head), REACH * map.world_per_meter, [0.3, 1.0, 0.45], &mut self.physics_tris);
+                let tracking = self.physics_tris.iter().map(|(t, c)| (t.map(|p| map.inv_point(p)), *c));
+                self.physics_view.wireframe_only = true;
+                if let Err(e) = self.physics_view.set_triangles(&self.gpu, tracking, std::iter::empty()) {
+                    tracing::warn!("collision view: {e:#}");
+                }
+            }
+        }
         self.sculpt.prepare(&self.gpu);
         let sculpt_draw = if draw_body && !framework { self.sculpt.draw(&mut self.sculpt_parts) } else { None };
         let body = &mut self.body;
@@ -2564,7 +2580,7 @@ impl Session {
                 if draw_body {
                     body.draw(gpu, target, eye, fov, light, if framework { None } else { depth.take() }, &held);
                 }
-                if debug_combat && let Err(e) = physics_view.draw(gpu, target, eye, fov) {
+                if (debug_combat || show_collision) && let Err(e) = physics_view.draw(gpu, target, eye, fov) {
                     tracing::warn!("combat debug view: {e:#}");
                 }
             });

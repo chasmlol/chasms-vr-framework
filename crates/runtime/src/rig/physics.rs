@@ -185,7 +185,9 @@ impl Physics {
                 let head: ColMesh = bytemuck::pod_read_unaligned(&payload[..size_of::<ColMesh>()]);
                 let tris_bytes = &payload[size_of::<ColMesh>()..];
                 let count = (head.count as usize).min(tris_bytes.len() / size_of::<ColTriangle>());
-                if let Some((b, _)) = self.meshes.remove(&head.id) {
+                if let Some((b, c)) = self.meshes.remove(&head.id) {
+                    let had = self.world.colliders.get(c).and_then(|c| c.shape().as_trimesh().map(|m| m.indices().len())).unwrap_or(0);
+                    self.triangles = self.triangles.saturating_sub(had);
                     self.world.remove_body_with_colliders(b, true);
                 }
                 // (Its materials come after it, if the game has them.)
@@ -210,7 +212,7 @@ impl Physics {
                         let h = self.world.insert(RigidBodyBuilder::fixed(), c.collision_groups(groups_world()).friction(0.8));
                         self.meshes.insert(head.id, h);
                         self.triangles += count;
-                        tracing::info!("rig: collision mesh {:#x}: {count} triangles", head.id);
+                        tracing::debug!("rig: collision mesh {:#x}: {count} triangles", head.id);
                     }
                     Err(e) => tracing::warn!("rig: collision mesh {}: {e:?}", head.id),
                 }
@@ -417,6 +419,31 @@ impl Physics {
             let pose = c.position();
             for t in idx {
                 out.push((t.map(|i| from_v(pose.transform_point(verts[i as usize]))), color));
+            }
+        }
+    }
+
+    /// The static world's triangles within `radius` of `at` (world), each `colour`.
+    pub fn world_triangles_near(&self, at: V3, radius: f32, colour: [f32; 3], out: &mut Vec<([V3; 3], [f32; 3])>) {
+        let near = |lo: V3, hi: V3| (lo - at).max(at - hi).max(V3::ZERO).length() <= radius;
+        for (_, h) in self.meshes.values().chain(self.boxes.values()) {
+            let Some(c) = self.world.colliders.get(*h) else { continue };
+            let aabb = c.compute_aabb();
+            if !near(from_v(aabb.mins), from_v(aabb.maxs)) {
+                continue;
+            }
+            let pose = c.position();
+            if let Some(m) = c.shape().as_trimesh() {
+                let v = m.vertices();
+                for t in m.indices() {
+                    let p = t.map(|i| from_v(pose.transform_point(v[i as usize])));
+                    if near(p[0].min(p[1]).min(p[2]), p[0].max(p[1]).max(p[2])) {
+                        out.push((p, colour));
+                    }
+                }
+            } else if let Some(b) = c.shape().as_cuboid() {
+                let (v, idx) = b.to_trimesh();
+                out.extend(idx.iter().map(|t| (t.map(|i| from_v(pose.transform_point(v[i as usize]))), colour)));
             }
         }
     }
