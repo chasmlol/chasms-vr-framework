@@ -1,9 +1,10 @@
 //! Objects' drawn shapes ([`rustvr_protocol::COL_OBJECT_MESH`]): a game's mesh of what's drawn of
-//! a thing, made the thing's collision as its convex parts (a basket's body and handle, a bowl's wall round its
-//! hollow, a sword's blade, guard and grip), whatever shape its description gives it. Working the
-//! parts out (an approximate convex decomposition, [`rustvr_guns::hulls::convex_parts`]) takes a
-//! while, so it's done on a thread of its own, once for each mesh (one plate's mesh does for every
-//! plate); until then an object keeps its own shape.
+//! a thing, made the thing's collision as its convex parts (a basket's body and handle, a bowl's
+//! wall round its hollow, a sword's blade, guard and grip), whatever shape its description gives
+//! it. Working the parts out (an approximate convex decomposition,
+//! [`rustvr_guns::hulls::convex_parts_covering`]) takes a while, so it's done on a thread of its
+//! own, once for each mesh (one plate's mesh does for every plate); until then an object keeps its
+//! own shape.
 
 use glam::Vec3;
 use rustvr_protocol::{ColMesh, ColTriangle};
@@ -11,10 +12,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 
-/// At most this many convex parts to a thing, each of at most this many points; worked out on a
-/// voxel grid this fine across the thing, each part at most this far from convex (a share of its
-/// size). Coarser than a gun's: a few tens of milliseconds a thing, and a bowl, a bucket or a
-/// basket keeps its hollow (finer, its parts run out before its wall does, and fill it).
+/// At most this many convex parts to a thing (and a few more for what they'd leave out), each of at
+/// most this many points; worked out on a voxel grid this fine across a round thing (finer across a
+/// long one: a sword's grip), each part at most this far from convex (a share of its size). Coarser
+/// than a gun's: about a tenth of a second a thing, and a bowl, a bucket or a basket keeps its
+/// hollow (finer, its parts run out before its wall does, and fill it).
 pub const MAX_PARTS: usize = 16;
 pub const MAX_POINTS: usize = 48;
 pub const RESOLUTION: u32 = 40;
@@ -120,7 +122,7 @@ fn parts_of(tris: &[[Vec3; 3]]) -> Vec<Vec<Vec3>> {
     if tris.len() < 12 {
         return whole();
     }
-    let parts = std::panic::catch_unwind(|| rustvr_guns::hulls::convex_parts_with(tris, MAX_PARTS, MAX_POINTS, RESOLUTION, CONCAVITY)).unwrap_or_default();
+    let parts = std::panic::catch_unwind(|| rustvr_guns::hulls::convex_parts_covering(tris, MAX_PARTS, MAX_POINTS, RESOLUTION, CONCAVITY)).unwrap_or_default();
     if parts.is_empty() { whole() } else { parts }
 }
 

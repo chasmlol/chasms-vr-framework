@@ -8,6 +8,8 @@
 
 use glam::{Mat4, Vec3};
 use parry3d::math::Vector;
+use parry3d::query::PointQuery;
+use parry3d::shape::ConvexPolyhedron;
 use parry3d::transformation::vhacd::{VHACD, VHACDParameters};
 use rustvr_protocol::{GameHull, MAX_HULL_POINTS};
 
@@ -44,6 +46,74 @@ pub fn convex_parts_with(triangles: &[[Vec3; 3]], max_parts: usize, max_points: 
     out.sort_by(|a, b| extent(b).total_cmp(&extent(a)));
     out.truncate(max_parts);
     out
+}
+
+/// [`convex_parts_with`] for a thing of any shape: the grid finer the longer and thinner the thing
+/// is (up to [`RESOLUTION`]: a sword's grip is a voxel or two across on a bowl's grid), and a part
+/// more for each connected piece of the triangles that no part covers (within a voxel), so nothing
+/// drawn is lost. A flat piece is given a millimetre's thickness.
+pub fn convex_parts_covering(triangles: &[[Vec3; 3]], max_parts: usize, max_points: usize, resolution: u32, concavity: f32) -> Vec<Vec<Vec3>> {
+    let (lo, hi) = triangles.iter().flatten().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+    let sides = hi - lo;
+    let size = sides.max_element();
+    if triangles.is_empty() || !size.is_finite() || size <= 0.0 {
+        return Vec::new();
+    }
+    // (Its longest side against its middle one.)
+    let middle = sides.x + sides.y + sides.z - size - sides.min_element();
+    let long = (size / middle.max(size * 0.01)).clamp(1.0, RESOLUTION as f32 / resolution.max(1) as f32);
+    let resolution = (resolution as f32 * long).round() as u32;
+    let mut parts = convex_parts_with(triangles, max_parts, max_points, resolution, concavity);
+    let near = size / resolution.max(1) as f32;
+    let solids: Vec<ConvexPolyhedron> = parts.iter().filter_map(|p| ConvexPolyhedron::from_convex_hull(&p.iter().map(|q| Vector::new(q.x, q.y, q.z)).collect::<Vec<_>>())).collect();
+    let covered = |p: Vec3| solids.iter().any(|s| s.distance_to_local_point(Vector::new(p.x, p.y, p.z), true) <= near);
+    let bare: Vec<usize> = (0..triangles.len()).filter(|&i| !covered((triangles[i][0] + triangles[i][1] + triangles[i][2]) / 3.0)).collect();
+    if bare.is_empty() {
+        return parts;
+    }
+    // The bare triangles in connected pieces (sharing a corner, to a hair).
+    let key = |p: Vec3| ((p - lo) / (size * 1e-4)).round().as_ivec3();
+    let mut root: Vec<usize> = (0..bare.len()).collect();
+    fn find(root: &mut [usize], mut i: usize) -> usize {
+        while root[i] != i {
+            root[i] = root[root[i]];
+            i = root[i];
+        }
+        i
+    }
+    let mut by_corner: std::collections::HashMap<glam::IVec3, usize> = std::collections::HashMap::new();
+    for (k, &t) in bare.iter().enumerate() {
+        for p in triangles[t] {
+            if let Some(&other) = by_corner.get(&key(p)) {
+                let (a, b) = (find(&mut root, k), find(&mut root, other));
+                root[a] = b;
+            } else {
+                by_corner.insert(key(p), k);
+            }
+        }
+    }
+    let mut pieces: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    for k in 0..bare.len() {
+        let r = find(&mut root, k);
+        pieces.entry(r).or_default().push(bare[k]);
+    }
+    let mut extra: Vec<Vec<Vec3>> = pieces
+        .into_values()
+        .map(|tris| {
+            let mut points: Vec<Vec3> = tris.iter().flat_map(|&t| triangles[t]).collect();
+            // (Flat: a millimetre either side of it.)
+            let n = tris.iter().map(|&t| (triangles[t][1] - triangles[t][0]).cross(triangles[t][2] - triangles[t][0])).sum::<Vec3>().normalize_or_zero();
+            if n != Vec3::ZERO && points.iter().all(|p| (*p - points[0]).dot(n).abs() < 1e-4) {
+                let flat = points.clone();
+                points = flat.iter().flat_map(|p| [*p + n * 0.0005 * size.min(1.0), *p - n * 0.0005 * size.min(1.0)]).collect();
+            }
+            fewest(points, max_points)
+        })
+        .filter(|p| p.len() >= 4)
+        .collect();
+    extra.sort_by(|a, b| extent(b).total_cmp(&extent(a)));
+    parts.extend(extra.into_iter().take(max_parts / 2));
+    parts
 }
 
 /// A part's size (its bounds' volume), for keeping the biggest.
