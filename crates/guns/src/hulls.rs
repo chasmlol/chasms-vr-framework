@@ -48,21 +48,42 @@ pub fn convex_parts_with(triangles: &[[Vec3; 3]], max_parts: usize, max_points: 
     out
 }
 
-/// [`convex_parts_with`] for a thing of any shape: the grid finer the longer and thinner the thing
-/// is (up to [`RESOLUTION`]: a sword's grip is a voxel or two across on a bowl's grid), and a part
-/// more for each connected piece of the triangles that no part covers (within a voxel), so nothing
-/// drawn is lost. A flat piece is given a millimetre's thickness.
+/// [`convex_parts_with`] for a thing of any shape. Each separate piece of it that is a solid its
+/// own hull fits (a gate's bars and crossbars, a chair's legs, a sword's guard) is a part as it is,
+/// over and above `max_parts`; the rest is decomposed on a grid the finer the longer and thinner it is (up to [`RESOLUTION`]: a
+/// sword's grip is a voxel or two across on a bowl's grid), with a part more for each connected
+/// piece of its triangles that no part covers (within a voxel), so nothing drawn is lost. A flat
+/// piece is given a millimetre's thickness.
 pub fn convex_parts_covering(triangles: &[[Vec3; 3]], max_parts: usize, max_points: usize, resolution: u32, concavity: f32) -> Vec<Vec<Vec3>> {
+    let Some((lo, size, grid)) = grid(triangles, resolution) else { return Vec::new() };
+    let (mut whole, rest) = whole_pieces(triangles, lo, size, size / grid.max(1) as f32, max_parts, max_points);
+    if whole.is_empty() {
+        return decomposed(triangles, max_parts, max_points, resolution, concavity);
+    }
+    let rest: Vec<[Vec3; 3]> = rest.iter().map(|&t| triangles[t]).collect();
+    if !rest.is_empty() {
+        whole.extend(decomposed(&rest, max_parts, max_points, resolution, concavity));
+    }
+    whole
+}
+
+/// The triangles' bounds' low corner and longest side, and the grid for them: `resolution` across
+/// it, finer for a long thin thing (its longest side against its middle one).
+fn grid(triangles: &[[Vec3; 3]], resolution: u32) -> Option<(Vec3, f32, u32)> {
     let (lo, hi) = triangles.iter().flatten().fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
     let sides = hi - lo;
     let size = sides.max_element();
     if triangles.is_empty() || !size.is_finite() || size <= 0.0 {
-        return Vec::new();
+        return None;
     }
-    // (Its longest side against its middle one.)
     let middle = sides.x + sides.y + sides.z - size - sides.min_element();
     let long = (size / middle.max(size * 0.01)).clamp(1.0, RESOLUTION as f32 / resolution.max(1) as f32);
-    let resolution = (resolution as f32 * long).round() as u32;
+    Some((lo, size, (resolution as f32 * long).round() as u32))
+}
+
+/// The triangles decomposed ([`convex_parts_covering`] without its whole pieces).
+fn decomposed(triangles: &[[Vec3; 3]], max_parts: usize, max_points: usize, resolution: u32, concavity: f32) -> Vec<Vec<Vec3>> {
+    let Some((lo, size, resolution)) = grid(triangles, resolution) else { return Vec::new() };
     let mut parts = convex_parts_with(triangles, max_parts, max_points, resolution, concavity);
     let near = size / resolution.max(1) as f32;
     let solids: Vec<ConvexPolyhedron> = parts.iter().filter_map(|p| ConvexPolyhedron::from_convex_hull(&p.iter().map(|q| Vector::new(q.x, q.y, q.z)).collect::<Vec<_>>())).collect();
@@ -71,34 +92,8 @@ pub fn convex_parts_covering(triangles: &[[Vec3; 3]], max_parts: usize, max_poin
     if bare.is_empty() {
         return parts;
     }
-    // The bare triangles in connected pieces (sharing a corner, to a hair).
-    let key = |p: Vec3| ((p - lo) / (size * 1e-4)).round().as_ivec3();
-    let mut root: Vec<usize> = (0..bare.len()).collect();
-    fn find(root: &mut [usize], mut i: usize) -> usize {
-        while root[i] != i {
-            root[i] = root[root[i]];
-            i = root[i];
-        }
-        i
-    }
-    let mut by_corner: std::collections::HashMap<glam::IVec3, usize> = std::collections::HashMap::new();
-    for (k, &t) in bare.iter().enumerate() {
-        for p in triangles[t] {
-            if let Some(&other) = by_corner.get(&key(p)) {
-                let (a, b) = (find(&mut root, k), find(&mut root, other));
-                root[a] = b;
-            } else {
-                by_corner.insert(key(p), k);
-            }
-        }
-    }
-    let mut pieces: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
-    for k in 0..bare.len() {
-        let r = find(&mut root, k);
-        pieces.entry(r).or_default().push(bare[k]);
-    }
-    let mut extra: Vec<Vec<Vec3>> = pieces
-        .into_values()
+    let mut extra: Vec<Vec<Vec3>> = pieces(triangles, &bare, lo, size)
+        .into_iter()
         .map(|tris| {
             let mut points: Vec<Vec3> = tris.iter().flat_map(|&t| triangles[t]).collect();
             // (Flat: a millimetre either side of it.)
@@ -114,6 +109,110 @@ pub fn convex_parts_covering(triangles: &[[Vec3; 3]], max_parts: usize, max_poin
     extra.sort_by(|a, b| extent(b).total_cmp(&extent(a)));
     parts.extend(extra.into_iter().take(max_parts / 2));
     parts
+}
+
+/// The triangles `of` (indices into `triangles`) in connected pieces: sharing a corner, to a hair
+/// (a ten-thousandth of `size`, from `lo`).
+fn pieces(triangles: &[[Vec3; 3]], of: &[usize], lo: Vec3, size: f32) -> Vec<Vec<usize>> {
+    let key = |p: Vec3| ((p - lo) / (size * 1e-4)).round().as_ivec3();
+    let mut root: Vec<usize> = (0..of.len()).collect();
+    fn find(root: &mut [usize], mut i: usize) -> usize {
+        while root[i] != i {
+            root[i] = root[root[i]];
+            i = root[i];
+        }
+        i
+    }
+    let mut by_corner: std::collections::HashMap<glam::IVec3, usize> = std::collections::HashMap::new();
+    for (k, &t) in of.iter().enumerate() {
+        for p in triangles[t] {
+            if let Some(&other) = by_corner.get(&key(p)) {
+                let (a, b) = (find(&mut root, k), find(&mut root, other));
+                root[a] = b;
+            } else {
+                by_corner.insert(key(p), k);
+            }
+        }
+    }
+    let mut out: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    for k in 0..of.len() {
+        let r = find(&mut root, k);
+        out.entry(r).or_default().push(of[k]);
+    }
+    let mut out: Vec<Vec<usize>> = out.into_values().collect();
+    out.sort_by_key(|p| p[0]);
+    out
+}
+
+/// Of a hull's surface, the share that must lie within a voxel of the piece's own triangles for the
+/// piece to be its hull; how many points of the surface are held up to them; the most triangles a
+/// piece may have to be looked at.
+const FIT: f32 = 0.95;
+const FIT_SAMPLES: usize = 256;
+const FIT_MOST_TRIANGLES: usize = 4000;
+
+/// The pieces of the triangles that are each a solid their hull fits (within `near`): their hulls'
+/// points (at most `max_points`), and the triangles of the rest. None when the thing is one piece,
+/// or more of its pieces fit than twice `max_parts` (a fence's hundred pickets: decomposed as a
+/// whole).
+fn whole_pieces(triangles: &[[Vec3; 3]], lo: Vec3, size: f32, near: f32, max_parts: usize, max_points: usize) -> (Vec<Vec<Vec3>>, Vec<usize>) {
+    let all: Vec<usize> = (0..triangles.len()).collect();
+    let pieces = pieces(triangles, &all, lo, size);
+    if pieces.len() < 2 || pieces.len() > 8 * max_parts {
+        return (Vec::new(), all);
+    }
+    let (mut whole, mut rest) = (Vec::new(), Vec::new());
+    for p in pieces {
+        let tris: Vec<[Vec3; 3]> = p.iter().map(|&t| triangles[t]).collect();
+        match (tris.len() <= FIT_MOST_TRIANGLES).then(|| hull_if_fits(&tris, near)).flatten() {
+            Some(hull) => whole.push(fewest(hull, max_points)),
+            None => rest.extend(p),
+        }
+    }
+    if whole.is_empty() || whole.len() > 2 * max_parts {
+        return (Vec::new(), all);
+    }
+    whole.sort_by(|a, b| extent(b).total_cmp(&extent(a)));
+    rest.sort_unstable();
+    (whole, rest)
+}
+
+/// A piece's hull's corners, if nearly all its hull's surface (by area) lies within `near` of the
+/// piece's triangles: a bar, a leg, a block. A cup's (the hull's lid over its mouth), a ring's or a
+/// bent bar's (the hull across its bend) don't. Flat pieces have no hull here.
+fn hull_if_fits(tris: &[[Vec3; 3]], near: f32) -> Option<Vec<Vec3>> {
+    let points: Vec<Vector> = tris.iter().flatten().map(|p| Vector::new(p.x, p.y, p.z)).collect();
+    let (corners, faces) = std::panic::catch_unwind(|| parry3d::transformation::convex_hull(&points)).ok()?;
+    if corners.len() < 4 || faces.len() < 4 {
+        return None;
+    }
+    let corners: Vec<Vec3> = corners.iter().map(|p| Vec3::new(p.x, p.y, p.z)).collect();
+    let face = |f: &[u32; 3]| [corners[f[0] as usize], corners[f[1] as usize], corners[f[2] as usize]];
+    let area = |t: &[Vec3; 3]| (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5;
+    let total: f32 = faces.iter().map(|f| area(&face(f))).sum();
+    if !(total > 0.0) {
+        return None;
+    }
+    let shapes: Vec<parry3d::shape::Triangle> = tris.iter().map(|t| parry3d::shape::Triangle::new(Vector::new(t[0].x, t[0].y, t[0].z), Vector::new(t[1].x, t[1].y, t[1].z), Vector::new(t[2].x, t[2].y, t[2].z))).collect();
+    let near_piece = |p: Vec3| shapes.iter().any(|s| s.distance_to_local_point(Vector::new(p.x, p.y, p.z), true) <= near);
+    // Points spread over each face by its area (a fixed scatter, the same every time).
+    let mut held = 0.0;
+    for f in &faces {
+        let t = face(f);
+        let a = area(&t);
+        let n = ((a / total * FIT_SAMPLES as f32).ceil() as usize).clamp(1, FIT_SAMPLES);
+        let on = (0..n)
+            .filter(|&k| {
+                let (mut u, mut v) = (((k as f32 + 0.5) * 0.618_034).fract(), ((k as f32 + 0.5) * 0.754_877_7).fract());
+                if u + v > 1.0 {
+                    (u, v) = (1.0 - u, 1.0 - v);
+                }
+                near_piece(t[0] + (t[1] - t[0]) * u + (t[2] - t[0]) * v)
+            })
+            .count();
+        held += a * on as f32 / n as f32;
+    }
+    (held >= FIT * total).then_some(corners)
 }
 
 /// A part's size (its bounds' volume), for keeping the biggest.
