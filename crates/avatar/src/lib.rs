@@ -177,6 +177,9 @@ pub struct ArtHand {
     pub moved: [f32; 3],
     /// How far round `at` its art reaches (m).
     pub reach: f32,
+    /// The way its art's plane faces: towards the head, the same for both eyes, so the eyes agree
+    /// where the hand hides it.
+    pub facing: [f32; 3],
 }
 
 /// The game's depth for the eye being drawn (and its bloom).

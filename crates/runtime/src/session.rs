@@ -2408,6 +2408,7 @@ impl Session {
         let sculpt_draw = if draw_body && !framework { self.sculpt.draw(&mut self.sculpt_parts) } else { None };
         let casting = self.magic.casting;
         let art_at = &self.art_at;
+        let head = Vec3::from_array(frame.hmd.pos);
         let body = &mut self.body;
         let physics_view = &mut self.physics_view;
         let held_objects = &mut self.held_objects;
@@ -2593,7 +2594,7 @@ impl Session {
                 })
             };
             let glass_depth = depth_srv.clone().map(|d| (d, 1.0 / depth_units.max(1e-6)));
-            let art = stereo.as_ref().filter(|_| !framework).and_then(|(slot, info)| art_input(slot, info, e, &casting, art_at));
+            let art = stereo.as_ref().filter(|_| !framework).and_then(|(slot, info)| art_input(slot, info, e, &casting, art_at, head));
             self.comp.draw_view(&self.gpu, target, eye, fov, background, &layers, true, &mut |gpu| {
                 if framework {
                     if let Err(e) = physics_view.draw(gpu, target, eye, fov) {
@@ -2765,7 +2766,7 @@ impl Session {
             // (The copy of the head the hands shape, as in the headset.)
             held.extend(sculpt_draw.as_ref().map(|d| rustvr_avatar::HeldDraw { model: d.model, parts: d.parts, key: d.key, overlay: None, bend: 0.0 }));
             // (The game's hand art from the aiming eye's picture.)
-            let art = stereo.as_ref().filter(|_| !framework).and_then(|(slot, info)| art_input(slot, info, first, &self.magic.casting, &self.art_at));
+            let art = stereo.as_ref().filter(|_| !framework).and_then(|(slot, info)| art_input(slot, info, first, &self.magic.casting, &self.art_at, Vec3::from_array(frame.hmd.pos)));
             self.comp.draw_view(&self.gpu, target, &cam, &fov, background, &layers, false, &mut |gpu| {
                 if framework && let Err(e) = physics_view.draw(gpu, target, &cam, &fov) {
                     tracing::warn!("framework view: {e:#}");
@@ -2949,8 +2950,8 @@ fn quat(a: [f32; 4]) -> Quat {
 
 /// The game's hand art for eye `e` of a picture (`slot`, `info`: [`SLOT_ART`]), from the eye it was
 /// drawn from, each hand's carried on with the hand from where it was then (`art_at`) to where it
-/// is now (`casting`).
-fn art_input<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, e: usize, casting: &[Caster; 2], art_at: &std::collections::VecDeque<(u64, [Option<Vec3>; 2])>) -> Option<rustvr_avatar::ArtInput<'a>> {
+/// is now (`casting`), in a plane facing the head (`head`: the same for both eyes).
+fn art_input<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, e: usize, casting: &[Caster; 2], art_at: &std::collections::VecDeque<(u64, [Option<Vec3>; 2])>, head: Vec3) -> Option<rustvr_avatar::ArtInput<'a>> {
     if info.flags & SLOT_ART == 0 {
         return None;
     }
@@ -2959,7 +2960,7 @@ fn art_input<'a>(slot: &'a crate::targets::Slot, info: &SlotInfo, e: usize, cast
     let hands = std::array::from_fn(|h| {
         let now = art_of(&casting[h])?;
         let moved = then.and_then(|t| t[h]).map_or(Vec3::ZERO, |t| now - t);
-        Some(rustvr_avatar::ArtHand { at: now.to_array(), moved: moved.to_array(), reach: crate::magic::ART_REACH })
+        Some(rustvr_avatar::ArtHand { at: now.to_array(), moved: moved.to_array(), reach: crate::magic::ART_REACH, facing: (head - now).normalize_or(Vec3::Z).to_array() })
     });
     Some(rustvr_avatar::ArtInput { srv, drawn: (info.eye_pose[e], info.fov[e]), hands })
 }

@@ -56,8 +56,11 @@ const TRIGGER_ON: f32 = 0.5;
 const TRIGGER_OFF: f32 = 0.25;
 /// Let go this soon with nothing charged: a tap, the game's Activate (seconds).
 const TAP: f64 = 0.25;
-/// The palm: this far off the middle of the fist (the controller's grip), m; the art sits in it.
-const PALM: f32 = 0.035;
+/// The palm's middle: this far from the wrist towards the knuckles of the hand drawn on the grip
+/// (`rustvr_ik`'s), and this far out of the hand's middle to the palm's skin (m). The art sits
+/// there and spells leave from there.
+const PALM_ALONG: f32 = 0.045;
+const PALM_SKIN: f32 = 0.012;
 /// A spell's art stays in the hand this long after the trigger last held it (seconds).
 pub const SHOWN: f64 = 30.0;
 /// How far round a hand the game's own art for it reaches (m): its picture apart from the eye's
@@ -221,6 +224,17 @@ pub fn charge_pulse(charge: f32) -> (f64, f32) {
     (PULSE_SLOW + (PULSE_FAST - PULSE_SLOW) * c as f64, c.powi(6))
 }
 
+/// The middle of a hand's palm, on its skin (tracking space), for its grip at `pos`, `rot`: the hand
+/// drawn on the grip has its wrist where `rustvr_ik` puts it, and the palm's middle is halfway from
+/// there to the knuckles (the grip's own middle is a fist's, nearer the fingers and in front of the
+/// palm).
+pub fn palm_centre(pos: Vec3, rot: Quat, hand: usize) -> Vec3 {
+    let side = if hand == 0 { rustvr_ik::Side::Left } else { rustvr_ik::Side::Right };
+    let wrist = rustvr_ik::HandOffsets::default().hand_frame(side, rustvr_ik::Pose { pos, rot });
+    let (face, _) = palm_frame(rot, hand);
+    wrist.pos + wrist.rot * Vec3::Y * PALM_ALONG + face * PALM_SKIN
+}
+
 /// Which way a hand's palm faces, and its fingers point (tracking space), from its pose: the
 /// controller's grip, +Z forward along the fingers, +Y out of the top of the fist, the palm facing
 /// +X on the left hand and -X on the right.
@@ -367,9 +381,9 @@ impl Magic {
     fn hand(&mut self, inp: &MagicInput, h: usize, game_art: bool) {
         let hs = inp.out.hands[h];
         let (hp, hq) = (Vec3::from_array(hs.pose.pos), Quat::from_array(hs.pose.rot));
-        // The palm (tracking: off the middle of the fist its way), then the world; how fast it goes.
+        // The palm's middle (tracking), then the world; how fast it goes.
         let (face, fingers) = palm_frame(hq, h);
-        let palm_t = hp + face * PALM;
+        let palm_t = palm_centre(hp, hq, h);
         let palm = inp.map.point(palm_t);
         {
             let c = &mut self.hands[h];
@@ -642,6 +656,16 @@ mod tests {
         let ahead = Vec3::new(0.0, 1.5, 0.6);
         assert!(hand_aim(Vec3::new(0.0, 1.5, 0.0), ahead, Quat::IDENTITY, Quat::IDENTITY, 0, 60.0).x > 0.8);
         assert!(hand_aim(Vec3::new(0.0, 1.5, 0.0), ahead, Quat::IDENTITY, Quat::IDENTITY, 1, 60.0).x < -0.8);
+    }
+
+    #[test]
+    fn the_palm_is_between_the_wrist_and_the_knuckles_on_its_skin() {
+        // A right hand held ahead, its palm to the left (-X): the palm's middle is a little to the
+        // palm's side of the grip and back towards the wrist from it.
+        let p = palm_centre(Vec3::ZERO, Quat::IDENTITY, 1);
+        let wrist = rustvr_ik::HandOffsets::default().hand_frame(rustvr_ik::Side::Right, rustvr_ik::Pose { pos: Vec3::ZERO, rot: Quat::IDENTITY }).pos;
+        assert!(p.distance(wrist) > 0.03 && p.distance(Vec3::ZERO) < wrist.length(), "{p:?} {wrist:?}");
+        assert!(p.x < wrist.x + 0.001, "the palm's side: {p:?} {wrist:?}");
     }
 
     #[test]
