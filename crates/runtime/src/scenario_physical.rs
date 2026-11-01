@@ -1045,12 +1045,12 @@ pub fn all() -> Vec<Scenario> {
             input: || {
                 latched(|t, _, _| {
                     let mut b = Body::rest();
-                    // The controller held out from the left shoulder's height, pointed at the
-                    // dummy's chest.
-                    let shoulder = Vec3::new(-0.18, 1.7, 0.0);
+                    // The arm held out from the left shoulder (where the runtime puts it off the
+                    // head) towards the dummy's chest, the controller pointed that way too.
+                    let shoulder = Body::rest().head_pos + Vec3::new(-0.18, -0.22, -0.08);
                     let chest = Vec3::new(0.15, 1.25, 1.15);
                     let dir = (chest - shoulder).normalize();
-                    let palm = shoulder + dir * 0.5 - Vec3::new(0.0, 0.0, 0.06);
+                    let palm = shoulder + dir * 0.5;
                     let rot = look_rot(dir);
                     let rest = Body::rest().hands[0].pos;
                     b.hands[0].pos = keys(t, &[(0.0, rest), (0.4, palm)]);
