@@ -46,10 +46,10 @@ impl Rig {
     }
 
     /// The duel's hold of hand `hand` on weapon `id`, from the sandbox's (`joint`, metres): as hard
-    /// as holds it level against its weight and swings it at most at the duel's accelerations (two
+    /// as holds it level against its weight and no harder than the hands' own strength on top (two
     /// hands' when both are on its handles), times the player's `strength` and the hand's share now
-    /// (staggered, in a riposte); its springs settling it as the duel says by its own mass and its
-    /// inertia about the grip.
+    /// (staggered, in a riposte), so it moves by its own mass and inertia; its springs settling it as
+    /// the duel says.
     pub(super) fn duel_joint(&self, id: u32, hand: usize, joint: Joint, strength: f32) -> Joint {
         let Some(o) = self.objects.get(&id) else { return joint };
         let w = self.map.world_per_meter;
@@ -63,23 +63,24 @@ impl Rig {
         let swing = (0.5 * (inertia.x_axis.x + inertia.y_axis.y + inertia.z_axis.z) / (w * w)).max(1e-3);
         let two = self.two_handed_melee(id);
         let share = self.melee.duel.drive[hand] * strength;
-        let (turn, move_) = if two { (tune::SWING_TWO, tune::GRIP_TWO) } else { (tune::SWING_ONE, tune::GRIP_ONE) };
+        let (force, torque) = if two { (tune::HAND_FORCE_TWO, tune::HAND_TORQUE_TWO) } else { (tune::HAND_FORCE_ONE, tune::HAND_TORQUE_ONE) };
         let g = 9.81;
         let (ws, wg) = (tune::SWING_SETTLE, tune::GRIP_SETTLE);
         Joint {
             spring: mass * wg * wg,
             damper: 2.0 * tune::GRIP_DAMPING * mass * wg,
-            max_force: mass * (g + move_ * share),
+            max_force: mass * g + force * share,
             ang_spring: swing * ws * ws,
             ang_damper: 2.0 * tune::SWING_DAMPING * swing * ws,
-            max_torque: mass * g * reach + swing * turn * share,
+            max_torque: mass * g * reach + torque * share,
             ..joint
         }
     }
 
-    /// How far each hand's melee weapon leans forward of the controller's handle (`degrees`, towards
-    /// where the controller points: its aim), from the controllers this frame. A weapon taken from
-    /// now on sits so in the hand.
+    /// How far each hand's melee weapon leans forward of the controller's handle (`degrees`), turned
+    /// about the hand's knuckles away from where the controller points (its aim ray runs down from a
+    /// hilt held upright), from the controllers this frame. A weapon taken from now on sits so in the
+    /// hand.
     pub fn set_grip_tilt(&mut self, hands: &[rustvr_protocol::Controller; 2], degrees: f32) {
         self.melee.tilt = std::array::from_fn(|h| {
             let grip = Quat::from_array(hands[h].grip.rot);
@@ -89,7 +90,7 @@ impl Rig {
             }
             // (The aim in the hand's own frame: the handle runs along its +Z.)
             let aim_here = grip.normalize().inverse() * (aim.normalize() * Vec3::Z);
-            match Vec3::Z.cross(aim_here).try_normalize() {
+            match aim_here.cross(Vec3::Z).try_normalize() {
                 Some(axis) if degrees.is_finite() => Quat::from_axis_angle(axis, degrees.clamp(-90.0, 90.0).to_radians()),
                 _ => Quat::IDENTITY,
             }

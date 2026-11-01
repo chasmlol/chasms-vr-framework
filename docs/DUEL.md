@@ -91,17 +91,18 @@ Sources: [Mordhau patch notes (parry, recovery, riposte windows)](https://steamd
   outside its window, is beaten aside (knocked along the blow at 2 m/s) and the blow carries on
   into you. A hit on a creature while it winds up holds its wind-up back 0.15 s (a flinch); while
   it releases, it does nothing to the swing. A blow lands once.
-* **Weight.** A hand turns its weapon no faster than it could the real thing: as hard as holds it
-  level against its weight, and on top of that at most 60 rad/s² with one hand, 110 with both on its
-  handles; it moves the grip at most 60 m/s² (100 with both) on top of gravity. Jerked faster than
-  that, the blade trails behind the hands; a committed swing carries on past where they stop,
-  braked no faster than they could; a long blade sags a little (its hold settling at 12 rad/s, damped
-  to 0.6 of critical). Staggered, a quarter of those; in a riposte, a quarter more. The stick walks
+* **Weight.** The hands are only so strong: on top of holding the weapon level against its weight,
+  one hand pushes its grip with at most 30 N and turns it with at most 5 N m, two hands on its
+  handles 45 N and 10 N m. So a weapon moves by its own mass and length: a dagger darts about, a
+  longsword in one hand barely swings, in two it swings and carries on. A swing stopped short
+  carries on, pulling the hands (and the body drawn after them) away from the controllers until the
+  hands have braked it; a fast jerk leaves the blade behind; a long blade sags a little. Staggered,
+  a quarter of that strength; in a riposte, a quarter more. The stick walks
   you at 0.55 of its speed with a melee weapon in hand.
 * **The grip's angle** (every melee, not only the duel): a weapon leans forward in the hand from the
-  controller's handle, towards where the controller points (30° by default, the Controls tab's
-  *Sword angle in the hand*), as a hilt held upright sits in a fist; along the handle it leaned
-  back. It's set as the weapon is taken.
+  controller's handle (30° by default, the Controls tab's *Sword angle in the hand*), turned about
+  the knuckles away from the controller's aim ray, as a hilt held upright sits in a fist; along the
+  handle it leaned back. It's set as the weapon is taken.
 * **Drags and accels need no system.** The blade is yours: a hit lands when it really reaches the
   creature, so turning your body away really delays it and turning into it really speeds it up.
 * **The creature is fooled by them.** It reads your blade as a person would: it sees it 0.22 s late

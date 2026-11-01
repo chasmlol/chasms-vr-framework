@@ -44,24 +44,24 @@ pub const BEATEN: f32 = 2.0;
 /// Two blades meet once in this long (s): a clash isn't judged again while they stay together.
 pub const CLASH_COOLDOWN: f64 = 0.35;
 
-/// **Weight.** In a duel a hand turns its weapon no faster than it could turn the real thing: as
-/// hard as holds it level against its weight, and on top of that at most [`SWING_ONE`] rad/s² with
-/// one hand, [`SWING_TWO`] with both (a longsword's two hands swing it far better than one); and it
-/// moves the grip at most [`GRIP_ONE`] / [`GRIP_TWO`] m/s² on top of gravity. So a weapon jerked
-/// faster than that is left behind, its blade trailing; a committed swing carries on past where the
-/// hands stop, braked no faster than they could; and a long blade sags a little, its hold settling at
-/// [`SWING_SETTLE`] rad/s, damped to [`SWING_DAMPING`] of critical (its grip [`GRIP_SETTLE`],
-/// [`GRIP_DAMPING`]).
-pub const SWING_ONE: f32 = 60.0;
-pub const SWING_TWO: f32 = 110.0;
-pub const GRIP_ONE: f32 = 60.0;
-pub const GRIP_TWO: f32 = 100.0;
+/// **Weight.** In a duel the hands are only so strong: on top of what holds the weapon level against
+/// its weight, one hand pushes its grip with at most [`HAND_FORCE_ONE`] N and turns it with at most
+/// [`HAND_TORQUE_ONE`] N m; two hands on its handles [`HAND_FORCE_TWO`] and [`HAND_TORQUE_TWO`]. So
+/// a weapon moves by its own mass and length: a dagger darts about, a longsword in one hand barely
+/// swings, in two it swings and carries on. A swing stopped short carries on past the hands, pulling
+/// them (and the body drawn after them) along until the hands have braked it; a fast jerk leaves the
+/// blade behind; a long blade sags a little, its hold settling at [`SWING_SETTLE`] rad/s, damped to
+/// [`SWING_DAMPING`] of critical (its grip [`GRIP_SETTLE`], [`GRIP_DAMPING`]).
+pub const HAND_FORCE_ONE: f32 = 30.0;
+pub const HAND_FORCE_TWO: f32 = 45.0;
+pub const HAND_TORQUE_ONE: f32 = 5.0;
+pub const HAND_TORQUE_TWO: f32 = 10.0;
 pub const SWING_SETTLE: f32 = 12.0;
 pub const SWING_DAMPING: f32 = 0.6;
-pub const GRIP_SETTLE: f32 = 35.0;
+pub const GRIP_SETTLE: f32 = 25.0;
 pub const GRIP_DAMPING: f32 = 0.9;
-/// Of those accelerations: a duel's hands as they are, staggered (the weapon heavy, barely swung),
-/// and in a riposte (lighter).
+/// Of the hands' strength: a duel's as they are, staggered (the weapon heavy, barely swung), and in a
+/// riposte (lighter).
 pub const DRIVE: f32 = 1.0;
 pub const DRIVE_STAGGER: f32 = 0.25;
 pub const DRIVE_RIPOSTE: f32 = 1.25;
@@ -108,7 +108,7 @@ pub fn stagger_ease(since: f64) -> f32 {
     (((since - half) / half) as f32).clamp(0.0, 1.0)
 }
 
-/// The share of a duel hand's swinging and moving accelerations it has now, staggered since
+/// The share of a duel hand's strength it has now, staggered since
 /// `staggered` seconds and in a riposte for `riposte` more (each None when not).
 pub fn drive(staggered: Option<f64>, riposte: Option<f64>) -> f32 {
     match (staggered, riposte) {
