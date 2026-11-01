@@ -174,9 +174,9 @@ impl Default for Mirror {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Magic {
-    /// Degrees a spell leaves the hand from the arm's way (shoulder through palm) towards the palm's
-    /// face: 0 straight along the arm held out, 90 straight out of the palm; about 60 is the palm
-    /// casting some Skyrim VR modlists ship.
+    /// Degrees a spell leaves the hand from where it points towards the palm's face: 0 where the
+    /// hand points, 90 straight out of the palm; about 60 is the palm casting some Skyrim VR
+    /// modlists ship.
     pub palm_tilt: f32,
     /// A target spell is helped onto a creature near where it's aimed (a gentle cone: 10 degrees up
     /// or down, 15 across).

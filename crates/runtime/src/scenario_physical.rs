@@ -1034,7 +1034,7 @@ pub fn all() -> Vec<Scenario> {
         },
         Scenario {
             name: "spell",
-            about: "physical: the off hand holds the fire bolt (the game's selected spell); its trigger charges it (the game's casting time) and it's let go with the controller pointed at the training dummy: one cast, the bolt strikes the dummy; let go too soon: nothing",
+            about: "physical: the off hand holds the fire bolt (the game's selected spell); its trigger charges it (the game's casting time) and it's let go with the hand pointed at the training dummy (the controller cocked up as a casting hand's wrist rests): one cast, the bolt strikes the dummy; let go too soon: nothing",
             duration: 3.0,
             needs_game: true,
             lockstep: true,
@@ -1045,13 +1045,14 @@ pub fn all() -> Vec<Scenario> {
             input: || {
                 latched(|t, _, _| {
                     let mut b = Body::rest();
-                    // The arm held out from the left shoulder (where the runtime puts it off the
-                    // head) towards the dummy's chest, the controller pointed that way too.
+                    // The arm held out from the left shoulder towards the dummy's chest, the
+                    // controller cocked up above it as a casting hand's wrist rests (the runtime
+                    // casts that far below its ray).
                     let shoulder = Body::rest().head_pos + Vec3::new(-0.18, -0.22, -0.08);
                     let chest = Vec3::new(0.15, 1.25, 1.15);
                     let dir = (chest - shoulder).normalize();
                     let palm = shoulder + dir * 0.5;
-                    let rot = look_rot(dir);
+                    let rot = look_rot(dir) * Quat::from_rotation_x(-crate::magic::WRIST_REST.to_radians());
                     let rest = Body::rest().hands[0].pos;
                     b.hands[0].pos = keys(t, &[(0.0, rest), (0.4, palm)]);
                     b.hands[0].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.4, rot)]);

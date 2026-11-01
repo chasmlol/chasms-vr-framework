@@ -23,14 +23,12 @@
 //!   cast now (too little magicka, a power used today) doesn't charge: a long dull pulse (PLANCK's
 //!   failure), and the game says why ([`CE_CAST_REFUSED`]). After a cast the hand waits out the rest
 //!   of the game's cast before it charges again.
-//! * **Aim along the arm**: a target spell leaves the palm along the arm held out, from the shoulder
-//!   through the palm (the headset's body tracking's shoulder, else one set off the head), as a
-//!   hand held out towards something points at it whatever its wrist does (the hand-tracking
-//!   pointer Meta's own headsets use is the same line). The controller's own pointing ray (its aim
-//!   pose, the laser's) rides on how the wrist is cocked: an open casting hand's is cocked up, and
-//!   the spell went high. With the hand in at the shoulder there's no arm to go by, and the
-//!   controller's ray takes over. Palm casting (Magic Improvements', which some Skyrim VR lists
-//!   ship) is a setting: `palm_tilt` degrees from that way towards the palm's face. The aim is
+//! * **Aim with the hand**: a target spell leaves the palm where the hand points, the arm and the
+//!   wrist both steering it: the controller's own pointing ray (its aim pose, the laser's) turned
+//!   down by the cock a casting hand's wrist rests at ([`WRIST_REST`]; held out at something, an
+//!   open hand's ray rides that far above it, and the spell went high), as Skyrim VR turns its own
+//!   (`fMagicRotationPitch`). Palm casting (Magic Improvements', which some Skyrim VR lists ship) is
+//!   a setting: `palm_tilt` degrees from that way towards the palm's face. The aim is
 //!   smoothed over the last moment, a little longer for a harder spell (40 ms for the easiest, 120
 //!   ms for the hardest: enough to take out the trigger's jolt; Magic Improvements' own, up to half
 //!   a second, trails behind a quick point), and helped onto a creature in a gentle cone (Spell
@@ -57,23 +55,21 @@ const TRIGGER_OFF: f32 = 0.25;
 /// Let go this soon with nothing charged: a tap, the game's Activate (seconds).
 const TAP: f64 = 0.25;
 /// The palm's middle: this far from the wrist towards the knuckles of the hand drawn on the grip
-/// (`rustvr_ik`'s), and this far out of the hand's middle to the palm's skin (m).
-const PALM_ALONG: f32 = 0.045;
+/// (`rustvr_ik`'s; an adult's is about 10 cm, its hollow a little past halfway), and this far out of
+/// the hand's middle to the palm's skin (m).
+const PALM_ALONG: f32 = 0.06;
 const PALM_SKIN: f32 = 0.012;
-/// The art sits this far out of the palm's middle, cupped in it as Skyrim VR's sits (m); spells
-/// leave from there.
-const PALM_OUT: f32 = 0.025;
+/// The art sits this far out of the palm's middle, just off its skin (m); spells leave from there.
+const PALM_OUT: f32 = 0.012;
 /// A spell's art stays in the hand this long after the trigger last held it (seconds).
 pub const SHOWN: f64 = 30.0;
 /// How far round a hand the game's own art for it reaches (m): its picture apart from the eye's
 /// (`TGT_ART`) is laid over the hands that far round each.
 pub const ART_REACH: f32 = 0.35;
-/// A shoulder off the head when the headset doesn't track it (m, the right one; the head's yaw):
-/// to the side, below the eyes, a little behind them (an adult's).
-const SHOULDER: Vec3 = Vec3::new(0.18, -0.22, -0.08);
-/// A palm nearer its shoulder than the first (m) casts where the controller points, one beyond the
-/// second along the arm; between, a blend of the two.
-const ARM: (f32, f32) = (0.15, 0.3);
+/// A casting hand held out at something rests with its wrist cocked up this far (degrees, the
+/// player's casts at a creature: 17 to 41, most about 25): the controller's ray rides this far above
+/// where the hand means, and a spell leaves this far below it.
+pub const WRIST_REST: f32 = 25.0;
 /// A casting time when the game gives none (seconds).
 const CAST_TIME: f32 = 0.5;
 /// ISPVR's charge: a pulse every `PULSE_SLOW` seconds at the start down to every `PULSE_FAST` when
@@ -244,26 +240,13 @@ pub fn palm_frame(rot: Quat, hand: usize) -> (Vec3, Vec3) {
     (rot * Vec3::X * if hand == 0 { 1.0 } else { -1.0 }, rot * Vec3::Z)
 }
 
-/// Where a hand's shoulder is (tracking space): the headset's body tracking's, else set off the
-/// head ([`SHOULDER`]).
-pub fn shoulder(frame: &HmdFrame, hand: usize) -> Vec3 {
-    if let Some(s) = frame.shoulders[hand] {
-        return Vec3::from_array(s);
-    }
-    let ahead = Quat::from_array(frame.hmd.rot) * Vec3::Z;
-    let yaw = Quat::from_rotation_y(ahead.x.atan2(ahead.z));
-    let side = if hand == 0 { -SHOULDER.x } else { SHOULDER.x };
-    Vec3::from_array(frame.hmd.pos) + yaw * Vec3::new(side, SHOULDER.y, SHOULDER.z)
-}
-
-/// The way a hand casts (tracking space): along its arm, from `shoulder` through `palm`; with the
-/// palm in at the shoulder ([`ARM`]), where its controller points (`aim`: its aim pose, +Z where it
-/// points). Then turned `palm_tilt` degrees towards the palm's face (the grip's, [`palm_frame`]).
-pub fn hand_aim(shoulder: Vec3, palm: Vec3, aim: Quat, grip: Quat, hand: usize, palm_tilt: f32) -> Vec3 {
-    let ray = (aim * Vec3::Z).normalize_or(Vec3::Z);
-    let arm = palm - shoulder;
-    let out = ((arm.length() - ARM.0) / (ARM.1 - ARM.0)).clamp(0.0, 1.0);
-    let point = ray.lerp(arm.normalize_or(ray), out).normalize_or(ray);
+/// The way a hand casts (tracking space): where it points, its controller's ray (`aim`: its aim
+/// pose, +Z where it points) turned [`WRIST_REST`] degrees down (towards the controller's -Y), so
+/// the arm and the wrist both steer it. Then turned `palm_tilt` degrees towards the palm's face (the
+/// grip's, [`palm_frame`]).
+pub fn hand_aim(aim: Quat, grip: Quat, hand: usize, palm_tilt: f32) -> Vec3 {
+    let rest = WRIST_REST.to_radians();
+    let point = (aim * Vec3::new(0.0, -rest.sin(), rest.cos())).normalize_or(Vec3::Z);
     let (face, _) = palm_frame(grip, hand);
     let side = (face - point * face.dot(point)).normalize_or_zero();
     let a = palm_tilt.clamp(0.0, 90.0).to_radians();
@@ -415,7 +398,7 @@ impl Magic {
                 // The art's +Z out of the palm, +Y along the fingers.
                 let rot = Quat::from_mat3(&Mat3::from_cols(fingers.cross(face), fingers, face)).normalize();
                 let pointing = Quat::from_array(inp.frame.hands[h].aim.rot);
-                let aim = inp.map.rot(Quat::IDENTITY) * hand_aim(shoulder(inp.frame, h), palm_t, pointing, hq, h, inp.settings.palm_tilt);
+                let aim = inp.map.rot(Quat::IDENTITY) * hand_aim(pointing, hq, h, inp.settings.palm_tilt);
                 Some((palm, aim, Pose { pos: palm_t.to_array(), valid: 1, rot: rot.to_array() }))
             }
             None => None,
@@ -643,21 +626,17 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_casts_along_the_arm_held_out() {
-        // The arm held out ahead and a little down, the wrist cocked up (the controller pointing
-        // well above it): the spell goes along the arm.
-        let shoulder = Vec3::new(0.18, 1.5, 0.0);
-        let way = Vec3::new(0.0, -0.2, 1.0).normalize();
-        let palm = shoulder + way * 0.55;
-        let cocked = Quat::from_rotation_x(-0.8);
-        assert!((hand_aim(shoulder, palm, cocked, cocked, 1, 0.0) - way).length() < 1e-4);
-        // The hand in at the shoulder: where the controller points.
-        let aim = hand_aim(shoulder, shoulder + Vec3::new(0.0, 0.0, 0.1), cocked, cocked, 1, 0.0);
-        assert!((aim - cocked * Vec3::Z).length() < 1e-4, "{aim:?}");
+    fn a_hand_casts_where_it_points_below_its_wrists_rest() {
+        // Held out level, the wrist at its rest (the controller's ray cocked up): level. The wrist
+        // bent 20 degrees down from there: 20 degrees down.
+        let rest = Quat::from_rotation_x(-WRIST_REST.to_radians());
+        assert!((hand_aim(rest, rest, 1, 0.0) - Vec3::Z).length() < 1e-4);
+        let down = Quat::from_rotation_x((20.0 - WRIST_REST).to_radians());
+        let aim = hand_aim(down, down, 1, 0.0);
+        assert!((aim.y.asin().to_degrees() + 20.0).abs() < 0.1, "{aim:?}");
         // Palm casting: turned towards the palm (the left hand's to its right, +X; the right's -X).
-        let ahead = Vec3::new(0.0, 1.5, 0.6);
-        assert!(hand_aim(Vec3::new(0.0, 1.5, 0.0), ahead, Quat::IDENTITY, Quat::IDENTITY, 0, 60.0).x > 0.8);
-        assert!(hand_aim(Vec3::new(0.0, 1.5, 0.0), ahead, Quat::IDENTITY, Quat::IDENTITY, 1, 60.0).x < -0.8);
+        assert!(hand_aim(rest, rest, 0, 60.0).x > 0.8);
+        assert!(hand_aim(rest, rest, 1, 60.0).x < -0.8);
     }
 
     #[test]
@@ -668,20 +647,6 @@ mod tests {
         let wrist = rustvr_ik::HandOffsets::default().hand_frame(rustvr_ik::Side::Right, rustvr_ik::Pose { pos: Vec3::ZERO, rot: Quat::IDENTITY }).pos;
         assert!(p.distance(wrist) > 0.03 && p.distance(Vec3::ZERO) < wrist.length(), "{p:?} {wrist:?}");
         assert!(p.x < wrist.x + 0.001, "the palm's side: {p:?} {wrist:?}");
-    }
-
-    #[test]
-    fn a_shoulder_off_the_head_unless_tracked() {
-        let mut f = HmdFrame::default();
-        f.hmd.pos = [0.0, 1.7, 0.0];
-        f.hmd.rot = Quat::IDENTITY.to_array();
-        let (l, r) = (shoulder(&f, 0), shoulder(&f, 1));
-        assert!(l.x < -0.1 && r.x > 0.1 && (l.y - 1.48).abs() < 1e-4 && l.z < 0.0, "{l:?} {r:?}");
-        // Turned to face +X: the right shoulder is behind (-Z).
-        f.hmd.rot = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2).to_array();
-        assert!(shoulder(&f, 1).z < -0.1, "{:?}", shoulder(&f, 1));
-        f.shoulders[1] = Some([0.3, 1.4, 0.1]);
-        assert_eq!(shoulder(&f, 1), Vec3::new(0.3, 1.4, 0.1));
     }
 
     #[test]
