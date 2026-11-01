@@ -372,6 +372,8 @@ pub struct Mechanics {
     upright_still: f32,
     /// The head's heights over the last [`UPRIGHT_HOLD`] seconds (when, how high).
     upright_window: std::collections::VecDeque<(f64, f32)>,
+    /// Upright was the said height ([`Mechanics::said_upright`]) last frame.
+    upright_said: bool,
     recalibrate: bool,
     phys_crouch: bool,
     crouch_by_phys: bool,
@@ -424,6 +426,7 @@ impl Default for Mechanics {
             upright_settled: false,
             upright_still: 0.0,
             upright_window: Default::default(),
+            upright_said: false,
             recalibrate: false,
             phys_crouch: false,
             crouch_by_phys: false,
@@ -959,7 +962,8 @@ impl Mechanics {
             // count). Lower by a slouch (under half a crouch), it settles there slowly; lower than
             // that (a crouch, made however slowly, or held), it stays. A recentre takes the head's
             // height as it is. A player who has said how tall they are, standing, is upright at
-            // their own eyes' height whatever the head does (`said_upright`).
+            // their own eyes' height whatever the head does (`said_upright`). Seated play turned on
+            // since, it's learned afresh from where the head is then, as when the headset's put on.
             let h = (hmd_pos + hmd_rot * NECK).y - NECK.y;
             let dt = inp.dt;
             let thr = c.input.stealth_crouch_amount.clamp(0.05, 0.4);
@@ -967,9 +971,15 @@ impl Mechanics {
             if let Some(said) = Self::said_upright(c) {
                 self.stand_h = said;
                 self.upright_settled = true;
+                self.upright_said = true;
                 self.recalibrate = false;
                 self.upright_window.clear();
             } else {
+                if std::mem::take(&mut self.upright_said) {
+                    self.upright_settled = false;
+                    self.upright_still = 0.0;
+                    self.upright_window.clear();
+                }
                 if std::mem::take(&mut self.recalibrate) && likely {
                     self.stand_h = h;
                     self.upright_settled = true;
@@ -1005,6 +1015,15 @@ impl Mechanics {
                     }
                     self.crouch_pending = -1;
                 }
+            } else if self.crouch_by_phys && game.is_some() && (c.comfort.seated || !c.input.physical_crouch) && now > self.crouch_cooldown {
+                // Seated play turned on (or the physical crouch off) in a crouch the head made: the
+                // game stands back up (sat, the head is upright now).
+                if game_crouched {
+                    self.press(Action::Crouch);
+                    self.crouch_cooldown = now + 0.6;
+                }
+                self.crouch_by_phys = false;
+                self.crouch_pending = -1;
             }
             // The real head already went down: don't lower the view a second time by the game's crouch
             // (by as much as it says its eye went down: a game that doesn't say does that itself).
