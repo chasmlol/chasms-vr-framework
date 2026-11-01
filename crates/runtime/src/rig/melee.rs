@@ -417,7 +417,7 @@ impl Rig {
                 let pivot_w = target.0 + target.1 * pivot;
                 let (cur, want) = (target.1 * (sup.at - pivot), cp + cq * sup.reach - pivot_w);
                 // (In a duel, both hands steer it along the line between them: [`Rig::duel_lever`].)
-                let lever = self.duel_lever(id, lever, cur.length(), want.length());
+                let lever = self.duel_lever(id, lever, want.length());
                 let (cur, want) = (cur.normalize_or_zero(), want.normalize_or_zero());
                 line_off = debug_melee().then(|| (now_rot * (sup.at - pivot)).normalize_or_zero().angle_between(want).to_degrees());
                 if cur == Vec3::ZERO || want == Vec3::ZERO || lever <= 0.0 {

@@ -99,16 +99,21 @@ Sources: [Mordhau patch notes (parry, recovery, riposte windows)](https://steamd
   leaves it behind, and it comes on after the hands along their way at its top turn rate, carries
   on a little past where they stopped, and settles on them. The top rate is so much energy in its
   turn (and its grip's motion), so a heavy blade turns slower than a light one: the longsword in two
-  hands at most about 620 degrees a second, a half turn in 0.3 s. Its grip settles at 10 rad/s (0.9
-  of critical damping), with at most 150 N (200 N in two hands) and 12 J of motion (18 J); the turn
-  settles at 14 rad/s about the grip (0.6), with at most 10 N m (20 N m) and 10 J of turn (16 J). In
-  two hands its handle lies along the line from one hand to the other (the first hand's wrist only
-  rolls it about that line): put the hands sideways and it turns sideways. The drawn hands stay on
+  hands at most about 620 degrees a second, a half turn in 0.3 s. Its grip settles at 10 rad/s (0.7
+  of critical damping), with at most 90 N (120 N in two hands) and 12 J of motion (18 J); the turn
+  settles at 14 rad/s about the grip (0.38: lightly damped, so a fast swing carries well on past a
+  stop), with at most 7 N m (14 N m) and 10 J of turn (16 J). Two hands steer it by how far apart
+  they are: far apart, its handle lies along the line from one hand to the other (the first hand's
+  wrist only rolls it about that line: put the hands sideways and it turns sideways); close
+  together, as a fist over a fist on a real handle, the wrists turn it (the line between two
+  controllers side by side says little); half each at 20 cm apart, a twentieth of the line at 10 cm
+  and nine tenths at 35. The drawn hands stay on
   its grip, so they come after your real hands too (a tracked elbow goes with its hand; a second
   hand stays on to 0.9 m). Checked headless: the longsword in two hands chopped from overhead in
-  0.25 s falls 34 degrees behind the hands, carries on 27 degrees past their stop and is with them
-  0.45 s after it; chopped in 0.6 s it trails 8 degrees and carries on 8; the hands put sideways
-  over a second, it turns with them 11 degrees behind. The menu's *Strength on a weapon*
+  0.25 s falls 47 degrees behind the hands, carries on 40 degrees past their stop (swinging back
+  7) and is with them 0.45 s after it; chopped in 0.6 s it trails 6 degrees and carries on 7; held
+  with the hands close together, the wrists tilted 60 degrees tilt it 51; the hands put 32 cm
+  apart sideways, it turns 78 of 90 degrees with them. The menu's *Strength on a weapon*
   (Controls) scales the most force, torque and energy: less is heavier, slower to turn and more
   carry. Staggered, the hands have a quarter of their strength; in a riposte, a quarter more. The
   stick walks you at 0.55 of its speed with a melee weapon in hand. Started in the duel area, the
@@ -181,8 +186,9 @@ rustvr-xrsim run --dir runs/guard --script tools/xrsim/duel_guard.toml -- rustvr
 
 The hold alone, with `--no-duelist` and `RUSTVR_DEBUG_MELEE=1` (the runtime logs the held weapon's
 lag and turn off its hold every 3 frames, and with two hands how far its handle is off the hands'
-line): `duel_chop.toml` (a slow chop and a fast one, the hands stopped dead), `duel_sideways.toml`
-(the hands put sideways and back), `duel_shoulder.toml` (the blade laid back on the shoulder).
+line): `duel_chop.toml` (a slow chop and a fast one, the hands stopped dead), `duel_two_hands.toml`
+(the wrists tilted with the hands close together, then the hands put wide apart sideways),
+`duel_shoulder.toml` (the blade laid back on the shoulder).
 
 Checked headless (2026-11-01, each run twice, the same each time; the runtime's `duel:` lines and
 the range's `duelist` lines say what happened):

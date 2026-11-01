@@ -55,27 +55,33 @@ pub const CLASH_COOLDOWN: f64 = 0.35;
 /// of its turn ([`TURN_ENERGY_TWO`]): its top turn rate, a heavy blade's slower than a light one's.
 /// So whatever the hands do, it goes their way at its own pace: hands slashing faster than it turns
 /// lead it, and it comes after them along their way; hands that stop carry it on past them, braked no
-/// harder than the wrists can, before it comes back. In two hands its handle lies along the line from
-/// one hand to the other. The arms bear its weight while it's held (it doesn't droop), and it rests
-/// on the player's body. The settings' *strength on a weapon* scales the force, the torque and the
-/// energies: less is heavier (slower, more carry). The longsword in two hands turns at most about
-/// 620 degrees a second (a half turn in 0.3 s). Checked headless: chopped from overhead in 0.25 s
-/// it falls 34 degrees behind the hands, carries on 27 degrees past where they stopped and is with
-/// them 0.45 s after they stopped; chopped slowly (0.6 s) it trails 8 degrees and carries on 8; the
-/// hands put sideways, its handle turns with them (11 degrees behind over a second's turn); laid on
-/// the shoulder it rests there.
+/// harder than the wrists can (lightly damped, so a fast one carries well on), before it comes back.
+/// In two hands held far apart its handle lies along the line from one hand to the other; held close
+/// together, the wrists turn it ([`TWO_HAND_SPREAD`]). The arms bear its weight while it's held (it
+/// doesn't droop), and it rests on the player's body. The settings' *strength on a weapon* scales
+/// the force, the torque and the energies: less is heavier (slower, more carry). The longsword in
+/// two hands turns at most about 620 degrees a second (a half turn in 0.3 s). Checked headless:
+/// chopped from overhead in 0.25 s it falls 47 degrees behind the hands, carries on 40 degrees past
+/// where they stopped (swinging back 7) and is with them 0.45 s after they stopped; chopped slowly
+/// (0.6 s) it trails 6 degrees and carries on 7; held with the hands close together, the wrists
+/// tilted 60 degrees tilt it 51; the hands put 32 cm apart sideways, it turns 78 of 90 degrees with
+/// them; laid on the shoulder it rests there.
 pub const GRIP_SETTLE: f32 = 10.0;
-pub const GRIP_DAMPING: f32 = 0.9;
+pub const GRIP_DAMPING: f32 = 0.7;
 pub const SWING_SETTLE: f32 = 14.0;
-pub const SWING_DAMPING: f32 = 0.6;
-pub const HOLD_FORCE_ONE: f32 = 150.0;
-pub const HOLD_FORCE_TWO: f32 = 200.0;
-pub const HOLD_TORQUE_ONE: f32 = 10.0;
-pub const HOLD_TORQUE_TWO: f32 = 20.0;
+pub const SWING_DAMPING: f32 = 0.38;
+pub const HOLD_FORCE_ONE: f32 = 90.0;
+pub const HOLD_FORCE_TWO: f32 = 120.0;
+pub const HOLD_TORQUE_ONE: f32 = 7.0;
+pub const HOLD_TORQUE_TWO: f32 = 14.0;
 pub const GRIP_ENERGY_ONE: f32 = 12.0;
 pub const GRIP_ENERGY_TWO: f32 = 18.0;
 pub const TURN_ENERGY_ONE: f32 = 10.0;
 pub const TURN_ENERGY_TWO: f32 = 16.0;
+/// Two hands on a handle this far apart (m, the controllers) steer it half by the line between them
+/// and half by the wrists: closer, the wrists turn it (a fist over a fist); further, the line does
+/// (a twentieth of the way at 0.1 m between the hands, nine tenths at 0.35).
+pub const TWO_HAND_SPREAD: f32 = 0.2;
 /// A held weapon stopped against something lets go further from the shoulders in a duel than the
 /// sandbox's reach (its swing has carried the hands on): this much further. A second hand on it lets
 /// go once it's this far from its controller (m: past the furthest a swing carries it).

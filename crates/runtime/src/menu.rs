@@ -463,7 +463,7 @@ fn help(ui: &mut egui::Ui) {
     ]);
     section(ui, "Duel melee (Controls tab: Melee)", &[
         ("A sword drawn", "it's heavy: it goes your hands' way at its own pace, slashing faster than it turns it comes after them, and it carries on a little past a stop; you walk slower"),
-        ("Both hands on its handle", "it lies along the line between your hands: move them sideways and it turns sideways"),
+        ("Both hands on its handle", "hands wide apart: it lies along the line between them; close together: your wrists turn it"),
         ("Rest it on your shoulder", "it lies on your body rather than passing through it"),
         ("Controls tab: sword angle", "how far forward the blade leans in your fist"),
         ("Controls tab: strength on a weapon", "less makes it heavier: slower to turn, more carry"),

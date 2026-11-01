@@ -126,12 +126,18 @@ impl Rig {
     }
 
     /// How much of the hold's turn a second hand on weapon `id` steers (`lever`, the sandbox's: the
-    /// share its pull has of the turning stiffness): in a duel, all of it with both hands on its
-    /// handles (the handle lies along the line from one hand to the other, the first hand's wrist
-    /// only rolling it about that line), less as the hands come closer together than half their
-    /// hold's spread (`spread`, how far apart they hold it; `apart`, the controllers).
-    pub(super) fn duel_lever(&self, id: u32, lever: f32, spread: f32, apart: f32) -> f32 {
-        if self.melee.duel.on && self.two_handed_melee(id) && spread > 0.0 { (2.0 * apart / spread).min(1.0) } else { lever }
+    /// share its pull has of the turning stiffness): in a duel with both hands on its handles, by
+    /// how far apart the controllers hold them (`apart`, world units). Hands far apart lay the
+    /// handle along the line from one to the other (the first hand's wrist only rolling it about
+    /// that line); hands close together turn it with the wrists, as a fist over a fist does (the
+    /// line between two controllers side by side says little), half each at
+    /// [`tune::TWO_HAND_SPREAD`].
+    pub(super) fn duel_lever(&self, id: u32, lever: f32, apart: f32) -> f32 {
+        if !(self.melee.duel.on && self.two_handed_melee(id)) {
+            return lever;
+        }
+        let d = (apart / self.map.world_per_meter / tune::TWO_HAND_SPREAD).powi(4);
+        d / (1.0 + d)
     }
 
     /// How much of its weight a held weapon carries itself: none in a duel (the arms bear it), all of
