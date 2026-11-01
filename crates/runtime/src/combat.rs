@@ -483,6 +483,9 @@ pub struct Combat {
     pub kicked: bool,
     /// When each damager (weapon, blade) last cut something off.
     sliced: HashMap<(u32, usize), f64>,
+    /// The duel's rules, when they're played (`crate::duel`): its clashes instead of blocks, a
+    /// staggered weapon harmless.
+    pub duel: crate::duel::Duel,
 }
 
 impl Default for Combat {
@@ -519,6 +522,7 @@ impl Default for Combat {
             cuts: Vec::new(),
             kicked: false,
             sliced: HashMap::new(),
+            duel: Default::default(),
         }
     }
 }
@@ -821,6 +825,7 @@ impl Combat {
         self.magic(inp, &bodies, &mut events);
         self.hit_until.retain(|_, &mut t| t > inp.now);
         self.block_until.retain(|_, &mut t| t > inp.now);
+        self.duel.tidy(inp.now);
         events
     }
 
@@ -1047,7 +1052,8 @@ impl Combat {
         let embedded = inp.rig.embedded(id);
         // A contact's damagers are tried point first, then edge, then blunt: the first that hits a
         // body takes it.
-        let mut order: Vec<usize> = (0..blades.len()).collect();
+        // (In a duel, a weapon staggered by a parry does no harm until it recovers.)
+        let mut order: Vec<usize> = if self.duel.harmless(hand, inp.now) { Vec::new() } else { (0..blades.len()).collect() };
         order.sort_by_key(|&k| match blades[k].kind {
             DMG_PIERCE => 0,
             DMG_SLASH => 1,
@@ -1101,10 +1107,33 @@ impl Combat {
         // (A thrown one meeting a fighter's blade just glances off it.)
         if inp.rig.held(hand) == Some(id) {
             let desc = Self::as_desc(&w);
-            self.blocks(inp, hand, id, &desc, &prev, &now, dt, events);
-            self.item_blocks(inp, hand, id, &desc, &prev, &now, dt, events);
+            if self.duel.on {
+                self.duel_clashes(inp, hand, id, &desc, &prev, &now, dt, events);
+            } else {
+                self.blocks(inp, hand, id, &desc, &prev, &now, dt, events);
+                self.item_blocks(inp, hand, id, &desc, &prev, &now, dt, events);
+            }
         }
         true
+    }
+
+    /// The duel's clashes (`crate::duel`) in place of blocks: the player's weapon against the
+    /// creatures' swings and parries.
+    #[allow(clippy::too_many_arguments)]
+    fn duel_clashes(&mut self, inp: &CombatInput, hand: usize, object: u32, desc: &MeleeDesc, prev: &[[Vec3; SAMPLES]], now: &[[Vec3; SAMPLES]], dt: f32, events: &mut Vec<CombatEvent>) {
+        let theirs: Vec<crate::duel::Theirs> = self
+            .items
+            .entries()
+            .iter()
+            .map(|&item| crate::duel::Theirs {
+                item,
+                centre: inp.rig.object_world_pose(item.id).map_or(Vec3::ZERO, |(c, _)| c),
+                blades: self.item_blades(inp, item.id).into_iter().map(|(a, b, r, _)| (a, b, r)).collect(),
+            })
+            .collect();
+        let radii: Vec<f32> = desc.damagers[..now.len()].iter().map(|d| d.radius).collect();
+        let mut out = crate::duel::Clashes { events, pulses: &mut self.pulses, sounds: &mut self.sounds };
+        self.duel.clash(hand, object, prev, now, &radii, &theirs, inp.map.world_per_meter, dt, inp.now, &mut out);
     }
 
     /// What a hit sounds like (by the two materials and the damage type): metal on metal clashes, a
@@ -1505,7 +1534,8 @@ impl Combat {
     /// each blade swept from last frame to now against the player's body, judged as any contact but
     /// with no angle test (a creature's blow needn't land square), told to the game (`CE_STRUCK`).
     fn struck(&mut self, inp: &CombatInput, dt: f32, events: &mut Vec<CombatEvent>) {
-        let items: Vec<ActorItem> = self.items.entries().iter().filter(|i| i.flags & AI_ATTACKING != 0).copied().collect();
+        // (In a duel, a swing the player parried lands nowhere.)
+        let items: Vec<ActorItem> = self.items.entries().iter().filter(|i| i.flags & AI_ATTACKING != 0 && !self.duel.swing_parried(i.id, inp.now)).copied().collect();
         let mut now_blades: HashMap<u32, Vec<(Vec3, Vec3, f32, MeleeBlade)>> = HashMap::new();
         for item in &items {
             now_blades.insert(item.id, self.item_blades(inp, item.id));

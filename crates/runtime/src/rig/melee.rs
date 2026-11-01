@@ -113,6 +113,8 @@ pub struct MeleeRig {
     /// Where each held weapon last buzzed against what it rubs on, by (weapon, the collider it
     /// touches): the contact then, in the weapon's frame and in the other's.
     pub rubs: std::collections::HashMap<(u32, rapier3d::prelude::ColliderHandle), (Vec3, Vec3)>,
+    /// The duel's hold, when its rules are played (`super::duel`).
+    pub duel: super::duel::DuelHold,
 }
 
 /// A thrown weapon: the hand that threw it, when, (flying point first) its point's way (weapon
@@ -399,7 +401,7 @@ impl Rig {
             None => (Vec3::ZERO, Vec3::ZERO),
         };
         held.target_prev = Some(t_now);
-        let strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05);
+        let strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05) * self.duel_drive(hand);
         let (joint, lever) = self.melee_joint(id, hand, pivot, strength, inp.settings.dominant());
         // The other hand on it pulls its own hold towards its controller: the turn it would have
         // (its hold lying towards that hand, about this one's) shares the target with this hand's

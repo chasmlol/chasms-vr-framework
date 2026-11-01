@@ -680,7 +680,10 @@
 
 /**
  * The player's weapon or shield (`object`; 0 a hand) met `actor`'s attacking weapon: a block, or
- * with `CEF_PARRY` a parry (the player's weapon moving into it).
+ * with `CEF_PARRY` a parry (the player's weapon moving into it). In the duel
+ * ([`crate::MELEE_DUEL`]): with `CEF_PARRY` the player parried its swing (`what`); with
+ * `CEF_PARRIED` its parry turned the player's blow away (the player's weapon is staggered); with
+ * neither, the player's blade was beaten aside and the swing goes on.
  */
 #define RVR_CE_BLOCK 2
 
@@ -790,6 +793,11 @@
  * Two hands on the weapon.
  */
 #define RVR_CEF_TWO_HANDED (1 << 10)
+
+/**
+ * The duel: a creature's parry ([`crate::AI_PARRYING`]) turned the player's blow away.
+ */
+#define RVR_CEF_PARRIED (1 << 11)
 
 #define RVR_MAX_BLOODS 16
 
@@ -1464,6 +1472,12 @@
 #define RVR_AI_FEINT (1 << 3)
 
 /**
+ * The duel ([`MELEE_DUEL`]): its holder is parrying with it now (its parry's window). The player's
+ * blade that meets it is parried: turned away, and staggered (`CEF_PARRIED`).
+ */
+#define RVR_AI_PARRYING (1 << 4)
+
+/**
  * The game keeps the player's stamina (`stamina`, `stamina_max`, its units): swings spend it, and a
  * tired player's arms are weaker. Without it the runtime keeps none (unless its own setting says).
  */
@@ -1498,6 +1512,16 @@
 #define RVR_RULES_KICK (1 << 7)
 
 /**
+ * The melee the game plays ([`MeleeRules::mode`]): the physics sandbox (weapons that hit by their
+ * momentum, blocks by meeting), or the duel (swings that wind up and recover, parries and their
+ * counters, staggers: `rustvr_melee::duel`). 0: the player's setting says (the physics sandbox
+ * unless they've chosen the duel).
+ */
+#define RVR_MELEE_PHYSICS 1
+
+#define RVR_MELEE_DUEL 2
+
+/**
  * Time is slowed: run the game's world at `time_scale`.
  */
 #define RVR_RTM_SLOW (1 << 0)
@@ -1511,6 +1535,16 @@
  * The player is out of stamina (the runtime's own meter, or the game's).
  */
 #define RVR_RTM_SPENT (1 << 2)
+
+/**
+ * The duel's rules are in play ([`MELEE_DUEL`]: the game's, or the player's choice).
+ */
+#define RVR_RTM_DUEL (1 << 3)
+
+/**
+ * In the duel, a weapon of the player's was parried: staggered, it does nothing until it recovers.
+ */
+#define RVR_RTM_STAGGERED (1 << 4)
 
 /**
  * The [`SoundPack`] region.

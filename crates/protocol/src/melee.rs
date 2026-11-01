@@ -257,6 +257,9 @@ pub const AI_SHIELD: u32 = 1 << 2;
 /// The swing was a feint: it will turn into another before it lands (for the game's own look; the
 /// runtime judges what it does).
 pub const AI_FEINT: u32 = 1 << 3;
+/// The duel ([`MELEE_DUEL`]): its holder is parrying with it now (its parry's window). The player's
+/// blade that meets it is parried: turned away, and staggered (`CEF_PARRIED`).
+pub const AI_PARRYING: u32 = 1 << 4;
 
 /// A thing one of the game's creatures holds, beside its object ([`crate::ObjectDesc`] of the same
 /// id, posed in [`crate::GamePoses`]).
@@ -317,6 +320,13 @@ pub const RULES_TELEKINESIS: u32 = 1 << 6;
 /// game's and slowing time the off hand's stick click.
 pub const RULES_KICK: u32 = 1 << 7;
 
+/// The melee the game plays ([`MeleeRules::mode`]): the physics sandbox (weapons that hit by their
+/// momentum, blocks by meeting), or the duel (swings that wind up and recover, parries and their
+/// counters, staggers: `rustvr_melee::duel`). 0: the player's setting says (the physics sandbox
+/// unless they've chosen the duel).
+pub const MELEE_PHYSICS: u32 = 1;
+pub const MELEE_DUEL: u32 = 2;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct MeleeRules {
@@ -337,7 +347,10 @@ pub struct MeleeRules {
     pub slow_scale: f32,
     pub focus_time: f32,
     pub focus_refill: f32,
-    pub _pad: [u32; 7],
+    /// Which melee the game plays (`MELEE_*`; 0: the player's setting). The player may still choose
+    /// another in the runtime's menu.
+    pub mode: u32,
+    pub _pad: [u32; 6],
 }
 
 // ---- the player's side --------------------------------------------------------------------------
@@ -349,6 +362,10 @@ pub const RTM_SLOW: u32 = 1 << 0;
 pub const RTM_CLIMBING: u32 = 1 << 1;
 /// The player is out of stamina (the runtime's own meter, or the game's).
 pub const RTM_SPENT: u32 = 1 << 2;
+/// The duel's rules are in play ([`MELEE_DUEL`]: the game's, or the player's choice).
+pub const RTM_DUEL: u32 = 1 << 3;
+/// In the duel, a weapon of the player's was parried: staggered, it does nothing until it recovers.
+pub const RTM_STAGGERED: u32 = 1 << 4;
 
 /// A hand imbuing what the other hand holds (or itself holds) with its charged spell.
 #[repr(C)]

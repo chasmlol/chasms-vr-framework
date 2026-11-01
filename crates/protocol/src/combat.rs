@@ -246,7 +246,10 @@ pub const COMBAT_EVENT_SLOTS: usize = 128;
 /// `point` where, `dir` which way the blade was moving.
 pub const CE_HIT: u32 = 1;
 /// The player's weapon or shield (`object`; 0 a hand) met `actor`'s attacking weapon: a block, or
-/// with `CEF_PARRY` a parry (the player's weapon moving into it).
+/// with `CEF_PARRY` a parry (the player's weapon moving into it). In the duel
+/// ([`crate::MELEE_DUEL`]): with `CEF_PARRY` the player parried its swing (`what`); with
+/// `CEF_PARRIED` its parry turned the player's blow away (the player's weapon is staggered); with
+/// neither, the player's blade was beaten aside and the swing goes on.
 pub const CE_BLOCK: u32 = 2;
 /// A spell cast: `spell` from `hand` (0 left, 1 right), from `point` along `dir`; `actor` the one a
 /// touch spell touched (or the target aimed at, 0: none); `strength` how charged (0..1). `object`:
@@ -304,6 +307,8 @@ pub const CEF_SKEWER: u32 = 1 << 8;
 pub const CEF_IMBUED: u32 = 1 << 9;
 /// Two hands on the weapon.
 pub const CEF_TWO_HANDED: u32 = 1 << 10;
+/// The duel: a creature's parry ([`crate::AI_PARRYING`]) turned the player's blow away.
+pub const CEF_PARRIED: u32 = 1 << 11;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]

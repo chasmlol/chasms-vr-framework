@@ -93,11 +93,35 @@ pub struct Melee {
     /// fast and wherever on it (without it a cut must be fast, 12 m/s for a sword, land within 4 cm
     /// of a joint and meet it square, and that proved too hard to land in play). A stab still sticks.
     pub easy_dismemberment: bool,
+    /// Which melee is played: the game's choice, or the player's (`crate::duel`).
+    pub mode: MeleeMode,
 }
 
 impl Default for Melee {
     fn default() -> Self {
-        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true }
+        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true, mode: MeleeMode::Game }
+    }
+}
+
+/// The melee played: the game's (its [`rustvr_protocol::MeleeRules::mode`]; the physics sandbox when
+/// it doesn't say), the physics sandbox (weapons hit by their momentum, blocks by meeting), or the
+/// duel (slow, weighty swings, parries and their counters, staggers: `rustvr_melee::duel`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeleeMode {
+    Game,
+    Physics,
+    Duel,
+}
+
+impl MeleeMode {
+    /// Whether the duel's rules are played, with the game saying `game` (`MELEE_*`, 0: nothing).
+    pub fn duel(self, game: u32) -> bool {
+        match self {
+            MeleeMode::Game => game == rustvr_protocol::MELEE_DUEL,
+            MeleeMode::Physics => false,
+            MeleeMode::Duel => true,
+        }
     }
 }
 

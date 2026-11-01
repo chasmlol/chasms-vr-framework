@@ -30,6 +30,7 @@ pub mod kick;
 pub mod melee;
 pub mod breaking;
 pub mod climbing;
+pub mod duel;
 pub mod telekinesis;
 pub mod physics;
 pub mod pickpocket;
@@ -6500,7 +6501,7 @@ impl Rig {
                         } else if self.bowls.contains_key(id) {
                             physics::groups_game_bowl()
                         } else if self.creature_item(*id) {
-                            physics::groups_actor()
+                            if self.duel_on() { duel::groups_item() } else { physics::groups_actor() }
                         } else {
                             groups_game_prop()
                         };

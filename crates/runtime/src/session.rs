@@ -1221,6 +1221,8 @@ impl Session {
                 self.kick_out.ankles[foot].map(|a| (foot, rig_map.point(a), rig_map.point(toes), rig_map.rot(Quat::IDENTITY) * way))
             });
             self.rig.set_actor_items(&self.combat.items);
+            // The duel (crate::duel): its rules as the player chose, else as the game says.
+            self.combat.duel.set_on(self.settings.current.melee.mode.duel(self.combat.rules.mode));
             let combat = self.combat.update(&crate::combat::CombatInput {
                 rig: &self.rig,
                 out: &self.rig_out,
@@ -1238,6 +1240,11 @@ impl Session {
             if self.combat.kicked {
                 self.foot_kicks.met(now);
             }
+            // The duel's clashes send the blades off, and each hand holds its weapon as the duel says.
+            for k in std::mem::take(&mut self.combat.duel.kicks) {
+                self.rig.kick_melee(k.object, k.vel);
+            }
+            self.rig.set_duel(self.combat.duel.on, self.combat.duel.drive(now));
             for ev in &combat {
                 self.link.push_combat_event(ev);
             }
@@ -1277,6 +1284,7 @@ impl Session {
                 if self.rig.climbing() {
                     rt.flags |= RTM_CLIMBING;
                 }
+                rt.flags |= self.combat.duel.flags(now);
                 self.link.write_rt_melee(&rt);
             }
             // Each hand's casting, for the game's own casting art.
@@ -1373,6 +1381,10 @@ impl Session {
         for h in self.mech.haptics.drain(..) {
             self.backend.haptic(h.hand, h.seconds, h.frequency, h.amplitude);
         }
+        // In a duel the player walks slower with a melee weapon drawn.
+        let drawn = rig_active && (0..2).any(|h| self.rig.held(h).is_some_and(|id| self.combat.weapons.get(id).is_some()));
+        let walk = self.combat.duel.walk(drawn);
+        out.intents.move_xy = out.intents.move_xy.map(|m| m * walk);
 
         // ---- riding: the reins, getting on and off (crate::riding)
         if alive && !menu_mode && menu_pointer.is_none() {

@@ -7,6 +7,7 @@ pub mod app;
 pub mod backend;
 pub mod blockout;
 pub mod combat;
+pub mod duel;
 pub mod powers;
 pub mod body;
 pub mod compositor;

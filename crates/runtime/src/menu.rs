@@ -8,7 +8,7 @@ use rustvr_gpu::{EguiPainter, Gpu, TexDesc, Texture};
 use windows::Win32::Graphics::Direct3D11::ID3D11ShaderResourceView;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB};
 
-use crate::settings::{BodyVisibility, GrenadeArming, Hand, MoveRelative, Quiver, ReloadStyle, Settings, TurnMode};
+use crate::settings::{BodyVisibility, GrenadeArming, Hand, MeleeMode, MoveRelative, Quiver, ReloadStyle, Settings, TurnMode};
 
 const WIDTH_PX: u32 = 1024;
 const HEIGHT_PX: u32 = 1280;
@@ -474,6 +474,14 @@ fn help(ui: &mut egui::Ui) {
         ("Let go after a short pull", "the arrow stays on the string"),
         ("Hands tab", "where the quiver is, and a crosshair where the bow points"),
     ]);
+    section(ui, "Duel melee (Controls tab: Melee)", &[
+        ("A sword drawn", "it's heavy, and you walk slower"),
+        ("Push your blade fast into their swing", "parry: your blade bounces off with the way for your counter"),
+        ("Counter straight after a parry", "it lands before they can swing again: left, right, over or under"),
+        ("Your swing parried", "your sword goes heavy and does nothing for a moment: parry their counter"),
+        ("Turn away as you swing / into it", "the blow lands later (a drag) or sooner (an accel): mistime their parry"),
+        ("A blade only held in the way", "is beaten aside: only a parry stops a swing"),
+    ]);
     section(ui, "Holsters", &[
         ("Let go of a gun at a hip", "holster it there"),
         ("Let go of it behind your shoulder", "carry it on your back (both shoulders)"),
@@ -601,6 +609,13 @@ fn controls(ui: &mut egui::Ui, s: &mut Settings) {
     if i.melee_swing {
         slider(ui, "Strike speed", &mut i.melee_speed, 1.5, 5.0, " m/s", 1);
     }
+    ui.horizontal(|ui| {
+        ui.label("Melee");
+        let m = &mut s.melee.mode;
+        ui.selectable_value(m, MeleeMode::Game, "The game's");
+        ui.selectable_value(m, MeleeMode::Physics, "Physics sandbox");
+        ui.selectable_value(m, MeleeMode::Duel, "Duel (parry and counter)");
+    });
     slider(ui, "Stick deadzone", &mut i.stick_deadzone, 0.0, 0.5, "", 2);
     ui.checkbox(&mut i.arm_swimming, "Swim with your arms (in the game's water)");
     if i.arm_swimming {

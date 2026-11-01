@@ -11,6 +11,7 @@ use glam::Vec3;
 use rustvr_protocol::*;
 
 pub mod body;
+pub mod duel;
 pub mod modifiers;
 
 pub use modifiers::*;
