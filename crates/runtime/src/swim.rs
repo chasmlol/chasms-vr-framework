@@ -1,7 +1,7 @@
 //! Swimming by the arms, for any game whose adapter says where its water is
 //! (`rustvr_protocol::WaterState`). The game decides when the player swims; the runtime turns the
 //! player's hands in its water into the velocity the game's swimming moves them at
-//! (`Intents::swim`). Research and design: the Oblivion adapter's `docs/research/swimming.md`.
+//! (`Intents::swim`). Research and design: the Oblivion adapter's `docs/design/swimming.md`.
 //!
 //! A hand catches the water and the swimmer pulls themself past it, as in the well-liked VR swimmers
 //! (Freediver: Triton Down, after Lone Echo's zero gravity): the grip squeezed with a hand under

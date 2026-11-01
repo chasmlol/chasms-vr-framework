@@ -15,7 +15,7 @@ use crate::mesh::MeshData;
 /// in the model's own space and drawn with `fix` (model -> weapon space).
 pub struct Weapon {
     pub name: String,
-    /// Stable id: a Metro gun's asset key, or `builtin_rifle`, `builtin_rifle_scoped`,
+    /// Stable id: a game gun's asset key, or `builtin_rifle`, `builtin_rifle_scoped`,
     /// `builtin_pistol`.
     pub key: String,
     /// One-handed (holsters on the hip).
@@ -43,7 +43,7 @@ pub struct Weapon {
     /// The trigger in `parts`, drawn swung back about its pivot (weapon space, about +X) by the
     /// holding hand's trigger times the angle (radians) of a full pull: with the trigger finger.
     pub trigger_parts: Vec<usize>,
-    /// Glass and lenses (the rig's `hidden_meshes`: a gauge's glass, a collimator's lens and
+    /// Glass and lenses (the rig's `hidden_meshes`: a gauge's glass, a reflex sight's lens and
     /// reticle), model space like `parts`, riding on the gun's body (drawn with `fix`). Not among
     /// `parts`: the range doesn't draw them (it can't draw them see-through); the runtime draws them
     /// with the game's forward shading or a special draw.
@@ -74,8 +74,8 @@ pub struct Weapon {
     /// The game's own recoil (its model space), when the extractor found it: the runtime plays
     /// these instead of its own (see `rustvr_asset::Recoil`).
     pub kicks: Vec<asset::Kick>,
-    /// The game's own hands on it, [support (left), firing (right)]: Metro's first-person arms as
-    /// they hold this gun (or, for the built-in guns, the Kalash's carried over). See [`GunHand`].
+    /// The game's own hands on it, [support (left), firing (right)]: the game's first-person arms
+    /// as they hold this gun (or, for the built-in guns, a game gun's carried over). See [`GunHand`].
     pub game_hands: [Option<GunHand>; 2],
     /// Kilograms: the gun without its magazine, and a loaded magazine.
     pub mass: f32,
@@ -100,8 +100,8 @@ pub struct Weapon {
     /// ...and the trigger blade's surface (weapon-space triangles).
     #[allow(dead_code)]
     pub trigger_blade: Vec<[Vec3; 3]>,
-    /// Metro's first-person arms posed holding it, and the same arms at rest (the game's hands
-    /// are taken from these; the built-in guns borrow the Kalash's).
+    /// The game's first-person arms posed holding it, and the same arms at rest (the game's hands
+    /// are taken from these; the built-in guns borrow a game gun's).
     pub game_arms: Option<std::sync::Arc<GameArms>>,
     /// What it fires (the game's ammo class, `5.45x39`), and the magazine it takes: guns with the
     /// same magazine take each other's (the runtime's `ammo_type`, see `physical::ammo_types`).
@@ -110,7 +110,7 @@ pub struct Weapon {
     /// How it's worked between shots and loaded, and the parts that move for it.
     pub action: WeaponAction,
     /// Where a laser fitted to it shines from (weapon space, along +Z): the game's mount for its
-    /// laser attachment (Metro's `loc_lazer`). Whether one is fitted is the game's to say.
+    /// laser attachment. Whether one is fitted is the game's to say.
     pub laser: Option<Vec3>,
 }
 
@@ -310,8 +310,6 @@ pub struct GunHand {
 }
 
 /// How far the trigger finger's contact with the trigger travels back at a full pull, metres.
-/// (Metro's own fire motions leave the Kalash's trigger finger still; the Bastard's flexes it by
-/// about 30°, 40° and 65° at the shot, with the whole grip squeezing.)
 pub const TRIGGER_TRAVEL: f32 = 0.008;
 
 /// Without a trigger to fit to: the turns the trigger finger takes from resting to a full pull
@@ -451,17 +449,16 @@ pub fn raked(deg: f32) -> Vec3 {
 
 /// Where the trigger finger's pad rests relative to the firing hand's grip pose origin, for the
 /// avatar's hand (`rustvr_ik`'s default `HandOffsets` and its `PistolGrip` curls) turned
-/// [`TRIGGER_TWIST`] about the grip: found on Metro's AK in `tests/rig.rs` (the pad on the trigger's
-/// face, the fist round the grip; the Kalash's own trigger sits there too). The built-in guns put
-/// their triggers here, so the Kalash's hand carried over to them finds it.
+/// [`TRIGGER_TWIST`] about the grip (the pad on the trigger's face, the fist round the grip). The
+/// built-in guns put their triggers here, so a game gun's hand carried over to them finds it.
 pub const TRIGGER_FROM_PALM: Vec3 = Vec3::new(0.0, 0.020, 0.074);
 /// The firing hand's turn about the grip (see [`pistol_grip`]): the index finger crosses the
 /// trigger's face instead of running past it.
 pub const TRIGGER_TWIST: f32 = -15.0;
 
-/// The support hand cradling a handguard (from Metro's AK arms, `hands_ak`'s bind pose): the
-/// handguard in the palm, the fingers curled up its right side, the thumb along its left; the
-/// fist's tube points up, forward and to the left, the palm faces up and a little right.
+/// The support hand cradling a handguard: the handguard in the palm, the fingers curled up its
+/// right side, the thumb along its left; the fist's tube points up, forward and to the left, the
+/// palm faces up and a little right.
 pub fn cradle() -> Quat {
     fist(CRADLE_TUBE, CRADLE_PALM)
 }

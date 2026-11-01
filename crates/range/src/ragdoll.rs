@@ -1286,8 +1286,8 @@ impl Dummies {
                 if s.impulse {
                     rb.apply_impulse_at_point(to_v(s.push * x * dt), to_v(at), true);
                 } else {
-                    // As an acceleration at a point: its speed changed, and its spin by the lever
-                    // to the point, neither weighed by its mass (a light hand isn't sent spinning).
+                    // An acceleration at a point: its speed changed, and its spin by the lever to
+                    // the point, neither weighed by its mass (a light hand isn't sent spinning).
                     let dv = s.push * x * dt * ADD_FORCE_STEP;
                     let lever = at - from_v(rb.translation());
                     rb.set_linvel(rb.linvel() + to_v(dv), true);

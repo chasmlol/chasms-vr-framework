@@ -1,8 +1,5 @@
 //! Headless renders of the avatar, written to `captures/avatar/` to look at, plus checks that the
 //! head chop and the game-depth test do their job.
-//!
-//! The Metro 2033 renders need the user's extracted assets (`local_assets/metro2033`); without
-//! them those tests only render the mannequin.
 
 #![allow(clippy::too_many_arguments)]
 
@@ -20,22 +17,9 @@ fn out_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("captures").join("avatar")
 }
 
-fn metro() -> Option<AvatarSource> {
-    let dir = rustvr_asset::default_root().join("metro2033");
-    if !dir.join("models").join("body_miller.rvm").exists() {
-        eprintln!("no Metro 2033 assets in {}: skipping the Metro renders", dir.display());
-        return None;
-    }
-    Some(AvatarSource::Model { dir, body: "body_miller".into(), hands: Some("hands_basic_suit".into()) })
-}
-
-/// The avatars to render: the mannequin, and Metro's Miller when the assets are there.
+/// The avatars to render: the mannequin.
 fn avatars(gpu: &Gpu) -> Vec<(&'static str, Avatar)> {
-    let mut out = vec![("procedural", Avatar::new(gpu, AvatarSource::Procedural).unwrap())];
-    if let Some(src) = metro() {
-        out.push(("metro", Avatar::new(gpu, src).unwrap()));
-    }
-    out
+    vec![("procedural", Avatar::new(gpu, AvatarSource::Procedural).unwrap())]
 }
 
 #[derive(Clone)]

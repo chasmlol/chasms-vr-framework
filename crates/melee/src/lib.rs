@@ -69,7 +69,7 @@ pub fn modifier_of(b: &MeleeBlade) -> u32 {
     }
 }
 
-/// A blade's damage curve: its own, or its kind's (`SwordSlash1H`'s 2 -> 1, 20 -> 2; a stab's
+/// A blade's damage curve: its own, or its kind's (a sword's edge 2 -> 1, 20 -> 2; a stab's
 /// 0 -> 1, 20 -> 10, rising fast; a mace's 2 -> 1, 20 -> 5).
 pub fn curve_of(b: &MeleeBlade) -> ([f32; 4], [f32; 2]) {
     if b.curve != [0.0; 4] {

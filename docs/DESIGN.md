@@ -31,7 +31,7 @@ headset ◀─ OpenXR ─┐
                    │  rustvr.exe, rustvr-play.exe (crates/runtime)
                    │    backend/openxr.rs   headset, controllers, swapchains, haptics, depth
                    │    backend/sim.rs      simulated headset for headless tests
-                   │    mechanics.rs        the body -> intents (ported from the Metro mod)
+                   │    mechanics.rs        the body -> intents
                    │    rig/                the player rig: physics hands, objects, guns, melee (Rapier)
                    │    body.rs             full-body IK and the avatar that draws it
                    │    combat.rs, gore.rs  hits and spells judged from the hands; blood
@@ -49,8 +49,7 @@ headset ◀─ OpenXR ─┐
                    │  game process
                    │    crates/adapter      the adapter SDK: connect, tracking -> world, slots
                    │    crates/range        the test range (a fake game)
-                   │    a game's adapter    in its own repository: Oblivion's (chasms-vr-oblivion),
-                   │                        Metro 2033 Redux's (chasms-vr-metro)
+                   │    a game's adapter    in its own repository: Oblivion's (chasms-vr-oblivion)
                    │
                    │  rustvr-voice.exe (crates/voice, optional): the voice plugin, on the same mapping
 ```
@@ -75,9 +74,9 @@ The workspace is every crate under `crates/`. Supporting crates:
   closing on what they hold (`grasp.rs`), FaceGen faces and shaping them by hand (`facegen.rs`,
   `sculpt.rs`), and the blood it draws (`gore.rs`). When the adapter publishes its lighting
   (`GameLighting`), meshes with the game's material are shaded as the game shades its own
-  first-person model: Gamebryo's per-pixel lighting as Oblivion's shaders do it (`gamebryo.rs`),
-  or Metro 2033 Redux's deferred shading, tone curve and grading (`metro.rs`). `collimator.rs`
-  draws a collimator sight's lens and reticle as Metro does, the reticle collimated for each eye.
+  first-person model (`shading.rs`): a deferred renderer's shading classes, tone curve and grading
+  (`LM_DEFERRED`), or Gamebryo's per-pixel lighting as Oblivion's shaders do it (`gamebryo.rs`,
+  `LM_GAMEBRYO`).
 - `crates/guns`: guns as RustVR holds them, shared by the range, the adapters and the runtime:
   weapon space, the parts cut from the game's model and how they move with the object's state,
   the game's hands on them, the protocol's descriptions of a gun (`desc.rs`), and a model's convex
@@ -88,14 +87,13 @@ The workspace is every crate under `crates/`. Supporting crates:
   [XRSIM.md](XRSIM.md)).
 - `crates/voice`: the voice plugin, `rustvr-voice.exe` (§6j). Optional, and left out of the usual
   build.
-- Metro's `metro-assets` (in the chasms-vr-metro repository) reads Metro 2033 Redux's archives
-  (`metro-extract`): models, textures, recoil, and its sound pack (§6c). Oblivion's
-  `oblivion-extract` (chasms-vr-oblivion) reads Oblivion's. Local test content only, never
-  committed.
-- `content/rigs/<game>.toml`: how the hands hold each of a game's guns, measured on its models
-  (ours, so committed and compiled in; `rustvr_asset::rigs` reads them, and `RUSTVR_RIGS` names a
-  folder to try one from). This repository has `metro2033.toml`. [RIGGING.md](RIGGING.md) says
-  how to rig a gun.
+- A game's extractor, in its adapter's repository, reads the user's installed game into
+  `local_assets/<game>/` (Oblivion's `oblivion-extract`, in chasms-vr-oblivion). Local test content
+  only, never committed.
+- `<game>.toml` gun rigs (in the game adapter's repository): how the hands hold each of a game's
+  guns, measured on its models (ours; `rustvr_asset::rigs` reads them from the folder
+  `RUSTVR_RIGS` names). No game's guns are rigged yet. [RIGGING.md](RIGGING.md) says how to rig a
+  gun.
 - `content/armour/<game>.toml` (in the game adapter's repository): which parts of the game's armour
   are rigid plates and what each rides (ours, hand-written per piece; `rustvr_asset::armour` reads
   them). [ARMOUR.md](ARMOUR.md) says how to mark a game's armour.
@@ -132,7 +130,7 @@ folder.
 
 ## 3. Spaces
 
-Everything in the protocol is **left-handed metres, X right, Y up, Z forward** (DirectX, Unity, 4A).
+Everything in the protocol is **left-handed metres, X right, Y up, Z forward** (DirectX, Unity).
 Quaternions are `[x, y, z, w]`; matrices are column-major (glam).
 
 | Space | What | Who uses it |
@@ -248,8 +246,8 @@ The table goes by subject, not by address.
    walk and turn between the game's last two steps go on from there, at most 0.15 s past the last
    step. It goes to now, not to when the frame shows: carried that far, the world would run ahead
    of the game's own picture of it. The picture itself is carried on by the walk for as late as it
-   is. The game steps at its own uneven pace (Metro once an eye pair), so without this the world
-   stands still for a frame and then jumps, however smoothly the picture is moved. A step that
+   is. The game steps at its own uneven pace, so without this the world stands still for a frame
+   and then jumps, however smoothly the picture is moved. A step that
    disagrees with what was being shown (a stop, a hitch) is glided out (a 60 ms time constant)
    rather than jumped; a step of more than 1 m or 0.3 rad is a jump (a snap turn, a teleport). The
    rig uses the same mapping, so the hands reach into the world where the player sees it. What a
@@ -277,16 +275,14 @@ In tests the runtime runs in **lockstep** (`RT_LOCKSTEP`): it waits for the adap
 time, and the adapter steps exactly once per headset frame using its `dt`, so runs are
 deterministic. With a real headset the game runs at its own pace and the newest slot wins.
 
-Games that can only draw one eye per engine frame (the Metro mod's alternate-eye rendering)
-fill eye L and eye R of the same slot on consecutive engine frames and publish after the second.
-`SlotInfo` carries per-eye poses, so both eyes are still submitted with the poses they were
-rendered with.
+Games that can only draw one eye per engine frame (alternate-eye rendering) fill eye L and eye R
+of the same slot on consecutive engine frames and publish after the second. `SlotInfo` carries
+per-eye poses, so both eyes are still submitted with the poses they were rendered with.
 
 ## 6. Mechanics
 
-`crates/runtime/src/mechanics.rs` is a port of the Metro 2033 VR mod's `player.cpp` (`Update` and
-`MenuControls`). That mod collected its features from Titanfall 2 VR, the feel reference. All of it
-works in tracking space:
+`crates/runtime/src/mechanics.rs` turns the player's body into what they do in the game, with
+numbers tuned by playing; Titanfall 2 VR is the feel reference. All of it works in tracking space:
 
 | Feature | Behaviour |
 |---|---|
@@ -312,15 +308,11 @@ works in tracking space:
 Each mechanic has unit tests (`cargo test -p rustvr-runtime`), and most have a headless scenario
 that drives them through the real protocol against the test range (§8).
 
-**The Metro mod is a reference for features, not code to copy.** It was built by asking for
-Titanfall 2 VR's features and is known to be buggy, so behaviour is re-derived and tested rather
-than transliterated. Where the port differs on purpose, the code says why.
-
 ## 6b. The player rig
 
 When a game registers objects (`ObjectTable`) and streams its static collision, the runtime's
 **rig** (`crates/runtime/src/rig/`) owns the hands and everything they do. It's built from the
-research in `reports/VR player controller design.md`, whose rule is **pin the hands, cheat
+research in `docs/design/vr-player-controller.md`, whose rule is **pin the hands, cheat
 everything else**: hands are exactly where the controllers are in free space, and everything else
 (grabs, magazines, throws, the body) bends in the player's favour.
 
@@ -355,7 +347,7 @@ the hands while walking.
 | Holding creatures | `rig/creatures.rs`, HIGGS's way: a hand whose grip closes on any part of a creature the game lets the hands take (`ActorBodies`) takes hold of it where it touched it, neither moving, the fingers closing round its capsule (and the ones beside it at the throat). The game moves the body with its own physics: each frame the runtime sends where the controller would have the point held, the hand's pull (the Hands tab's strength times the game's own strength for the player), how hard a throat is squeezed, and on letting go, the throw (the hand's speed at its peak, no gain). The hand is drawn on the part where the game has it, so the body's weight holds it back (a light arm follows closely, a body hangs and lags) and it never goes into the body; it feels the strain (a low rumble, harder the further it's held back); past an arm's reach (60 cm from the controller) the grip slips. Let go, it's a free hand again where it is, on the body's surface (held back by the body if its controller is in it, catching up eased). A fist closed on a creature doesn't punch it. A push on a creature says how fast the pusher itself came in (a shove, not a lean). The range's dummies take grabs with a stiff spring at the point (5000 N/m), go down when lifted by the head or torso and stay down while held |
 | Pockets | `rig/pickpocket.rs`, for picking pockets by hand (a game's adapter's `docs/design/pickpocket.md` has the research). The game says where its creatures' pockets are (on their own bones, every frame) and what's in them (each thing a template, drawn from the game's model, and how it feels). An empty hand in one feels a soft brush and a tick for the thing it's on, each kind its own (coins, a key, glass, paper, cloth, something hard); every 4 cm it moves in the pocket it's on the next thing. Gripping takes a copy of that thing into the hand, still the creature's while it's in the pocket (let go there: back, nothing tried); pulled out past the pocket's edge (3 cm) the attempt goes to the game (`PE_TAKE`), and its answer keeps the thing (the player's: kept in a body slot, the game's own drop let go elsewhere, planted let go in a pocket) or takes it from the hand with a hard jolt. Anything to take (`OBJF_LOOT`) let go gently in a pocket is planting, for the game to say. A creature's pickpocketing opens once a hand has been in its pockets for a second (at once on a take or a plant; a shorter look is only feeling) and closes once no hand has been near them for 0.75 s, so the game can run its own rules for both. A slow heartbeat in the hand while the pocket's creature sees the player (the game's own detection); a hand in a pocket pushes nothing of its creature, and its trigger doesn't use |
 | Fingers | Curls from the trigger, grip and thumb-rest touch. Holding something (not in a game's own hand pose for it), each finger closes on it (`avatar/src/grasp.rs`): bent in from straight, every joint stops as its segment meets the surface while the joints past it curl on, so it wraps a handle and folds over an edge (a segment may come closer near its knuckle, which folds round the edge it's on); a finger that's in the thing straight (a thumb under a palm laid flat on a crate) first bends back at its base until it's out; the drawn hand's own finger geometry, the handle it's on (a capsule) or the thing's collision shape. It closes over 0.12 s as the hand takes hold and opens as it lets go; a gun held by its grip keeps the index on the trigger |
-| Full body | `crates/ik` solves 22 joints every frame from the head and the hands the rig drew (VRIK/FRIK-style: torso yaw from the hands, spine pitch from the head drop, stepping legs, elbow prediction, hands pinned exactly). The avatar (the game's own body once its adapter sends it, `AvatarDesc`; else Metro's Miller when extracted, else a built-in mannequin) is drawn between the game's picture and the overlays, hidden behind the game's geometry using its linear depth; the head is cut away in first person. Hands only, arms or full body. The body stands on the game's floor (the game puts your eyes at its own eye height, so the real floor would leave it floating or crouched), its proportions follow your height (set, measured, or the game character's), and its arms follow your arm span: set, measured in a T-pose, or automatic (it grows whenever your real arms reach further). Seated mode draws it standing |
+| Full body | `crates/ik` solves 22 joints every frame from the head and the hands the rig drew (VRIK/FRIK-style: torso yaw from the hands, spine pitch from the head drop, stepping legs, elbow prediction, hands pinned exactly). The avatar (the game's own body once its adapter sends it, `AvatarDesc`; else a built-in mannequin) is drawn between the game's picture and the overlays, hidden behind the game's geometry using its linear depth; the head is cut away in first person. Hands only, arms or full body. The body stands on the game's floor (the game puts your eyes at its own eye height, so the real floor would leave it floating or crouched), its proportions follow your height (set, measured, or the game character's), and its arms follow your arm span: set, measured in a T-pose, or automatic (it grows whenever your real arms reach further). Seated mode draws it standing |
 | Face | A game whose heads are FaceGen's (Oblivion, Fallout 3, New Vegas) describes the player's face (`FaceDesc`: its coordinates, detail map and hair colour); the parts with face morphs in the cache (the head and the parts made to it) are moved to it as the body is put together, and the head's texture morphs make the face's texture, laid over its skin as the game's shader does (`avatar/src/facegen.rs`). A slider moved in the game's character creator is redone off the frame (the morphed vertices and the texture, not the whole body). While the creator is open (`FACE_SCULPT`) the hands can shape the face (`sculpt.rs`): a grip takes hold of a point of a bust of the head standing within reach (1.7 times life size) or of the player's own head, and pulls; the face becomes the nearest the face's own FaceGen coordinates can make, within the sliders' ranges, and goes to the game (`FaceSculpt`) |
 | Mirror | A standing mirror in the game's world (`runtime/src/mirror.rs`), called up from the Body tab, by pulling the gripped hands apart in front of the chest, by the game's mirror spell (`EV_MIRROR_CAST`, the glass appearing at its effect's moment), or by the game (`GS_MIRROR`: its character creator, its menu beside the mirror with the world round it). Each eye's reflection is drawn every headset frame from that eye reflected in the glass: the game's world rendered once a frame from the head reflected (`MirrorView`, the aux texture and its depth), moved to each eye by its depth, then the whole body with its head, lit by the game's lights |
 | Comfort | A vignette eases in while the stick moves or smooth-turns you (strength 0.5, 0.3 s); the view fades out when the head pushes into the game's collision; snap turn 45° (0.75 press, 0.25 re-arm past the stick's 0.25 dead zone, 0.5 s repeat); seated mode; play at your real height or the character's |
@@ -382,19 +374,20 @@ that failed, or with "the game's own sounds" turned off.
   `ui_click`, `melee`, `grenade_pin`, `grenade_arm`, `grenade_tick`, `grenade_throw`, `explosion`,
   `knife_throw`, `knife_stick`, `bite`, `gulp`, `hit_cut`, `hit_stab`, `clash`, `chop`, a
   creature's `grunt`, `shout`, `death`, `scream` ...; 47 in all, `rustvr_audio::Event`) to sounds,
-  in `[defaults]` and per **sound set** (`[sets.wpn_ak]`, one per gun, say; a set can `extends`
+  in `[defaults]` and per **sound set** (`[sets.rifle]`, one per gun, say; a set can `extends`
   another). An event is layers that play together (a shot's close crack and its body), each a
   choice of files picked at random, never the same twice running. A layer can be `spatial = false`
   (the unspatialised stereo bed: a shot's echo fills the head) or wait (`delay`: the casing lands
   half a second later). The format is documented in `crates/audio/src/pack.rs`.
 - **The adapter publishes it** (`SoundPack` region, `Adapter::set_sound_pack`; `local_sound_pack`
   finds an extractor's pack in `local_assets/<game>/sounds`): the folder, each object's set, and
-  what the game plays itself. `SND_GAME_SHOTS`: the game plays the gunshots of the shots it fires
-  (Metro does), so the runtime plays no shot, tail, casing or explosion; `SND_GAME_HANDLING`: it
-  plays its own reload and handling sounds (a dry fire too); `SND_GAME_INVENTORY`: it plays its own
-  sounds of things going into and out of the body's slots. Per object or for the whole pack. The
-  test range plays nothing itself, so it sets none and the runtime plays Metro's shots for it. The
-  region is additive: an adapter that never writes it gets the runtime's own sounds.
+  what the game plays itself. `SND_GAME_SHOTS`: the game plays the gunshots of the shots it fires,
+  so the runtime plays no shot, tail, casing or explosion; `SND_GAME_HANDLING`: it plays its own
+  reload and handling sounds (a dry fire too); `SND_GAME_INVENTORY`: it plays its own sounds of
+  things going into and out of the body's slots. Per object or for the whole pack. The region is
+  additive: an adapter that never writes it gets the runtime's own sounds. The test range plays
+  nothing itself and hands over no pack, so the runtime plays its own sounds for it, shots and
+  explosions included.
 - **The runtime** loads the pack on a background thread when the path (or its `revision`) changes,
   or the game-sounds setting or the output's sample rate does, decoding and resampling everything
   to the mixer's rate, and unloads it when the game goes (each new connection starts with none, so
@@ -403,23 +396,12 @@ that failed, or with "the game's own sounds" turned off.
   finish, and packs are freed on the game thread. Each cue then plays the object's set's event (its
   own, inherited, or the pack's defaults). Settings: sound on/off, volume, gunshots, and "the
   game's own sounds".
-- **Metro's pack** comes from `metro-extract` (`metro-assets`, in Metro's repository), from the
-  game's own data: `sounds.bin` (its sound items) and each gun's config, which names its shot,
-  echo, casings and dry fire (the Kalash's shot is `ak_close_shot_*` layered with
-  `ak_boom_shot_*`, its tail `generic_ar_echo`); reloads are Redux's split reloads
-  (`weapons\split_reloads`), which suit a reload made by hand. Its throwables have sets of their
-  own, from the configs that hold their first-person models (the dynamite lit with
-  `bomb_prepare`, the knife sinking in with `knife_hit_default`). What the range checks of it
-  (`game_sounds`, `game_dynamite`, §8): the pack loads with its sets and files, the Kalash's grab,
-  shots with their tails and casings, and magazine play from it, and each bomb's set has its pin,
-  arming, throw and explosion. The range's frag uses the `grenade` set and its knife `throw_knife`;
-  its built-in rifles borrow `wpn_ak` and its pistol `wpn_revolver`.
 
 ## 6d. The HUD in VR
 
 A flat game's HUD is a full-screen layer. Hung in front of the face as one sheet it covers the view
-and chases the head, which no well-liked VR game does (`research_notes/VR throwables and UI/ui.md`:
-Half-Life: Alyx, the Titanfall 2 VR mod, UEVR, Doom 3 VR, Metro Awakening). So the adapter
+and chases the head, which no well-liked VR game does (`docs/design/vr-throwables-and-ui/ui.md`:
+Half-Life: Alyx, the Titanfall 2 VR mod, UEVR, Doom 3 VR). So the adapter
 describes its HUD (`HudLayout`: rectangles of the HUD texture and their roles) and the runtime
 (`crates/runtime/src/hud.rs`) puts each piece where native VR games do:
 
@@ -446,8 +428,7 @@ layout the HUD is one flat screen, as before; a layout that hides what it doesn'
 (`HUDL_REST_HIDDEN`) with nothing in it shows nothing. Each picture says which layout it was drawn
 with (`SlotInfo::hud_layout`), and the runtime cuts it by that one: a layout written as the picture
 is finished waits for its picture, so no piece is ever cut from the frame before or after (a menu's
-pieces from the HUD, or the HUD's from a menu). Metro's layout is in its adapter's `docs/METRO.md`
-(the chasms-vr-metro repository).
+pieces from the HUD, or the HUD's from a menu).
 
 **Menus in pieces.** A game's menu is never hung in front of the face whole: the adapter describes
 it as groups of pieces (`HudGroup`: the parts that matter, cut out of its UI) and the runtime floats
@@ -617,7 +598,7 @@ A window on the monitor for recording and streaming, the same for every game
   over the gaps a fast turn leaves, the game's HUD where a flat player has it, motion blur, a view
   wider at speed, shake with hits and shots, handheld sway, a chest mount, depth of field, a lens
   (fisheye, colour fringes, vignette, glow, grain, sharpen) and colour (exposure, contrast,
-  saturation, temperature, tint, a grade, a LUT). The research is in `docs/research/desktop-fx.md`.
+  saturation, temperature, tint, a grade, a LUT). The research is in `docs/design/desktop-fx.md`.
 - **OBS in the headset** (`obs_view.rs`, `ui.obs_view`, off by default): the window of the OBS
   running on the machine, captured with Windows Graphics Capture, on a panel only the headset sees,
   over the back of the left wrist when the player looks at it (the left hand empty), or pinned in
@@ -755,8 +736,8 @@ game it:
    hidden behind its world. Its hands on its guns and their recoil go in with `write_hand_poses` and
    `write_kicks` (`kicks` turns an extractor's kicks into weapon space). Games that don't fall back
    to the gun glued to the firing hand (`Intents`).
-7. **Optionally hands over its own sounds** (§6c): writes a sound pack from the game's files (an
-   extractor, like `metro-extract`) and publishes it with `Adapter::set_sound_pack`
+7. **Optionally hands over its own sounds** (§6c): writes a sound pack from the game's files (its
+   extractor) and publishes it with `Adapter::set_sound_pack`
    (`local_sound_pack` finds it): the folder, each object's sound set, and `SND_GAME_SHOTS` /
    `SND_GAME_HANDLING` / `SND_GAME_INVENTORY` for what the game already plays itself.
 8. **Optionally writes the rest of what the runtime can use**, each region on its own: its HUD's
@@ -774,7 +755,7 @@ game it:
    `mirror_cast`, `mirror_hit`).
 
 Adapters can be written in any language: Rust (hook-and-offset games, using `retour`: Oblivion's,
-a 32-bit `dinput8.dll` built for `i686-pc-windows-msvc`, and Metro's), C++ (games with C++ SDKs,
+a 32-bit `dinput8.dll` built for `i686-pc-windows-msvc`), C++ (games with C++ SDKs,
 using the generated header), or C# (Unity).
 
 ## 8. Testing without a headset or a game
@@ -792,7 +773,7 @@ using the generated header), or C# (Unity).
   range's reported stats (shots, hits, reloads, crouching, gestures), and each run saves PNGs of
   exactly what the headset would show into `captures/<scenario>/`. The mixer runs offline in
   scenarios, so the checks see which sounds played. `rustvr --list` lists them all; `all` leaves
-  out the ones that play a real game (`metro_*`, `live`), which run only by name with `--attach`.
+  out `live`, which plays a real game and runs only by name with `--attach`.
   - Legacy mode (`scenario.rs`, the range started with `--legacy`: the gun glued to the hand):
     - `smoke`: connect, look around, the game picture reaches both eyes every frame.
     - `aim`: raise the gun to the eye, aim down the sights and hit the target 10 m ahead.
@@ -809,20 +790,11 @@ using the generated header), or C# (Unity).
     - `scope`: aim through an optic; the scope view renders into the lens.
     - `async`: the headset at 90 Hz, the game at 45 frames a second: the newest picture is shown.
     - `void`: no game; the runtime shows its own room and menu.
-    - `live` and `metro_boot`: an attached game (look around for 12 s; Metro: tap A through its
-      intro and menus).
+    - `live`: an attached game: look around for 12 s.
   - Physical mode (`scenario_physical.rs`, the range's objects in the runtime's hands):
     - `pickup`: pick up the rifle from the table, aim down the sights, hit the target;
-    - `runtime_gun`: the runtime draws Metro's Kalash 2012 itself (`--runtime-draws`); aim
-      through its collimator and fire;
-    - `metro_hud`: Redux's HUD layout (`--metro-hud`): subtitles low, ammo on the gun;
     - `gun_fx`: three shots from the hip: the range shows them as a game would (the flash lights
       the view, smoke, tracers, holes in the target, casings out of the port onto the floor);
-    - `game_sounds`: the range hands over Metro's sound pack; picking up the Kalash, its three
-      shots (each with its tail and a casing) and dropping its magazine play Metro's own sounds,
-      and every throwable has its set;
-    - `game_recoil`: pick up Metro's Kalash, fire a burst aimed: it kicks with Metro's own recoil
-      (the range's kick table), the muzzle held up mid-burst and back on target after;
     - `mag_reload`: eject, a magazine from the shoulder pouch, seat it, rack the handle, fire;
     - `holster`: draw the pistol from the hip, fire, let go and it returns to the holster;
     - `throw`: throw a bottle down the range;
@@ -835,10 +807,6 @@ using the generated header), or C# (Unity).
     - `stab`, `stab_floor`: a thrust into the dummy (or the floor) stays in, drags it, and comes
       back out;
     - `spell`: charge the fire bolt and cast it at the dummy;
-    - `game_dynamite`: Metro's dynamite from the throwables' table, the other hand pulls its fuse,
-      a throw down range: the fuse lit, the throw and the explosion are Metro's own sounds. With
-      Metro's sounds extracted, `grenade` and `knife` check theirs too (the frag's countdown, its
-      throw and explosion; the knife's throw and hit);
     - `gloves`: point at a can on the far table, flick it to you and catch it;
     - `valve`: turn the free-running valve a quarter turn;
     - `two_hand`: the support hand on the foregrip steers the rifle;
@@ -848,22 +816,9 @@ using the generated header), or C# (Unity).
     - `vignette`: walking closes the vignette in, stopping opens it;
     - `wall_fade`: the head inside the table fades the view out;
     - `wall_hand`: a hand pushed into the table stops at its surface (a ghost shows the real one);
-    - `break_reload`: Metro's Duplet fires one barrel a pull, then clicks; the lever lets the
-      barrels fall open and both cases fly out; a shell from the pouch goes into each chamber; a
-      flick up snaps it shut and it fires both barrels again;
-    - `bolt_cycle`: Metro's Ventil fires once and won't again until the left hand lifts the bolt,
-      pulls it back (the case flies out), pushes it home (the next round goes in) and turns it down;
-    - `pump`: Metro's Tihar, empty of air, only hisses; four strokes of its pump lever fill it, and
-      each shot spends some;
-    - `cylinder_reload`: Metro's revolver fires six and clicks; B swings the cylinder out, A drops
-      the cases, a speed loader from the pouch goes into the swung-out cylinder, a roll of the wrist
-      swings it home and it fires;
     - `grip_handle`, `grip_handguard`, `grip_gun_barrel`, `grip_hand_to_hand`: a sword by the
       pommel's end with the other hand on the blade; the handguard taken again further forward; the
       rifle held by its barrel (the trigger does nothing); a bottle passed from hand to hand.
-
-    The Metro scenarios lay their gun nearest with the range's `--table` and need Metro's guns
-    extracted; `game_sounds` and `game_dynamite` fail without Metro's sounds.
 - **The range's own renders:** `cargo test -p rustvr-range` also draws the guns as the rig holds
   them (`tests/rig.rs`, `captures/rig/`, [RIGGING.md](RIGGING.md) §6) and the guns' convex hulls
   (`tests/hulls.rs`), and its effects close up and from the side (`tests/fx.rs`, `captures/fx/`: a
@@ -883,21 +838,19 @@ using the generated header), or C# (Unity).
 
 ## 9. Test content
 
-The test range runs in **physical mode** by default: the built-in rifles (a plain one and a scoped
-one), Metro's Kalash and its Bastard lie on a table at your right hand, the built-in pistol starts
-on your right hip, every other rigged Metro gun (20 of the rig file's 22, when extracted) lies on an
-armory bench behind you, side by side, pistols last and the rest grouped by caliber, and there are
-bottles, cans, crates and a barrel to knock about on the long table ahead and around, some of them
-breakable (with their debris, `debris.rs`). Every gun's own magazines come from the ammo pouch while
-it's in your other hand (guns that take the same magazine share one: the Kalash's and the AKSU's).
-Throwables (`crates/range/src/throwables.rs`): two frag grenades in the chest pouches and a knife
-on the belt; two more frags, two knives, an arming sword, a dagger and Metro's dynamite, sticky
-dynamite and incendiary bomb (when extracted) on a table at your left hand. The range is the game
-for them: it makes the explosions (effects, a blast that hurts the target plates within 5 m, 2.5 m
-for the incendiary, and pushes the props within 6 m; the grenade back on its table or in its pouch
-3 s later) and counts knives stuck in the plates. Six target plates down the lane, a board of seven
-valves on your right (`content.rs`), a bow on your back with its arrows from the runtime's quiver
-(`archery.rs`), and two spells, a fire bolt and a shock (`combat.rs`).
+The test range runs in **physical mode** by default. Its guns are its own, made in code
+(`content.rs`): a rifle and a scoped rifle lie on a table at your right hand and a pistol starts
+on your right hip; an armory bench behind you takes any more rigged guns, side by side, pistols
+last and the rest grouped by caliber. There are bottles, cans, crates and a barrel to knock about
+on the long table ahead and around, some of them breakable (with their debris, `debris.rs`). Every
+gun's own magazines come from the ammo pouch while it's in your other hand (guns that take the same
+magazine share one). Throwables (`crates/range/src/throwables.rs`): two frag grenades in the chest
+pouches and a knife on the belt; two more frags, two knives, an arming sword and a dagger on a table
+at your left hand. The range is the game for them: it makes the explosions (effects, a blast that
+hurts the target plates within 5 m and pushes the props within 6 m; the grenade back on its table
+or in its pouch 3 s later) and counts knives stuck in the plates. Six target plates down the lane,
+a board of seven valves on your right (`content.rs`), a bow on your back with its arrows from the
+runtime's quiver (`archery.rs`), and two spells, a fire bolt and a shock (`combat.rs`).
 
 The range is also the game for the framework's melee (`--arena range|rack|arena|bench|climb|duel`
 starts the player in one of its areas, `arenas.rs`): two training dummies near the start, a melee
@@ -907,50 +860,43 @@ bench of dummies to skewer and dummies in leather, chainmail and plate, a wooden
 weapons, and a 2 m block to climb. It asks for the melee buttons (`RULES_KICK`) everywhere but the
 `range` area.
 
-The range also shows what a game shows when its guns fire (`crates/range/src/effects.rs`; in Metro
-the game draws its own): a muzzle flash (a sprite facing you and one along the barrel, two frames)
+The range also shows what a game shows when its guns fire (`crates/range/src/effects.rs`): a muzzle
+flash (a sprite facing you and one along the barrel, two frames)
 and a point light on the gun, hands and tables; gas and smoke; a tracer streaking to the hit (its
 head glows, since from behind your own tracer is a receding dot); a hole where the bullet hit
 (`hits.rs` casts it against the room, the plates and the loose objects; holes ride with the object
 they're in, at most 64, the oldest fading first), sparks off metal, dust and chips off wood and
-stone, a push on a loose object (`EV_IMPULSE`); and a casing from the ejection port (Metro's
-`loc_shell_point` locator, the built-in guns' receivers), out right, up and a little back with a
-spin, bouncing on the floor and tables and fading after 6 s. Magazine-fed rifles and pistols
-eject; revolvers, break-actions and air guns keep their brass. With Metro extracted the sprites
-are Metro's own (its muzzle flash `pfx_muzzle1`, gas, sparks `part_iskry`, the fireball
-`part_flame_1`, explosion star and smoke, dust, the wallmark `wm_bullet_metall_thin_1` and the
-`fx_tracer1` sheet the tracer meshes use); otherwise built-in ones. All of it is cheap sprites
-(at most a few hundred), drawn after the world with depth testing and no depth writes.
+stone, a push on a loose object (`EV_IMPULSE`); and a casing from the ejection port (the right of
+a rifle's receiver, the top of a pistol's slide), out right, up and a little back with a spin,
+bouncing on the floor and tables and fading after 6 s; a bolt or a pump throws its case as it's
+worked. All of it is the range's own cheap sprites (at most a few hundred), drawn after the world
+with depth testing and no depth writes.
 
 Its other options: `--legacy` (the current gun glued to the firing hand, driven by intents, which
 the legacy scenarios test; `--weapon <name|scoped|first>` picks it), `--fps <n>` (caps its frame
 rate when the runtime isn't in lockstep), `--table <key>[,<key>...]` (those guns nearest on the
-table), `--runtime-draws` (the runtime draws Metro's guns and their magazines, as a game adapter
-asks it to), `--metro-hud` (Redux's HUD layout) and `--arena`.
+table) and `--arena`.
 
-`metro-extract` (in Metro's repository) reads the user's own Metro 2033 Redux install (read-only)
-and writes first-person guns, hands, a body and props into `local_assets/metro2033/`
-(`crates/asset` format), and its sound pack into `local_assets/metro2033/sounds/`; it also has
-options for the sounds alone and for the throwables and effect sprites alone. The test range loads
-them when present, and uses built-in guns and the runtime's own sounds otherwise; its built-in guns
-borrow Metro's sets (the rifles the Kalash's, the pistol the revolver's). Metro's bombs keep the
-runtime's 4 s default fuse. `local_assets/` is at the repository root, or in a folder above it (a
-game adapter's, with this repository as its `framework/` submodule), or where `RUSTVR_ASSETS` says.
-**`local_assets/` is git-ignored and never committed or redistributed.**
+The range needs nothing from a game: no sound pack either, so the runtime plays its own
+synthesised sounds for it. What a game's extractor reads out of the user's own install (its models,
+textures, recoil and sound pack, in `crates/asset`'s format) goes into `local_assets/<game>/`, at
+the repository root, or in a folder above it (a game adapter's, with this repository as its
+`framework/` submodule), or where `RUSTVR_ASSETS` says. **`local_assets/` is git-ignored and never
+committed or redistributed.**
 
 ## 10. Phased plan
 
 | # | Phase | Done when |
 |---|---|---|
 | 0 | **Loop** | Protocol, SDK, runtime, sim headset and test range; all scenarios pass headless |
-| 1 | **Metro adapter** | Metro's world in the headset with the runtime's player controller in it (as SkyCraft does it: the game supplies the world, the runtime the player); then its collision, actors and guns. The adapter lives in its own repository (chasms-vr-metro) |
+| 1 | **A game** | Oblivion (1.2.0.416: Gamebryo, 32-bit, Direct3D 9): its world in the headset with the runtime's player controller in it (as SkyCraft does it: the game supplies the world, the runtime the player); then its collision, creatures and weapons. A Rust `dinput8.dll` on the SDK, in its own repository (chasms-vr-oblivion) |
 | 2 | **Headset** | The OpenXR backend runs on the user's headset (a Quest 3 through Virtual Desktop), and the game's picture is moved to every headset frame (§5); the HUD is still drawn into the projection layer: quad layers are to come |
 | 3 | **A C++ adapter** | Skyrim SE through CommonLibSSE (C++ on the generated header), reusing SkyCraft's camera and actor code |
 | 4 | **Feel** | Done in the runtime: physics hands, objects, holsters, pouches and the body's slots, physical reloads and guns worked by hand, throwing (grenades, knives), gravity gloves, physical melee and telekinesis, creatures held by hand, spells, bows, pockets, bowls, hinges and slides, riding, swimming, gore, full-body IK and an avatar with the game's own body, face and lighting, a mirror, spatial sound and the game's own sounds, comfort, the desktop view, and voice as a plugin (§6 to §6k). Next: tuning on the headset |
 
 ## 11. Decisions (2026-10-21)
 
-1. **Rust** for the runtime, the SDK and the game adapters (Metro's, Oblivion's). C++ only where a
+1. **Rust** for the runtime, the SDK and the game adapters (Oblivion's). C++ only where a
    game's modding SDK is C++.
 2. **The runtime is a separate process**, so a game crash doesn't take down the headset and a
    loading screen doesn't freeze the view. Optional parts that would slow its frames (the voice
@@ -973,7 +919,6 @@ game adapter's, with this repository as its `framework/` submodule), or where `R
 | Stereo rendering stays per-game work | The SDK keeps it to "render these two views"; it's per engine where possible |
 | Cross-process GPU sync stalls | Triple buffer plus keyed mutexes never contend in steady state; the runtime's GPU work goes before the game's (`SetGPUThreadPriority`), and its pacing log (`pacing.rs`, every 10 s) counts the frames shown late |
 | A game slower than the headset | Its picture is moved to each headset frame by its depth, and its walk carried on between its steps (§5); the hands are drawn every headset frame |
-| A game can only draw one eye per frame | Supported (alternate eyes into one slot), with synchronized eyes via its frame timer, as the Metro mod does |
+| A game can only draw one eye per frame | Supported (alternate eyes into one slot), with synchronized eyes via its frame timer |
 | OpenXR runtimes differ | The backend has run on the user's headset through Virtual Desktop; the emulated headset (`crates/xrsim`) runs the real OpenXR path without one |
-| Bugs inherited from the Metro mod | Features are re-derived and tested, not copied |
 | Anti-cheat | Single-player games only |

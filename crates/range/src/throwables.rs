@@ -6,16 +6,11 @@
 //! later. A knife stuck in a target plate counts as a hit on it.
 //!
 //! Content: built-in frag grenades (an RGD-5-like egg: pin, lever, the UZRGM's 4 s fuse as the
-//! range's own data) and throwing knives always; Metro 2033's own dynamite, sticky dynamite,
-//! incendiary bomb and throwing knife when extracted (`metro-extract --extras`). Metro's bombs
-//! have a fuse cord rather than a pin: the other hand pulls its end to light it (`THROW_PIN`
-//! without a lever), and their fuse is left to the runtime's default (4 s) because Metro's
-//! configs don't name it. Two frags start in the chest pouches and a knife on the belt; the rest
-//! lie on a table at your left hand, in front of the bottles.
+//! range's own data) and throwing knives. Two frags start in the chest pouches and a knife on the
+//! belt; the rest lie on a table at your left hand, in front of the bottles.
 
 use bytemuck::Zeroable;
 use glam::{Mat4, Quat, Vec3};
-use rustvr_asset as asset;
 use rustvr_protocol::*;
 use std::collections::HashMap;
 
@@ -41,7 +36,6 @@ pub struct Throwable {
     pub name: String,
     pub parts: Vec<MeshData>,
     pub fix: Mat4,
-    pub from_game: bool,
     /// Parts drawn only until the pin is out, and until the lever flies.
     pub pin_parts: Vec<usize>,
     pub lever_parts: Vec<usize>,
@@ -104,7 +98,6 @@ pub fn builtin_frag() -> Throwable {
         name: "Frag grenade".into(),
         parts: vec![body, lever, pin],
         fix: Mat4::IDENTITY,
-        from_game: false,
         pin_parts: vec![2],
         lever_parts: vec![1],
         desc: d,
@@ -133,7 +126,6 @@ pub fn builtin_knife() -> Throwable {
         name: "Throwing knife".into(),
         parts: vec![m],
         fix: Mat4::IDENTITY,
-        from_game: false,
         pin_parts: Vec::new(),
         lever_parts: Vec::new(),
         desc: d,
@@ -145,116 +137,21 @@ pub fn builtin_knife() -> Throwable {
     }
 }
 
-/// Metro 2033's throwables from `local_assets/metro2033` (`metro-extract --extras`), if there.
-pub fn metro_throwables(root: &std::path::Path) -> Vec<Throwable> {
-    let dir = root.join("metro2033");
-    let mut out = Vec::new();
-    let bombs = [
-        ("throw_dynamite", "Dynamite", 0, Blast::Frag),
-        ("throw_sticky_dynamite", "Sticky dynamite", THROW_STICKY, Blast::Frag),
-        ("throw_incendiary", "Incendiary bomb", THROW_IMPACT, Blast::Fire),
-    ];
-    for (key, name, extra, blast) in bombs {
-        let Ok(model) = asset::load_model(&dir, key) else { continue };
-        // The fuse cord's end: where the other hand lights it, and where it sputters.
-        let fuse = bone(&model, "fetil_fire").unwrap_or(Vec3::new(0.0, 0.0, 0.24));
-        let sticky = extra & THROW_STICKY != 0;
-        let half = if sticky { Vec3::new(0.04, 0.04, 0.12) } else { Vec3::new(0.026, 0.026, 0.115) };
-        let mut d = base_desc(THROW_GRENADE | THROW_PIN | extra, half, Vec3::ZERO, 0.45);
-        d.handle = fuse.to_array();
-        d.handle_travel = 0.05;
-        d.grip = [0.0, 0.0, -0.02];
-        // Along the fist, the fuse out past the thumb.
-        d.grip_rot = Quat::IDENTITY.to_array();
-        d.impact_delay = 0.15;
-        set_name(&mut d.name, name);
-        out.push(Throwable {
-            key: key.into(),
-            name: name.into(),
-            parts: model_meshes(&model),
-            fix: Mat4::IDENTITY,
-            from_game: true,
-            pin_parts: Vec::new(),
-            lever_parts: Vec::new(),
-            desc: d,
-            blast: Some(blast),
-            fuse_at: Some(fuse),
-            led: None,
-            lying: (Quat::IDENTITY, half.y + 0.003),
-        });
-    }
-    if let Ok(model) = asset::load_model(&dir, "throw_knife") {
-        let lo = Vec3::from_array(model.bounds_min);
-        let hi = Vec3::from_array(model.bounds_max);
-        let mut d = base_desc(THROW_KNIFE, (hi - lo) * 0.5, (hi + lo) * 0.5, 0.12);
-        // The blade is the +Z half; the handle (wrapped) the -Z half, its ring at the end.
-        d.grip = [0.0, 0.0, lo.z * 0.5];
-        d.muzzle = [0.0, 0.0, hi.z];
-        d.grip_rot = Quat::IDENTITY.to_array();
-        set_name(&mut d.name, "Throwing knife");
-        out.push(Throwable {
-            key: "throw_knife".into(),
-            name: "Throwing knife (Metro)".into(),
-            parts: model_meshes(&model),
-            fix: Mat4::IDENTITY,
-            from_game: true,
-            pin_parts: Vec::new(),
-            lever_parts: Vec::new(),
-            desc: d,
-            blast: None,
-            fuse_at: None,
-            led: None,
-            lying: (Quat::from_rotation_z(std::f32::consts::FRAC_PI_2), (hi.x - lo.x) * 0.5 + 0.003),
-        });
-    }
-    out
-}
-
-fn bone(model: &asset::Model, name: &str) -> Option<Vec3> {
-    let b = model.bones.iter().find(|b| b.name == name)?;
-    Some(Mat4::from_cols_array(&b.model_matrix).w_axis.truncate())
-}
-
-fn model_meshes(m: &asset::Model) -> Vec<MeshData> {
-    m.meshes
-        .iter()
-        .filter(|mesh| !mesh.indices.is_empty() && !mesh.name.starts_with("collision"))
-        .map(|mesh| MeshData {
-            vertices: mesh.vertices.iter().map(|v| crate::content::Vertex { pos: v.pos, normal: v.normal, uv: v.uv, color: [255; 4] }).collect(),
-            indices: mesh.indices.clone(),
-            source: None,
-            texture: if mesh.texture.is_empty() { None } else { Some(mesh.texture.clone()) },
-        })
-        .collect()
-}
-
-/// The sound set a throwable uses in Metro's sound pack (`metro-assets`' `sound_pack`): Metro's
-/// its own (its key), the built-in knife Metro's throwing knife's, and the built-in frag the
-/// pack's pin grenade (`grenade`: Metro has none, so its pin and lever stay the runtime's own).
-pub fn sound_set(t: &Throwable) -> &str {
-    match t.key.as_str() {
-        "builtin_frag" => "grenade",
-        "builtin_knife" => "throw_knife",
-        key => key,
-    }
-}
-
-/// Everything the range throws: the built-in ones, then Metro's.
-pub fn all(root: &std::path::Path) -> Vec<Throwable> {
+/// Everything the range throws.
+pub fn all() -> Vec<Throwable> {
     let mut v = vec![builtin_frag(), builtin_knife()];
     // The melee weapons (the arming sword first, on this table; the rest on the melee rack).
     v.extend(crate::arsenal::all().into_iter().map(|a| a.thing));
-    v.extend(metro_throwables(root));
     v
 }
 
 /// Their places: (which throwable, its descriptor with id, spawn pose and start slot). Two frags
-/// in the chest pouches and a knife in the belt; two frags, two knives (Metro's if it's there),
-/// the arming sword, a dagger and Metro's bombs on the table.
+/// in the chest pouches and a knife in the belt; two frags, two knives, the arming sword and a
+/// dagger on the table.
 pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
     let find = |key: &str| list.iter().position(|t| t.key == key);
     let frag = find("builtin_frag").unwrap();
-    let knife = find("throw_knife").or(find("builtin_knife")).unwrap();
+    let knife = find("builtin_knife").unwrap();
     let (lo, hi) = TABLE_THROW;
     let top = hi.y;
     let mut places: Vec<(usize, Vec3, u32)> = vec![
@@ -264,18 +161,13 @@ pub fn layout(list: &[Throwable]) -> Vec<(usize, ObjectDesc)> {
         (knife, Vec3::new(-0.91, top, 1.05), 0),
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_LEFT + 1),
         (frag, Vec3::new(-0.53, top, 0.87), SLOT_CHEST_RIGHT + 1),
-        (find("builtin_knife").unwrap(), Vec3::new(-0.91, top, 1.05), SLOT_BELT + 1),
+        (knife, Vec3::new(-0.91, top, 1.05), SLOT_BELT + 1),
     ];
     // The sword, its handle towards the player, and a dagger to throw at the back, its pommel clear
     // of the knives' handles (a hand going for a knife takes the knife).
     for (key, at) in [("builtin_sword", Vec3::new(-0.72, top, 0.82)), ("kit_dagger", Vec3::new(-0.62, top, 1.2))] {
         if let Some(i) = find(key) {
             places.push((i, at, 0));
-        }
-    }
-    for (key, x) in [("throw_dynamite", -0.53), ("throw_incendiary", -0.61), ("throw_sticky_dynamite", -0.71)] {
-        if let Some(i) = find(key) {
-            places.push((i, Vec3::new(x, top, 1.08), 0));
         }
     }
     let n_table = places.len();
@@ -395,14 +287,6 @@ mod tests {
         }
         let ids: Vec<u32> = placed.iter().map(|(_, d)| d.id).collect();
         assert!(ids.windows(2).all(|w| w[0] < w[1]), "unique ids");
-    }
-
-    #[test]
-    fn throwables_sound_like_metros() {
-        assert_eq!((sound_set(&builtin_frag()), sound_set(&builtin_knife())), ("grenade", "throw_knife"));
-        let mut t = builtin_knife();
-        t.key = "throw_dynamite".into();
-        assert_eq!(sound_set(&t), "throw_dynamite", "Metro's are their own");
     }
 
     #[test]

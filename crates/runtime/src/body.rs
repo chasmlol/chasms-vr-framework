@@ -2,11 +2,7 @@
 //! hands when it owns them, else the controllers), published as [`RtBody`], and drawn over the
 //! game's picture by the avatar (`rustvr_avatar`), hidden behind the game's geometry using its depth.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use glam::{Quat, Vec3};
-use rustvr_avatar::collimator::Collimator;
 use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput, GameShading, Grasp, HeldHand};
 use rustvr_gpu::Gpu;
 use rustvr_ik::{BodyParams, BodySolver, Calibration, FingerInput, FingerSolver, HandOffsets, HoldShape, Side, StraightArms, TrackedInput};
@@ -93,12 +89,9 @@ pub struct PlayerBody {
     pub grasp: [Option<Grasp>; 2],
     pub reached: [bool; 2],
     seq: u32,
-    /// Draws the held meshes the avatar doesn't shade itself (see `rustvr_avatar::SpecialDraw`:
-    /// a collimator's lens and reticle); None leaves them out.
+    /// Draws the held meshes the avatar doesn't shade itself (see `rustvr_avatar::SpecialDraw`);
+    /// None leaves them out.
     pub special: Option<SpecialDrawFn>,
-    /// The collimator sights' draw (`rustvr_avatar::collimator`), installed as `special` when
-    /// nothing else is.
-    collimator: Option<Rc<RefCell<Collimator>>>,
     /// Automatic arm span: grows while a hand keeps reaching beyond the arms.
     auto_span: Option<f32>,
     /// The hands' size the player's are drawn at (wrist to the middle finger's knuckle, metres),
@@ -176,7 +169,6 @@ impl Default for PlayerBody {
             reached: [true; 2],
             seq: 0,
             special: None,
-            collimator: None,
             auto_span: None,
             hand_length: 0.0,
             hand_said: 0.0,
@@ -502,8 +494,8 @@ impl PlayerBody {
         self.game_body = Some(rx);
     }
 
-    /// Loads the avatar the first time it's needed: Metro's Miller when the extracted assets are
-    /// there (local test content), else the built-in mannequin; later, the body the game makes up.
+    /// Loads the avatar the first time it's needed: the built-in mannequin; later, the body the
+    /// game makes up.
     fn avatar(&mut self, gpu: &Gpu) -> Option<&mut Avatar> {
         let received = self.game_body.as_ref().map(|rx| rx.try_recv());
         if let Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) = received {
@@ -533,13 +525,7 @@ impl PlayerBody {
         }
         if !self.avatar_tried {
             self.avatar_tried = true;
-            let dir = rustvr_asset::default_root().join("metro2033");
-            let source = if dir.join("models").join("body_miller.rvm").exists() {
-                AvatarSource::Model { dir, body: "body_miller".into(), hands: Some("hands_sviter".into()) }
-            } else {
-                AvatarSource::Procedural
-            };
-            match Avatar::new(gpu, source) {
+            match Avatar::new(gpu, AvatarSource::Procedural) {
                 Ok(a) => {
                     self.avatar = Some(a);
                     self.take_proportions();
@@ -565,22 +551,6 @@ impl PlayerBody {
         let avatar = if shading.is_some() { self.avatar(gpu) } else { self.avatar.as_mut() };
         if let Some(avatar) = avatar {
             avatar.set_game_shading(gpu, shading);
-        }
-        // A collimator's lens and reticle: drawn by `rustvr_avatar::collimator` through `special`
-        // (unless something else took it), under the same lighting.
-        if self.collimator.is_none() && self.special.is_none() {
-            match Collimator::new(gpu, rustvr_asset::default_root()) {
-                Ok(c) => {
-                    let c = Rc::new(RefCell::new(c));
-                    let draw = c.clone();
-                    self.special = Some(Box::new(move |sd| draw.borrow_mut().draw(sd)));
-                    self.collimator = Some(c);
-                }
-                Err(e) => tracing::error!("runtime: no collimator draw: {e:#}"),
-            }
-        }
-        if let Some(c) = &self.collimator {
-            c.borrow_mut().set_shading(gpu, shading);
         }
     }
 

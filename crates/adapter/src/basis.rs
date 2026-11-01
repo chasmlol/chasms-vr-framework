@@ -1,5 +1,5 @@
 //! Converting a game's own coordinates into the protocol's (left-handed metres, X right, Y up,
-//! Z forward) and back. Games that already use that convention (4A, Unity) use
+//! Z forward) and back. Games that already use that convention (Unity's) use
 //! [`Basis::IDENTITY`].
 
 use glam::{Mat3, Quat, Vec3};

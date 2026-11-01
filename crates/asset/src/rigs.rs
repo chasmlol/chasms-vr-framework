@@ -2,19 +2,14 @@
 //!
 //! A rig file is ours, not the game's: points measured on a gun's first-person model (in the
 //! model's own space, the space [`crate::Model`]s are cached in) plus a few facts about the gun.
-//! They're committed under `content/rigs/<game>.toml` and compiled in ([`builtin`]), so the test
-//! range and a game's adapter register exactly the same rigs with the runtime. `docs/RIGGING.md`
-//! says how each field is measured (`cargo run -p rustvr-asset --example rig_probe`).
+//! `docs/RIGGING.md` says how each field is measured (`cargo run -p rustvr-asset --example
+//! rig_probe`).
 //!
-//! Set `RUSTVR_RIGS` to a folder to load `<game>.toml` from there instead (to try a rig without
-//! rebuilding).
+//! A game's rigs are `<game>.toml` in the folder `RUSTVR_RIGS` names ([`load`]).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
-/// The rig files compiled in, by game.
-const BUILTIN: &[(&str, &str)] = &[("metro2033", include_str!("../../../content/rigs/metro2033.toml"))];
 
 /// A game's rigs.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -107,7 +102,7 @@ pub struct Block {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct GunRig {
-    /// The gun's key in the game's asset index (`wpn_ak`).
+    /// The gun's key in the game's asset index.
     pub key: String,
     /// Shown to the player; the index's name when left out.
     #[serde(default)]
@@ -158,7 +153,7 @@ pub struct GunRig {
     pub trigger_bone: String,
     /// Bones (with their children) whose skin is the magazine (none: the rounds stay in the
     /// gun), and the part that moves back with the handle. A trailing `*` matches any ending
-    /// (`patron_*`).
+    /// (`round_*`).
     #[serde(default)]
     pub mag_bones: Vec<String>,
     #[serde(default)]
@@ -269,40 +264,22 @@ pub fn parse(text: &str) -> Result<RigFile> {
     Ok(file)
 }
 
-/// The committed rigs of `game`, as compiled in.
-pub fn builtin(game: &str) -> Option<RigFile> {
-    let (_, text) = BUILTIN.iter().find(|(g, _)| *g == game)?;
-    Some(parse(text).unwrap_or_else(|e| panic!("content/rigs/{game}.toml: {e:#}")))
-}
-
-/// A folder of rig files to use instead of the compiled-in ones (`RUSTVR_RIGS`).
+/// The folder of rig files (`RUSTVR_RIGS`).
 pub fn override_dir() -> Option<PathBuf> {
     std::env::var_os("RUSTVR_RIGS").map(PathBuf::from)
 }
 
-/// The rigs of `game`: `RUSTVR_RIGS/<game>.toml` when that's set, else the compiled-in ones.
+/// The rigs of `game`: `RUSTVR_RIGS/<game>.toml`.
 pub fn load(game: &str) -> Result<RigFile> {
-    if let Some(dir) = override_dir() {
-        let path = dir.join(format!("{game}.toml"));
-        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        return parse(&text).with_context(|| format!("parsing {}", path.display()));
-    }
-    builtin(game).with_context(|| format!("no rigs for {game}"))
+    let dir = override_dir().with_context(|| format!("no rigs for {game} (RUSTVR_RIGS isn't set)"))?;
+    let path = dir.join(format!("{game}.toml"));
+    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    parse(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_committed_rigs_parse() {
-        let f = builtin("metro2033").unwrap();
-        assert_eq!(f.game, "metro2033");
-        let ak = f.gun("wpn_ak").expect("the Kalash is rigged");
-        assert_eq!(ak.hold, Hold::Rifle);
-        assert_eq!(ak.trigger_bone, "kurok");
-        assert!(ak.handle.is_some() && ak.handle_travel > 0.0);
-    }
 
     #[test]
     fn mistakes_are_refused() {
@@ -336,21 +313,5 @@ mod tests {
         assert!(pistol("pressure = { pump = 0.25, shot = 0.1, min = 0.1 }").is_err(), "an air gun without its pump");
         let air = "handle = [0, -0.1, 0.5]\nhandle_travel = 0.08\npressure = { pump = 0.25, shot = 0.1, min = 0.1, gauge_bone = \"g\", gauge_turn = [0, 270] }";
         assert!(pistol(air).is_ok());
-    }
-
-    #[test]
-    fn the_metro_guns_that_dont_cycle_themselves_say_how_they_work() {
-        let f = builtin("metro2033").unwrap();
-        let g = |k: &str| f.gun(k).unwrap_or_else(|| panic!("{k} is rigged"));
-        assert_eq!(g("wpn_duplet").action, Action::Break);
-        assert_eq!(g("wpn_duplet").chamber_bones.len(), 2);
-        assert_eq!(g("wpn_ashot").action, Action::Swing);
-        assert_eq!(g("wpn_revolver").action, Action::Swing);
-        assert_eq!(g("wpn_preved").action, Action::Bolt);
-        assert_eq!(g("wpn_ventil").action, Action::Bolt);
-        assert!(g("wpn_tihar").pressure.is_some() && g("wpn_helsing").pressure.is_some());
-        assert_eq!(g("wpn_uboynicheg").round_bones.len(), 6, "the revolving shotgun takes its shells one by one");
-        assert_eq!(g("wpn_helsing").round_bones.len(), 8, "and the crossbow its darts");
-        assert_eq!(g("wpn_ak").action, Action::Auto);
     }
 }

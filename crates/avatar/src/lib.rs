@@ -30,15 +30,14 @@
 //! * **The game's shading:** when the game publishes its lighting ([`GameShading`]) and a mesh
 //!   carries the game's material, the mesh is shaded exactly as the game shades its own
 //!   first-person model: its G-buffer terms, its lights, ambient and occlusion, its tone curve
-//!   and colour grading, written as the code values the game would display ([`metro`]). Other
+//!   and colour grading, written as the code values the game would display ([`shading`]). Other
 //!   meshes, and everything when the game doesn't say, keep the runtime's own look.
 //!
 //! * **Held objects:** what the hands hold (a gun, its magazine) can be drawn here too
 //!   ([`HeldModel`], [`Avatar::draw_with`]): rigid parts of a game model, each where the frame puts
 //!   it, in the body's depth (fingers wrap a grip) and through exactly the same shading (the game's
-//!   materials and lighting). Meshes whose shading isn't reproduced here (a collimator's lens and
-//!   reticle) are left to a caller's special draw ([`SpecialDraw`]); [`collimator::Collimator`]
-//!   is the one for a collimator sight.
+//!   materials and lighting). Meshes whose shading isn't reproduced here (a sight's lens) are
+//!   left to a caller's special draw ([`SpecialDraw`]).
 //!
 //! **Joint rotations** are read as the orientation of each joint's canonical frame in tracking
 //! space (the protocol's convention in `world.rs`), so a player standing in the reference T-pose
@@ -48,7 +47,6 @@
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
 pub mod armour;
-pub mod collimator;
 pub mod cor;
 pub mod facegen;
 pub mod sculpt;
@@ -57,12 +55,12 @@ pub mod gamebryo;
 pub mod gore;
 pub mod grasp;
 pub mod held;
-pub mod metro;
 mod names;
 pub mod pose;
 mod procedural;
 mod render;
 pub mod rig;
+pub mod shading;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -173,7 +171,7 @@ pub struct DepthInput<'a> {
 pub enum AvatarSource {
     /// The built-in mannequin.
     Procedural,
-    /// Models from an asset cache folder (e.g. `local_assets/metro2033`): `body` for the full
+    /// Models from an asset cache folder (e.g. `local_assets/oblivion`): `body` for the full
     /// body, and optionally first-person arms (`hands`) for the hands and arms views and the ghost
     /// hands.
     Model { dir: PathBuf, body: String, hands: Option<String> },
@@ -226,7 +224,7 @@ pub struct MeshExtras {
 }
 
 /// The game's lighting for this frame, to shade the body exactly as the game shades its own
-/// first-person model (see [`metro`]).
+/// first-person model (see [`shading`]).
 pub struct GameShading<'a> {
     pub lighting: &'a GameLighting,
     /// Tracking space to the game's world (the orientation its environment maps are in).
@@ -500,9 +498,8 @@ pub struct HeldMeshInfo {
     pub source: usize,
     pub name: String,
     /// Taken by a special draw ([`SpecialDraw`]): the game shades it with a shader this crate's
-    /// materials don't reproduce ([`metro::Class::of`] has none, in a model that has the game's
-    /// materials), or it is part of a collimator ([`collimator::takes`]; [`collimator::Collimator`]
-    /// is the special draw that draws it).
+    /// materials don't reproduce ([`shading::Class::of`] has none, in a model that has the game's
+    /// materials).
     pub special: bool,
 }
 
@@ -552,7 +549,7 @@ pub struct LaserBeam {
 pub struct HeldDraw<'a> {
     pub model: &'a HeldModel,
     pub parts: &'a [Option<Mat4>],
-    /// What it is, for the special draws (e.g. `metro2033/wpn_2012`).
+    /// What it is, for the special draws (`<game folder>/<asset key>`).
     pub key: &'a str,
     /// The game's effect shader over it (an enchanted weapon's shimmer).
     pub overlay: Option<OverlayDraw>,
@@ -632,9 +629,8 @@ impl HeldModel {
             let mesh = asset::Mesh { texture: m.texture.clone(), vertices, indices: p.indices.clone(), name: m.name.clone(), material: m.material.clone() };
             let one = asset::Model { source: model.source.clone(), meshes: vec![mesh], ..Default::default() };
             let Some(source) = from_model(one, None, &mut texture).meshes.pop() else { continue };
-            // Shaders not reproduced here, and the whole of a collimator (its reticle, the lens's
-            // reflection, pane and refraction, which the game draws in that order: `collimator`).
-            let special = game_materials && (metro::Class::of(m.material.shader).is_none() || collimator::takes(model, p.mesh));
+            // Shaders not reproduced here.
+            let special = game_materials && shading::Class::of(m.material.shader).is_none();
             // Each vertex's offset to the bent shape, where there's one with the same vertices.
             let offsets = bent.and_then(|b| b.meshes.get(p.mesh)).filter(|b| b.vertices.len() == m.vertices.len()).map(|b| {
                 p.vertices
@@ -703,7 +699,7 @@ impl HeldModel {
                 .to_vec()
         };
         let paper = || SourceMaterial {
-            class: metro::Class::GamebryoLit,
+            class: shading::Class::GamebryoLit,
             params: [0.0; 4],
             color: [0.0; 4],
             alpha_test: true,
@@ -767,13 +763,13 @@ pub(crate) struct SourceMesh {
 }
 
 pub(crate) struct SourceMaterial {
-    pub class: metro::Class,
+    pub class: shading::Class,
     pub params: [f32; 4],
     pub color: [f32; 4],
     pub alpha_test: bool,
     /// The emissive classes' multiplier (2 when the asset doesn't say).
     pub emissive: f32,
-    /// The `use_fresnel` permutation (see [`metro::Surface::fresnel`]).
+    /// The grazing-angle term is on (the deferred model's fresnel).
     pub fresnel: bool,
     pub bump: Option<Arc<asset::Texture>>,
     pub detail: Option<Arc<asset::Texture>>,
@@ -1247,7 +1243,7 @@ pub fn mannequin_skeleton() -> Vec<asset::Bone> {
     procedural::mannequin().bones
 }
 
-/// Eye overlay shells (Metro's `eyeballenv`, the cornea, tearline and occlusion meshes of Unreal
+/// Eye overlay shells (an `eyeballenv`, the cornea, tearline and occlusion meshes of Unreal
 /// and Character Creator heads) are blended over the eyes in their games; drawn opaque they hide
 /// the iris, so they're left out.
 fn is_eye_overlay(mesh_name: &str) -> bool {
@@ -1285,7 +1281,7 @@ fn from_model_with(model: asset::Model, extras: Vec<MeshExtras>, centres: Option
         .filter(|(_, m, _)| !m.indices.is_empty() && !is_eye_overlay(&m.name))
         .map(|(centres, m, x)| {
             let texture = get(&m.texture);
-            let material = metro::Class::of(m.material.shader).and_then(|class| {
+            let material = shading::Class::of(m.material.shader).and_then(|class| {
                 let mat = &m.material;
                 let (bump, detail, env) = (get(&mat.bump), get(&mat.detail), get(&mat.env));
                 let (need_bump, need_detail, need_env) = class.needs();

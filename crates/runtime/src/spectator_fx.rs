@@ -3,7 +3,7 @@
 //! turn, a view that shakes or widens by itself, a lens that bends). It's a stage of its own after
 //! `crate::spectator`'s steadied camera, and only ever the desktop window's: the headset's picture
 //! never changes. The research it rests on and how it fits with the other desktop view features is
-//! in `docs/research/desktop-fx.md`.
+//! in `docs/design/desktop-fx.md`.
 //!
 //! **The camera** ([`Stage::shot`]), before anything's drawn:
 //! - *Smoothed jumps*: a snap turn, a snap crouch or a recentre jumps the game's world under the

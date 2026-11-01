@@ -12,10 +12,9 @@
 //! the region where the game evaluates its first-person lighting: the light atlas
 //! ([`TexKind::Lights`](crate::TexKind::Lights), see [`LIGHT_TILE`]).
 //!
-//! Which game's shading model the terms are for is [`GameLighting::model`]: Metro 2033 Redux's
-//! ([`LM_METRO`], docs/research/metro-viewmodel-lighting.md), or Gamebryo's forward per-pixel
-//! lighting as Oblivion's shaders do it ([`LM_GAMEBRYO`], see there). A game whose renderer differs
-//! adds its model here.
+//! Which game's shading model the terms are for is [`GameLighting::model`]: a deferred renderer's
+//! ([`LM_DEFERRED`]), or Gamebryo's forward per-pixel lighting as Oblivion's shaders do it
+//! ([`LM_GAMEBRYO`], see there). A game whose renderer differs adds its model here.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -62,10 +61,10 @@ pub const GL_SHADOWED_PLAIN: u32 = 4;
 pub const GL_AMBIENT: u32 = 5;
 
 // ---- shading models ([`GameLighting::model`]) -------------------------------------------------
-/// Metro 2033 Redux's deferred shading (everything above).
-pub const LM_METRO: u32 = 0;
+/// A deferred renderer's shading (everything above).
+pub const LM_DEFERRED: u32 = 0;
 /// Gamebryo's forward per-pixel lighting, as Oblivion's `ShadowLightShader` and `SkinShader` do it
-/// (the Oblivion adapter's docs/research/oblivion-lighting.md): in the display's 0..1 range, each
+/// (the Oblivion adapter's docs/design/oblivion-lighting.md): in the display's 0..1 range, each
 /// light's diffuse capped at 1 and attenuated, summed with the ambient and capped at 1, lighting the
 /// base texture (times the vertex colour); each light's specular (the normal map's alpha) added;
 /// then the fog. The terms used:
@@ -85,8 +84,8 @@ pub const GL_GB_DIRECTIONAL: u32 = 16;
 pub const GL_GB_POINT: u32 = 17;
 
 // ---- light flags ------------------------------------------------------------------------------
-/// The light reaches the first-person model (its volume was shaded with depth test Always: the
-/// game's "mode A"). Others never light it.
+/// The light reaches the first-person model (its volume was shaded with depth test Always).
+/// Others never light it.
 pub const GLF_REACHES_VIEWMODEL: u32 = 1 << 0;
 /// [`GameLight::tile`] holds this light's texture term in the light atlas.
 pub const GLF_TILE: u32 = 1 << 1;
@@ -125,30 +124,30 @@ pub struct GameLighting {
     /// The first-person model's per-object ambient occlusion ("hemi"; vertex AO is multiplied in).
     pub hemi: f32,
     /// The view-space depth factor the game squashes its first-person model with before lighting
-    /// it (0.04 in Metro: lights see the model a few centimetres in front of the camera).
+    /// it (0.04, say: lights see the model a few centimetres in front of the camera).
     pub depth_squash: f32,
     /// The screen-space ambient occlusion the game's first-person model gets (its mean).
     pub ssao: f32,
     /// Nonzero when [`GameLighting::lut`] holds this frame's colour grading.
     pub lut_valid: u32,
-    /// The environment-reflection tint the game's materials use (Metro's `envmap_color`, rgb).
+    /// The environment-reflection tint the game's materials use (rgb).
     pub envmap_color: [f32; 4],
-    /// The game's fog (Metro's, in its combine): its colour towards the sun (`fog_color`), away
-    /// from it (`clouds_dir`), and how it thickens with distance (`fade_params`: amount =
+    /// The game's fog: its colour towards the sun, away from it (`fog_color_away`), and how it
+    /// thickens with distance (`fog_fade`: amount =
     /// saturate(distance·y + x)); zeros: no fog. For [`LM_GAMEBRYO`], `fog_fade.z` is 1 when the
     /// game's shaders fog by that distance: Gamebryo's own take the length of a point's clip-space
     /// position instead, unless the adapter has rewritten them (Oblivion's does).
     pub fog_color: [f32; 4],
     pub fog_color_away: [f32; 4],
     pub fog_fade: [f32; 4],
-    /// The direction towards the sun, in the game camera's view space (`sun_direction`).
+    /// The direction towards the sun, in the game camera's view space.
     pub sun_dir: [f32; 4],
     pub lights: [GameLight; GAME_LIGHTS_MAX],
     /// The colour-grading table: `LUT_SIZE`³ RGBA8 texels packed little-endian (r in the low
     /// byte), index `(b·16 + g)·16 + r`, applied as
     /// `out = saturate(tonemapped) + 2·lut(tonemapped.bgr).bgr − 1`.
     pub lut: [u32; LUT_SIZE * LUT_SIZE * LUT_SIZE],
-    /// Whose shading model the terms are for: [`LM_METRO`] or [`LM_GAMEBRYO`].
+    /// Whose shading model the terms are for: [`LM_DEFERRED`] or [`LM_GAMEBRYO`].
     pub model: u32,
     pub _pad_model: [u32; 3],
 }

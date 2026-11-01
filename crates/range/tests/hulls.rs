@@ -10,8 +10,7 @@ use std::time::Instant;
 
 #[test]
 fn guns_come_apart_into_convex_parts() {
-    let mut w = content::metro_weapons(&rustvr_asset::default_root());
-    w.extend([content::builtin_rifle("Range rifle", false), content::builtin_pistol()]);
+    let w = vec![content::builtin_rifle("Range rifle", false), content::builtin_pistol()];
     let t0 = Instant::now();
     for g in w.iter().filter(|w| w.rigged()) {
         let t = Instant::now();

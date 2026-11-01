@@ -5,7 +5,7 @@
 //! (`rustvr_ik`: +Y along the fingers, +Z on the thumb side; the palm faces +X on the right hand,
 //! -X on the left), placed on the hand joint the same offsets put the drawn hand on. A curl turns
 //! the finger in towards the palm and shortens it to the chord a bent finger spans. The sizes are
-//! an adult hand's, the thumb's as the drawn hands' (Metro's): out in front of the palm, folding
+//! an adult hand's, the thumb's as the drawn hands': out in front of the palm, folding
 //! across it towards the little finger. The drawn hands' own vary by model; these only decide what
 //! the fingers touch.
 

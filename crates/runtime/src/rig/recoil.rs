@@ -1,21 +1,20 @@
-//! Gun recoil, after Escape from Tarkov's (`NewRecoilShotEffect` and `NewRotationRecoilProcess`;
-//! the user's Rust port is the reference), adapted to a gun in a tracked hand.
+//! Gun recoil, after Escape from Tarkov's, adapted to a gun in a tracked hand.
 //!
 //! Each shot drives three layers, all as offsets of the gun from the hand that holds it (the hand
 //! drawn on the gun goes with it; the controller doesn't):
 //!
 //! * **Snap**: a fast, stiff flip and push back: the violent first ~50 ms of a shot.
-//! * **Rotation process** (EFT's hand rotation recoil): the shot's kick leans a random angle off
-//!   straight up (wider as a burst goes on), the first shot of a burst kicks hardest, and the
-//!   return spring is weak while you keep firing, so full auto climbs. After a few shots it goes
-//!   into *stable mode*: the climb plateaus and wanders around a stable point. When you stop, the
-//!   gun comes back down along a curved, sideways return, and settles a little up and off where
-//!   it started: you pull it back on target yourself. That rest offset fades over a few seconds.
+//! * **Rotation process**: the shot's kick leans a random angle off straight up (wider as a burst
+//!   goes on), the first shot of a burst kicks hardest, and the return spring is weak while you
+//!   keep firing, so full auto climbs. After a few shots it goes into *stable mode*: the climb
+//!   plateaus and wanders around a stable point. When you stop, the gun comes back down along a
+//!   curved, sideways return, and settles a little up and off where it started: you pull it back
+//!   on target yourself. That rest offset fades over a few seconds.
 //! * **Position**: the gun drives back along the barrel and lifts slightly, then springs forward.
 //!
-//! A second hand and a shouldered stock tame the rotation and speed the return, as EFT's mount
-//! multipliers do. The springs run at a fixed 240 Hz so the feel doesn't change with frame rate,
-//! and the randomness is a per-gun seeded generator, so tests are repeatable.
+//! A second hand and a shouldered stock tame the rotation and speed the return. The springs run at
+//! a fixed 240 Hz so the feel doesn't change with frame rate, and the randomness is a per-gun
+//! seeded generator, so tests are repeatable.
 
 use glam::{Quat, Vec2, Vec3};
 use rustvr_protocol::*;
@@ -75,12 +74,12 @@ impl Default for Hold {
 
 /// Shots this close together are one burst.
 const BURST_GAP: f32 = 0.25;
-/// From this shot of a burst on, the climb plateaus (EFT's `RecoilStableIndexShot`).
+/// From this shot of a burst on, the climb plateaus.
 const STABLE_SHOT: u32 = 4;
-/// Each stable-mode shot leans this much wider (EFT's `RecoilStableAngleIncreaseStep`), up to the max.
+/// Each stable-mode shot leans this much wider, up to the max.
 const STABLE_ANGLE_STEP: f32 = 2.5;
 const STABLE_ANGLE_MAX: f32 = 20.0;
-/// The first shot of a burst kicks harder (EFT's shot groups).
+/// The first shot of a burst kicks harder.
 const FIRST_SHOT: f32 = 1.25;
 /// The rest offset left after a burst fades with this time constant (s).
 const REST_FADE: f32 = 2.5;
@@ -191,7 +190,7 @@ impl Recoil {
             2..=3 => 0.75,
             _ => 0.6,
         };
-        // EFT: the kick's direction leans a random angle off straight up, wider in stable mode.
+        // The kick's direction leans a random angle off straight up, wider in stable mode.
         if self.shot_index >= STABLE_SHOT {
             if self.stable.is_none() {
                 self.stable = Some(self.rot.truncate());
@@ -240,7 +239,7 @@ impl Recoil {
         self.since_shot += h;
         let firing = self.since_shot < BURST_GAP;
         let w = p.ret * self.hold.ret;
-        // EFT's return speed curve: weak right after a shot (so a burst climbs), full by ~0.35 s.
+        // The return speed curve: weak right after a shot (so a burst climbs), full by ~0.35 s.
         let t = (self.since_shot / 0.35).clamp(0.0, 1.0);
         let curve = t * t * (3.0 - 2.0 * t);
         let k = w * w * (1.0 - p.climb * (1.0 - curve));
@@ -259,7 +258,7 @@ impl Recoil {
             if !self.returning {
                 self.returning = true;
                 self.return_side = if self.rot.y.abs() > 1e-4 { self.rot.y.signum() } else if self.rand() < 0.5 { -1.0 } else { 1.0 };
-                // EFT's after-recoil offset: where this burst leaves the gun.
+                // The after-recoil offset: where this burst leaves the gun.
                 let peak = self.rot.x.max(0.0);
                 let up = self.range(0.06, 0.16);
                 let side = self.range(0.2, 0.5);

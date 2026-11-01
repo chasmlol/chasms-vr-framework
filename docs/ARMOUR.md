@@ -4,7 +4,7 @@ A game's armour is skinned by its artist with soft weights everywhere: drawn on 
 a pauldron, a gauntlet's cuff or a greave bends like cloth. A **marks file** says, piece by piece,
 which parts of the game's models are rigid **plates** and what each **rides**; the runtime then
 moves each plate as one piece. Everything not marked stays soft, and is skinned so its joints
-keep their volume. The research behind it is the Oblivion adapter's `docs/research/armour.md`.
+keep their volume. The research behind it is the Oblivion adapter's `docs/design/armour.md`.
 
 Marks are ours, written by hand per game, and meant to be easy to read and add to: a modder making
 an armour for a game marks their own models the same way. Oblivion's

@@ -456,7 +456,7 @@ pub const OBJF_SCOPED: u32 = 1 << 4;
 pub const OBJF_TEMPLATE: u32 = 1 << 5;
 /// The runtime draws it (with the player's hands, lit by the game's [`crate::GameLighting`]) from
 /// the model its `name` gives as `<game>/<asset key>` in the runtime's asset cache
-/// (`metro2033/wpn_2012`); the game doesn't. A weapon is drawn with its moving parts where its
+/// (`mygame/rifle_01`); the game doesn't. A weapon is drawn with its moving parts where its
 /// [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
 /// (or round) part, in place (magazine space is the gun's). A prop ([`OBJ_PROP`]) the game draws
 /// is the runtime's to draw once a hand has had it ([`OS_RUNTIME_DRAWN`]), its model at
@@ -464,7 +464,7 @@ pub const OBJF_TEMPLATE: u32 = 1 << 5;
 /// runtime's to draw always (the game hides its own): its model in two pieces, the part on
 /// [`ObjectDesc::turn_bone`] turned by how far it's turned.
 pub const OBJF_RUNTIME_DRAWS: u32 = 1 << 6;
-/// Weapons: the game keeps this gun's ammunition (Metro's magazine and reserve), so the runtime's
+/// Weapons: the game keeps this gun's ammunition (its magazine and reserve), so the runtime's
 /// rounds follow the game's instead of being unlimited. The gun arrives (and comes back with each
 /// `spawn_seq`) holding `rounds` in all, not a full magazine: a self-loading gun chambers one of
 /// them and its seated magazine holds the rest (0: chamber and magazine empty). A magazine the hand
@@ -784,7 +784,7 @@ pub const OS_SPENT: u32 = 1 << 14;
 pub const OS_ACTION_OPEN: u32 = 1 << 15;
 /// A prop with [`OBJF_RUNTIME_DRAWS`] a hand has had (holds, pulls or once did): the runtime draws
 /// it, so the game hides its own. (A game may not draw a thing moved from where its level put it:
-/// Metro files its clutter under the part of the level it starts in.) If the flag goes, the
+/// it may file its clutter under the part of the level it starts in.) If the flag goes, the
 /// runtime goes on drawing it for [`RUNTIME_DRAW_TAIL`] seconds while the game shows its own again.
 pub const OS_RUNTIME_DRAWN: u32 = 1 << 16;
 /// See [`OS_RUNTIME_DRAWN`].

@@ -6,7 +6,7 @@
 //! any slot it goes back; let go anywhere else it falls, for the game to drop where it comes to
 //! rest (see `rustvr_protocol::inventory`).
 //!
-//! What the research behind it found players want (`docs/research/holsters.md` in the Oblivion
+//! What the research behind it found players want (`docs/design/holsters.md` in the Oblivion
 //! adapter's repository): slots placed from the head, not a guessed body (they hang off the same
 //! body anchor as the holsters); a tick on finding one and a different one when it's empty; a
 //! generous mouth (a small one is much complained of) with a moment's

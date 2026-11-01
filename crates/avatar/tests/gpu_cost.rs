@@ -76,11 +76,7 @@ fn measure(gpu: &Gpu, avatar: &mut Avatar, frame: &AvatarFrame, depth: Option<&T
 #[test]
 fn gpu_cost_per_eye() {
     let gpu = Gpu::new().unwrap();
-    let mut sources = vec![("procedural", AvatarSource::Procedural)];
-    let dir = rustvr_asset::default_root().join("metro2033");
-    if dir.join("models").join("body_miller.rvm").exists() {
-        sources.push(("metro", AvatarSource::Model { dir, body: "body_miller".into(), hands: Some("hands_basic_suit".into()) }));
-    }
+    let sources = vec![("procedural", AvatarSource::Procedural)];
     // A game depth far away, so the depth test runs but hides nothing.
     let far = vec![100f32; (EYE.0 * EYE.1) as usize];
     let depth = Texture::upload(&gpu, EYE.0, EYE.1, DXGI_FORMAT_R32_FLOAT, &[bytemuck::cast_slice(&far)]).unwrap();

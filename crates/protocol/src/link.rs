@@ -1284,11 +1284,11 @@ mod tests {
         assert!(!rt.read_sound_pack_into(&mut back), "nothing written yet: the runtime's own sounds");
         let mut pack = SoundPack::new(r"C:\packs\game");
         pack.flags = SND_GAME_SHOTS;
-        assert!(pack.add_object(7, "wpn_ak", SND_GAME_HANDLING));
+        assert!(pack.add_object(7, "rifle", SND_GAME_HANDLING));
         ad.write_sound_pack(&pack);
         assert!(rt.read_sound_pack_into(&mut back));
         assert_eq!((back.path(), back.flags), (r"C:\packs\game", SND_GAME_SHOTS));
-        assert_eq!(back.object(7).map(|o| (o.set_name(), o.flags)), Some(("wpn_ak", SND_GAME_HANDLING)));
+        assert_eq!(back.object(7).map(|o| (o.set_name(), o.flags)), Some(("rifle", SND_GAME_HANDLING)));
         let seq = rt.sound_pack_seq();
         ad.write_sound_pack(&pack);
         assert_ne!(rt.sound_pack_seq(), seq, "rewrites are visible");

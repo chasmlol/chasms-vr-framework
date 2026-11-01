@@ -11,8 +11,8 @@
 //!   is `HandOffsets::hand_frame` of its grip);
 //! * `rustvr_ik::FingerSolver` wraps the fingers (`PistolGrip` with the index on the trigger,
 //!   `Foregrip` for the support hand);
-//! * `rustvr_avatar::Avatar` (Metro's Miller with `hands_basic_suit`, as the runtime loads it)
-//!   draws the body over the range's own render of the gun, hidden behind it by its depth.
+//! * `rustvr_avatar::Avatar` (the built-in mannequin) draws the body over the range's own render
+//!   of the gun, hidden behind it by its depth.
 //!
 //! Views per gun: `side` (from the right), `left`, `top`, `eye` (the shooter's view down the
 //! sights), `grip` (the firing hand close up from the right), `trigger` (from the left, below:
@@ -28,11 +28,13 @@ mod content;
 mod render;
 #[path = "../src/physical.rs"]
 mod physical;
+#[path = "../src/archery.rs"]
+mod archery;
 
 use std::path::{Path, PathBuf};
 
 use content::{MeshData, Weapon};
-use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec3};
 use render::{Draw, Mesh, Renderer};
 use rustvr_adapter::math::{projection, view_matrix};
 use rustvr_avatar::{Avatar, AvatarFrame, AvatarSource, DepthInput};
@@ -45,19 +47,14 @@ fn out_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("captures").join("rig")
 }
 
-fn metro_dir() -> PathBuf {
-    rustvr_asset::default_root().join("metro2033")
-}
-
-fn has_metro() -> bool {
-    metro_dir().join("models").join("body_miller.rvm").exists()
+/// Every gun the range has.
+fn guns() -> Vec<Weapon> {
+    vec![content::builtin_rifle("Range rifle", false), content::builtin_rifle("Range rifle (scoped)", true), content::builtin_pistol()]
 }
 
 /// Every rigged gun the range has.
 fn rigged() -> Vec<Weapon> {
-    let mut w = content::metro_weapons(&rustvr_asset::default_root());
-    w.extend([content::builtin_rifle("Range rifle", false), content::builtin_rifle("Range rifle (scoped)", true), content::builtin_pistol()]);
-    w.into_iter().filter(|w| w.rigged()).collect()
+    guns().into_iter().filter(|w| w.rigged()).collect()
 }
 
 /// The eye of a 1.70 m player standing at the origin, aiming.
@@ -330,39 +327,6 @@ fn the_line_of_sight_passes_through_the_sights() {
     }
 }
 
-/// The Kalash 2012 (the first gun in Metro 2033) aims through the collimator the game mounts on
-/// it: the line of sight is the collimator's own axis (its mount `loc_kolimator`'s +Z through its
-/// origin), through the reticle's centre and the middle of the lens's window; the lens and the
-/// reticle are glass the runtime draws (`Weapon::glass`), not range parts.
-#[test]
-fn the_kalash_2012_sights_through_its_collimator() {
-    let Some(w) = rigged().into_iter().find(|w| w.key == "wpn_2012") else {
-        eprintln!("no Metro 2033 assets: skipped");
-        return;
-    };
-    let model = rustvr_asset::load_model(&metro_dir(), "wpn_2012").unwrap();
-    let mount = model.bones.iter().find(|b| b.name == "loc_kolimator").expect("the collimator's mount");
-    let mount = Mat4::from_cols_array(&mount.model_matrix);
-    let sight = Vec3::from_array(w.rig.sight);
-    // The mount's axis in weapon space is the line of sight.
-    let axis = w.fix.transform_vector3(mount.z_axis.truncate()).normalize();
-    eprintln!("wpn_2012: the collimator's axis is {:.4}° off the line of sight", axis.angle_between(Vec3::Z).to_degrees());
-    assert!(axis.angle_between(Vec3::Z).to_degrees() < 0.01, "the line of sight is the collimator's axis ({axis})");
-    let on_line = |p: Vec3| Vec2::new(p.x - sight.x, p.y - sight.y).length();
-    let origin = w.fix.transform_point3(mount.w_axis.truncate());
-    assert!(on_line(origin) < 1e-4, "through the mount: {:.2} mm off", on_line(origin) * 1000.0);
-    // The glass: the panes and the reticle, each centred on the line.
-    assert_eq!(w.glass.len(), 4, "the collimator's four lens meshes are glass");
-    for g in &w.glass {
-        let (lo, hi) = g.bounds(w.fix).unwrap();
-        let c = (lo + hi) * 0.5;
-        eprintln!("wpn_2012: glass {:?} centred {:.2} mm off the line of sight", g.texture, on_line(c) * 1000.0);
-        assert!(on_line(c) < 0.001, "a lens mesh {lo}..{hi} is off the line of sight");
-        assert!(c.z > sight.z - 0.01, "the lens is ahead of the sight point");
-    }
-    assert!(w.parts.iter().all(|p| p.source.as_ref().is_some_and(|s| s.mesh < 6)), "no glass among the parts");
-}
-
 /// The hands the runtime would draw are where the rig says: each hand joint is exactly
 /// `hand_frame` of its grip pose, the palm faces the grip, and the trigger is in reach of the
 /// index finger.
@@ -379,8 +343,8 @@ fn the_drawn_hands_sit_on_the_gun() {
             let l = offsets.hand_frame(Side::Left, left);
             assert!(l.pos.distance(held.targets[0].pos) < 1e-4, "{}: the left hand is on its grip pose", w.key);
         }
-        // A heavy gun's handles are the game's own shapes (a spade grip, a handlebar, a side
-        // handle): its hands are Metro's (`metro_arms_hold_their_guns`), not a pistol grip's.
+        // A heavy gun's handles are its model's own shapes (a spade grip, a handlebar, a side
+        // handle), not a pistol grip.
         if !w.stock && !w.pistol {
             continue;
         }
@@ -409,95 +373,19 @@ fn the_drawn_hands_sit_on_the_gun() {
     }
 }
 
-/// Metro's first-person arms for a gun hold it in their bind pose (in the gun's own space): the
-/// grip poses that would put the avatar's hand joints exactly on those hands, in weapon space
-/// ([left, right]), using the same canonical hand frame the avatar computes (Y from the wrist to
-/// the middle finger's base, Z from the little finger's base to the index's, X = Y x Z).
-fn metro_hand_grips(w: &Weapon) -> Option<[IkPose; 2]> {
-    let dir = metro_dir();
-    let index = rustvr_asset::load_index(&dir).ok()?;
-    let hands = index.items.iter().find(|i| i.key == w.key)?.hands.clone()?;
-    let m = rustvr_asset::load_model(&dir, &hands).ok()?;
-    let at = |name: String| m.bones.iter().find(|b| b.name == name).map(|b| Vec3::new(b.model_matrix[12], b.model_matrix[13], b.model_matrix[14]));
-    let offsets = BodyParams::default().hand_offsets;
-    let (_, fix_rot, _) = w.fix.to_scale_rotation_translation();
-    let grip = |side: Side, s: &str| -> Option<IkPose> {
-        let wrist = at(format!("bip01_{s}_hand"))?;
-        let y = (at(format!("bip01_{s}_finger2"))? - wrist).normalize();
-        let across = at(format!("bip01_{s}_finger1"))? - at(format!("bip01_{s}_finger4"))?;
-        let z = (across - y * across.dot(y)).normalize();
-        let hand = Quat::from_mat3(&Mat3::from_cols(y.cross(z), y, z));
-        let o = offsets.grip_to_hand[side as usize];
-        let rot = (hand * o.rot.inverse()).normalize();
-        let pos = wrist - rot * o.pos;
-        Some(IkPose { pos: w.fix.transform_point3(pos), rot: (fix_rot * rot).normalize() })
-    };
-    Some([grip(Side::Left, "l")?, grip(Side::Right, "r")?])
-}
-
-fn describe(q: Quat) -> String {
-    let (x, y, z) = (q * Vec3::X, q * Vec3::Y, q * Vec3::Z);
-    format!("X {x:.3} Y {y:.3} Z {z:.3} quat {:.4?}", q.to_array())
-}
-
-#[test]
-fn metro_arms_hold_their_guns() {
-    for w in rigged().iter().filter(|w| w.from_game) {
-        let Some([left, right]) = metro_hand_grips(w) else { continue };
-        eprintln!("{} from Metro's arms:", w.key);
-        eprintln!("  right grip pose at {:.4} {}", right.pos, describe(right.rot));
-        eprintln!("  left  grip pose at {:.4} {}", left.pos, describe(left.rot));
-        let g = w.grip_rot.unwrap();
-        let grip = Vec3::from_array(w.rig.grip);
-        let dr = g.angle_between(right.rot).to_degrees();
-        eprintln!("  authored right {}  ({dr:.1}° from Metro's, palm {:.1} cm away)", describe(g), grip.distance(right.pos) * 100.0);
-        // The hands are Metro's own: the controllers go where they put the drawn hands exactly on
-        // Metro's arms for the gun.
-        assert!(dr < 25.0 && grip.distance(right.pos) < 0.03, "{}: the firing hand strays from Metro's", w.key);
-        // A pistol is held in the firing hand alone (Metro's other hand cups it; the runtime has no
-        // cupping hold).
-        if let Some(s) = w.support_rot.filter(|_| !w.pistol) {
-            let fore = Vec3::from_array(w.rig.foregrip);
-            let dl = s.angle_between(left.rot).to_degrees();
-            eprintln!("  authored left  {}  ({dl:.1}° from Metro's, palm {:.1} cm away)", describe(s), fore.distance(left.pos) * 100.0);
-            assert!(dl < 5.0 && fore.distance(left.pos) < 0.01, "{}: the support hand strays from Metro's", w.key);
-        }
-    }
-}
-
 #[test]
 fn renders() {
     let gpu = Gpu::new().unwrap();
     eprintln!("GPU: {}", gpu.adapter_name());
-    if !has_metro() {
-        eprintln!("no Metro 2033 assets: the built-in guns only, with the mannequin");
-    }
     std::fs::create_dir_all(out_dir()).unwrap();
-    let source = if has_metro() {
-        AvatarSource::Model { dir: metro_dir(), body: "body_miller".into(), hands: Some("hands_basic_suit".into()) }
-    } else {
-        AvatarSource::Procedural
-    };
-    let mut renderer = Renderer::new(&gpu, rustvr_asset::default_root()).unwrap();
+    let source = AvatarSource::Procedural;
+    let mut renderer = Renderer::new(&gpu).unwrap();
     let mut cube = MeshData::default();
     cube.add_box(Vec3::splat(-0.5), Vec3::splat(0.5), [255, 255, 255, 255]);
     let cube = renderer.upload(&gpu, &cube).unwrap();
     let mut scene = Scene { gpu: &gpu, avatar: Avatar::new(&gpu, source).unwrap(), renderer, cube };
     let only = std::env::var("RIG_ONLY").ok();
-    // RIG_METRO=1: hold Metro's guns the way Metro's own arms do instead (for comparison).
-    let metro_hold = std::env::var("RIG_METRO").is_ok();
-    let mut guns = rigged();
-    if metro_hold {
-        for w in guns.iter_mut() {
-            if let Some([l, r]) = metro_hand_grips(w) {
-                w.grip_rot = Some(r.rot);
-                w.rig.grip = r.pos.to_array();
-                w.support_rot = Some(l.rot);
-                w.rig.foregrip = l.pos.to_array();
-                w.key += "_metro";
-            }
-        }
-    }
+    let guns = rigged();
     for w in guns.iter().filter(|w| only.as_ref().is_none_or(|k| k.split(',').any(|k| w.key.starts_with(k)))) {
         let gun_meshes: Vec<(Mesh, bool)> = w.parts.iter().map(|p| (scene.renderer.upload(&gpu, p).unwrap(), w.from_game)).collect();
         let gun = aimed(w);
@@ -608,11 +496,10 @@ fn renders() {
 fn table_layout_renders() {
     let gpu = Gpu::new().unwrap();
     std::fs::create_dir_all(out_dir()).unwrap();
-    let mut weapons = content::metro_weapons(&rustvr_asset::default_root());
-    weapons.extend([content::builtin_rifle("Range rifle", false), content::builtin_rifle("Range rifle (scoped)", true), content::builtin_pistol()]);
+    let weapons = guns();
     let refs: Vec<&Weapon> = weapons.iter().collect();
     let armory = physical::Armory::new(&refs);
-    let mut renderer = Renderer::new(&gpu, rustvr_asset::default_root()).unwrap();
+    let mut renderer = Renderer::new(&gpu).unwrap();
     let (_, plain) = content::room();
     let room = renderer.upload(&gpu, &plain).unwrap();
     let mut meshes = Vec::new();
@@ -650,66 +537,10 @@ fn table_layout_renders() {
     }
 }
 
-/// (For rigging, see docs/RIGGING.md) Every Metro gun as the game holds it: its model with
-/// Metro's own first-person arms for it, in the model's space, from the right, the left, above,
-/// below and behind, with the rig points marked (the rig's when it has one, else the extractor's
-/// guesses): red grip, yellow trigger, green line of sight, blue foregrip, magenta magazine well,
-/// white muzzle, cyan charging handle. `captures/rig/survey/<gun>_<view>.png`; `RIG_ONLY` picks guns.
-#[test]
-fn metro_guns_as_the_game_holds_them() {
-    if !has_metro() {
-        return;
-    }
-    let gpu = Gpu::new().unwrap();
-    let dir = out_dir().join("survey");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut renderer = Renderer::new(&gpu, rustvr_asset::default_root()).unwrap();
-    let mut cube = MeshData::default();
-    cube.add_box(Vec3::splat(-0.5), Vec3::splat(0.5), [255, 255, 255, 255]);
-    let cube = renderer.upload(&gpu, &cube).unwrap();
-    let only = std::env::var("RIG_ONLY").ok();
-    let (width, height) = SIZE;
-    let aspect = width as f32 / height as f32;
-    for w in content::metro_weapons(&rustvr_asset::default_root()).iter().filter(|w| only.as_ref().is_none_or(|k| k.split(',').any(|k| w.key.starts_with(k)))) {
-        let meshes: Vec<Mesh> = w.parts.iter().chain(&w.hands).map(|p| renderer.upload(&gpu, p).unwrap()).collect();
-        let Some((lo, hi)) = content::parts_bounds(&w.parts, &(0..w.parts.len()).collect::<Vec<_>>(), Mat4::IDENTITY) else { continue };
-        let centre = (lo + hi) * 0.5;
-        let size = (hi - lo).length().max(0.3);
-        let to_model = w.fix.inverse();
-        let marks: Vec<(Mat4, [f32; 4])> = markers(w).into_iter().map(|(m, tint)| (to_model * m, tint)).collect();
-        let d = size * 1.25;
-        let mut views = vec![
-            ("right".to_string(), look_at(centre + Vec3::X * d, centre, Vec3::Y), 0.45),
-            ("left".to_string(), look_at(centre - Vec3::X * d, centre, Vec3::Y), 0.45),
-            ("top".to_string(), look_at(centre + Vec3::Y * d, centre, Vec3::Z), 0.45),
-            ("under".to_string(), look_at(centre - Vec3::Y * d, centre, Vec3::Z), 0.45),
-            ("back".to_string(), look_at(centre - Vec3::Z * d, centre, Vec3::Y), 0.45),
-        ];
-        // The top of the gun along the line of sight, close up from the right in four tiles (rear
-        // to front), to see its sights side-on.
-        let to_model = |p: [f32; 3]| to_model.transform_point3(Vec3::from_array(p));
-        let (sight, muzzle) = (to_model(w.rig.sight), to_model(w.rig.muzzle));
-        let (z0, z1) = (to_model(w.rig.grip).z - 0.05, muzzle.z + 0.02);
-        for k in 0..4 {
-            let at = Vec3::new(sight.x, sight.y, z0 + (z1 - z0) * (k as f32 + 0.5) / 4.0);
-            views.push((format!("sights_{k}"), look_at(at + Vec3::X * 0.4, at, Vec3::Y), (z1 - z0) / 8.0 / 0.4 / aspect * 1.1));
-        }
-        for (name, (cam, rot), tan) in views {
-            let color = Texture::new(&gpu, &TexDesc::target(width, height, DXGI_FORMAT_R8G8B8A8_UNORM)).unwrap();
-            let vp = projection(&fov(tan, aspect), 0.02, 20.0) * view_matrix(cam, rot);
-            let mut draws: Vec<Draw> = meshes.iter().map(|m| Draw { mesh: m, model: Mat4::IDENTITY, tint: [1.0; 4], emissive: 0.0, two_sided: true }).collect();
-            draws.extend(marks.iter().map(|(m, tint)| Draw { mesh: &cube, model: *m, tint: *tint, emissive: 1.5, two_sided: false }));
-            renderer.render(&gpu, color.rtv.as_ref().unwrap(), None, width, height, vp, cam, rot * Vec3::Z, &draws).unwrap();
-            rustvr_gpu::save_png(&dir.join(format!("{}_{name}.png", w.key)), width, height, &color.read_rgba8(&gpu).unwrap()).unwrap();
-        }
-    }
-}
-
 /// Prints every laid-out gun's descriptor rig (weapon space), for the record.
 #[test]
 fn print_descriptors() {
-    let mut weapons = content::metro_weapons(&rustvr_asset::default_root());
-    weapons.extend([content::builtin_rifle("Range rifle", false), content::builtin_rifle("Range rifle (scoped)", true), content::builtin_pistol()]);
+    let weapons = guns();
     let refs: Vec<&Weapon> = weapons.iter().collect();
     let a = physical::Armory::new(&refs);
     let descs = &a.table.descs[..a.table.count as usize];

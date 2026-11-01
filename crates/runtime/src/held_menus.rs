@@ -1,6 +1,6 @@
 //! The game's menus held in the hands (`HudLayout::held`, [`ANCHOR_HELD`]): a book's pages lying on
 //! the book a hand holds, turned by the other hand; a map held like paper, spread between the hands
-//! and dragged by one. See `docs/research/books.md` in the Oblivion adapter for what players asked
+//! and dragged by one. See `docs/design/books.md` in the Oblivion adapter for what players asked
 //! for, and the protocol's `hud.rs` for what a game says.
 //!
 //! - **On a thing** (`HELD_FACE`): the group lies on the thing's broad face that was turned to the

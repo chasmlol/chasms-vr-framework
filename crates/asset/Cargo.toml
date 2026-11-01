@@ -11,7 +11,3 @@ anyhow.workspace = true
 serde.workspace = true
 postcard.workspace = true
 toml.workspace = true
-
-[dev-dependencies]
-# rig_probe's survey measures in vectors.
-glam.workspace = true

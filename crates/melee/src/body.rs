@@ -57,8 +57,8 @@ impl Part {
         }
     }
 
-    /// A cut's going in multiplies its penetration damage by this (its slash multiplier:
-    /// the neck's 32 makes a cut throat fatal).
+    /// A cut's going in multiplies its penetration damage by this (the neck's 32 makes a cut throat
+    /// fatal).
     pub fn cut(self) -> f32 {
         match self {
             Part::Head => 2.0,
@@ -69,8 +69,7 @@ impl Part {
         }
     }
 
-    /// A point coming out the far side multiplies its skewer damage by this
-    /// (by part).
+    /// A point coming out the far side multiplies its skewer damage by this.
     pub fn skewer(self) -> f32 {
         match self {
             Part::Head | Part::Neck => 4.0,
@@ -129,8 +128,8 @@ pub enum Doing {
     AttackingAirborne,
 }
 
-/// Whose push table: Hard's is Medium's; the armoured
-/// ones' (`MediumHeavy`, `HardHeavy`) a step tougher.
+/// Whose push table: Hard's is Medium's; the armoured ones' (`MediumHeavy`, `HardHeavy`) a step
+/// tougher.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
     Easy,

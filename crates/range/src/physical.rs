@@ -1,14 +1,12 @@
 //! Physical mode: the range's guns, magazines and props are objects the runtime's hands pick up,
 //! holster, reload and fire. The range registers them (with its static collision, and the game's
-//! own hand poses on the guns: Metro's first-person arms, see `content::GunHand`), then each frame
-//! draws them where the runtime says they are, the trigger of a held gun following its hand's, and
-//! turns their shot counters into bullets. Other modules add their own objects to the table
-//! (`add_objects`: the throwables, which `throwables` draws).
+//! own hand poses on a gun that has them, see `content::GunHand`), then each frame draws them where
+//! the runtime says they are, the trigger of a held gun following its hand's, and turns their shot
+//! counters into bullets. Other modules add their own objects to the table (`add_objects`: the
+//! throwables, which `throwables` draws).
 //!
-//! The range makes no sound itself: it hands the runtime Metro's own sounds (the sound pack
-//! `metro-extract` writes to `local_assets/metro2033/sounds`, see [`sound_pack`]), each gun and
-//! throwable the set it sounds like, and the runtime plays them, its shots and explosions
-//! included, as it would for any game that doesn't play its own.
+//! The range makes no sound itself and has no sound pack: the runtime plays its own sounds, its
+//! shots and explosions included, as it would for any game that doesn't play its own.
 
 use bytemuck::Zeroable;
 use glam::{Mat3, Mat4, Quat, Vec3};
@@ -70,9 +68,9 @@ pub struct Armory {
     pub table: Box<ObjectTable>,
     /// The guns' own recoil (see `kick_descs`).
     pub kicks: Box<KickTable>,
-    /// The game's own hands on the guns (Metro's arms, see `content::GunHand`).
+    /// The game's own hands on the guns (see `content::GunHand`).
     pub poses: Box<HandPoseTable>,
-    /// Metro's sounds, when extracted, and each gun's set (see [`sound_pack`]).
+    /// No sound pack: the runtime's own sounds.
     pub sounds: Box<SoundPack>,
     pub kinds: HashMap<u32, Kind>,
     descs: HashMap<u32, ObjectDesc>,
@@ -297,36 +295,10 @@ fn col_box(id: u32, min: Vec3, max: Vec3) -> ColBox {
     ColBox { id, center: ((min + max) * 0.5).to_array(), half_extents: ((max - min) * 0.5).to_array(), rot: [0.0, 0.0, 0.0, 1.0], ..Default::default() }
 }
 
-/// The sound set a gun uses in Metro's sound pack: a Metro gun its own (its asset key is the
-/// game's entity name, `wpn_ak`), the built-in guns the nearest Metro has (the Kalash for the
-/// rifles, the revolver for the pistol).
-pub fn sound_set(w: &Weapon) -> &str {
-    match w.key.as_str() {
-        "builtin_rifle" | "builtin_rifle_scoped" => "wpn_ak",
-        "builtin_pistol" => "wpn_revolver",
-        key => key,
-    }
-}
-
-/// The sound pack to publish: Metro's (`<assets>/metro2033/sounds`) if it has been extracted, with
-/// each registered gun's set; none otherwise (the runtime's own sounds). No flags: the range plays
-/// no sounds of its own, so the runtime plays every shot.
-pub fn sound_pack(assets: &std::path::Path, guns: &[(u32, &Weapon)]) -> SoundPack {
-    let dir = assets.join("metro2033").join("sounds");
-    if !dir.join("sounds.toml").is_file() {
-        return SoundPack::zeroed();
-    }
-    let mut pack = SoundPack::new(&dir.to_string_lossy());
-    for (id, w) in guns {
-        pack.add_object(*id, sound_set(w), 0);
-    }
-    pack
-}
-
 /// Front-to-back order on the near table: the plain rifle nearest (the scenarios reach for it),
-/// then Metro's Kalash and Bastard, then the scoped rifle. Every other gun goes on the armory
-/// bench (`None`). Guns named in `front` (the range's `--table`) go nearest instead, followed by
-/// the plain rifle and the Kalash only (to leave them room).
+/// then the scoped rifle. Every other gun goes on the armory bench (`None`). Guns named in `front`
+/// (the range's `--table`) go nearest instead, followed by the plain rifle only (to leave them
+/// room).
 fn table_rank(w: &Weapon, front: &[String]) -> Option<u32> {
     if let Some(k) = front.iter().position(|k| *k == w.key) {
         return Some(k as u32);
@@ -334,8 +306,6 @@ fn table_rank(w: &Weapon, front: &[String]) -> Option<u32> {
     let first = front.len() as u32;
     match w.key.as_str() {
         "builtin_rifle" => Some(first),
-        "wpn_ak" => Some(first + 1),
-        "wpn_ubludok" if front.is_empty() => Some(2),
         "builtin_rifle_scoped" if front.is_empty() => Some(4),
         _ => None,
     }
@@ -401,7 +371,7 @@ impl Armory {
             descs.push(d);
             kinds.insert(WEAPON_BASE + i as u32, Kind::Weapon(i));
             // One magazine template per kind of magazine, from the first gun laid out that takes it.
-            // (A gun without one, the flamethrower, holds its rounds itself.)
+            // (A gun without one holds its rounds itself.)
             if !templates.contains(&ammo[i]) && !w.round_parts().is_empty() {
                 templates.push(ammo[i]);
                 let mut m = mag_desc(i, w);
@@ -486,7 +456,7 @@ impl Armory {
             collision.push(col_box(id, t.center - Vec3::new(t.radius, t.radius, 0.0), t.center + Vec3::new(t.radius, t.radius, 0.02)));
             id += 1;
         }
-        let sounds = Box::new(sound_pack(&rustvr_asset::default_root(), &guns));
+        let sounds = bytemuck::zeroed_box();
         // The guns' convex parts, cut from their models (each on its own thread).
         let laid: Vec<(u32, &Weapon)> = guns.iter().map(|(id, w)| (*id, *w)).collect();
         let parts: Vec<(u32, Vec<Vec<Vec3>>)> = std::thread::scope(|s| {
@@ -538,19 +508,6 @@ impl Armory {
         }
         if let Some(d) = self.descs.get_mut(&id) {
             d.shape = SHAPE_HULL;
-        }
-    }
-
-    /// Objects added by other modules (`add_objects`) that sound like one of the pack's sets
-    /// (the throwables, see `throwables::sound_set`): nothing without a pack. Before registering.
-    pub fn add_sound_sets(&mut self, sets: &[(u32, &str)]) {
-        if self.sounds.path().is_empty() {
-            return;
-        }
-        for (id, set) in sets {
-            if !self.sounds.add_object(*id, set, 0) {
-                tracing::warn!("range: no room for object {id}'s sound set {set}");
-            }
         }
     }
 
@@ -629,10 +586,6 @@ impl Armory {
                 self.shots_seen.clear();
                 self.chambers_seen.clear();
                 tracing::info!("range: registered {} objects, {} hand poses and {} recoil kicks", self.table.count, self.poses.count, self.kicks.count);
-                match self.sounds.path() {
-                    "" => tracing::info!("range: no sound pack (run metro-extract): the runtime's own sounds"),
-                    dir => tracing::info!("range: Metro's sounds from {dir}, {} objects with their own", self.sounds.count),
-                }
             }
         }
         while self.sent < self.collision.len() && adapter.push_collision(COL_BOX, bytemuck::bytes_of(&self.collision[self.sent])) {
@@ -731,27 +684,8 @@ impl Armory {
         })
     }
 
-    /// Has the runtime draw the rigged Metro guns and their magazines (`OBJF_RUNTIME_DRAWS`, by
-    /// their model's name: `rustvr_guns::desc::model_name`) instead of the range, as a game adapter
-    /// does. Before the table is registered.
-    pub fn let_runtime_draw(&mut self, weapons: &[&Weapon]) {
-        let count = (self.table.count as usize).min(MAX_OBJECTS);
-        for d in self.table.descs[..count].iter_mut() {
-            let w = match self.kinds.get(&d.id) {
-                Some(Kind::Weapon(i)) | Some(Kind::Mag(i)) => weapons[*i],
-                _ => continue,
-            };
-            if !w.from_game || !w.rigged() {
-                continue;
-            }
-            set_name(&mut d.name, &rustvr_guns::desc::model_name("metro2033", &w.key));
-            d.flags |= OBJF_RUNTIME_DRAWS;
-            self.descs.insert(d.id, *d);
-        }
-    }
-
-    /// Draw items for every object the range draws (not the ones the runtime does). `triggers`:
-    /// each controller's trigger (a held gun's trigger follows its hand's).
+    /// Draw items for every object the range draws. `triggers`: each controller's trigger (a held
+    /// gun's trigger follows its hand's).
     pub fn draws(&self, v: &View, weapons: &[&Weapon], triggers: [f32; 2], skip: &dyn Fn(&ObjectState) -> bool, glow_of: &dyn Fn(u32) -> f32) -> Vec<DrawItem> {
         let mut out = Vec::new();
         for s in self.states() {
@@ -759,7 +693,7 @@ impl Armory {
             if skip(s) {
                 continue;
             }
-            if self.descs.get(&s.desc).is_some_and(|d| d.flags & OBJF_RUNTIME_DRAWS != 0) || s.flags & OS_BROKEN != 0 {
+            if s.flags & OS_BROKEN != 0 {
                 continue;
             }
             let (p, q) = Self::world_pose(s, v);
@@ -816,16 +750,9 @@ impl Armory {
 mod tests {
     use super::*;
 
+    /// Every gun the range loads.
     fn builtins() -> Vec<Weapon> {
         vec![content::builtin_rifle("Range rifle", false), content::builtin_rifle("Range rifle (scoped)", true), content::builtin_pistol()]
-    }
-
-    /// Everything the range loads: Metro's guns (when extracted) and the built-in ones.
-    fn everything() -> Vec<Weapon> {
-        let mut w = content::metro_weapons(&rustvr_asset::default_root());
-        w.extend(builtins());
-        content::share_game_hands(&mut w);
-        w
     }
 
     fn weapon_descs(a: &Armory) -> Vec<ObjectDesc> {
@@ -851,42 +778,9 @@ mod tests {
     }
 
     #[test]
-    fn guns_get_metros_sound_sets_when_its_sounds_are_there() {
-        let weapons = builtins();
-        let guns: Vec<(u32, &Weapon)> = weapons.iter().enumerate().map(|(i, w)| (WEAPON_BASE + i as u32, w)).collect();
-        let assets = std::env::temp_dir().join(format!("rustvr-range-sounds-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&assets);
-        assert!(sound_pack(&assets, &guns).path().is_empty(), "nothing extracted: no pack");
-        std::fs::create_dir_all(assets.join("metro2033").join("sounds")).unwrap();
-        std::fs::write(assets.join("metro2033").join("sounds").join("sounds.toml"), "format = 1\n").unwrap();
-        let pack = sound_pack(&assets, &guns);
-        assert!(pack.path().ends_with("sounds") && pack.flags == 0, "{} {:#x}", pack.path(), pack.flags);
-        let set = |key: &str| {
-            let (id, _) = guns.iter().find(|(_, w)| w.key == key).unwrap();
-            pack.object(*id).unwrap().set_name().to_owned()
-        };
-        assert_eq!((set("builtin_rifle").as_str(), set("builtin_pistol").as_str()), ("wpn_ak", "wpn_revolver"));
-        let _ = std::fs::remove_dir_all(&assets);
-    }
-
-    #[test]
-    fn throwables_get_their_sound_sets_only_with_a_pack() {
-        let weapons = builtins();
-        let refs: Vec<&Weapon> = weapons.iter().collect();
-        let mut a = Armory::new(&refs);
-        *a.sounds = SoundPack::zeroed();
-        a.add_sound_sets(&[(3000, "grenade")]);
-        assert_eq!(a.sounds.count, 0, "no pack, no sets");
-        *a.sounds = SoundPack::new("C:\\metro2033\\sounds");
-        a.add_sound_sets(&[(3000, "grenade"), (3002, "throw_knife")]);
-        assert_eq!(a.sounds.object(3000).unwrap().set_name(), "grenade");
-        assert_eq!(a.sounds.object(3002).unwrap().set_name(), "throw_knife");
-    }
-
-    #[test]
     fn only_rigged_guns_are_laid_out() {
-        let mut weapons = everything();
-        // A gun without authored hands (like Metro's others) stays out.
+        let mut weapons = builtins();
+        // A gun without authored hands stays out.
         let mut unrigged = content::builtin_rifle("Unrigged", false);
         unrigged.grip_rot = None;
         weapons.push(unrigged);
@@ -898,9 +792,6 @@ mod tests {
         let keys: Vec<&str> = laid.iter().map(|w| w.key.as_str()).collect();
         for k in ["builtin_rifle", "builtin_rifle_scoped", "builtin_pistol"] {
             assert!(keys.contains(&k), "{k} in {keys:?}");
-        }
-        if weapons.iter().any(|w| w.from_game) {
-            assert!(keys.contains(&"wpn_ak") && keys.contains(&"wpn_ubludok"), "{keys:?}");
         }
         // Each kind of magazine the laid-out guns take has one template, and nothing else is
         // registered.
@@ -914,7 +805,7 @@ mod tests {
 
     #[test]
     fn the_tables_hold_the_guns_apart() {
-        let weapons = everything();
+        let weapons = builtins();
         let refs: Vec<&Weapon> = weapons.iter().collect();
         let a = Armory::new(&refs);
         let mut boxes = Vec::new();
@@ -947,36 +838,24 @@ mod tests {
         let (nmin, nmax) = content::TABLE_NEAR;
         let nearest = boxes.iter().filter(|b| b.1.x >= nmin.x - 0.03 && b.2.x <= nmax.x + 0.03 && b.1.z >= nmin.z && b.2.z <= nmax.z).min_by(|a, b| a.1.z.total_cmp(&b.1.z)).unwrap();
         assert_eq!(nearest.0, "builtin_rifle");
-        // Metro's other guns are on the bench, its Kalash (the scenarios' game rifle) on the near table.
-        if weapons.iter().any(|w| w.from_game) {
-            let on_near = |key: &str| boxes.iter().any(|b| b.0 == key && b.1.z >= nmin.z && b.2.z <= nmax.z && b.1.x >= nmin.x - 0.03);
-            assert!(on_near("wpn_ak"));
-            let (bmin, bmax) = content::TABLE_ARMORY;
-            let on_bench = boxes.iter().filter(|b| b.1.z >= bmin.z && b.2.z <= bmax.z).count();
-            assert_eq!(on_bench + 5, weapons.iter().filter(|w| w.rigged()).count(), "every other rigged gun is on the bench");
-        }
     }
 
     #[test]
     fn descriptors_carry_the_recoil_feel_and_the_game_hands() {
-        let weapons = everything();
+        let weapons = builtins();
         let refs: Vec<&Weapon> = weapons.iter().collect();
         let a = Armory::new(&refs);
-        let with_game = weapons.iter().any(|w| w.from_game);
         for d in weapon_descs(&a) {
             let w = refs[(d.id - WEAPON_BASE) as usize];
             let want = match w.key.as_str() {
-                "wpn_ak" => [0.65, 8.0, 14.0],
-                "wpn_ubludok" => [0.7, 7.5, 18.0],
                 "builtin_pistol" => [0.4, 14.0, 8.0],
                 "builtin_rifle" | "builtin_rifle_scoped" => [0.6, 9.0, 12.0],
-                // (The other rigs' own, from content/rigs/.)
                 _ => w.recoil_feel,
             };
             assert_eq!([d.recoil_climb, d.recoil_return, d.recoil_angle], want, "{}", w.key);
-            // Every rigged gun has Metro's hands when Metro's there (the built-in ones the Kalash's).
-            assert_eq!(d.grip_pose != 0, with_game, "{}: firing pose", w.key);
-            assert_eq!(d.support_pose != 0, with_game && !w.pistol, "{}: support pose", w.key);
+            // A gun the game's own hands hold has their poses (the built-in ones have none).
+            assert_eq!(d.grip_pose != 0, w.game_hands[HAND_RIGHT].is_some(), "{}: firing pose", w.key);
+            assert_eq!(d.support_pose != 0, w.game_hands[HAND_LEFT].is_some() && !w.pistol, "{}: support pose", w.key);
             if let Some(p) = a.poses.find(d.grip_pose) {
                 assert_eq!(p.side as usize, HAND_RIGHT);
                 assert!(p.flags & HPOSE_TRIGGER != 0, "{}: the index curls with the trigger", w.key);
@@ -1005,10 +884,10 @@ mod tests {
 
     /// The pouch hands each gun a magazine of its kind (the template its ammo type names), and
     /// seated it sits where the gun's own magazine does: the magazine drawn in the gun covers the
-    /// gun's own (a shared one, the Kalash's in the AKSU, within a few millimetres).
+    /// gun's own (a shared one within a few millimetres).
     #[test]
     fn every_gun_gets_a_magazine_that_fits_it() {
-        let weapons = everything();
+        let weapons = builtins();
         let refs: Vec<&Weapon> = weapons.iter().collect();
         let a = Armory::new(&refs);
         let mag_bounds = |w: &Weapon| rustvr_guns::desc::bounds_where(w, |i| w.mag_parts.contains(&i));
@@ -1047,7 +926,7 @@ mod tests {
 
     #[test]
     fn every_gun_keeps_its_own_recoil() {
-        let weapons = everything();
+        let weapons = builtins();
         let refs: Vec<&Weapon> = weapons.iter().collect();
         let a = Armory::new(&refs);
         let table = &a.kicks.kicks[..a.kicks.count as usize];
@@ -1065,16 +944,12 @@ mod tests {
             // Every kind of kick the game gives the gun is there, at least once.
             let have: Vec<KickDesc> = ours.iter().map(|k| **k).collect();
             assert_eq!(kinds(&have), kinds(&theirs), "{}: its recoil for every way of firing", w.key);
-            // The near table's guns (the scenarios fire them) keep every variant.
-            if matches!(w.key.as_str(), "wpn_ak" | "wpn_ubludok") {
-                assert_eq!(ours.len(), theirs.len(), "{}: all its kicks", w.key);
-            }
         }
     }
 
     #[test]
     fn descriptors_carry_the_authored_rig() {
-        let weapons = everything();
+        let weapons = builtins();
         let refs: Vec<&Weapon> = weapons.iter().collect();
         let a = Armory::new(&refs);
         for d in weapon_descs(&a) {
@@ -1115,7 +990,7 @@ mod tests {
             // The magazine template's box is the magazine (a box, a drum, a speed loader, a pair
             // of shells), a small part of the gun. (A gun without one holds its rounds.)
             if w.round_parts().is_empty() {
-                assert!(w.from_game && a.descs.values().all(|m| m.flags & OBJF_TEMPLATE == 0 || m.ammo_type != d.ammo_type), "{}", w.key);
+                assert!(a.descs.values().all(|m| m.flags & OBJF_TEMPLATE == 0 || m.ammo_type != d.ammo_type), "{}", w.key);
                 continue;
             }
             let m = *a.descs.values().find(|m| m.flags & OBJF_TEMPLATE != 0 && m.ammo_type == d.ammo_type).unwrap_or_else(|| panic!("{}: no magazine", w.key));

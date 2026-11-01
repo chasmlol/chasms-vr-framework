@@ -5,7 +5,7 @@
 //! blade turns up with it and the clavicle lifts, so the joint rises (some 4-5 cm by the
 //! horizontal); reaching forward or across the body it slides forward round the ribs, reaching
 //! behind it pulls back and up (Klopčar & Lenarčič's shoulder-girdle model, Ludewig's bone-pin
-//! measurements, `docs/research/ik.md`). Every VR body before this held the shoulder still until
+//! measurements, `docs/design/ik.md`). Every VR body before this held the shoulder still until
 //! the hand passed the arm's full reach.
 //!
 //! The swivel (the elbow's angle around the shoulder -> wrist axis) starts from VRArmIK's tuned

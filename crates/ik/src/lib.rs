@@ -1,7 +1,7 @@
 //! Full-body IK for a VR player: a whole body from the head and two controllers, calibrated to
 //! the player, plus finger curls from the controllers' buttons and touch sensors.
 //!
-//! The rule from the research (`reports/VR player controller design.md`, "Three tracked points
+//! The rule from the research (`docs/design/vr-player-controller.md`, "Three tracked points
 //! can carry a body only if the body absorbs every error"): **the hands are pinned exactly to the
 //! controllers.** The body bends, stretches, clamps or reports that it couldn't reach
 //! ([`BodyOutput::reached`], so the runtime can fade the arm), and never pulls a hand away.

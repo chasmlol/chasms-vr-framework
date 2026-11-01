@@ -1,5 +1,5 @@
 //! Release velocity: what a throw leaves the hand with. Built from the research in
-//! `research_notes/VR throwables and UI/throwables.md` (section 10):
+//! `docs/design/vr-throwables-and-ui/throwables.md` (section 10):
 //!
 //! * **History** (Alyx, the Valve patent): 0.3 s of controller samples per hand, in *tracking*
 //!   space (a snap turn or a teleport doesn't pollute it), the controller's own velocity where the

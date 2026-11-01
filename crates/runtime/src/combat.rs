@@ -547,8 +547,8 @@ pub struct CombatInput<'a> {
     pub easy_dismemberment: bool,
 }
 
-/// A damager's hit on a body part: whose, which part (its index, kind and radius), where, how
-/// fast, out of which surface, and how it was judged.
+/// A damager's hit on a body part: whose, which part (its index, kind and radius), where, how fast,
+/// out of which surface, and how it was judged.
 struct JudgedHit {
     actor: u32,
     index: usize,

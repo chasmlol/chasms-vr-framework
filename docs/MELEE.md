@@ -419,4 +419,4 @@ bench`). `RUSTVR_DEBUG_MELEE=1` logs how far held weapons lag their hands,
 `RUSTVR_DEBUG_COMBAT=1` each contact's judging (and draws the parts and damagers judged),
 `RUSTVR_DEBUG_BRAIN=1` (the range) each fighter's state once a second, `RUSTVR_SILENT=1` keeps the
 runtime's sounds off the speakers. The Oblivion adapter's repository keeps the playtest notes,
-`docs/playtest/range-melee.md`: how to start each area and what to try.
+`docs/playtest/melee.md`: how to start each area and what to try.

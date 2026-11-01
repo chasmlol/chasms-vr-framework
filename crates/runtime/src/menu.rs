@@ -1,6 +1,6 @@
-//! The runtime's in-headset settings menu (egui), the Rust version of the Metro mod's `vrmenu.cpp`.
-//! It floats beside the game's pause menu, or in front of you when no game is connected. Point
-//! at it and pull the trigger; changes apply at once and are saved.
+//! The runtime's in-headset settings menu (egui). It floats beside the game's pause menu, or in
+//! front of you when no game is connected. Point at it and pull the trigger; changes apply at once
+//! and are saved.
 
 use anyhow::Result;
 use glam::Vec2;
@@ -453,19 +453,6 @@ fn help(ui: &mut egui::Ui) {
         ("Let go / B on the grenade hand", "the lever flies and the fuse starts / cook it in your hand"),
         ("Trigger or A on the grenade hand", "arm it one-handed while the other hand holds a gun"),
         ("Throw a knife", "it flies blade first and sticks; grab it to pull it out"),
-    ]);
-    section(ui, "Games that keep their own gun (Metro 2033)", &[
-        ("Trigger", "fire; raise the sights to your eye to aim down them"),
-        ("Other hand on the barrel + grip", "two-handed (one-handed kicks three times harder)"),
-        ("A on the gun hand", "drop the magazine; grip at your hip for a fresh one, push it into the gun, pull the charging handle"),
-        ("Hold A on the gun hand", "change the gas mask's filter"),
-        ("B on the gun hand", "jump"),
-        ("A on the other hand / hold it", "use / the journal and map"),
-        ("B on the other hand / hold it", "flashlight / charge it"),
-        ("Trigger on the other hand", "throw a grenade"),
-        ("Grip at your face / the top of your head", "gas mask / night vision"),
-        ("Grip over your shoulder", "next weapon"),
-        ("Other wrist up in front of your eyes", "your watch (the light and the filter's time)"),
     ]);
     section(ui, "Bows", &[
         ("Grip over the shoulder (or at the hip) with a bow in the other hand", "an arrow from the quiver"),

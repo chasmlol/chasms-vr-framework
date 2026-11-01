@@ -1,5 +1,5 @@
-//! Every tunable of the VR experience. Defaults come from the Metro 2033 VR mod's `config.h`, which
-//! were tuned by playing; games override them in profiles.
+//! Every tunable of the VR experience. Defaults were tuned by playing; games override them in
+//! profiles.
 //!
 //! `settings.toml` holds the player's settings; `profiles/<adapter>.toml` holds per-game
 //! overrides (gun offsets differ between games) and is applied on top. Both are re-read live when
@@ -1226,11 +1226,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rustvr-settings-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("profiles")).unwrap();
         std::fs::write(dir.join("settings.toml"), "[comfort]\nturn_mode = \"smooth\"\n").unwrap();
-        std::fs::write(dir.join("profiles").join("metro2033.toml"), "[weapon]\npitch = 12.5\n").unwrap();
+        std::fs::write(dir.join("profiles").join("mygame.toml"), "[weapon]\npitch = 12.5\n").unwrap();
         let mut store = SettingsStore::open(&dir);
         assert_eq!(store.current.comfort.turn_mode, TurnMode::Smooth);
         assert_eq!(store.current.weapon.pitch, 0.0);
-        store.set_profile(Some("metro2033"));
+        store.set_profile(Some("mygame"));
         assert_eq!(store.current.weapon.pitch, 12.5);
         assert_eq!(store.current.comfort.turn_mode, TurnMode::Smooth, "base settings still apply");
         assert_eq!(store.current.comfort.snap_angle, Comfort::default().snap_angle, "missing keys keep defaults");

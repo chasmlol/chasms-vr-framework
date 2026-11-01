@@ -123,9 +123,9 @@ impl Texture {
 
     /// Opens a texture shared by another process (or device) under `name`, with the given views.
     ///
-    /// Some games' devices can't look a shared texture up by name (Metro 2033 Redux's gets "the
-    /// parameter is incorrect" for names any other device in the process finds). Then a helper
-    /// device of our own opens it by name and hands the game's device an unnamed handle to it.
+    /// Some games' devices can't look a shared texture up by name (they get "the parameter is
+    /// incorrect" for names any other device in the process finds). Then a helper device of our
+    /// own opens it by name and hands the game's device an unnamed handle to it.
     pub fn open_shared(gpu: &Gpu, name: &str, rtv: Option<DXGI_FORMAT>, srv: Option<DXGI_FORMAT>) -> Result<Texture> {
         unsafe {
             let access = (DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE).0;

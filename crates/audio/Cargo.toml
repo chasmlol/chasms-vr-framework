@@ -14,5 +14,5 @@ serde.workspace = true
 toml.workspace = true
 # Audio output (WASAPI on Windows).
 cpal = "0.18"
-# Ogg Vorbis, the format of game sound packs (Metro's `.vba` files are plain Ogg Vorbis).
+# Ogg Vorbis, the format of game sound packs.
 lewton = "0.10"

@@ -1,7 +1,7 @@
 //! Riding a mount (`rustvr_protocol::ride`): the rider's side of it, for any game. The game has the
 //! mount (its model, its gaits and their speeds, how it turns, whose it is, getting on and off, its
 //! sounds); the runtime has the rider. Why it works this way is in the Oblivion adapter's
-//! `docs/research/riding.md` (what players of VR riding like and hate, and what keeps it
+//! `docs/design/riding.md` (what players of VR riding like and hate, and what keeps it
 //! comfortable).
 //!
 //! * **Getting on**: a free hand closing on a mount's saddle ([`Mount::saddle_a`] to `saddle_b`)

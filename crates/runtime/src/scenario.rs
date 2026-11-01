@@ -749,34 +749,6 @@ pub fn all() -> Vec<Scenario> {
             captures: vec![(1.0, "live_01"), (3.0, "live_03"), (5.0, "live_05"), (7.0, "live_07"), (9.0, "live_09"), (11.5, "live_11")],
         },
         Scenario {
-            name: "metro_boot",
-            about: "Metro, attached (--attach) as it starts: tap A through its intro and menus into the game, capturing the headset every 5 s",
-            duration: 170.0,
-            needs_game: true,
-            lockstep: false,
-            range_args: vec![],
-            physical: false,
-            start: Body::rest,
-            settings: |_| {},
-            input: || {
-                Box::new(|t, _| {
-                    let mut b = Body::rest();
-                    // A tap every 6 s for the first two minutes (the splash, "press any key", the
-                    // main menu's first item, the loading screen's "press to continue").
-                    if t < 120.0 && (t % 6.0) < 0.2 {
-                        b.hands[1].buttons |= rustvr_protocol::CTRL_A;
-                    }
-                    let k = ((t - 130.0).max(0.0) * 0.6) as f32;
-                    b.head_rot = Quat::from_rotation_y(0.6 * k.sin());
-                    b
-                })
-            },
-            checks: vec![check(169.0, "the game's picture reached the headset", |c| {
-                ensure(c.stats.game_frames > 100, || format!("{} game frames", c.stats.game_frames))
-            })],
-            captures: (0..34).map(|i| (i as f64 * 5.0, &*Box::leak(format!("boot_{:03}", i * 5).into_boxed_str()))).collect(),
-        },
-        Scenario {
             name: "void",
             about: "no game: the runtime shows its own room and settings menu",
             duration: 1.0,

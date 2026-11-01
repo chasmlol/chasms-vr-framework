@@ -4,7 +4,7 @@
 //!
 //! Names are split into lowercase words (at separators, case changes and digit runs), side words
 //! (`l`, `left`, `r`, `right`) and rig prefixes are set aside, and what's left is matched against
-//! keywords. Helpers (IK targets, sockets, end bones, Metro's `aux_` and `loc_` bones) are never
+//! keywords. Helpers (IK targets, sockets, end bones, `aux_` and `loc_` bones) are never
 //! matched, so they follow their parent.
 
 /// What a bone is, as far as its name tells.
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn common_rigs() {
         let cases: &[(&str, Option<Class>)] = &[
-            // 3ds Max Biped (Metro 2033)
+            // 3ds Max Biped
             ("bip01_pelvis", Some(Hips)),
             ("bip01_spine2", Some(Spine)),
             ("bip01_neck", Some(Neck)),

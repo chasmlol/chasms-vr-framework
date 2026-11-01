@@ -1,13 +1,13 @@
 //! Throwables: grenades and throwing knives, the hand side of them (the game owns what happens
-//! when one goes off or hits). From `research_notes/VR throwables and UI/throwables.md`:
+//! when one goes off or hits). From `docs/design/vr-throwables-and-ui/throwables.md`:
 //!
 //! * **Grenades** ([`THROW_GRENADE`]). The fuse is the game's (`ObjectDesc::fuse`), else 4 s (real
-//!   UZRGM and M67 fuses, HL:A and Metro Awakening's). Two ways to arm, a setting:
+//!   UZRGM and M67 fuses, HL:A's). Two ways to arm, a setting:
 //!   - *pin* (the default, the realistic scheme of Pavlov, H3VR and Into the Radius): the other hand
 //!     takes the pin ([`THROW_PIN`]: its ring at `handle`) and pulls it `handle_travel` (5 cm)
 //!     away. With a lever ([`THROW_LEVER`]) the spoon stays held while the grip is: the fuse starts
 //!     when you let go (a throw or a drop) or when B pops it in your hand (cooking). Without one (a
-//!     lit fuse, Metro's dynamite) it starts as the pin comes out;
+//!     lit fuse, a stick of dynamite) it starts as the pin comes out;
 //!   - *button* (one-handed, HL:A's priming button): the trigger or A on the holding hand arms it
 //!     and the fuse starts. It's also how a pinned grenade arms while the other hand holds a gun
 //!     (never two hands when one is busy), and how one without a pin arms.

@@ -36,7 +36,7 @@ pub fn held(intents: &Intents, a: Action) -> bool {
 }
 
 /// Holds game buttons down for a short time per press, for games that poll input and would miss
-/// a one-frame tap (the Metro mod used 0.12 s).
+/// a one-frame tap (0.12 s is enough).
 pub struct Pulses {
     until: [f64; 64],
 }

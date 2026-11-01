@@ -105,8 +105,8 @@ pub struct MeleeRig {
     /// Weapons that cut a limb off, carrying on through the creature (its id) until they're clear
     /// of it (see [`Rig::cut_through`]).
     pub cutting: std::collections::HashMap<u32, u32>,
-    /// The melee buttons (the game's say): the dominant stick's click jumps off what the hands climb;
-    /// the jump made this frame, for the game; the stick's click last frame.
+    /// The melee buttons (the game's say): the dominant stick's click jumps off what the hands
+    /// climb; the jump made this frame, for the game; the stick's click last frame.
     pub melee_buttons: bool,
     pub jump: Option<Vec3>,
     pub jump_click_was: bool,

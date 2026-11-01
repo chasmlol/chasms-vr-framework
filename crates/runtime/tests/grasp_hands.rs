@@ -1,5 +1,5 @@
 //! The drawn fingers close round the handles the rig puts a hand on (a sword's grip, a gun's pistol
-//! grip, a handguard), measured on Metro's own hands where they're extracted, and the mannequin.
+//! grip, a handguard), measured on the mannequin.
 
 use glam::{Mat3, Quat, Vec3};
 use rustvr_avatar::grasp::ALL_FINGERS;
@@ -21,14 +21,7 @@ fn fist(tube: Vec3, back: Vec3) -> Quat {
 }
 
 fn models() -> Vec<(String, Option<Vec<rustvr_asset::Bone>>)> {
-    let mut out = vec![("mannequin".to_string(), None)];
-    let dir = rustvr_asset::default_root().join("metro2033");
-    for key in ["body_miller", "hands_sviter", "hands_basic_suit"] {
-        if let Ok(m) = rustvr_asset::load_model(&dir, key) {
-            out.push((key.into(), Some(m.bones)));
-        }
-    }
-    out
+    vec![("mannequin".to_string(), None)]
 }
 
 #[test]

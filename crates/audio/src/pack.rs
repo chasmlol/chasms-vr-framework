@@ -7,7 +7,7 @@
 //!
 //! ```toml
 //! format = 1
-//! name = "Metro 2033 Redux"
+//! name = "My Game"
 //! gain = 1.0                      # the whole pack
 //!
 //! [defaults]                      # every object, and every set that doesn't say otherwise
@@ -17,7 +17,7 @@
 //! [sets.rifle]                    # a sound set: what one kind of object sounds like
 //! mag_out = "reload/mag_out.ogg"
 //!
-//! [sets.wpn_ak]
+//! [sets.ak74]
 //! extends = "rifle"               # events it doesn't define come from there (then [defaults])
 //! fire = [                        # layers play together, each picking one of its files
 //!   { files = ["ak/close_1.ogg", "ak/close_2.ogg"] },

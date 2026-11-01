@@ -24,7 +24,6 @@ Each game's adapter is a repository of its own, with this one as its `framework/
 | Game | Adapter repository |
 |---|---|
 | The Elder Scrolls IV: Oblivion | chasms-vr-oblivion: a 32-bit `dinput8.dll`, Oblivion's own hits, spells, blood, menus and models |
-| Metro 2033 Redux | chasms-vr-metro |
 
 ## Layout
 
@@ -36,14 +35,13 @@ Each game's adapter is a repository of its own, with this one as its `framework/
 | `crates/gpu` | Direct3D 11 helpers: devices, shared textures, shaders, PNGs, egui painting |
 | `crates/range` | `rustvr-range.exe`: a fake game for testing: a room with targets, guns, throwables, a bow, and melee areas with fighters |
 | `crates/xrsim` | `rustvr-xrsim`: an emulated headset (an OpenXR runtime) for playtesting any VR app without one ([docs/XRSIM.md](docs/XRSIM.md)) |
-| `crates/asset` | The format of `local_assets/`, and the rig and armour marks files |
+| `crates/asset` | The format of `local_assets/`, and the gun rig ([docs/RIGGING.md](docs/RIGGING.md)) and armour marks files |
 | `crates/ik` | Full-body IK from the head and hands, with a small learned prior for the chest, hips and elbows |
 | `crates/avatar` | Draws the player's body and hands: over the game's picture, or inside the game's frame by its adapter. A game's armour moves as plates where its marks say ([docs/ARMOUR.md](docs/ARMOUR.md); `rustvr-armour` previews them) |
 | `crates/guns` | Guns: their parts, magazines and mechanisms, and their collision hulls |
 | `crates/melee` | The melee rules: damage by part and armour, cuts, stabs, dismemberment ([docs/MELEE.md](docs/MELEE.md)) |
 | `crates/audio` | Spatial interaction sounds: a game's own (its sound pack), or procedural ones |
 | `crates/voice` | `rustvr-voice.exe`: an optional plugin for talking to a game's characters out loud (below) |
-| `content/rigs` | How the hands hold each game's guns, measured on its models ([docs/RIGGING.md](docs/RIGGING.md)) |
 
 ## Building
 
@@ -70,8 +68,7 @@ the shoulder pouch, racks, draws from and returns to the holster, throws, pulls 
 gravity gloves, pushes its hand into a table, crouches, makes gestures, turns, walks around the
 room, swings swords, uses the menus and looks through a scope, and each run checks that the game
 did the right thing. Each scenario saves what the headset would have shown into
-`captures/<scenario>/*.png`. `rustvr --list` lists them. Nothing opens a window. (A few scenarios
-need Metro 2033's extracted guns and skip or fail without them.)
+`captures/<scenario>/*.png`. `rustvr --list` lists them. Nothing opens a window.
 
 To playtest a real VR app without a headset, run it on the emulated headset: a script moves the
 head and controllers, and the emulator saves what each eye would see. See
@@ -82,8 +79,8 @@ its game.
 textures and sounds), for the runtime to draw and play. It's git-ignored: those files are the
 game's, never to be committed or shared. The runtime finds it in the nearest folder above its own
 exe that has one (a game adapter's repository, which runs its runtime from its own `target/`), or
-at `RUSTVR_ASSETS`. With Metro 2033's extracted (by Metro's adapter), the range uses its guns and
-its sounds; without, it has its own rifle, scoped rifle and pistol.
+at `RUSTVR_ASSETS`. The range needs none of it: its rifle, scoped rifle and pistol are its own, and
+the runtime plays its own sounds for it.
 
 ## Running with a headset
 
@@ -112,7 +109,7 @@ for settings and logs: with both set, several test runs, each with its own range
 without crossing. `rustvr-play.exe --wait -- --arena <range|rack|arena|bench|climb>` starts the
 range in one of its melee areas ([docs/MELEE.md](docs/MELEE.md)).
 
-In the range, the pistol starts on your right hip and the rigged guns lie on the table at your
+In the range, the pistol starts on your right hip and the two rifles lie on the table at your
 right hand; the throwables' table, the melee rack, the training dummies, the arena's fighters and
 a bow on your back are round the room. The menu button opens the runtime's menu on a Help page
 listing every control (right-handed; swap the weapon hand in Controls). The essentials:

@@ -2,7 +2,7 @@
 //!
 //! A flat game draws its HUD over the whole screen. Hung in front of the face as one sheet, it
 //! covers the view and chases the head; none of the well-liked VR shooters do that (see
-//! `research_notes/VR throwables and UI/ui.md`). When the adapter describes its HUD
+//! `docs/design/vr-throwables-and-ui/ui.md`). When the adapter describes its HUD
 //! ([`HudLayout`]: which rectangle of the HUD texture is the subtitles, the hints, the ammo
 //! counter...), each piece goes where native VR games put it:
 //!
@@ -575,7 +575,9 @@ fn facing_eye(c: Vec3, eye: Vec3, w: f32, h: f32) -> Panel {
 mod tests {
     use super::*;
 
-    fn metro() -> HudLayout {
+    /// A game's UI layer in pieces: subtitles low, hints above them, ammo bottom right, status
+    /// bottom left, the rest in the middle.
+    fn pieces() -> HudLayout {
         HudLayout::new(
             HUDL_REST_HIDDEN,
             &[
@@ -609,7 +611,7 @@ mod tests {
         let s = Settings::default();
         let mut h = HudPlacer::default();
         let head = Vec3::new(0.0, 1.6, 0.0);
-        let l = metro();
+        let l = pieces();
         let p = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &Attach::default());
         let sub = p.iter().find(|p| p.role == HUD_SUBTITLES).unwrap();
         let hint = p.iter().find(|p| p.role == HUD_HINTS).unwrap();
@@ -630,7 +632,7 @@ mod tests {
         let s = Settings::default();
         let mut h = HudPlacer::default();
         let head = Vec3::new(0.0, 1.6, 0.0);
-        let l = metro();
+        let l = pieces();
         let at = Attach::default();
         let first = h.place(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, Some(&l), &at)[0].panel.center;
         let small = Quat::from_rotation_y(10f32.to_radians());
@@ -653,7 +655,7 @@ mod tests {
         let s = Settings::default();
         let mut h = HudPlacer::default();
         let head = Vec3::new(0.0, 1.6, 0.0);
-        let l = metro();
+        let l = pieces();
         let gun = Mat4::from_translation(Vec3::new(0.15, 1.35, 0.35));
         let sight = Vec3::new(0.15, 1.40, 0.30);
         // (A left hand's palm is its grip's +X: turned up, +X is up.)
