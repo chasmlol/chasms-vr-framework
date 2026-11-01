@@ -95,11 +95,15 @@ pub struct Melee {
     pub easy_dismemberment: bool,
     /// Which melee is played: the game's choice, or the player's (`crate::duel`).
     pub mode: MeleeMode,
+    /// How far a melee weapon leans forward in the hand from the controller's handle (degrees,
+    /// towards where the controller points): a hilt held upright sits so in a fist. Taken as a
+    /// weapon is taken.
+    pub grip_angle: f32,
 }
 
 impl Default for Melee {
     fn default() -> Self {
-        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true, mode: MeleeMode::Game }
+        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true, mode: MeleeMode::Game, grip_angle: 30.0 }
     }
 }
 

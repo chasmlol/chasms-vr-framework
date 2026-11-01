@@ -475,7 +475,8 @@ fn help(ui: &mut egui::Ui) {
         ("Hands tab", "where the quiver is, and a crosshair where the bow points"),
     ]);
     section(ui, "Duel melee (Controls tab: Melee)", &[
-        ("A sword drawn", "it's heavy, and you walk slower"),
+        ("A sword drawn", "it's as heavy as it is: jerk it and the blade trails, commit to a swing and it carries on; you walk slower"),
+        ("Controls tab: sword angle", "how far forward the blade leans in your fist"),
         ("Push your blade fast into their swing", "parry: your blade bounces off with the way for your counter"),
         ("Counter straight after a parry", "it lands before they can swing again: left, right, over or under"),
         ("Your swing parried", "your sword goes heavy and does nothing for a moment: parry their counter"),
@@ -616,6 +617,7 @@ fn controls(ui: &mut egui::Ui, s: &mut Settings) {
         ui.selectable_value(m, MeleeMode::Physics, "Physics sandbox");
         ui.selectable_value(m, MeleeMode::Duel, "Duel (parry and counter)");
     });
+    slider(ui, "Sword angle in the hand (forward; take it again to apply)", &mut s.melee.grip_angle, -20.0, 70.0, " deg", 0);
     slider(ui, "Stick deadzone", &mut i.stick_deadzone, 0.0, 0.5, "", 2);
     ui.checkbox(&mut i.arm_swimming, "Swim with your arms (in the game's water)");
     if i.arm_swimming {

@@ -113,8 +113,10 @@ pub struct MeleeRig {
     /// Where each held weapon last buzzed against what it rubs on, by (weapon, the collider it
     /// touches): the contact then, in the weapon's frame and in the other's.
     pub rubs: std::collections::HashMap<(u32, rapier3d::prelude::ColliderHandle), (Vec3, Vec3)>,
-    /// The duel's hold, when its rules are played (`super::duel`).
+    /// The duel's hold, when its rules are played (`super::duel`), and how each hand's weapon
+    /// leans in it (its own frame: [`Rig::set_grip_tilt`]).
     pub duel: super::duel::DuelHold,
+    pub tilt: [Quat; 2],
 }
 
 /// A thrown weapon: the hand that threw it, when, (flying point first) its point's way (weapon
@@ -401,8 +403,10 @@ impl Rig {
             None => (Vec3::ZERO, Vec3::ZERO),
         };
         held.target_prev = Some(t_now);
-        let strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05) * self.duel_drive(hand);
+        let strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05);
         let (joint, lever) = self.melee_joint(id, hand, pivot, strength, inp.settings.dominant());
+        // (In a duel, as heavy as it is.)
+        let joint = if self.melee.duel.on { self.duel_joint(id, hand, joint, strength) } else { joint };
         // The other hand on it pulls its own hold towards its controller: the turn it would have
         // (its hold lying towards that hand, about this one's) shares the target with this hand's
         // own, by how much of the turning is its pull (no filtering: the hands pull as they are).
@@ -590,6 +594,9 @@ impl Rig {
     /// ([`MeleeRig::handle_hold`]): its hold there.
     pub(super) fn onto_handle(&self, id: u32, k: usize, at: Vec3, drawn: (Vec3, Quat), i: usize, nearest: bool) -> (Vec3, Quat) {
         let hold = self.melee.handle_hold(id, k, at, drawn.1, i, nearest);
+        // Leaned forward in the hand as a hilt held upright sits in a fist (not a shield).
+        let shield = self.melee.weapons.get(&id).is_some_and(|w| w.flags & MW_SHIELD != 0);
+        let hold = if shield { hold } else { (hold.0, (hold.1 * self.melee.tilt[i].inverse()).normalize()) };
         let made = Quat::from_array(self.melee.weapons[&id].handle[k].rot);
         tracing::info!(
             "rig: hand {i} onto {id:#x}'s handle {k} at {:.3?}{} (from {:.3?}, turned {:.0} deg)",
