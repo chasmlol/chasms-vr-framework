@@ -41,13 +41,12 @@ pub(crate) const DEPTH_BIAS: f32 = 0.0015;
 pub(crate) const DEPTH_BIAS_PER_METER: f32 = 0.002;
 
 /// A hand's art is laid over the player in a plane this far in front of where it is (m, towards
-/// the head): a palm turned to the eye is behind it, the back of a hand (a hand's breadth nearer) in
-/// front of it.
+/// the head): a palm turned to the eye is behind it, the back of a hand in front of it.
 const ART_IN_FRONT: f32 = 0.008;
 /// Where the player hides the art, it fades over this much depth (m) and this much of the picture's
 /// width round the edge of what hides it (a thumb in front of the art doesn't cut it sharply).
-const ART_SOFT_DEPTH: f32 = 0.01;
-const ART_SOFT_WIDTH: f32 = 0.004;
+const ART_SOFT_DEPTH: f32 = 0.005;
+const ART_SOFT_WIDTH: f32 = 0.0012;
 
 /// The ghost hands' colour (linear) and opacity.
 const GHOST: [f32; 4] = [0.30, 0.62, 1.0, 0.35];

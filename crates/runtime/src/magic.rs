@@ -57,10 +57,12 @@ const TRIGGER_OFF: f32 = 0.25;
 /// Let go this soon with nothing charged: a tap, the game's Activate (seconds).
 const TAP: f64 = 0.25;
 /// The palm's middle: this far from the wrist towards the knuckles of the hand drawn on the grip
-/// (`rustvr_ik`'s), and this far out of the hand's middle to the palm's skin (m). The art sits
-/// there and spells leave from there.
+/// (`rustvr_ik`'s), and this far out of the hand's middle to the palm's skin (m).
 const PALM_ALONG: f32 = 0.045;
 const PALM_SKIN: f32 = 0.012;
+/// The art sits this far out of the palm's middle, cupped in it as Skyrim VR's sits (m); spells
+/// leave from there.
+const PALM_OUT: f32 = 0.025;
 /// A spell's art stays in the hand this long after the trigger last held it (seconds).
 pub const SHOWN: f64 = 30.0;
 /// How far round a hand the game's own art for it reaches (m): its picture apart from the eye's
@@ -383,7 +385,7 @@ impl Magic {
         let (hp, hq) = (Vec3::from_array(hs.pose.pos), Quat::from_array(hs.pose.rot));
         // The palm's middle (tracking), then the world; how fast it goes.
         let (face, fingers) = palm_frame(hq, h);
-        let palm_t = palm_centre(hp, hq, h);
+        let palm_t = palm_centre(hp, hq, h) + face * PALM_OUT;
         let palm = inp.map.point(palm_t);
         {
             let c = &mut self.hands[h];
