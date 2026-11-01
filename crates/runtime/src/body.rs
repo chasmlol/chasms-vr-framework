@@ -310,6 +310,14 @@ impl PlayerBody {
         // The elbows and the shoulders where the headset tracks them (when the player lets it).
         let tracked = |joints: [Option<[f32; 3]>; 2]| joints.map(|e| e.filter(|_| inp.settings.body.tracked_elbows).map(|e| Vec3::from_array(e) - down));
         let (elbows, shoulders) = (tracked(f.elbows), tracked(f.shoulders));
+        // A hand drawn away from its controller (held back by what it holds, or carried on by a
+        // swung weapon) takes its tracked elbow with it: else the forearm alone stretches to it.
+        let elbows: [Option<Vec3>; 2] = std::array::from_fn(|i| {
+            elbows[i].map(|e| match inp.hands.map(|h| h[i]) {
+                Some(g) if f.hands[i].grip.valid != 0 => e + (g.0 - Vec3::from_array(f.hands[i].grip.pos)),
+                _ => e,
+            })
+        });
         // In a saddle the body sits where the game seats its rider.
         self.solver.ride(inp.saddle.map(|s| rustvr_ik::Saddle {
             seat: rustvr_ik::Pose { pos: s.seat.pos - down, rot: s.seat.rot },

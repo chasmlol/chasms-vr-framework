@@ -191,9 +191,10 @@ struct Game {
     /// The player's side of melee as the runtime last said (`RtMelee`), and the spell selected.
     rt_melee: RtMelee,
     spell: u32,
-    /// The melee asked of the runtime: the duel's while the player's in the duel ring (None: to be
-    /// written again).
+    /// The melee asked of the runtime: the duel's while the player's in the duel ring, or everywhere
+    /// when started there (`duel_start`) (None: to be written again).
     duel_rules: Option<bool>,
+    duel_start: bool,
     /// The duelist drawn as Oblivion's figure, when the game's files are extracted.
     figure: Option<figure::Figure>,
 }
@@ -245,6 +246,7 @@ fn main() -> Result<()> {
     // The melee areas play with the melee buttons (the gravity gloves stay: telekinesis is
     // the settings' to turn on, as in the gun range).
     game.melee = arena != "range";
+    game.duel_start = arena == "duel";
     tracing::info!("range: starting in the {arena} area at {feet:.1?}");
     game.run(fps_cap)
 }
@@ -437,6 +439,7 @@ impl Game {
             rt_melee: bytemuck::Zeroable::zeroed(),
             spell: combat::FIRE_BOLT,
             duel_rules: None,
+            duel_start: false,
             figure,
         })
     }
@@ -915,9 +918,9 @@ impl Game {
         }
         // The fighters see the player and their weapons.
         let sight = self.sight(f, dt);
-        // The duel's rules while the player's in its ring, with no slowing time there (the melee buttons
-        // in the melee areas).
-        let duel = arenas::in_duel(sight.feet);
+        // The duel's rules while the player's in its ring (everywhere, started there), with no slowing
+        // time then (the melee buttons in the melee areas).
+        let duel = self.duel_start || arenas::in_duel(sight.feet);
         if self.adapter.connected() && self.duel_rules != Some(duel) {
             let mut rules: MeleeRules = bytemuck::Zeroable::zeroed();
             rules.flags = if self.melee { RULES_KICK } else { 0 } | if duel { RULES_SAYS_SLOW } else { 0 };

@@ -91,14 +91,16 @@ Sources: [Mordhau patch notes (parry, recovery, riposte windows)](https://steamd
   outside its window, is beaten aside (knocked along the blow at 2 m/s) and the blow carries on
   into you. A hit on a creature while it winds up holds its wind-up back 0.15 s (a flinch); while
   it releases, it does nothing to the swing. A blow lands once.
-* **Weight.** The hands are only so strong: on top of holding the weapon level against its weight,
-  one hand pushes its grip with at most 30 N and turns it with at most 5 N m, two hands on its
-  handles 45 N and 10 N m. So a weapon moves by its own mass and length: a dagger darts about, a
-  longsword in one hand barely swings, in two it swings and carries on. A swing stopped short
-  carries on, pulling the hands (and the body drawn after them) away from the controllers until the
-  hands have braked it; a fast jerk leaves the blade behind; a long blade sags a little. Staggered,
-  a quarter of that strength; in a riposte, a quarter more. The stick walks
-  you at 0.55 of its speed with a melee weapon in hand.
+* **Momentum.** The hands swing a weapon easily but stop it hard. On top of holding it level
+  against its weight, a hand bringing it after itself pushes with up to 150 N and turns it with up
+  to 20 N m (two hands on its handles 250 N and 35 N m); but a weapon going faster than the hands
+  (they've stopped or slowed, and it hasn't) is braked with only 20 N and 6 N m (35 N and 12 N m
+  with two). So a committed swing carries on past where the hands stop, pulling them (and the arms
+  and body drawn after them: a tracked elbow goes with its hand) away from the controllers until
+  they've braked it, by the weapon's own mass and length. Staggered, the hands bring it after them
+  with a quarter of their strength; in a riposte, a quarter more. The stick walks you at 0.55 of
+  its speed with a melee weapon in hand. Started in the duel area, the range plays the duel's rules
+  across the whole room.
 * **The grip's angle** (every melee, not only the duel): a weapon leans forward in the hand from the
   controller's handle (30° by default, the Controls tab's *Sword angle in the hand*), turned about
   the knuckles away from the controller's aim ray, as a hilt held upright sits in a fist; along the

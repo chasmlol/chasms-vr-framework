@@ -405,8 +405,8 @@ impl Rig {
         held.target_prev = Some(t_now);
         let strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05);
         let (joint, lever) = self.melee_joint(id, hand, pivot, strength, inp.settings.dominant());
-        // (In a duel, as heavy as it is.)
-        let joint = if self.melee.duel.on { self.duel_joint(id, hand, joint, strength) } else { joint };
+        // (In a duel, swung easily and stopped hard: a swing carries on.)
+        let joint = if self.melee.duel.on { self.duel_joint(id, hand, joint, strength, map.rot(Quat::IDENTITY) * tv, map.rot(Quat::IDENTITY) * ta) } else { joint };
         // The other hand on it pulls its own hold towards its controller: the turn it would have
         // (its hold lying towards that hand, about this one's) shares the target with this hand's
         // own, by how much of the turning is its pull (no filtering: the hands pull as they are).
@@ -882,7 +882,7 @@ impl Rig {
         let w = self.map.world_per_meter;
         let off = grip.distance(self.shoulders()) / w;
         // (The player is as tall as their eyes are high and a sixteenth more.)
-        let reach = self.eye_height / (1.0 - 1.0 / 16.0) * REACH_OF_HEIGHT;
+        let reach = self.eye_height / (1.0 - 1.0 / 16.0) * REACH_OF_HEIGHT * if self.melee.duel.on { rustvr_melee::duel::STUCK_SLACK } else { 1.0 };
         (stopped && off > reach) || off > STRETCH_SNAP
     }
 

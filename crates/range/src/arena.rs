@@ -36,6 +36,8 @@ pub const DUELIST_ID: u32 = 7301;
 const DUELIST_AGAIN: f64 = 4.0;
 /// Testing the duel (`--duel-test`), the duelist stands this far before the player's start (m).
 const DUEL_TEST_GAP: f32 = 1.45;
+/// Off its ground, the duelist still fights someone this near it (m).
+const NEAR_DUELIST: f32 = 5.0;
 
 /// Fighters keep this far apart (m).
 const SPACING: f32 = 0.9;
@@ -234,8 +236,9 @@ impl People {
             return;
         }
         let (at, face) = p.at;
-        // (It fights only someone in its ring; outside it, it stands in its guard.)
-        let near = arenas::in_duel(sight.feet) || d.drive != Drive::Free;
+        // (It fights someone on its ground, or come within a few steps of it; else it stands in its
+        // guard.)
+        let near = arenas::in_duel(sight.feet) || (sight.feet - at).with_y(0.0).length() < NEAR_DUELIST || d.drive != Drive::Free;
         let seen = if near { sight.clone() } else { Sight { feet: at + face * Vec3::Z * 3.0, ..Default::default() } };
         let mut t = d.think(now, dt, at, face, &seen, self.duel_cue);
         if !near {

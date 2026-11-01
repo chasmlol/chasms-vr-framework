@@ -45,34 +45,42 @@ impl Rig {
         self.melee.duel.on
     }
 
-    /// The duel's hold of hand `hand` on weapon `id`, from the sandbox's (`joint`, metres): as hard
-    /// as holds it level against its weight and no harder than the hands' own strength on top (two
-    /// hands' when both are on its handles), times the player's `strength` and the hand's share now
-    /// (staggered, in a riposte), so it moves by its own mass and inertia; its springs settling it as
-    /// the duel says.
-    pub(super) fn duel_joint(&self, id: u32, hand: usize, joint: Joint, strength: f32) -> Joint {
+    /// The duel's hold of hand `hand` on weapon `id`, from the sandbox's (`joint`, metres), the hands
+    /// moving at `hand_vel` (m/s, the world's way) and turning at `hand_spin` (rad/s): as hard as
+    /// holds it level against its weight, and on top of that the hands' strength bringing it after
+    /// them (two hands' when both are on its handles, times the player's `strength` and the hand's
+    /// share now: staggered, in a riposte), or only their braking once it's going faster than they
+    /// are, so a swing carries on; its springs settling it as the duel says.
+    pub(super) fn duel_joint(&self, id: u32, hand: usize, joint: Joint, strength: f32, hand_vel: Vec3, hand_spin: Vec3) -> Joint {
         let Some(o) = self.objects.get(&id) else { return joint };
         let w = self.map.world_per_meter;
         let rb = &self.physics.world.bodies[o.body];
         let mass = rb.mass().max(0.05);
         let (pos, rot) = self.physics.pose(o.body);
         let pivot = pos + rot * joint.pivot;
-        let reach = (physics::from_v(rb.center_of_mass()) - pivot).length() / w;
+        let com = physics::from_v(rb.center_of_mass());
+        let reach = (com - pivot).length() / w;
+        let spin = physics::from_v(rb.angvel());
+        let moving = (physics::from_v(rb.linvel()) + spin.cross(pivot - com)) / w;
         // (About the grip, swung round: the two big turns of a long thing, taken as one.)
         let inertia = self.physics.body_inertia_tensor_about(o.body, pivot);
         let swing = (0.5 * (inertia.x_axis.x + inertia.y_axis.y + inertia.z_axis.z) / (w * w)).max(1e-3);
         let two = self.two_handed_melee(id);
         let share = self.melee.duel.drive[hand] * strength;
         let (force, torque) = if two { (tune::HAND_FORCE_TWO, tune::HAND_TORQUE_TWO) } else { (tune::HAND_FORCE_ONE, tune::HAND_TORQUE_ONE) };
+        let (brake_force, brake_torque) = if two { (tune::BRAKE_FORCE_TWO, tune::BRAKE_TORQUE_TWO) } else { (tune::BRAKE_FORCE_ONE, tune::BRAKE_TORQUE_ONE) };
+        // Going faster than the hands: only braked.
+        let force = if moving.length() > hand_vel.length() + tune::BRAKING_FROM.0 { brake_force } else { force * share };
+        let torque = if spin.length() > hand_spin.length() + tune::BRAKING_FROM.1 { brake_torque } else { torque * share };
         let g = 9.81;
         let (ws, wg) = (tune::SWING_SETTLE, tune::GRIP_SETTLE);
         Joint {
             spring: mass * wg * wg,
             damper: 2.0 * tune::GRIP_DAMPING * mass * wg,
-            max_force: mass * g + force * share,
+            max_force: mass * g + force,
             ang_spring: swing * ws * ws,
             ang_damper: 2.0 * tune::SWING_DAMPING * swing * ws,
-            max_torque: mass * g * reach + torque * share,
+            max_torque: mass * g * reach + torque,
             ..joint
         }
     }
