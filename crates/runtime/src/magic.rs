@@ -1,11 +1,13 @@
 //! The hands' magic, after Skyrim VR and the mods its players swear by (what they do and why, and
-//! this design: the Oblivion adapter's `docs/research/spells.md`). The game says what spells the
+//! this design: the Oblivion adapter's `docs/design/spells.md`). The game says what spells the
 //! player has and what each costs and does ([`Spells`]); the runtime has the hands hold them, charge
 //! them and aim them, and sends the casts back ([`CE_CAST`]) for the game to cast its own way.
 //!
 //! * **A spell in each hand** (Skyrim VR's own): either empty hand holds one of the player's spells,
 //!   its art small in the palm (the game's, [`Casters`]), smaller as the player's magicka runs down
-//!   (Magic Improvements). A hand that takes something keeps its spell and has it back when it lets
+//!   (Magic Improvements). The art shows once the trigger has charged it, and stays [`SHOWN`]
+//!   seconds after: a hand only holding a spell shows nothing (turned about, it'd flicker round the
+//!   hand's edges). A hand that takes something keeps its spell and has it back when it lets
 //!   go (as VRIK puts a spell back). At first the off hand holds the game's selected spell and the
 //!   main hand none, so its trigger stays the game's Activate. A spell picked in the game's own
 //!   interface (its magic menu, a quick key) goes into the off hand.
@@ -54,10 +56,10 @@ const TRIGGER_ON: f32 = 0.5;
 const TRIGGER_OFF: f32 = 0.25;
 /// Let go this soon with nothing charged: a tap, the game's Activate (seconds).
 const TAP: f64 = 0.25;
-/// The palm: this far off the middle of the fist (the controller's grip), m; the art sits this far
-/// off the palm.
+/// The palm: this far off the middle of the fist (the controller's grip), m; the art sits in it.
 const PALM: f32 = 0.035;
-const PALM_OUT: f32 = 0.05;
+/// A spell's art stays in the hand this long after the trigger last held it (seconds).
+pub const SHOWN: f64 = 30.0;
 /// A shoulder off the head when the headset doesn't track it (m, the right one; the head's yaw):
 /// to the side, below the eyes, a little behind them (an adult's).
 const SHOULDER: Vec3 = Vec3::new(0.18, -0.22, -0.08);
@@ -111,6 +113,8 @@ struct Hand {
     next_pulse: f64,
     /// It charges again from then (the rest of the game's cast after a release).
     recover_until: f64,
+    /// Its spell's art shows until then ([`SHOWN`] after the trigger last held it).
+    shown_until: f64,
     /// Where it's aimed lately (world), for the smoothing: when, which way.
     aims: VecDeque<(f64, Vec3)>,
     /// The palm last frame (world) and how fast it moves.
@@ -393,7 +397,7 @@ impl Magic {
                 let rot = Quat::from_mat3(&Mat3::from_cols(fingers.cross(face), fingers, face)).normalize();
                 let pointing = Quat::from_array(inp.frame.hands[h].aim.rot);
                 let aim = inp.map.rot(Quat::IDENTITY) * hand_aim(shoulder(inp.frame, h), palm_t, pointing, hq, h, inp.settings.palm_tilt);
-                Some((palm, aim, Pose { pos: (palm_t + face * PALM_OUT).to_array(), valid: 1, rot: rot.to_array() }))
+                Some((palm, aim, Pose { pos: palm_t.to_array(), valid: 1, rot: rot.to_array() }))
             }
             None => None,
         };
@@ -472,6 +476,9 @@ impl Magic {
         } else if let Phase::Charging { .. } = c.phase {
             c.charge = (c.charge + inp.dt / cast_time.max(0.01)).min(1.0);
         }
+        if let Phase::Charging { .. } = c.phase {
+            c.shown_until = inp.now + SHOWN;
+        }
         // The charge felt (ISPVR's curve), a spike as it fills, a faint tick while it's held ready.
         if let (Phase::Charging { .. }, true, None) = (c.phase, inp.settings.charge_haptics, cast) {
             if inp.now >= c.next_pulse {
@@ -486,7 +493,7 @@ impl Magic {
         let state = match c.phase {
             Phase::Charging { .. } if c.charge >= 1.0 => CAST_READY,
             Phase::Charging { .. } => CAST_CHARGING,
-            _ if matches!(source, Source::Spell(_)) => CAST_READIED,
+            _ if matches!(source, Source::Spell(_)) && inp.now < c.shown_until => CAST_READIED,
             _ => CAST_NONE,
         };
         if state != c.state {
