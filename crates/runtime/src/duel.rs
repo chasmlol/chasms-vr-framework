@@ -298,6 +298,23 @@ impl Duel {
 /// a step at a swing's speed).
 const STEPS: usize = 8;
 
+/// The player's body as a duel's held weapons rest on it (world: ends, radius), from the solved
+/// body's joints (tracking space): the head, the torso, and the line across the shoulders (where a
+/// blade rests on one).
+pub fn body_capsules(joints: &[Pose; JOINT_COUNT], map: &crate::rig::WorldMap) -> Vec<(Vec3, Vec3, f32)> {
+    let at = |j: Joint| map.point(Vec3::from_array(joints[j as usize].pos));
+    let w = map.world_per_meter;
+    if joints[Joint::Head as usize].valid == 0 {
+        return Vec::new();
+    }
+    let up = (at(Joint::Head) - at(Joint::Neck)).normalize_or(Vec3::Y);
+    vec![
+        (at(Joint::Neck) + up * 0.04 * w, at(Joint::Head) + up * 0.08 * w, tune::BODY_HEAD * w),
+        (at(Joint::Hips), at(Joint::UpperChest), tune::BODY_TORSO * w),
+        (at(Joint::LeftUpperArm), at(Joint::RightUpperArm), tune::BODY_SHOULDERS * w),
+    ]
+}
+
 /// What a frame's clashes give the game and the player: events, buzzes, sounds (as `Combat` keeps
 /// them).
 pub struct Clashes<'a> {

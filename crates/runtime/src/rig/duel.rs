@@ -1,19 +1,20 @@
 //! The duel's side of holding a weapon (`crate::duel`, the numbers in `rustvr_melee::duel`): each
-//! hand's weapon held as heavy as it is (the hand turns and moves it no faster than it could the real
-//! thing: a fast jerk leaves the blade behind, a committed swing carries on past where the hands
-//! stop, a long blade sags; staggered it's barely swung, in a riposte lighter), sent off a clash as
-//! the duel judged it, and the creatures' weapons solid to nothing the hands hold (the blades meet
-//! only by the duel's rules: no passive block stops a swing).
+//! hand's weapon held by plain physics (its own mass and inertia on a spring and damper from the
+//! controllers, no harder than the hands are strong, its weight the arms': it moves by its own
+//! momentum, trailing and carrying on; staggered the hands are weaker, in a riposte stronger),
+//! resting on the player's body, sent off a clash as the duel judged it, and the creatures' weapons
+//! solid to nothing the hands hold (the blades meet only by the duel's rules: no passive block stops
+//! a swing).
 //!
 //! And for every melee: the weapon leaned forward in the hand ([`Rig::set_grip_tilt`]), as a hilt
 //! held upright sits in a fist, rather than along the controller's handle.
 
 use glam::{Quat, Vec3};
-use rapier3d::prelude::{InteractionGroups, InteractionTestMode};
+use rapier3d::prelude::{ColliderHandle, InteractionGroups, InteractionTestMode, RigidBodyHandle};
 use rustvr_melee::duel as tune;
 
 use super::Rig;
-use super::physics::{self, G_HAND, G_OBJECT, Joint};
+use super::physics::{G_HAND, G_HELD, G_OBJECT, G_PLAYER, Joint};
 
 /// How the duel holds each hand's weapon.
 #[derive(Clone, Debug)]
@@ -21,14 +22,14 @@ pub struct DuelHold {
     pub on: bool,
     /// Each hand's share of its strength (1: all of it; less staggered, more in a riposte).
     pub drive: [f32; 2],
-    /// Weapons a swing carried the hands on with, being brought back: where the hands have them so
-    /// far (their grip, world, and their turn), by id.
-    pub paced: std::collections::HashMap<u32, (Vec3, Quat)>,
+    /// The player's body as the held weapons meet it (head, torso, shoulders): each capsule's body and
+    /// collider, its half length and radius.
+    pub body: Vec<(RigidBodyHandle, ColliderHandle, f32, f32)>,
 }
 
 impl Default for DuelHold {
     fn default() -> Self {
-        DuelHold { on: false, drive: [1.0; 2], paced: Default::default() }
+        DuelHold { on: false, drive: [1.0; 2], body: Vec::new() }
     }
 }
 
@@ -44,13 +45,41 @@ impl Rig {
         let d = &mut self.melee.duel;
         d.on = on;
         d.drive = drive.map(|d| if d.is_finite() && d > 0.0 { d } else { 1.0 });
-        if !on {
-            d.paced.clear();
-        }
     }
 
     pub fn duel_on(&self) -> bool {
         self.melee.duel.on
+    }
+
+    /// The player's body as capsules (world: ends, radius: their head, torso and shoulders), which
+    /// what the hands hold rests on in a duel (none off it).
+    pub fn set_player_body(&mut self, capsules: &[(Vec3, Vec3, f32)]) {
+        let capsules = if self.melee.duel.on { capsules } else { &[] };
+        let mut body = std::mem::take(&mut self.melee.duel.body);
+        while body.len() > capsules.len() {
+            let (b, ..) = body.pop().unwrap();
+            self.physics.remove(b);
+        }
+        for (i, &(a, b, radius)) in capsules.iter().enumerate() {
+            let half = 0.5 * a.distance(b);
+            let (mid, rot) = ((a + b) * 0.5, Quat::from_rotation_arc(Vec3::Y, (b - a).normalize_or(Vec3::Y)));
+            match body.get(i) {
+                Some(&(rb, _, h, r)) if (h - half).abs() < 0.01 && (r - radius).abs() < 0.002 => self.physics.move_kinematic(rb, mid, rot),
+                old => {
+                    if let Some(&(rb, ..)) = old {
+                        self.physics.remove(rb);
+                    }
+                    let (rb, c) = self.physics.add_actor_part(mid, rot, half, radius);
+                    self.physics.set_groups(c, InteractionGroups::new(G_PLAYER, G_HELD[0] | G_HELD[1], InteractionTestMode::And));
+                    if i < body.len() {
+                        body[i] = (rb, c, half, radius);
+                    } else {
+                        body.push((rb, c, half, radius));
+                    }
+                }
+            }
+        }
+        self.melee.duel.body = body;
     }
 
     /// How far a second hand on a weapon may be from its controller before it lets go, of the
@@ -59,99 +88,41 @@ impl Rig {
         if self.melee.duel.on { tune::SUPPORT_BREAK.max(sandbox) } else { sandbox }
     }
 
-    /// The duel's hold of hand `hand` on weapon `id`, from the sandbox's (`joint`, metres), the hands
-    /// moving at `hand_vel` (m/s, the world's way) and turning at `hand_spin` (rad/s): as hard as
-    /// holds it level against its weight, and on top of that the hands' strength bringing it after
-    /// them (two hands' when both are on its handles, times the player's `strength` and the hand's
-    /// share now: staggered, in a riposte), or only their braking once it's going faster than they
-    /// are, so a swing carries on; its springs settling it as the duel says.
-    pub(super) fn duel_joint(&self, id: u32, hand: usize, joint: Joint, strength: f32, hand_vel: Vec3, hand_spin: Vec3, turned: Vec3) -> (Joint, bool) {
-        let Some(o) = self.objects.get(&id) else { return (joint, false) };
+    /// The duel's hold of hand `hand` on weapon `id`, from the sandbox's (`joint`, metres): a spring
+    /// and a damper settling it by its own mass and its inertia about the grip, no harder than the
+    /// hands are strong (two hands' when both are on its handles), times the player's `strength` and
+    /// the hand's share now (staggered, in a riposte), on the weapon as a whole body (its turn pulls
+    /// its grip, and the hands, along: [`Joint::whole`]). Its weight is the arms' while it's held
+    /// ([`Rig::duel_gravity`]).
+    pub(super) fn duel_joint(&self, id: u32, hand: usize, joint: Joint, strength: f32) -> Joint {
+        let Some(o) = self.objects.get(&id) else { return joint };
         let w = self.map.world_per_meter;
-        let rb = &self.physics.world.bodies[o.body];
-        let mass = rb.mass().max(0.05);
+        let mass = self.physics.world.bodies[o.body].mass().max(0.05);
         let (pos, rot) = self.physics.pose(o.body);
         let pivot = pos + rot * joint.pivot;
-        let com = physics::from_v(rb.center_of_mass());
-        let reach = (com - pivot).length() / w;
-        let spin = physics::from_v(rb.angvel());
-        let moving = (physics::from_v(rb.linvel()) + spin.cross(pivot - com)) / w;
         // (About the grip, swung round: the two big turns of a long thing, taken as one.)
         let inertia = self.physics.body_inertia_tensor_about(o.body, pivot);
         let swing = (0.5 * (inertia.x_axis.x + inertia.y_axis.y + inertia.z_axis.z) / (w * w)).max(1e-3);
         let two = self.two_handed_melee(id);
         let share = self.melee.duel.drive[hand] * strength;
-        let (force, torque) = if two { (tune::HAND_FORCE_TWO, tune::HAND_TORQUE_TWO) } else { (tune::HAND_FORCE_ONE, tune::HAND_TORQUE_ONE) };
-        let (force, torque) = (force * share, torque * share);
-        // How far it has carried the hands from the controllers: free so far, then the arms take it
-        // back (0 to 1 over the ramp).
-        let carried = ((o.lag.length() / w - tune::CARRY) / tune::CARRY_RAMP).clamp(0.0, 1.0);
-        let carried = carried * carried * (3.0 - 2.0 * carried);
-        // Going faster than the hands and not on its way back to them: it carries on, only braked
-        // (going down, its weight carrying it on); else the hands bring it after them, gently while
-        // they're still.
-        let lag = o.lag / w;
-        let back = lag.length() > 0.03 && (moving - hand_vel).dot(lag) > 0.0;
-        let flying = !back && moving.length() > hand_vel.length() + tune::BRAKING_FROM.0;
-        let turning_back = turned.length() > 0.05 && (spin - hand_spin).dot(turned) > 0.0;
-        let spinning = !turning_back && spin.length() > hand_spin.length() + tune::BRAKING_FROM.1;
-        let support = if flying && moving.y < -0.3 { tune::FALL_SUPPORT + (1.0 - tune::FALL_SUPPORT) * carried } else { 1.0 };
-        let force = if flying { tune::BRAKE_FORCE + (force - tune::BRAKE_FORCE) * carried } else { force };
-        let torque = if spinning { tune::BRAKE_TORQUE + (torque - tune::BRAKE_TORQUE) * carried } else { torque };
-        if tracing::enabled!(tracing::Level::DEBUG) && self.frame_index.is_multiple_of(3) {
-            tracing::debug!(
-                "duel: {id:#x}{} {:.2} m from the hands ({:.2} carried), moving {:.2} m/s ({:.2} the hands'), turning {:.1} rad/s ({:.1}){}{}",
-                if two { " (two hands)" } else { "" },
-                o.lag.length() / w,
-                carried,
-                moving.length(),
-                hand_vel.length(),
-                spin.length(),
-                hand_spin.length(),
-                if flying { ", carrying on" } else { "" },
-                if spinning { ", swinging on" } else { "" }
-            );
-        }
-        let g = 9.81;
-        let (ws, wg) = (tune::SWING_SETTLE, tune::GRIP_SETTLE);
-        (Joint {
+        let (force, torque) = if two { (tune::HOLD_FORCE_TWO, tune::HOLD_TORQUE_TWO) } else { (tune::HOLD_FORCE_ONE, tune::HOLD_TORQUE_ONE) };
+        let (wg, ws) = (tune::GRIP_SETTLE, tune::SWING_SETTLE);
+        Joint {
             spring: mass * wg * wg,
             damper: 2.0 * tune::GRIP_DAMPING * mass * wg,
-            max_force: mass * g * support + force,
+            max_force: force * share,
             ang_spring: swing * ws * ws,
             ang_damper: 2.0 * tune::SWING_DAMPING * swing * ws,
-            max_torque: mass * g * reach * support + torque,
+            max_torque: torque * share,
+            whole: true,
             ..joint
-        }, flying || spinning)
+        }
     }
 
-    /// Where the hands bring weapon `id` this step in a duel (it at `now`, held at `pivot`, the hands
-    /// wanting it at `target` and moving at `hand_speed` m/s, turning at `hand_spin` rad/s): where
-    /// they want it, but after a swing carried them on (while it's `carrying` on, from where it's got
-    /// to) no faster back to it than the arms would bring it, so it comes back up smoothly rather than
-    /// snapping.
-    pub(super) fn duel_target(&mut self, id: u32, target: (Vec3, Quat), now: (Vec3, Quat), pivot: Vec3, hand_speed: f32, hand_spin: f32, carrying: bool, dt: f32) -> (Vec3, Quat) {
-        let w = self.map.world_per_meter;
-        let (now_at, to) = (now.0 + now.1 * pivot, target.0 + target.1 * pivot);
-        if carrying {
-            if now_at.distance(to) > 0.02 * w {
-                self.melee.duel.paced.insert(id, (now_at, now.1));
-            }
-            return target;
-        }
-        let Some(&(from, from_rot)) = self.melee.duel.paced.get(&id) else { return target };
-        let reach = (tune::RETURN_SPEED + tune::RETURN_WITH_HANDS * hand_speed) * dt * w;
-        let gap = to - from;
-        let at = if gap.length() > reach { from + gap * (reach / gap.length()) } else { to };
-        let turn = (tune::RETURN_TURN + tune::RETURN_WITH_HANDS * hand_spin) * dt;
-        let off = from_rot.angle_between(target.1);
-        let rot = if off > turn { from_rot.slerp(target.1, turn / off).normalize() } else { target.1 };
-        if at == to && rot == target.1 {
-            self.melee.duel.paced.remove(&id);
-        } else {
-            self.melee.duel.paced.insert(id, (at, rot));
-        }
-        (at - rot * pivot, rot)
+    /// How much of its weight a held weapon carries itself: none in a duel (the arms bear it), all of
+    /// it otherwise.
+    pub(super) fn duel_gravity(&self) -> f32 {
+        if self.melee.duel.on { 0.0 } else { 1.0 }
     }
 
     /// How far each hand's melee weapon leans forward of the controller's handle (`degrees`): turned

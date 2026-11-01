@@ -435,6 +435,7 @@ impl Rig {
                 ang_damper: TK_TURN_DAMPER,
                 max_torque: TK_MAX_TORQUE,
                 twist_axis: None,
+                whole: false,
             }
             .in_units(w);
             self.physics.joint(body, point, (hq * tk.turn).normalize(), dt, &joint);

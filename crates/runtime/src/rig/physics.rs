@@ -16,6 +16,8 @@ pub const G_WORLD: Group = Group::GROUP_1;
 pub const G_OBJECT: Group = Group::GROUP_2;
 pub const G_HAND: [Group; 2] = [Group::GROUP_3, Group::GROUP_4];
 pub const G_HELD: [Group; 2] = [Group::GROUP_5, Group::GROUP_6];
+/// The player's own body, as what the hands hold rests on it (a duel's: `super::duel`).
+pub const G_PLAYER: Group = Group::GROUP_7;
 
 pub fn groups_world() -> InteractionGroups {
     InteractionGroups::new(G_WORLD, Group::ALL, InteractionTestMode::And)
@@ -53,9 +55,10 @@ pub fn groups_actor() -> InteractionGroups {
     InteractionGroups::new(G_OBJECT, G_OBJECT | G_HAND[0] | G_HAND[1] | G_HELD[0] | G_HELD[1], InteractionTestMode::And)
 }
 
-/// An object held by `hand` touches the world and free objects, never the hands.
+/// An object held by `hand` touches the world and free objects (and the player's body, where it's
+/// there), never the hands.
 pub fn groups_held(hand: usize) -> InteractionGroups {
-    InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT, InteractionTestMode::And)
+    InteractionGroups::new(G_HELD[hand], G_WORLD | G_OBJECT | G_PLAYER, InteractionTestMode::And)
 }
 
 /// A hand touches free objects and creatures (not what either hand is holding). Not the world:
@@ -750,19 +753,23 @@ impl Physics {
         // grip that moves fast.
         let rb = &self.world.bodies[b];
         let gravity = from_v(self.world.gravity) * rb.gravity_scale();
-        let weight = (com - pivot_now).cross((gravity - (v_next - v) / dt) * mass);
+        let r = com - pivot_now;
+        // (As a whole, about its centre of mass: the hold's pull turns it, its weight doesn't.)
+        let (about, weight) = if j.whole { (com, -r.cross(force)) } else { (pivot_now, r.cross((gravity - (v_next - v) / dt) * mass)) };
         // Turning: the same about the point held, against the body's inertia about it each way
         // round (a long weapon's head far out is hard to swing round, but it twists about its own
         // handle easily: taken as one number for every way, the weight swinging it round would
         // spin it about its handle as if that were as hard to turn, and it flew off the hand).
         let dq = (target_rot * rot_c.inverse()).normalize();
         let angle = scaled_axis(dq);
-        let inertia = self.body_inertia_tensor_about(b, pivot_now) + glam::Mat3::from_diagonal(V3::splat(1e-6));
+        let inertia = self.body_inertia_tensor_about(b, about) + glam::Mat3::from_diagonal(V3::splat(1e-6));
         let (ka, ca) = (j.ang_spring, j.ang_damper);
         let drive = glam::Mat3::from_diagonal(V3::splat(ca * dt + ka * dt * dt));
         let free_w = (inertia + drive).inverse() * (inertia * w + dt * (ka * angle + ca * j.target_ang + weight));
         let torque = j.turning(inertia * (free_w - w) / dt - weight);
         let w_next = (w + inertia.inverse() * (torque + weight) * dt).clamp_length_max(60.0);
+        // (As a whole, the centre of mass goes as the pull takes it, the point held about it.)
+        let v_next = if j.whole { v_next + (w - w_next).cross(r) } else { v_next };
         // 20 m/s is beyond any real hand; it only guards against tracking glitches.
         let v_next = v_next.clamp_length_max(20.0) + carry_v;
         let w_next = w_next + carry_w;
@@ -998,6 +1005,11 @@ pub struct Joint {
     /// across it are driven and capped apart, each to `max_torque`. None: one cap on the whole turn
     /// (its `Slerp`).
     pub twist_axis: Option<V3>,
+    /// The body as a whole (a duel's hold): the hold's pull at the point held moves its centre of
+    /// mass and turns it about that, so a body turning faster or slower than the hold (swung round,
+    /// or carrying on past hands that stopped) pulls the point held, and the hands on it, along.
+    /// Otherwise the point held goes where the hold pulls it and the body turns about it.
+    pub whole: bool,
 }
 
 impl Joint {
@@ -1030,6 +1042,7 @@ impl Joint {
             ang_damper: HOLD_TURN_DAMPER * HANDLE_TURN_DAMPER * (strength * 0.5).max(1.0),
             max_torque: HOLD_MAX_TORQUE * strength,
             twist_axis: None,
+            whole: false,
         }
     }
 

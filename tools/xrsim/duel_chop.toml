@@ -1,0 +1,110 @@
+# Run: rustvr-xrsim run --dir runs/duel_chop --script tools/xrsim/duel_chop.toml -- rustvr-play.exe -- --arena duel --no-duelist (docs/DUEL.md)
+# The longsword in two hands, raised overhead, chopped down slowly (0.8 s, speeding up over the
+# first 0.3 s), the hands stopping dead at the chest; then again fast (0.3 s, up to speed in
+# 0.12 s). The sword, the hands and the arms should carry on down past the stop, then come back.
+# The right hand takes it from the table and lifts it; the left takes the handle below it in the
+# air (13 cm down the handle, which leans 25 degrees down from the controller's line). With
+# RUSTVR_DEBUG_MELEE=1 the runtime logs the held weapon's lag and turn off its hold every 3 frames.
+# (Stage space: forward is -Z; a hand is [right, up, forward] from the head.)
+duration = 34
+capture_width = 960
+[[key]]
+t = 0
+head = { pos = [0, 1.7, 0], yaw = 0, pitch = -30 }
+left = { pos = [-0.4, -0.6, 0.2], squeeze = 0 }
+right = { pos = [0.3, -0.6, 0.2], squeeze = 0 }
+[[key]]
+t = 9
+right = { pos = [-0.72, -0.45, 0.25], pitch = 0 }
+[[key]]
+t = 10
+right = { pos = [-0.72, -0.84, 0.25], pitch = 0 }
+[[key]]
+t = 11
+right = { squeeze = 1 }
+[[key]]
+t = 12.5
+head = { pitch = 0 }
+right = { pos = [0, -0.35, 0.40], pitch = 10 }
+[[key]]
+t = 13.5
+left = { pos = [-0.15, -0.316, 0.274], pitch = 10 }
+[[key]]
+t = 14.5
+left = { pos = [0, -0.316, 0.274], pitch = 10 }
+[[key]]
+t = 15.5
+left = { squeeze = 1 }
+[[capture]]
+t = 15.8
+name = "two_hands"
+[[key]]
+t = 17.5
+right = { pos = [0, 0.3, 0.05], pitch = 110 }
+left = { pos = [0, 0.171, 0.039], pitch = 110 }
+[[key]]
+t = 19.0
+right = { pos = [0, 0.3, 0.05], pitch = 110 }
+left = { pos = [0, 0.171, 0.039], pitch = 110 }
+[[key]]
+t = 19.075
+right = { pos = [0.0, 0.2921, 0.0558], pitch = 108.56 }
+left = { pos = [0.0, 0.1654, 0.0431], pitch = 108.56 }
+[[key]]
+t = 19.150
+right = { pos = [0.0, 0.2683, 0.0731], pitch = 104.23 }
+left = { pos = [0.0, 0.1487, 0.0554], pitch = 104.23 }
+[[key]]
+t = 19.225
+right = { pos = [0.0, 0.2286, 0.1019], pitch = 97.02 }
+left = { pos = [0.0, 0.1208, 0.076], pitch = 97.02 }
+[[key]]
+t = 19.300
+right = { pos = [0.0, 0.1731, 0.1423], pitch = 86.92 }
+left = { pos = [0.0, 0.0817, 0.1048], pitch = 86.92 }
+[[key]]
+t = 19.800
+right = { pos = [0.0, -0.25, 0.45], pitch = 10.0 }
+left = { pos = [0.0, -0.216, 0.324], pitch = 10.0 }
+[[film]]
+t = 18.9
+frames = 80
+every = 3
+name = "chop"
+[[key]]
+t = 21.8
+right = { pos = [0, -0.25, 0.45], pitch = 10 }
+left = { pos = [0, -0.216, 0.324], pitch = 10 }
+[[key]]
+t = 23.3
+right = { pos = [0, 0.3, 0.05], pitch = 110 }
+left = { pos = [0, 0.171, 0.039], pitch = 110 }
+[[key]]
+t = 24.0
+right = { pos = [0, 0.3, 0.05], pitch = 110 }
+left = { pos = [0, 0.171, 0.039], pitch = 110 }
+[[key]]
+t = 24.030
+right = { pos = [0.0, 0.2914, 0.0563], pitch = 108.44 }
+left = { pos = [0.0, 0.165, 0.0435], pitch = 108.44 }
+[[key]]
+t = 24.060
+right = { pos = [0.0, 0.2656, 0.075], pitch = 103.75 }
+left = { pos = [0.0, 0.1468, 0.0568], pitch = 103.75 }
+[[key]]
+t = 24.090
+right = { pos = [0.0, 0.2227, 0.1063], pitch = 95.94 }
+left = { pos = [0.0, 0.1166, 0.0791], pitch = 95.94 }
+[[key]]
+t = 24.120
+right = { pos = [0.0, 0.1625, 0.15], pitch = 85.0 }
+left = { pos = [0.0, 0.0743, 0.1103], pitch = 85.0 }
+[[key]]
+t = 24.300
+right = { pos = [0.0, -0.25, 0.45], pitch = 10.0 }
+left = { pos = [0.0, -0.216, 0.324], pitch = 10.0 }
+[[film]]
+t = 23.9
+frames = 60
+every = 3
+name = "fast"

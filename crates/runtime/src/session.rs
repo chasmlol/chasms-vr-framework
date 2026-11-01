@@ -991,8 +991,10 @@ impl Session {
             // Slowed time (crate::powers): the player's world steps less a frame; the hands keep their
             // real speed, so in it they swing faster.
             let world_dt = frame.dt * self.powers.time_scale;
-            // (A melee weapon taken now leans forward in the hand as the settings say.)
+            // (A melee weapon taken now leans forward in the hand as the settings say; in a duel it
+            // rests on the player's body, as it stood last frame.)
             self.rig.set_grip_tilt(self.settings.current.melee.grip_angle);
+            self.rig.set_player_body(&crate::duel::body_capsules(&self.body.body.joints, &rig_map));
             self.rig_out = self.rig.update(&RigInput {
                 frame: &frame,
                 map: rig_map,

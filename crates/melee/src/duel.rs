@@ -44,43 +44,43 @@ pub const BEATEN: f32 = 2.0;
 /// Two blades meet once in this long (s): a clash isn't judged again while they stay together.
 pub const CLASH_COOLDOWN: f64 = 0.35;
 
-/// **Momentum.** In a duel the hands swing a weapon easily but stop it hard. On top of what holds it
-/// level against its weight, a hand bringing it after itself pushes with at most [`HAND_FORCE_ONE`] N
-/// and turns it with at most [`HAND_TORQUE_ONE`] N m (two hands on its handles [`HAND_FORCE_TWO`],
-/// [`HAND_TORQUE_TWO`]). A weapon going faster than the hands that hold it (they've stopped, or slowed,
-/// and it hasn't) carries on: it's braked with only [`BRAKE_FORCE`] N and [`BRAKE_TORQUE`] N m, and
-/// going down only [`FALL_SUPPORT`] of its weight is held up, so its weight carries it on down; it
-/// pulls the hands (and the arms and body drawn after them) away from the controllers until they're
-/// [`CARRY`] m behind it, and from there the arms take it back, to the hands' full strength
-/// [`CARRY_RAMP`] m further on. Spent, it comes back to the controllers no faster than the arms
-/// would bring it: [`RETURN_SPEED`] m/s and [`RETURN_TURN`] rad/s, and the hands' own speed on top
-/// (times [`RETURN_WITH_HANDS`]) once they move. Its hold settles at [`SWING_SETTLE`] rad/s, damped
-/// to [`SWING_DAMPING`] of critical (its grip [`GRIP_SETTLE`], [`GRIP_DAMPING`]).
-pub const HAND_FORCE_ONE: f32 = 150.0;
-pub const HAND_FORCE_TWO: f32 = 250.0;
-pub const HAND_TORQUE_ONE: f32 = 20.0;
-pub const HAND_TORQUE_TWO: f32 = 35.0;
-pub const BRAKE_FORCE: f32 = 8.0;
-pub const BRAKE_TORQUE: f32 = 2.0;
-pub const FALL_SUPPORT: f32 = 0.3;
-pub const CARRY: f32 = 0.3;
-pub const CARRY_RAMP: f32 = 0.35;
-pub const RETURN_SPEED: f32 = 0.6;
-pub const RETURN_TURN: f32 = 1.5;
-pub const RETURN_WITH_HANDS: f32 = 3.0;
-pub const SWING_SETTLE: f32 = 18.0;
-pub const SWING_DAMPING: f32 = 0.6;
-pub const GRIP_SETTLE: f32 = 40.0;
-pub const GRIP_DAMPING: f32 = 0.9;
-/// A weapon is braked once it's going this much faster than the hands (m/s at its grip, rad/s).
-pub const BRAKING_FROM: (f32, f32) = (0.3, 0.8);
+/// **The hold.** In a duel a held weapon is plain physics, as a whole body: its own mass and inertia,
+/// held by a spring and a damper from the controllers to its grip, and turned towards the
+/// controllers' turn by another (the arms' give). The pull moves its grip as stiffly as its mass
+/// settles at [`GRIP_SETTLE`] rad/s, damped to [`GRIP_DAMPING`] of critical, with at most
+/// [`HOLD_FORCE_ONE`] N ([`HOLD_FORCE_TWO`] in two hands); the turn as stiffly as it settles at
+/// [`SWING_SETTLE`] rad/s about its grip, damped to [`SWING_DAMPING`], with at most
+/// [`HOLD_TORQUE_ONE`] N m ([`HOLD_TORQUE_TWO`] in two hands): wrists firm against a small turn and
+/// only so strong against a big one. The arms bear its weight while it's held (it doesn't droop), and
+/// it rests on the player's body. So it moves by its own momentum: it trails hands that set off fast,
+/// and carries on past hands that stop, braked no harder than the wrists can, pulling the hands (and
+/// the arms and body drawn after them) along, a long heavy blade far more than a light one; then it
+/// comes back to them. The settings' *strength on a weapon* scales the most force and torque: less is
+/// heavier (more trail, more carry). Checked headless with the longsword in two hands, chopped from
+/// overhead (0.8 s, up to speed in 0.3 s) and the hands stopped dead: it trails 18 degrees and
+/// carries on 24 degrees past them, the hands pulled 13 cm on down, and is back with them 0.8 s later;
+/// chopped fast (0.3 s) it trails 87 degrees and carries on 32.
+pub const GRIP_SETTLE: f32 = 5.0;
+pub const GRIP_DAMPING: f32 = 0.45;
+pub const SWING_SETTLE: f32 = 14.0;
+pub const SWING_DAMPING: f32 = 0.8;
+pub const HOLD_FORCE_ONE: f32 = 150.0;
+pub const HOLD_FORCE_TWO: f32 = 250.0;
+pub const HOLD_TORQUE_ONE: f32 = 2.5;
+pub const HOLD_TORQUE_TWO: f32 = 3.5;
 /// A held weapon stopped against something lets go further from the shoulders in a duel than the
 /// sandbox's reach (its swing has carried the hands on): this much further. A second hand on it lets
 /// go once it's this far from its controller (m: past the furthest a swing carries it).
 pub const STUCK_SLACK: f32 = 1.6;
 pub const SUPPORT_BREAK: f32 = 0.9;
-/// Of the hands' strength bringing a weapon after them: a duel's as they are, staggered (the weapon
-/// heavy, barely swung), and in a riposte (lighter).
+
+/// **The body.** A duel's held weapons rest on the player's body rather than going through it: their
+/// head (this round, m), their torso and the line of their shoulders.
+pub const BODY_HEAD: f32 = 0.1;
+pub const BODY_TORSO: f32 = 0.13;
+pub const BODY_SHOULDERS: f32 = 0.06;
+/// Of the hands' strength: a duel's as they are, staggered (the weapon heavy, barely swung), and in a
+/// riposte (lighter).
 pub const DRIVE: f32 = 1.0;
 pub const DRIVE_STAGGER: f32 = 0.25;
 pub const DRIVE_RIPOSTE: f32 = 1.25;

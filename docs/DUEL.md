@@ -91,21 +91,27 @@ Sources: [Mordhau patch notes (parry, recovery, riposte windows)](https://steamd
   outside its window, is beaten aside (knocked along the blow at 2 m/s) and the blow carries on
   into you. A hit on a creature while it winds up holds its wind-up back 0.15 s (a flinch); while
   it releases, it does nothing to the swing. A blow lands once.
-* **Momentum.** The hands swing a weapon easily but stop it hard. On top of holding it level
-  against its weight, a hand bringing it after itself pushes with up to 150 N and turns it with up
-  to 20 N m (two hands on its handles 250 N and 35 N m), so it follows them closely. A weapon going
-  faster than the hands and away from them (they've stopped or slowed, and it hasn't) carries on:
-  braked with only 8 N and 2 N m, and going down only 0.3 of its weight held up, so its weight
-  carries it on down. It pulls the hands (and the arms and body drawn after them: a tracked elbow
-  goes with its hand; a second hand stays on to 0.9 m) away from the controllers freely for 0.3 m,
-  then the arms take it back, to their full strength 0.35 m further. Spent, it comes back up to the
-  controllers no faster than 0.6 m/s and 1.5 rad/s (more once the hands move), smoothly rather than
-  snapping. Checked headless: the longsword in two hands, chopped down from overhead at 1 m/s and
-  the hands stopped dead, carries on 0.4 m and 65° past them, the arms reaching after it, and comes
-  back up over 0.7 s. Staggered, the hands bring it after them with a quarter of their strength; in
-  a riposte, a quarter more. The stick walks you at 0.55 of its speed with a melee weapon in hand.
-  Started in the duel area, the range plays the duel's rules across the whole room
-  (`--no-duelist` leaves its duelist out).
+* **Momentum, by physics alone.** No code looks for a swing: a held weapon is its own mass and
+  inertia, held as a whole body by a spring and a damper from the controllers to its grip and
+  another turning it towards their turn (the arms' give), its weight borne by the arms (it doesn't
+  droop). The grip settles at 5 rad/s (0.45 of critical damping), with at most 150 N (250 N in two
+  hands); the turn settles at 14 rad/s about the grip (0.8), with at most 2.5 N m (3.5 N m in two
+  hands): wrists firm against a small turn, only so strong against a big one. So a weapon trails
+  hands that set off fast, and carries on past hands that stop, braked no harder than the wrists
+  can; turning, it pulls its grip along, and the hands on it (and the arms and body drawn after
+  them: a tracked elbow goes with its hand; a second hand stays on to 0.9 m); then it comes back.
+  A long heavy blade does this far more than a light one. Checked headless: the longsword in two
+  hands, chopped from overhead (0.8 s, up to speed in 0.3 s) and the hands stopped dead, trails 18°
+  and carries on 23° past them, the hands pulled 13 cm on down, and is back with them 0.8 s later
+  without swinging back; chopped fast (0.3 s), it trails 89° and carries on 32°. The menu's
+  *Strength on a weapon* (Controls) scales the most force and torque: less is heavier, more trail
+  and more carry. Staggered, the hands have a quarter of their strength; in a riposte, a quarter
+  more. The stick walks you at 0.55 of its speed with a melee weapon in hand. Started in the duel
+  area, the range plays the duel's rules across the whole room (`--no-duelist` leaves its duelist
+  out).
+* **It rests on your body.** In a duel your head, torso and the line of your shoulders are solid to
+  what your hands hold: lay the blade back on a shoulder and it lies there (checked headless: held
+  12 cm above where the hands would put it through the shoulder) rather than passing through you.
 * **The grip's angle** (every melee, not only the duel): a weapon leans forward in the hand from the
   controller's handle (25° by default, the Controls tab's *Sword angle in the hand*), turned about
   the palm's normal towards the knuckles (a held pistol's barrel), as a hilt held upright sits in a
@@ -128,8 +134,9 @@ Sources: [Mordhau patch notes (parry, recovery, riposte windows)](https://steamd
 
 * `crates/melee/src/duel.rs`: every timing and weight.
 * `crates/runtime/src/duel.rs`: the player's side (the parry window, the clashes, the stagger and
-  riposte, the hold's strength, the walk); `rig/duel.rs`: the hold, the kicks off a clash, and the
-  creatures' weapons passing through what the hands hold. `combat.rs` calls the duel's clashes in
+  riposte, the hold's strength, the walk, the body the blades rest on); `rig/duel.rs`: the hold,
+  the body's capsules, the kicks off a clash, and the creatures' weapons passing through what the
+  hands hold; `rig/physics.rs`: `Joint::whole`, the hold's solve as a whole body. `combat.rs` calls the duel's clashes in
   place of blocks, and skips a staggered weapon's hits; `session.rs` sets the mode and the walk.
 * The protocol: `MeleeRules::mode` (from its padding: the layout is unchanged), `AI_PARRYING`
   (a creature's parry window), `CEF_PARRIED` (a creature's parry turned the player's blow away),

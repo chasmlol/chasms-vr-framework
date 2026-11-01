@@ -405,14 +405,8 @@ impl Rig {
         held.target_prev = Some(t_now);
         let strength = self.melee.strength.max(0.05) * inp.settings.melee.strength.max(0.05);
         let (joint, lever) = self.melee_joint(id, hand, pivot, strength, inp.settings.dominant());
-        // (In a duel, swung easily and stopped hard: a swing carries on.)
-        let (joint, target) = if self.melee.duel.on {
-            let turned = physics::scaled_axis((target.1 * now_rot.inverse()).normalize());
-            let (joint, carrying) = self.duel_joint(id, hand, joint, strength, map.rot(Quat::IDENTITY) * tv, map.rot(Quat::IDENTITY) * ta, turned);
-            (joint, self.duel_target(id, target, (now_pos, now_rot), pivot, tv.length(), ta.length(), carrying, dt))
-        } else {
-            (joint, target)
-        };
+        // (In a duel, plain physics by its own mass: [`Rig::duel_joint`].)
+        let joint = if self.melee.duel.on { self.duel_joint(id, hand, joint, strength) } else { joint };
         // The other hand on it pulls its own hold towards its controller: the turn it would have
         // (its hold lying towards that hand, about this one's) shares the target with this hand's
         // own, by how much of the turning is its pull (no filtering: the hands pull as they are).
@@ -439,18 +433,21 @@ impl Rig {
         let joint = Joint { carry, carried, target_vel, target_ang: map.rot(Quat::IDENTITY) * ta, ..joint.in_units(w) };
         let (carried, swing) = self.physics.joint(body, target.0, target.1, dt, &joint);
         self.objects.get_mut(&id).unwrap().carried = carried;
-        if debug_melee() && self.frame_index.is_multiple_of(9) {
-            let turned = (target.1 * now_rot.inverse()).normalize();
+        if debug_melee() && self.frame_index.is_multiple_of(3) {
+            // (Behind and turned off as the world has it, each way: up is +y.)
+            let turned = physics::scaled_axis((target.1 * now_rot.inverse()).normalize());
             tracing::info!(
-                "melee: {id:#x} in hand {hand}{}: {:.3} m behind its hold, turned {:.1} deg off, hand at {:.2} m/s",
-                if joint.spring > physics::HOLD_SPRING * strength * 1.5 { " (two hands)" } else { "" },
+                "melee: {id:#x} in hand {hand}{}: {:.3} m behind its hold {:.3?}, turned {:.1} deg off {:.0?}, hand at {:.2} m/s",
+                if self.two_handed_melee(id) { " (two hands)" } else { "" },
                 lag.length() / w,
-                physics::scaled_axis(turned).length().to_degrees(),
+                (lag / w).to_array(),
+                turned.length().to_degrees(),
+                (turned * 180.0 / std::f32::consts::PI).to_array(),
                 tv.length()
             );
         }
         self.melee.held.entry(id).or_default().swing = Some(swing);
-        self.physics.set_gravity(body, 1.0);
+        self.physics.set_gravity(body, self.duel_gravity());
         true
     }
 

@@ -1,0 +1,58 @@
+# Run: rustvr-xrsim run --dir runs/duel_shoulder --script tools/xrsim/duel_shoulder.toml -- rustvr-play.exe -- --arena duel --no-duelist (docs/DUEL.md)
+# The longsword in two hands laid back onto the right shoulder: the controllers pitched 195 (the
+# blade 10 degrees above level, pointing back) put it through the shoulder, so it should rest on
+# the shoulder (held off its hold by the body) rather than pass through. With RUSTVR_DEBUG_MELEE=1
+# the log shows it held off its hold at rest. (The hands turn with the head: it stays ahead.)
+# (Stage space: forward is -Z; a hand is [right, up, forward] from the head.)
+duration = 30
+capture_width = 960
+[[key]]
+t = 0
+head = { pos = [0, 1.7, 0], yaw = 0, pitch = -30 }
+left = { pos = [-0.4, -0.6, 0.2], squeeze = 0 }
+right = { pos = [0.3, -0.6, 0.2], squeeze = 0 }
+[[key]]
+t = 9
+right = { pos = [-0.72, -0.45, 0.25], pitch = 0 }
+[[key]]
+t = 10
+right = { pos = [-0.72, -0.84, 0.25], pitch = 0 }
+[[key]]
+t = 11
+right = { squeeze = 1 }
+[[key]]
+t = 12.5
+head = { pitch = 0 }
+right = { pos = [0, -0.35, 0.40], pitch = 10 }
+[[key]]
+t = 13.5
+left = { pos = [-0.15, -0.316, 0.274], pitch = 10 }
+[[key]]
+t = 14.5
+left = { pos = [0, -0.316, 0.274], pitch = 10 }
+[[key]]
+t = 15.5
+left = { squeeze = 1 }
+[[capture]]
+t = 15.8
+name = "two_hands"
+[[key]]
+t = 18.5
+right = { pos = [0.12, -0.3, 0.25], pitch = 60 }
+left = { pos = [0.12, -0.375, 0.144], pitch = 60 }
+[[key]]
+t = 20.5
+right = { pos = [0.15, -0.3, 0.3], pitch = 195 }
+left = { pos = [0.15, -0.323, 0.428], pitch = 195 }
+[[key]]
+t = 22
+head = { pitch = 0 }
+[[key]]
+t = 23
+head = { pitch = -35 }
+[[capture]]
+t = 24
+name = "shoulder"
+[[key]]
+t = 26
+head = { pitch = -35 }
