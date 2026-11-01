@@ -156,7 +156,7 @@ fn thing(key: &str, name: &str, parts: Vec<MeshData>, mass: f32, grip: [Vec3; 2]
     d.grip_radius = radius;
     d.muzzle = [0.0, 0.0, hi.z];
     set_name(&mut d.name, name);
-    Throwable { key: key.into(), name: name.into(), parts, fix: Mat4::IDENTITY, from_game: false, pin_parts: Vec::new(), lever_parts: Vec::new(), desc: d, blast: None, fuse_at: None, led: None, lying }
+    Throwable { key: key.into(), name: name.into(), parts, fix: Mat4::IDENTITY, pin_parts: Vec::new(), lever_parts: Vec::new(), desc: d, blast: None, fuse_at: None, led: None, lying }
 }
 
 /// Lying flat on a table, its flat (+Y) up, its blade along +X.

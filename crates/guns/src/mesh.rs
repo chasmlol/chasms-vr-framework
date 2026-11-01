@@ -17,7 +17,7 @@ pub struct Vertex {
 pub struct MeshData {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
-    /// Texture key in the asset cache (Metro models), or a built-in texture name.
+    /// Texture key in the asset cache (a game's models), or a built-in texture name.
     pub texture: Option<String>,
     /// Cut from a game model's mesh: which, and each vertex's index there (so a renderer can draw
     /// the part with that mesh's full vertices and material).

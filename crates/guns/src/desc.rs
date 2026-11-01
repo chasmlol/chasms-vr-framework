@@ -177,7 +177,7 @@ pub fn kick_descs(object: u32, w: &Weapon) -> Vec<rustvr_protocol::KickDesc> {
 }
 
 /// What the runtime draws a gun with when it draws it itself ([`OBJF_RUNTIME_DRAWS`]): the model
-/// named `<game folder>/<asset key>` in its asset cache (`metro2033/wpn_2012`).
+/// named `<game folder>/<asset key>` in its asset cache (`mygame/rifle_01`).
 pub fn model_name(game: &str, key: &str) -> String {
     format!("{game}/{key}")
 }
@@ -253,11 +253,11 @@ mod tests {
 
     #[test]
     fn model_names_round_trip() {
-        assert_eq!(parse_model_name(&model_name("metro2033", "wpn_2012")), Some(("metro2033", "wpn_2012")));
-        for bad in ["wpn_2012", "/wpn_2012", "metro2033/", "a/b/c", "Kalash 2012"] {
+        assert_eq!(parse_model_name(&model_name("mygame", "rifle_01")), Some(("mygame", "rifle_01")));
+        for bad in ["rifle_01", "/rifle_01", "mygame/", "a/b/c", "Rifle 01"] {
             assert_eq!(parse_model_name(bad), None, "{bad}");
         }
         // (It fits the protocol's name.)
-        assert!(model_name("metro2033", "wpn_railgun_hand").len() < 32);
+        assert!(model_name("mygame", "rifle_railgun_hand").len() < 32);
     }
 }

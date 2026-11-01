@@ -1,14 +1,11 @@
 //! The range's visual effects: what a game shows when its guns fire and its grenades go off (the
-//! range is the game here; in Metro the game draws its own). Metro's own sprites when they're
-//! extracted (`metro-extract --extras`: its muzzle flash `pfx_muzzle1`, muzzle gas, sparks
-//! `part_iskry`, the explosion's fireball `part_flame_1`, star and smoke, dust, glow, a wallmark
-//! bullet hole and the `fx_tracer1` streak), built-in ones otherwise.
+//! range is the game here), with the range's own built-in sprites.
 //!
 //! * **A shot**: a flash at the muzzle (a sprite facing you and one along the barrel, two frames)
 //!   and a light that brightens the gun, hands and table for 60 ms; a puff of gas drifting off;
 //!   a tracer streaking to whatever the bullet hit; and a casing out of the ejection port (right,
 //!   up and a little back, spinning) that bounces on the floor and tables and fades after a few
-//!   seconds. Magazine-fed rifles and pistols eject; revolvers, break-actions and air guns don't.
+//!   seconds.
 //! * **A hit**: a hole on the surface (riding with an object it's in; at most 64, the oldest
 //!   fading out first), sparks off metal and target plates, a puff of dust and chips off wood
 //!   and stone.
@@ -36,72 +33,40 @@ pub const TRACER_SPEED: f32 = 180.0;
 /// A tracer's streak (m).
 pub const TRACER_LENGTH: f32 = 2.0;
 
-/// An effect sprite: its texture, how it's cut into frames (columns, rows), and whether it's the
-/// game's.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Sprite {
-    pub tex: usize,
-    pub grid: (u32, u32),
-    pub from_game: bool,
-}
-
-impl Sprite {
-    /// The uv rectangle of frame `k` (row by row).
-    pub fn frame(&self, k: u32) -> [f32; 4] {
-        let (c, r) = (self.grid.0.max(1), self.grid.1.max(1));
-        let k = k % (c * r);
-        let (x, y) = ((k % c) as f32, (k / c) as f32);
-        let (w, h) = (1.0 / c as f32, 1.0 / r as f32);
-        [x * w, y * h, (x + 1.0) * w, (y + 1.0) * h]
-    }
-
-    pub fn frames(&self) -> u32 {
-        self.grid.0.max(1) * self.grid.1.max(1)
-    }
-}
-
-/// Every sprite the effects use.
+/// Every sprite the effects use: each one's texture id.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Sprites {
-    pub flash: Sprite,
-    pub gas: Sprite,
-    pub sparks: Sprite,
-    pub fireball: Sprite,
-    pub smoke: Sprite,
-    pub dust: Sprite,
-    pub star: Sprite,
-    pub glow: Sprite,
-    pub hole: Sprite,
-    pub tracer: Sprite,
-    /// The tracer's cell in its atlas.
-    pub tracer_uv: [f32; 4],
-    pub scorch: Sprite,
-    pub dot: Sprite,
+    pub flash: usize,
+    pub gas: usize,
+    pub sparks: usize,
+    pub fireball: usize,
+    pub smoke: usize,
+    pub dust: usize,
+    pub star: usize,
+    pub glow: usize,
+    pub hole: usize,
+    pub tracer: usize,
+    pub scorch: usize,
+    pub dot: usize,
 }
 
 impl Sprites {
-    /// Resolves each sprite with `load(game texture key, built-in fallback) -> (id, from the game)`.
-    pub fn load(mut load: impl FnMut(&str, &str) -> (usize, bool)) -> Sprites {
-        let mut sprite = |key: &str, fallback: &str, grid: (u32, u32)| {
-            let (tex, from_game) = load(key, fallback);
-            Sprite { tex, grid: if from_game { grid } else { (1, 1) }, from_game }
-        };
-        let tracer = sprite("fx__fx_tracer1", "fx_streak", (8, 8));
+    /// Resolves each sprite with `load(built-in texture) -> id`.
+    pub fn load(mut load: impl FnMut(&str) -> usize) -> Sprites {
+        let tracer = load("fx_streak");
         Sprites {
-            flash: sprite("pfx__pfx_muzzle1", "fx_flash", (1, 1)),
-            gas: sprite("pfx__pfx_muzzle_gas1", "fx_smoke", (2, 2)),
-            sparks: sprite("part__part_iskry", "fx_soft", (4, 4)),
-            fireball: sprite("part__part_flame_1", "fx_flash", (8, 8)),
-            smoke: sprite("part__part_expl_smoke2", "fx_smoke", (8, 8)),
-            dust: sprite("part__part_hit_dust", "fx_smoke", (1, 1)),
-            star: sprite("part__part_expl_star", "fx_flash", (1, 1)),
-            glow: sprite("part__part_glow", "fx_soft", (1, 1)),
-            hole: sprite("wm__wm_bullet_metall_thin_1", "fx_hole", (1, 1)),
-            // Metro's orange streak is the third cell down its first column, its head to the right.
-            tracer_uv: if tracer.from_game { [0.0, 0.25, 0.125, 0.375] } else { [0.0, 0.0, 1.0, 1.0] },
-            tracer: Sprite { grid: (1, 1), ..tracer },
-            scorch: sprite("fx_scorch", "fx_scorch", (1, 1)),
-            dot: sprite("fx_soft", "fx_soft", (1, 1)),
+            flash: load("fx_flash"),
+            gas: load("fx_smoke"),
+            sparks: load("fx_soft"),
+            fireball: load("fx_flash"),
+            smoke: load("fx_smoke"),
+            dust: load("fx_smoke"),
+            star: load("fx_flash"),
+            glow: load("fx_soft"),
+            hole: load("fx_hole"),
+            tracer,
+            scorch: load("fx_scorch"),
+            dot: load("fx_soft"),
         }
     }
 }
@@ -137,28 +102,11 @@ impl Casing {
     }
 }
 
-/// Guns that keep their brass: revolvers, break-actions, air and energy guns, flamethrowers.
-pub fn keeps_casings(key: &str) -> bool {
-    ["revolver", "duplet", "ashot", "uboynicheg", "helsing", "tihar", "railgun", "ognemet"].iter().any(|k| key.contains(k))
-}
-
-/// How a gun shows its shots: its muzzle, and its ejection port from the game's own locator
-/// (`loc_shell_point`, which every Metro gun model has) or, for the built-in guns, the right side
-/// of the receiver (rifle) or the top of the slide (pistol).
-pub fn gun_fx(w: &crate::content::Weapon, assets: &std::path::Path) -> GunFx {
-    let port = if keeps_casings(&w.key) {
-        None
-    } else if w.from_game {
-        rustvr_asset::load_model(&assets.join("metro2033"), &w.key)
-            .ok()
-            .and_then(|m| m.bones.iter().find(|b| b.name == "loc_shell_point").map(|b| glam::Mat4::from_cols_array(&b.model_matrix).w_axis.truncate()))
-            .map(|p| w.fix.transform_point3(p))
-    } else if w.pistol {
-        Some(Vec3::new(0.012, 0.042, 0.04))
-    } else {
-        Some(Vec3::new(0.027, 0.05, 0.12))
-    };
-    let casing = if w.key.contains("saiga") || w.key.contains("shot") || w.caliber.contains("gauge") {
+/// How a gun shows its shots: its muzzle, and its ejection port, the right side of the receiver
+/// (rifle) or the top of the slide (pistol).
+pub fn gun_fx(w: &crate::content::Weapon) -> GunFx {
+    let port = Some(if w.pistol { Vec3::new(0.012, 0.042, 0.04) } else { Vec3::new(0.027, 0.05, 0.12) });
+    let casing = if w.key.contains("shot") || w.caliber.contains("gauge") {
         Casing::Shell
     } else if w.pistol {
         Casing::Pistol
@@ -191,7 +139,7 @@ pub fn casing_mesh(c: Casing) -> crate::content::MeshData {
 
 #[derive(Clone, Copy, Debug)]
 struct Particle {
-    sprite: Sprite,
+    tex: usize,
     blend: FxBlend,
     pos: Vec3,
     vel: Vec3,
@@ -204,9 +152,6 @@ struct Particle {
     color: [f32; 4],
     t: f32,
     life: f32,
-    /// Plays its sprite's frames over its life (else stays on `frame`).
-    animate: bool,
-    frame: u32,
     /// Drawn along its velocity (a spark's streak) this many seconds long.
     streak: f32,
     /// Stays in a world point's frame: a flash is drawn at the muzzle it left.
@@ -215,7 +160,7 @@ struct Particle {
 
 #[derive(Clone, Copy, Debug)]
 struct Decal {
-    sprite: Sprite,
+    tex: usize,
     pos: Vec3,
     rot: Quat,
     size: f32,
@@ -325,8 +270,8 @@ impl Effects {
         }
     }
 
-    fn particle(sprite: Sprite, blend: FxBlend, pos: Vec3, size: f32, life: f32, color: [f32; 4]) -> Particle {
-        Particle { sprite, blend, pos, vel: Vec3::ZERO, drag: 1.0, gravity: 0.0, size: (size, size), roll: 0.0, spin: 0.0, color, t: 0.0, life, animate: false, frame: 0, streak: 0.0, fade_in: 0.0 }
+    fn particle(tex: usize, blend: FxBlend, pos: Vec3, size: f32, life: f32, color: [f32; 4]) -> Particle {
+        Particle { tex, blend, pos, vel: Vec3::ZERO, drag: 1.0, gravity: 0.0, size: (size, size), roll: 0.0, spin: 0.0, color, t: 0.0, life, streak: 0.0, fade_in: 0.0 }
     }
 
     /// A chip of debris thrown off at `vel`, tumbling.
@@ -356,9 +301,10 @@ impl Effects {
         let side = Particle { size: (0.42 * s, 0.16 * s), streak: -1.0, vel: fwd, ..Self::particle(self.sprites.flash, FxBlend::Add, muzzle + fwd * 0.15 * s, 0.0, 0.035, [1.4, 1.2, 1.0, 0.9]) };
         self.push(side);
         self.light(muzzle + fwd * 0.05, Vec3::new(5.0, 3.2, 1.4) * s, 4.0, 0.06, false);
-        // The hot gas (Metro's gas sprites are lit, so they add) and then smoke drifting off.
-        let frame = (self.rand() * self.sprites.gas.frames() as f32) as u32;
-        let gas = Particle { size: (0.3 * s, 0.4 * s), streak: -1.0, vel: fwd * 2.0, frame, ..Self::particle(self.sprites.gas, FxBlend::Add, muzzle + fwd * 0.18 * s, 0.0, 0.12, [0.5, 0.45, 0.4, 0.8]) };
+        // The hot gas and then smoke drifting off. (A draw spent first: the ones after it keep
+        // their place in the sequence.)
+        self.rand();
+        let gas = Particle { size: (0.3 * s, 0.4 * s), streak: -1.0, vel: fwd * 2.0, ..Self::particle(self.sprites.gas, FxBlend::Add, muzzle + fwd * 0.18 * s, 0.0, 0.12, [0.5, 0.45, 0.4, 0.8]) };
         self.push(gas);
         for k in 0..3 {
             let mut g = Self::particle(self.sprites.dust, FxBlend::Alpha, muzzle + fwd * (0.04 + 0.06 * k as f32), 0.06, self.range(0.9, 1.4), [0.72, 0.72, 0.72, 0.32]);
@@ -443,7 +389,7 @@ impl Effects {
         };
         // (A creature's body wears its own mark of it, where it was hit, as it moves.)
         if !matches!(hit.what, HitWhat::Body(..)) {
-            self.decals.push_back(Decal { sprite: self.sprites.hole, pos: at, rot, size, color, t: 0.0, life: DECAL_LIFE, on });
+            self.decals.push_back(Decal { tex: self.sprites.hole, pos: at, rot, size, color, t: 0.0, life: DECAL_LIFE, on });
             self.stats.holes += 1;
         }
         while self.decals.len() > MAX_DECALS {
@@ -462,7 +408,6 @@ impl Effects {
             Surface::Flesh => {}
             Surface::Metal | Surface::Target => {
                 let mut flare = Self::particle(self.sprites.sparks, FxBlend::Add, at + n * 0.02, 0.18, 0.12, [1.5, 1.2, 0.8, 1.0]);
-                flare.animate = true;
                 flare.roll = self.range(0.0, 6.28);
                 self.push(flare);
                 for _ in 0..7 {
@@ -496,7 +441,6 @@ impl Effects {
         let n = n.normalize_or(Vec3::Y);
         let k = ((intensity - 0.5) / 0.5).clamp(0.2, 1.0);
         let mut flare = Self::particle(self.sprites.sparks, FxBlend::Add, at + n * 0.01, 0.1 + 0.1 * k, 0.1, [1.5, 1.2, 0.8, 1.0]);
-        flare.animate = true;
         flare.roll = self.range(0.0, 6.28);
         self.push(flare);
         for _ in 0..(4.0 + 10.0 * k) as usize {
@@ -530,8 +474,7 @@ impl Effects {
     /// A knife went in at `at` (a little puff, sparks off a target plate).
     pub fn knife_hit(&mut self, at: Vec3, metal: bool) {
         if metal {
-            let mut flare = Self::particle(self.sprites.sparks, FxBlend::Add, at, 0.14, 0.1, [1.5, 1.2, 0.8, 1.0]);
-            flare.animate = true;
+            let flare = Self::particle(self.sprites.sparks, FxBlend::Add, at, 0.14, 0.1, [1.5, 1.2, 0.8, 1.0]);
             self.push(flare);
         } else {
             let mut d = Self::particle(self.sprites.dust, FxBlend::Alpha, at, 0.05, 0.5, [0.55, 0.45, 0.32, 0.4]);
@@ -543,7 +486,6 @@ impl Effects {
     /// A lit fuse at `at` sputters (call every frame it burns).
     pub fn fuse(&mut self, at: Vec3) {
         let mut s = Self::particle(self.sprites.sparks, FxBlend::Add, at, 0.05, 0.08, [1.6, 1.1, 0.6, 1.0]);
-        s.animate = true;
         s.roll = self.range(0.0, 6.28);
         self.push(s);
         if self.rand() < 0.4 {
@@ -569,10 +511,9 @@ impl Effects {
         if !fire {
             self.push(Self::particle(self.sprites.star, FxBlend::Add, at + up * 0.3, 3.2, 0.18, [2.0, 1.8, 1.5, 1.0]));
         }
-        // The fireball: the game's animated one (fire into smoke), or flashes.
+        // The fireball: flashes.
         for k in 0..if fire { 4 } else { 6 } {
-            let mut f = Self::particle(self.sprites.fireball, if self.sprites.fireball.from_game { FxBlend::Alpha } else { FxBlend::Add }, at + up * (0.25 + 0.15 * k as f32) + self.unit() * 0.3, 1.0, self.range(0.8, 1.2), [1.3, 1.2, 1.1, 1.0]);
-            f.animate = true;
+            let mut f = Self::particle(self.sprites.fireball, FxBlend::Add, at + up * (0.25 + 0.15 * k as f32) + self.unit() * 0.3, 1.0, self.range(0.8, 1.2), [1.3, 1.2, 1.1, 1.0]);
             f.size = (0.9, 2.2);
             f.vel = up * self.range(0.5, 1.5) + self.unit() * 0.6;
             f.drag = 0.5;
@@ -597,7 +538,6 @@ impl Effects {
         for k in 0..12 {
             let life = self.range(3.0, 5.0);
             let mut s = Self::particle(self.sprites.smoke, FxBlend::Alpha, at + up * (0.2 + 0.15 * k as f32) + self.unit() * 0.6, 1.4, life, [0.36, 0.35, 0.33, 0.8]);
-            s.animate = true;
             s.size = (1.4, 4.0);
             s.vel = up * self.range(0.5, 1.4) + self.unit() * 0.8;
             s.drag = 0.35;
@@ -608,7 +548,7 @@ impl Effects {
         }
         // A scorch mark on the ground below.
         let rot = Quat::from_rotation_arc(Vec3::Z, Vec3::Y) * Quat::from_rotation_z(self.range(0.0, 6.28));
-        self.decals.push_back(Decal { sprite: self.sprites.scorch, pos: Vec3::new(at.x, 0.003, at.z), rot, size: if fire { 2.2 } else { 1.8 }, color: [1.0; 3], t: 0.0, life: 40.0, on: None });
+        self.decals.push_back(Decal { tex: self.sprites.scorch, pos: Vec3::new(at.x, 0.003, at.z), rot, size: if fire { 2.2 } else { 1.8 }, color: [1.0; 3], t: 0.0, life: 40.0, on: None });
         while self.decals.len() > MAX_DECALS {
             self.decals.pop_front();
         }
@@ -691,8 +631,7 @@ impl Effects {
         let fires = self.fires.clone();
         for (at, t) in fires {
             if self.rand() < 0.7 {
-                let mut f = Self::particle(self.sprites.fireball, if self.sprites.fireball.from_game { FxBlend::Alpha } else { FxBlend::Add }, at + self.unit() * 0.7 * Vec3::new(1.0, 0.0, 1.0) + Vec3::Y * 0.25, 0.5, 0.7, [1.3, 1.15, 1.0, (1.0 - t / 6.0).max(0.25)]);
-                f.animate = true;
+                let mut f = Self::particle(self.sprites.fireball, FxBlend::Add, at + self.unit() * 0.7 * Vec3::new(1.0, 0.0, 1.0) + Vec3::Y * 0.25, 0.5, 0.7, [1.3, 1.15, 1.0, (1.0 - t / 6.0).max(0.25)]);
                 f.vel = Vec3::Y * self.range(0.8, 1.6);
                 f.size = (0.55, 1.4);
                 self.push(f);
@@ -725,7 +664,6 @@ impl Effects {
             let k = (p.t / p.life).clamp(0.0, 1.0);
             let size = p.size.0 + (p.size.1 - p.size.0) * k.sqrt();
             let fade = if p.fade_in > 0.0 { (p.t / p.fade_in).min(1.0) } else { 1.0 } * (1.0 - k).powf(if p.blend == FxBlend::Add { 1.0 } else { 1.5 });
-            let frame = if p.animate { (k * p.sprite.frames() as f32) as u32 } else { p.frame };
             let (shape, dims, pos) = if p.streak > 0.0 && p.vel.length() > 0.1 {
                 let len = (p.vel.length() * p.streak).max(size);
                 (FxShape::Axial(p.vel), Vec2::new(len, size), p.pos - p.vel * p.streak * 0.5)
@@ -735,7 +673,7 @@ impl Effects {
                 (FxShape::Billboard { roll: p.roll }, Vec2::splat(size), p.pos)
             };
             let c = p.color;
-            out.push(FxDraw { tex: p.sprite.tex, pos, size: dims, shape, color: [c[0], c[1], c[2], c[3] * fade], uv: p.sprite.frame(frame), blend: p.blend });
+            out.push(FxDraw { tex: p.tex, pos, size: dims, shape, color: [c[0], c[1], c[2], c[3] * fade], uv: [0.0, 0.0, 1.0, 1.0], blend: p.blend });
         }
         for t in &self.tracers {
             // The first frame it's already on its way (it left between frames).
@@ -746,13 +684,13 @@ impl Effects {
                 continue;
             }
             let mid = t.from + t.dir * (0.5 * (head + tail));
-            out.push(FxDraw { tex: self.sprites.tracer.tex, pos: mid, size: Vec2::new(head - tail, 0.06), shape: FxShape::Axial(t.dir), color: [2.6, 2.0, 1.2, 1.0], uv: self.sprites.tracer_uv, blend: FxBlend::Add });
+            out.push(FxDraw { tex: self.sprites.tracer, pos: mid, size: Vec2::new(head - tail, 0.06), shape: FxShape::Axial(t.dir), color: [2.6, 2.0, 1.2, 1.0], uv: [0.0, 0.0, 1.0, 1.0], blend: FxBlend::Add });
             // Its glowing head: from behind (your own shots) the streak is end on, a receding dot.
-            out.push(FxDraw { tex: self.sprites.glow.tex, pos: t.from + t.dir * head, size: Vec2::splat(0.09), shape: FxShape::Billboard { roll: 0.0 }, color: [2.4, 1.6, 0.7, 1.0], uv: [0.0, 0.0, 1.0, 1.0], blend: FxBlend::Add });
+            out.push(FxDraw { tex: self.sprites.glow, pos: t.from + t.dir * head, size: Vec2::splat(0.09), shape: FxShape::Billboard { roll: 0.0 }, color: [2.4, 1.6, 0.7, 1.0], uv: [0.0, 0.0, 1.0, 1.0], blend: FxBlend::Add });
         }
         for d in &self.decals {
             let fade = ((d.life - d.t) / 2.0).clamp(0.0, 1.0);
-            out.push(FxDraw { tex: d.sprite.tex, pos: d.pos, size: Vec2::splat(d.size), shape: FxShape::Fixed(d.rot), color: [d.color[0], d.color[1], d.color[2], fade], uv: [0.0, 0.0, 1.0, 1.0], blend: FxBlend::Alpha });
+            out.push(FxDraw { tex: d.tex, pos: d.pos, size: Vec2::splat(d.size), shape: FxShape::Fixed(d.rot), color: [d.color[0], d.color[1], d.color[2], fade], uv: [0.0, 0.0, 1.0, 1.0], blend: FxBlend::Alpha });
         }
         out
     }
@@ -784,9 +722,9 @@ mod tests {
 
     fn sprites() -> Sprites {
         let mut n = 0;
-        Sprites::load(|_, _| {
+        Sprites::load(|_| {
             n += 1;
-            (n, false)
+            n
         })
     }
 
@@ -817,7 +755,7 @@ mod tests {
         assert!(sprites.iter().any(|s| s.blend == FxBlend::Alpha && matches!(s.shape, FxShape::Fixed(_)) && (s.pos.z - 10.0).abs() < 0.01), "a hole in the target");
         // The tracer streaks off towards the hit, its head glowing.
         fx.update(1.0 / 90.0, &w, &none);
-        let tracer = |fx: &Effects| fx.sprites().into_iter().filter(|s| s.tex == fx.sprites.tracer.tex || s.tex == fx.sprites.glow.tex).map(|s| s.pos.z).fold(0.0f32, f32::max);
+        let tracer = |fx: &Effects| fx.sprites().into_iter().filter(|s| s.tex == fx.sprites.tracer || s.tex == fx.sprites.glow).map(|s| s.pos.z).fold(0.0f32, f32::max);
         let z1 = tracer(&fx);
         fx.update(1.0 / 90.0, &w, &none);
         let z2 = tracer(&fx);
@@ -841,12 +779,6 @@ mod tests {
         }
         assert_eq!(fx.casings().count(), 0, "faded away");
         assert_eq!(fx.decal_count(), 1, "the hole stays a while");
-    }
-
-    #[test]
-    fn revolvers_keep_their_brass() {
-        assert!(keeps_casings("wpn_revolver") && keeps_casings("wpn_duplet"));
-        assert!(!keeps_casings("wpn_ak") && !keeps_casings("builtin_pistol"));
     }
 
     #[test]

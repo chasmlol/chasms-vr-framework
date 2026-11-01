@@ -1,9 +1,8 @@
 //! Close renders of the drawn hand holding things as the rig takes them: the controller brought
 //! slowly to a thing (the hand stopped where its palm and fingers meet it), the grip squeezed, the
-//! thing lifted clear; then the body solved and drawn (Metro's when its assets are extracted, else
-//! the mannequin) with the thing beside it. `captures/grasp/<case>_<view>.png`. For looking at:
-//! the fingers should close on the thing from where they are, on its surface, neither floating off
-//! it nor sunk in.
+//! thing lifted clear; then the body solved and drawn (the mannequin) with the thing beside it.
+//! `captures/grasp/<case>_<view>.png`. For looking at: the fingers should close on the thing from
+//! where they are, on its surface, neither floating off it nor sunk in.
 
 use glam::{Mat3, Mat4, Quat, Vec3};
 use rustvr_avatar::{HeldDraw, HeldModel, HeldPart};
@@ -187,23 +186,6 @@ fn hands_close_on_what_they_take() {
                 hands_only: false,
                 settings: &settings,
             });
-        }
-        if let (Some(g), Ok(m)) = (grasp.as_ref(), rustvr_asset::load_model(&rustvr_asset::default_root().join("metro2033"), "body_miller")) {
-            let curls = rustvr_avatar::grasp_curls(Some(&m.bones), &body.body.joints, 1, body.body.hands[1].pose, g).unwrap();
-            let palm = Vec3::from_array(body.body.hands[1].pose.pos);
-            eprintln!("{}: wrap curls {:?}; wrist {:.3?}, its distance from the thing {:.3}", case.name, curls.map(|c| c.map(|v| (v * 100.0).round() / 100.0)), palm, g.distance(palm));
-            // Each segment's nearest to the surface: straight, and wrapped.
-            let gap = |segs: &[Vec<(Vec3, Vec3)>; 5]| segs.clone().map(|s| s.iter().map(|&(a, b)| ((0..=10).map(|t| g.distance(a.lerp(b, t as f32 / 10.0))).fold(f32::INFINITY, f32::min) * 1000.0).round() / 10.0).collect::<Vec<_>>());
-            let straight = rustvr_avatar::finger_segments(Some(&m.bones), &body.body.joints, 1, body.body.hands[1].pose, [[0.0; 3]; 5]).unwrap();
-            let wrapped = rustvr_avatar::finger_segments(Some(&m.bones), &body.body.joints, 1, body.body.hands[1].pose, curls).unwrap();
-            eprintln!("{}: segment gaps (cm) straight {:?}
-   wrapped {:?}", case.name, gap(&straight), gap(&wrapped));
-            if let Some(rustvr_avatar::Solid::Box { centre, rot, .. }) = g.solids.first() {
-                let local = |p: Vec3| ((rot.inverse() * (p - *centre)) * 1000.0).round() / 10.0;
-                for f in 0..5 {
-                    eprintln!("   finger {f} (thing's frame, cm): {:?}", wrapped[f].iter().map(|&(a, b)| (local(a), local(b))).collect::<Vec<_>>());
-                }
-            }
         }
         let model = box_model(case.half);
         let all = HeldPart { part: 0, mesh: 0, vertices: (0..24).collect(), indices: model.meshes[0].indices.clone() };

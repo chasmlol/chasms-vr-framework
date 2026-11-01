@@ -1699,7 +1699,7 @@
 /**
  * The runtime draws it (with the player's hands, lit by the game's [`crate::GameLighting`]) from
  * the model its `name` gives as `<game>/<asset key>` in the runtime's asset cache
- * (`metro2033/wpn_2012`); the game doesn't. A weapon is drawn with its moving parts where its
+ * (`mygame/rifle_01`); the game doesn't. A weapon is drawn with its moving parts where its
  * [`ObjectState`] puts them; a magazine (or a round) naming the same model as its gun's magazine
  * (or round) part, in place (magazine space is the gun's). A prop ([`OBJ_PROP`]) the game draws
  * is the runtime's to draw once a hand has had it ([`OS_RUNTIME_DRAWN`]), its model at
@@ -1710,7 +1710,7 @@
 #define RVR_OBJF_RUNTIME_DRAWS (1 << 6)
 
 /**
- * Weapons: the game keeps this gun's ammunition (Metro's magazine and reserve), so the runtime's
+ * Weapons: the game keeps this gun's ammunition (its magazine and reserve), so the runtime's
  * rounds follow the game's instead of being unlimited. The gun arrives (and comes back with each
  * `spawn_seq`) holding `rounds` in all, not a full magazine: a self-loading gun chambers one of
  * them and its seated magazine holds the rest (0: chamber and magazine empty). A magazine the hand
@@ -2063,7 +2063,7 @@
 /**
  * A prop with [`OBJF_RUNTIME_DRAWS`] a hand has had (holds, pulls or once did): the runtime draws
  * it, so the game hides its own. (A game may not draw a thing moved from where its level put it:
- * Metro files its clutter under the part of the level it starts in.) If the flag goes, the
+ * it may file its clutter under the part of the level it starts in.) If the flag goes, the
  * runtime goes on drawing it for [`RUNTIME_DRAW_TAIL`] seconds while the game shows its own again.
  */
 #define RVR_OS_RUNTIME_DRAWN (1 << 16)
@@ -2286,9 +2286,9 @@
 #define RVR_GL_AMBIENT 5
 
 /**
- * Metro 2033 Redux's deferred shading (everything above).
+ * A deferred renderer's shading (everything above).
  */
-#define RVR_LM_METRO 0
+#define RVR_LM_DEFERRED 0
 
 /**
  * Gamebryo's forward per-pixel lighting, as Oblivion's `ShadowLightShader` and `SkinShader` do it
@@ -2318,8 +2318,8 @@
 #define RVR_GL_GB_POINT 17
 
 /**
- * The light reaches the first-person model (its volume was shaded with depth test Always: the
- * game's "mode A"). Others never light it.
+ * The light reaches the first-person model (its volume was shaded with depth test Always).
+ * Others never light it.
  */
 #define RVR_GLF_REACHES_VIEWMODEL (1 << 0)
 

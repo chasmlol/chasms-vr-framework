@@ -1,9 +1,8 @@
 //! The player's body -> what they're doing in the game.
 //!
-//! Ported from the Metro 2033 VR mod (`player.cpp`: `Update` and `MenuControls`), where these
-//! numbers were tuned by playing. Everything here works in tracking space from controller poses,
-//! so it's the same for every game: the adapter only maps the results into its world and onto its
-//! own input.
+//! The numbers here were tuned by playing. Everything here works in tracking space from controller
+//! poses, so it's the same for every game: the adapter only maps the results into its world and
+//! onto its own input.
 //!
 //! * The gun sits in the firing hand (rig grip on the palm, barrel along the controller's aim) and
 //!   pivots around that hand when the other hand holds the foregrip.
@@ -158,7 +157,7 @@ pub enum MagState {
     Seated,
 }
 
-/// A button's press / tap / long-press tracking (`Btn` in the Metro mod).
+/// A button's press / tap / long-press tracking.
 #[derive(Clone, Copy, Default)]
 struct Btn {
     down: bool,
@@ -319,7 +318,7 @@ pub fn sight_line(rig: &WeaponRig) -> (Vec3, Vec3) {
     (sight, Vec3::Z)
 }
 
-/// Default rig (the Metro mod's HudRig defaults) for when the game reports none.
+/// Default rig for when the game reports none.
 pub fn default_rig() -> WeaponRig {
     WeaponRig {
         grip: [0.10, -0.15, 0.39],
@@ -698,8 +697,8 @@ impl Mechanics {
             }
 
             // The game's own recoil (`rig::kick`), from the shots the game says it fired: its kicks
-            // turn the gun in weapon space, which here is the game's (for Metro its viewmodel camera
-            // space, so a view kick turns the gun about the eye as the flat game turns its camera).
+            // turn the gun in weapon space, which here is the game's (its viewmodel camera space,
+            // say, so a view kick turns the gun about the eye as the flat game turns its camera).
             // Held in one hand it kicks harder, as on the rig.
             let ia = &c.interaction;
             if ia.game_recoil && !inp.held_kicks.is_empty() {
@@ -746,7 +745,7 @@ impl Mechanics {
             }
             // Hysteresis: in at 6 cm, out past 12 cm, and never mid-burst (a game's fire animation
             // nudges the gun, and with it the sights; dropping out of the aim pose then would pull
-            // the gun off the eye, further out of it: Metro did).
+            // the gun off the eye, further out of it).
             let firing = dc.trigger > 0.5;
             let keep = if firing { 0.35 } else { 0.12 };
             let ads = (best < 0.06 && aim.dot(head_fwd) > 0.9) || (self.last_ads && best < keep && aim.dot(head_fwd) > 0.8) || dc.squeeze > 0.7;
@@ -1049,7 +1048,7 @@ impl Mechanics {
                     continue;
                 }
                 // Aiming down the sights puts the firing hand near the face with the grip squeezed:
-                // that's not the gas-mask gesture. (The Metro mod fired it anyway.)
+                // that's not the face gesture.
                 if h == dom && weapon.is_some_and(|w| w.ads) {
                     continue;
                 }
@@ -1910,7 +1909,7 @@ mod tests {
     }
 
     #[test]
-    fn zones_match_the_metro_mod() {
+    fn zones_lie_round_the_head_and_body() {
         assert_eq!(zone_of(Vec3::ZERO, Vec3::new(0.0, -0.05, 0.08)), Zone::Face);
         assert_eq!(zone_of(Vec3::ZERO, Vec3::new(0.0, 0.15, 0.0)), Zone::HeadTop);
         assert_eq!(zone_of(Vec3::new(0.2, -0.2, -0.1), Vec3::new(0.2, -0.2, -0.1)), Zone::Shoulder);

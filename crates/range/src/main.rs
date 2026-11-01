@@ -18,10 +18,8 @@
 //!
 //! Options: `--weapon <name|scoped|first>` picks the starting gun (legacy); `--fps <n>` caps the
 //! frame rate when the runtime isn't in lockstep (to test a game slower than the headset);
-//! `--table <key>[,<key>...]` lays those guns (asset keys, `wpn_duplet`) nearest on the table at
-//! your right hand (physical mode; the scenarios that handle a particular gun use it);
-//! `--runtime-draws` has the runtime draw Metro's guns and their magazines (`OBJF_RUNTIME_DRAWS`,
-//! from the same models, with the player's hands) instead of the range, as a game adapter does.
+//! `--table <key>[,<key>...]` lays those guns (their keys, `builtin_pistol`) nearest on the table
+//! at your right hand (physical mode; the scenarios that handle a particular gun use it);
 //! `--arena <range|arena|bench|climb>` starts the player in one of the melee areas (`arenas`).
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
@@ -109,10 +107,6 @@ struct Game {
     targets: Vec<content::Target>,
     weapon: usize,
     hud: (egui::Context, EguiPainter),
-    /// `--metro-hud`: the HUD stands in for Metro 2033 Redux's UI layer (its pieces where Redux
-    /// draws them, additive over black) and is described with Redux's layout, as Metro's adapter
-    /// does, so the runtime's HUD in pieces can be tested without the game. The layout's been sent.
-    metro_hud: Option<bool>,
 
     time: f64,
     feet: Vec3,
@@ -194,8 +188,6 @@ fn main() -> Result<()> {
     let mut fps_cap = 0.0f64;
     let mut legacy = false;
     let mut front: Vec<String> = Vec::new();
-    let mut runtime_draws = false;
-    let mut metro_hud = false;
     let mut arena = String::from("range");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -203,16 +195,13 @@ fn main() -> Result<()> {
             "--weapon" => start_weapon = args.next().unwrap_or_default(),
             "--fps" => fps_cap = args.next().and_then(|v| v.parse().ok()).unwrap_or(0.0),
             "--legacy" => legacy = true,
-            "--runtime-draws" => runtime_draws = true,
-            "--metro-hud" => metro_hud = true,
             "--arena" => arena = args.next().unwrap_or_default(),
             "--table" => front = args.next().unwrap_or_default().split(',').filter(|k| !k.is_empty()).map(String::from).collect(),
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
     let gpu = Gpu::new()?;
-    let mut game = Game::new(gpu, &start_weapon, legacy, &front, runtime_draws)?;
-    game.metro_hud = metro_hud.then_some(false);
+    let mut game = Game::new(gpu, &start_weapon, legacy, &front)?;
     let Some((feet, yaw)) = arenas::start(&arena) else {
         anyhow::bail!("no area {arena}: {}", arenas::starts().map(|s| s.0).join(", "));
     };
@@ -225,9 +214,8 @@ fn main() -> Result<()> {
 }
 
 impl Game {
-    fn new(gpu: Gpu, start_weapon: &str, legacy: bool, front: &[String], runtime_draws: bool) -> Result<Game> {
-        let assets = rustvr_asset::default_root();
-        let mut renderer = Renderer::new(&gpu, assets.clone())?;
+    fn new(gpu: Gpu, start_weapon: &str, legacy: bool, front: &[String]) -> Result<Game> {
+        let mut renderer = Renderer::new(&gpu)?;
         let (grid, plain) = content::room();
         let scenery = vec![renderer.upload(&gpu, &grid)?, renderer.upload(&gpu, &plain)?];
         let targets = content::targets();
@@ -239,15 +227,9 @@ impl Game {
         hand_data.add_box(Vec3::new(-0.035, -0.05, -0.06), Vec3::new(0.035, 0.03, 0.05), [205, 160, 130, 255]);
         let hand_box = renderer.upload(&gpu, &hand_data)?;
 
-        // Guns: Metro 2033's own when they've been extracted, plus the built-in ones.
-        let mut list = content::metro_weapons(&assets);
-        let from_game = list.len();
-        list.push(content::builtin_rifle("Range rifle", false));
-        list.push(content::builtin_rifle("Range rifle (scoped)", true));
-        list.push(content::builtin_pistol());
-        // The built-in guns are held with the Kalash's own hands when Metro's are there.
-        content::share_game_hands(&mut list);
-        tracing::info!("range: {} guns ({} from Metro 2033)", list.len(), from_game);
+        // Guns: the built-in ones.
+        let list = vec![content::builtin_rifle("Range rifle", false), content::builtin_rifle("Range rifle (scoped)", true), content::builtin_pistol()];
+        tracing::info!("range: {} guns", list.len());
         let mut weapons = Vec::new();
         for w in list {
             let parts = w.parts.iter().map(|p| renderer.upload(&gpu, p)).collect::<Result<Vec<_>>>()?;
@@ -261,12 +243,9 @@ impl Game {
         };
 
         let mut armory = (!legacy).then(|| physical::Armory::with_front(&weapons.iter().map(|g| &g.w).collect::<Vec<_>>(), front));
-        if let (Some(a), true) = (&mut armory, runtime_draws) {
-            a.let_runtime_draw(&weapons.iter().map(|g| &g.w).collect::<Vec<_>>());
-        }
         // Grenades and knives (physical mode): on their own table at your left hand, and in the
         // pouches.
-        let throw_list = if legacy { Vec::new() } else { throwables::all(&assets) };
+        let throw_list = if legacy { Vec::new() } else { throwables::all() };
         let mut scenery = scenery;
         // The melee weapons' handles and damagers, by the ids they're registered with.
         let mut melee_weapons: Box<MeleeWeapons> = bytemuck::zeroed_box();
@@ -309,7 +288,6 @@ impl Game {
                 let tris = rustvr_guns::hulls::triangles(&t.parts, 0..t.parts.len(), t.fix);
                 a.add_hulls(d.id, &rustvr_guns::hulls::convex_parts(&tris, 4, MAX_HULL_POINTS));
             }
-            a.add_sound_sets(&placed.iter().map(|(i, d)| (d.id, throwables::sound_set(&throw_list[*i]))).collect::<Vec<_>>());
             let table: Vec<_> = throwables::furniture().into_iter().chain(arenas::furniture()).collect();
             a.add_collision(&table.iter().map(|(lo, hi, _)| (*lo, *hi)).collect::<Vec<_>>());
             let mut m = MeshData::default();
@@ -325,9 +303,8 @@ impl Game {
         let throw_meshes = throw_list.iter().map(|t| t.parts.iter().map(|p| renderer.upload(&gpu, p)).collect::<Result<Vec<_>>>()).collect::<Result<Vec<_>>>()?;
         let fx_meshes = [Casing::Rifle, Casing::Pistol, Casing::Shell].iter().map(|c| renderer.upload(&gpu, &effects::casing_mesh(*c))).collect::<Result<Vec<_>>>()?;
         let valve_meshes = content::valves().iter().map(|v| renderer.upload(&gpu, &content::valve_mesh(v))).collect::<Result<Vec<_>>>()?;
-        let sprites = effects::Sprites::load(|key, fallback| renderer.fx_texture(&gpu, key, fallback));
-        tracing::info!("range: effect sprites {}", if sprites.flash.from_game { "from Metro 2033" } else { "built in" });
-        let gun_fx = weapons.iter().map(|g| effects::gun_fx(&g.w, &assets)).collect();
+        let sprites = effects::Sprites::load(|name| renderer.fx_texture(name));
+        let gun_fx = weapons.iter().map(|g| effects::gun_fx(&g.w)).collect();
         // What bullets hit: the room (stone), the furniture (wood, the steel rails metal), the plates.
         let mut boxes: Vec<(Vec3, Vec3, Surface)> = content::shell().into_iter().map(|(lo, hi)| (lo, hi, Surface::Stone)).collect();
         for (lo, hi, c) in content::furniture().into_iter().chain(if legacy { Vec::new() } else { throwables::furniture().into_iter().chain(arenas::furniture()).collect() }) {
@@ -357,7 +334,6 @@ impl Game {
             targets,
             weapon,
             hud: (egui::Context::default(), painter),
-            metro_hud: None,
             time: 0.0,
             feet: Vec3::ZERO,
             vel_y: 0.0,
@@ -993,7 +969,7 @@ impl Game {
         let w = &self.scene.weapons[weapon].w;
         let round = if w.pistol {
             combat::PISTOL
-        } else if w.key.contains("saiga") || w.key.contains("shot") || w.caliber.contains("gauge") {
+        } else if w.key.contains("shot") || w.caliber.contains("gauge") {
             combat::SHOTGUN
         } else {
             combat::RIFLE
@@ -1203,7 +1179,7 @@ impl Game {
                 for part in 0..t.parts.len() {
                     let gone = (s.flags & OS_PIN_PULLED != 0 && t.pin_parts.contains(&part)) || (s.flags & OS_ARMED != 0 && t.lever_parts.contains(&part));
                     if !gone {
-                        draws.push((throwables::part_id(i, part), model, [1.0; 4], glow, t.from_game));
+                        draws.push((throwables::part_id(i, part), model, [1.0; 4], glow, false));
                     }
                 }
             }
@@ -1315,10 +1291,6 @@ impl Game {
             player_frame: 0,
             states_frame: 0,
         };
-        if self.metro_hud == Some(false) && slot_hud.is_some() {
-            self.adapter.write_hud_layout(&metro_2033_redux_layout(info.hud_aspect));
-            self.metro_hud = Some(true);
-        }
         self.adapter.submit(info);
         Ok(())
     }
@@ -1336,7 +1308,6 @@ impl Game {
         // Physical mode: no gun in hand, no ammo counter.
         let show_gun = self.armory.is_none() || self.held.is_some();
         let name = weapon.name.clone();
-        let metro = self.metro_hud.is_some();
         // The melee: the player's health, the focus that slows time, stamina (when kept), the spell
         // ready in the spell hand.
         let r = self.rt_melee;
@@ -1357,16 +1328,6 @@ impl Game {
                 painter.rect_filled(button, 8.0, egui::Color32::from_rgb(160, 60, 30));
                 painter.text(button.center(), egui::Align2::CENTER_CENTER, "Resume (menu button)", egui::FontId::proportional(18.0), egui::Color32::WHITE);
                 painter.text(egui::pos2(size.x / 2.0, size.y * 0.7), egui::Align2::CENTER_CENTER, "RustVR test range", egui::FontId::proportional(16.0), egui::Color32::GRAY);
-            } else if metro {
-                // Metro's UI, where Redux draws it (fractions of the layer: see the layout).
-                let at = |u: f32, v: f32| egui::pos2(size.x * u, size.y * v);
-                let orange = egui::Color32::from_rgb(230, 120, 40);
-                painter.text(at(0.43, 0.84), egui::Align2::CENTER_TOP, "Shhh... Something moving in the next room.", egui::FontId::proportional(18.0), orange);
-                painter.text(at(0.43, 0.88), egui::Align2::CENTER_TOP, "Open the gate, cover.", egui::FontId::proportional(18.0), orange);
-                painter.text(at(0.5, 0.72), egui::Align2::CENTER_CENTER, "Use L to move.", egui::FontId::proportional(16.0), egui::Color32::WHITE);
-                if show_gun {
-                    painter.text(at(0.9, 0.9), egui::Align2::CENTER_CENTER, format!("{ammo} | {mag}"), egui::FontId::proportional(24.0), egui::Color32::LIGHT_GRAY);
-                }
             } else {
                 if show_gun {
                     let panel = egui::Rect::from_min_size(egui::pos2(20.0, size.y - 90.0), egui::vec2(240.0, 70.0));

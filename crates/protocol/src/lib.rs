@@ -15,7 +15,7 @@
 //!
 //! # Spaces and units
 //!
-//! Everything is left-handed metres with X right, Y up and Z forward (the DirectX/Unity/4A
+//! Everything is left-handed metres with X right, Y up and Z forward (the DirectX/Unity
 //! convention). Quaternions are `[x, y, z, w]`. Matrices are column-major `[f32; 16]` (glam's
 //! layout): `m[12..15]` is the translation.
 //!
@@ -547,30 +547,30 @@ pub enum Action {
     Crouch = 3,
     Sprint = 4,
     Use = 5,
-    /// Use button held (Metro: journal and map).
+    /// Use button held.
     UseHold = 6,
     Reload = 7,
-    /// Reload button held (Metro: change gas-mask filter).
+    /// Reload button held.
     ReloadHold = 8,
     NextWeapon = 9,
     PrevWeapon = 10,
     Menu = 11,
     Flashlight = 12,
-    /// Flashlight button held (Metro: charge the battery).
+    /// Flashlight button held.
     FlashlightHold = 13,
     Throw = 14,
     Melee = 15,
     /// Off-hand wrist turned up in front of the eyes.
     Watch = 16,
-    /// Grip squeezed with a hand at the eyes (Metro: gas mask on or off).
+    /// Grip squeezed with a hand at the eyes.
     GestureFace = 17,
-    /// ... on top of the head (Metro: night vision).
+    /// ... on top of the head.
     GestureHeadTop = 18,
-    /// ... on the chest (Metro: medkit).
+    /// ... on the chest.
     GestureChest = 19,
-    /// ... over the shoulder (Metro: next weapon).
+    /// ... over the shoulder.
     GestureShoulder = 20,
-    /// ... at the hip (Metro: knife).
+    /// ... at the hip.
     GestureHip = 21,
     MenuAccept = 22,
     MenuBack = 23,
@@ -587,9 +587,9 @@ pub enum Action {
     WeaponWheel = 32,
     /// The radial action menu is open.
     Inventory = 33,
-    /// Grip squeezed with a hand at the mouth (Metro: the gas mask's filter changed).
+    /// Grip squeezed with a hand at the mouth.
     GestureMouth = 34,
-    /// An open hand swept across the eyes (Metro: the gas mask wiped).
+    /// An open hand swept across the eyes.
     GestureWipe = 35,
     /// The free hand turned the page of what the other holds open (`hud::HELD_PAGES`): onwards
     /// (swept leftwards across it), or back.
@@ -1236,8 +1236,8 @@ mod tests {
     #[test]
     fn names_round_trip() {
         let mut buf = [0u8; 8];
-        set_name(&mut buf, "metro2033redux");
-        assert_eq!(name_str(&buf), "metro20");
+        set_name(&mut buf, "longgamename");
+        assert_eq!(name_str(&buf), "longgam");
         set_name(&mut buf, "range");
         assert_eq!(name_str(&buf), "range");
     }

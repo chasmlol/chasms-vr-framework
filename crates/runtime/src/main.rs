@@ -82,8 +82,8 @@ fn main() -> Result<()> {
             warmup_timeout: std::time::Duration::from_secs(90),
         };
         let all = scenario::all();
-        // `all` is the range's: the scenarios that play a real game (`metro_*`, `live`) run only by name.
-        let real_game = |name: &str| name.starts_with("metro_") || name == "live";
+        // `all` is the range's: the scenario that plays a real game (`live`) runs only by name.
+        let real_game = |name: &str| name == "live";
         let chosen: Vec<_> = all.iter().filter(|s| s.name == which || (which == "all" && !real_game(s.name))).collect();
         if chosen.is_empty() {
             bail!("no scenario '{which}' (see --list)");

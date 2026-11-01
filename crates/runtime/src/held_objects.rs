@@ -5,11 +5,12 @@
 //! lighting, wherever the rig has them.
 //!
 //! The model is the one the object's name gives (`<game>/<asset key>`, `rustvr_guns::desc::
-//! model_name`) in the runtime's asset cache, rigged by `content/rigs/<game>.toml`: exactly the gun
-//! the adapter registered (`rustvr_guns`), so weapon space is the same on both sides. Its moving
-//! parts go where the object's state puts them, as the test range draws its own guns
-//! (`rustvr_guns::desc::object_part_matrices`): the bolt or handle back with `slide`, the trigger
-//! under the finger pulling it, the rounds a magazine holds, the magazine where its own object is.
+//! model_name`) in the runtime's asset cache. A gun is drawn as the rigged gun the adapter
+//! registered (`rustvr_guns`), so weapon space is the same on both sides (no game's guns are rigged
+//! yet: [`load`] refuses them). Its moving parts go where the object's state puts them, as the test
+//! range draws its own guns (`rustvr_guns::desc::object_part_matrices`): the bolt or handle back
+//! with `slide`, the trigger under the finger pulling it, the rounds a magazine holds, the magazine
+//! where its own object is.
 //! The game's effect shader on one ([`Overlays`]: an enchanted weapon's shimmer) is drawn over it.
 //! A bow bends with its string: between its model and the game's own bent shape ([`BowDesc::bent`])
 //! as far as its state's `slide` says.
@@ -217,14 +218,8 @@ pub fn load(gpu: &Gpu, root: &std::path::Path, name: &str, kind: u32, turn_bone:
         let model = HeldModel::load(gpu, &dir, &model, &parts)?;
         return Ok(Loaded { weapon: None, model, blocks: Vec::new(), turning: Vec::new() });
     }
-    // (Rigs are Metro 2033's so far: `content/rigs/metro2033.toml`.)
-    anyhow::ensure!(game == "metro2033", "no rigs for {game}'s guns yet");
-    let dir = root.join(game);
-    let weapon = rustvr_guns::metro::metro_weapon(&dir, key)?;
-    let model = rustvr_asset::load_model(&dir, key)?;
-    let model = HeldModel::load(gpu, &dir, &model, &held_parts(&weapon))?;
-    let blocks = weapon.parts.iter().map(|m| crate::blockout::blockout(&m.vertices.iter().map(|v| Vec3::from_array(v.pos)).collect::<Vec<_>>(), &m.indices)).collect();
-    Ok(Loaded { weapon: Some(weapon), model, blocks, turning: Vec::new() })
+    // A gun (or its magazine) is drawn in its rigged parts, and no game's guns are rigged yet.
+    anyhow::bail!("no rigs for {game}'s guns yet")
 }
 
 /// Where a prop's model sits on it ([`ObjectDesc::model_pos`], `model_rot`).
@@ -603,42 +598,5 @@ mod tests {
         let p = |k: usize| places[k].unwrap().transform_point3(Vec3::X);
         assert!(p(0).distance(Vec3::new(2.0, 2.0, 3.0)) < 1e-5);
         assert!(p(1).distance(Vec3::new(1.0, 3.0, 3.0)) < 1e-5, "a quarter turn about +Z");
-    }
-
-    /// The Kalash 2012 as an adapter registers it: the runtime reads the model from its name, and
-    /// places the parts as the range does (the magazine with its own object, the glass on the body,
-    /// the trigger under the finger).
-    #[test]
-    fn a_registered_gun_names_its_model_and_moves_its_parts() {
-        let dir = rustvr_asset::default_root().join("metro2033");
-        let ids = rustvr_guns::desc::GunIds { gun: 7, magazine: 8, grip_pose: 3, support_pose: 4 };
-        let Ok((w, reg)) = rustvr_guns::metro::metro_gun(&dir, "wpn_2012", ids) else {
-            eprintln!("no Metro 2033 assets: skipped");
-            return;
-        };
-        for d in [Some(&reg.desc), reg.magazine.as_ref()].into_iter().flatten() {
-            assert!(d.flags & OBJF_RUNTIME_DRAWS != 0);
-            assert_eq!(rustvr_guns::desc::parse_model_name(name_str(&d.name)), Some(("metro2033", "wpn_2012")));
-        }
-        let m = reg.magazine.expect("a magazine template");
-        assert_eq!((m.ammo_type, m.capacity, m.flags & OBJF_TEMPLATE != 0), (reg.desc.ammo_type, 40, true));
-        assert_eq!((reg.desc.grip_pose, reg.desc.support_pose, reg.poses.len()), (3, 4, 2), "Metro's two hands on it");
-        assert!(!reg.kicks.is_empty(), "its own recoil");
-        let at = Mat4::from_translation(Vec3::new(0.2, 1.3, 0.4));
-        let s: ObjectState = bytemuck::Zeroable::zeroed();
-        let gun = part_places(&w, OBJ_WEAPON, &s, 0.0, at);
-        let mag = part_places(&w, OBJ_MAGAZINE, &s, 0.0, at);
-        assert_eq!(gun.len(), w.parts.len() + w.glass.len());
-        for i in 0..w.parts.len() {
-            let is_mag = w.mag_parts.contains(&i);
-            assert_eq!((gun[i].is_some(), mag[i].is_some()), (!is_mag, is_mag), "part {i}: the gun or its magazine draws it");
-        }
-        for k in 0..w.glass.len() {
-            assert_eq!(gun[w.parts.len() + k], Some(at * w.fix), "the glass rides on the body");
-            assert_eq!(mag[w.parts.len() + k], None);
-        }
-        let pulled = part_places(&w, OBJ_WEAPON, &s, 1.0, at);
-        let t = w.trigger_parts[0];
-        assert!(pulled[t] != gun[t] && pulled[0] == gun[0], "the trigger swings with the finger, the body stays");
     }
 }

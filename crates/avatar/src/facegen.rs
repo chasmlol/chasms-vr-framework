@@ -1,6 +1,6 @@
 //! FaceGen faces: a head and the parts made to its shape (ears, eyes, mouth, teeth, hair), moved
 //! to a face's place in FaceGen's statistical face space, as Oblivion, Fallout 3 and New Vegas make
-//! their characters' heads (the Oblivion adapter's docs/research/mirror.md).
+//! their characters' heads (the Oblivion adapter's docs/design/mirror.md).
 //!
 //! * **Geometry:** each coordinate moves every vertex of a part by its morph times the coordinate
 //!   ([`morph_mesh`]); the symmetric coordinates and the asymmetric ones each have their own morphs.

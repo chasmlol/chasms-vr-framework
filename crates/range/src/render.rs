@@ -9,7 +9,6 @@
 use anyhow::Result;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec2, Vec3};
-use rustvr_asset as asset;
 use rustvr_gpu::pipeline::{self, Blend, ConstantBuffer, static_buffer};
 use rustvr_gpu::shader::{Program, element};
 use rustvr_gpu::{Gpu, TexDesc, Texture};
@@ -145,7 +144,6 @@ pub struct Renderer {
     /// Effect sprites by id ([`Renderer::fx_texture`]).
     fx_textures: Vec<String>,
     depth: HashMap<(u32, u32), Texture>,
-    asset_dir: std::path::PathBuf,
 }
 
 /// One thing to draw this frame.
@@ -220,7 +218,7 @@ fn fx_blend_state(gpu: &Gpu, additive: bool) -> Result<ID3D11BlendState> {
 }
 
 impl Renderer {
-    pub fn new(gpu: &Gpu, asset_dir: std::path::PathBuf) -> Result<Renderer> {
+    pub fn new(gpu: &Gpu) -> Result<Renderer> {
         let layout = [
             element(b"POSITION\0", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0),
             element(b"NORMAL\0", 0, DXGI_FORMAT_R32G32B32_FLOAT, 12),
@@ -253,7 +251,6 @@ impl Renderer {
             textures: HashMap::new(),
             fx_textures: Vec::new(),
             depth: HashMap::new(),
-            asset_dir,
         };
         r.textures.insert("grid".into(), builtin_texture(gpu, grid_pixels)?);
         r.textures.insert("target".into(), builtin_texture(gpu, target_pixels)?);
@@ -263,10 +260,8 @@ impl Renderer {
         Ok(r)
     }
 
+    /// A mesh on the GPU (a texture the renderer doesn't have leaves it untextured).
     pub fn upload(&mut self, gpu: &Gpu, m: &MeshData) -> Result<Mesh> {
-        if let Some(t) = &m.texture {
-            self.ensure_texture(gpu, t);
-        }
         Ok(Mesh {
             vb: static_buffer(gpu, bytemuck::cast_slice(&m.vertices), D3D11_BIND_VERTEX_BUFFER)?,
             ib: static_buffer(gpu, bytemuck::cast_slice(&m.indices), D3D11_BIND_INDEX_BUFFER)?,
@@ -275,45 +270,15 @@ impl Renderer {
         })
     }
 
-    /// Loads a game texture from the asset cache (once); a missing one leaves the mesh untextured.
-    fn ensure_texture(&mut self, gpu: &Gpu, key: &str) {
-        if self.textures.contains_key(key) {
-            return;
-        }
-        let tex = asset::load_texture(&self.asset_dir.join("metro2033"), key).and_then(|t| {
-            let format = match t.format {
-                asset::TexFormat::Rgba8 => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-                asset::TexFormat::Bc1 => DXGI_FORMAT_BC1_UNORM_SRGB,
-                asset::TexFormat::Bc2 => DXGI_FORMAT_BC2_UNORM_SRGB,
-                asset::TexFormat::Bc3 => DXGI_FORMAT_BC3_UNORM_SRGB,
-                asset::TexFormat::Bc4 => DXGI_FORMAT_BC4_UNORM,
-                asset::TexFormat::Bc5 => DXGI_FORMAT_BC5_UNORM,
-                asset::TexFormat::Bc7 => DXGI_FORMAT_BC7_UNORM_SRGB,
-            };
-            let mips: Vec<&[u8]> = t.mips.iter().map(|m| m.as_slice()).collect();
-            Texture::upload(gpu, t.width, t.height, format, &mips)
-        });
-        match tex {
-            Ok(t) => {
-                self.textures.insert(key.to_owned(), t);
-            }
-            Err(e) => tracing::debug!("range: texture {key}: {e:#}"),
-        }
-    }
-
-    /// An id for an effect sprite: the game's texture `key` from the asset cache if it's there,
-    /// else the built-in `fallback` (one of `fx_*`).
-    pub fn fx_texture(&mut self, gpu: &Gpu, key: &str, fallback: &str) -> (usize, bool) {
-        self.ensure_texture(gpu, key);
-        let (name, from_game) = if self.textures.contains_key(key) { (key, true) } else { (fallback, false) };
-        let id = match self.fx_textures.iter().position(|t| t == name) {
+    /// An id for an effect sprite: the built-in texture `name` (one of `fx_*`).
+    pub fn fx_texture(&mut self, name: &str) -> usize {
+        match self.fx_textures.iter().position(|t| t == name) {
             Some(i) => i,
             None => {
                 self.fx_textures.push(name.to_string());
                 self.fx_textures.len() - 1
             }
-        };
-        (id, from_game)
+        }
     }
 
     /// Renders `draws` into `target` from a camera (`view_proj`, eye position and forward in the
@@ -517,7 +482,7 @@ fn target_pixels(x: u32, y: u32) -> [u8; 4] {
     if ((r * 5.0) as u32).is_multiple_of(2) { [200, 30, 30, 255] } else { [235, 235, 235, 255] }
 }
 
-/// The built-in effect sprites (when the game's aren't extracted).
+/// The built-in effect sprites.
 pub const BUILTIN_FX: [(&str, fn(u32, u32) -> [u8; 4]); 6] =
     [("fx_soft", soft_pixels), ("fx_flash", flash_pixels), ("fx_streak", streak_pixels), ("fx_hole", hole_pixels), ("fx_smoke", smoke_pixels), ("fx_scorch", scorch_pixels)];
 

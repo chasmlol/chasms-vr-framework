@@ -14,12 +14,11 @@ path = "src/main.rs"
 rustvr-protocol.workspace = true
 rustvr-gpu.workspace = true
 rustvr-adapter.workspace = true
-rustvr-asset.workspace = true
-# The game's own hand poses are read from its arms models with the avatar's retargeting.
+# The rig test draws the player's body over the guns, as the runtime does.
 rustvr-avatar.workspace = true
 # The one mapping from a controller's grip pose to the hand drawn on it.
 rustvr-ik.workspace = true
-# The guns (Metro's, rigged) and how they're registered: shared with the adapters and the runtime.
+# The guns and how they're registered: shared with the adapters and the runtime.
 rustvr-guns.workspace = true
 # The melee rules: the range is the game for its creatures and weapons.
 rustvr-melee.workspace = true
@@ -32,7 +31,3 @@ tracing-subscriber.workspace = true
 # The training dummies' bodies (ragdolls), simulated as the game's own creatures.
 rapier3d = "0.36"
 windows.workspace = true
-
-[dev-dependencies]
-# The recoil test plays the guns' kicks with the runtime's own player.
-rustvr-runtime = { path = "../runtime" }

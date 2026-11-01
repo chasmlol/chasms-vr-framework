@@ -431,10 +431,10 @@ impl Adapter {
     /// synthesised ones wherever the pack has them, and none where the game makes its own:
     ///
     /// ```ignore
-    /// let dir = rustvr_adapter::local_sound_pack("metro2033");  // <local_assets>/metro2033/sounds
+    /// let dir = rustvr_adapter::local_sound_pack("mygame");     // <local_assets>/mygame/sounds
     /// let mut pack = SoundPack::new(&dir.map(|d| d.to_string_lossy().into_owned()).unwrap_or_default());
     /// pack.flags = SND_GAME_SHOTS;                               // the game plays its own gunshots
-    /// pack.add_object(gun.id, "wpn_ak", 0);                      // the gun sounds like [sets.wpn_ak]
+    /// pack.add_object(gun.id, "ak74", 0);                        // the gun sounds like [sets.ak74]
     /// adapter.set_sound_pack(&pack);
     /// ```
     ///
@@ -931,8 +931,8 @@ impl Drop for Adapter {
     }
 }
 
-/// The sound pack an extractor wrote for `game` (`<local_assets>/<game>/sounds`, e.g. what
-/// `metro-extract` writes for `metro2033`), if it's there: for [`Adapter::set_sound_pack`].
+/// The sound pack an extractor wrote for `game` (`<local_assets>/<game>/sounds`), if it's there:
+/// for [`Adapter::set_sound_pack`].
 /// `local_assets` is `RUSTVR_ASSETS`, or the one in the repository this was built from
 /// ([`rustvr_asset::default_root`]).
 pub fn local_sound_pack(game: &str) -> Option<std::path::PathBuf> {

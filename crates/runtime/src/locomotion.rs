@@ -1,18 +1,19 @@
-//! Where the game has the player at any moment. Its states come at its own pace (Metro steps once
-//! an eye pair, 50 to 90 times a second, unevenly), each stamped with when the game's clock stood
-//! where it has the player (`GameState::time_qpc`). The walk and turn between the last two steps
-//! are carried on to when a headset frame is shown, so the world moves smoothly under a walking,
-//! turning player instead of in the game's steps: still for a frame, then a jump. Where a new step
-//! disagrees with what was being shown (the player stopped, turned harder, the game hitched past
-//! `MAX_AHEAD`), the difference is glided out over `SETTLE` rather than jumped.
+//! Where the game has the player at any moment. Its states come at its own pace (a game may
+//! step once an eye pair, 50 to 90 times a second, unevenly), each stamped with when the game's
+//! clock stood where it has the player (`GameState::time_qpc`). The walk and turn between the
+//! last two steps are carried on to when a headset frame is shown, so the world moves smoothly
+//! under a walking, turning player instead of in the game's steps: still for a frame, then a
+//! jump. Where a new step disagrees with what was being shown (the player stopped, turned
+//! harder, the game hitched past `MAX_AHEAD`), the difference is glided out over `SETTLE`
+//! rather than jumped.
 
 use glam::Vec3;
 
 use crate::rig::WorldMap;
 
 /// At most this far past the game's last step (seconds): a game that has stopped stepping (a
-/// pause, a hitch) isn't walked on and on. (Metro's camera is a step behind its clock and a pair
-/// of eyes is 10 to 25 ms: shown 25 to 50 ms after.)
+/// pause, a hitch) isn't walked on and on. (A game's camera may be a step behind its clock, and a
+/// pair of eyes is 10 to 25 ms: shown 25 to 50 ms after.)
 const MAX_AHEAD: f64 = 0.15;
 /// How fast a disagreement between what was shown and a new step fades (seconds, e-folding).
 const SETTLE: f64 = 0.06;
@@ -82,7 +83,7 @@ impl Locomotion {
                 }
                 self.last = Some((qpc, map));
             }
-            // The same step again (Metro's second eye): the newest mapping (the head moved in the
+            // The same step again (a game's second eye): the newest mapping (the head moved in the
             // room), the step's time.
             Some((t, _)) if qpc == t => self.last = Some((t, map)),
             _ => {

@@ -1,6 +1,6 @@
 //! Fitting a game's hand pose to the thing it holds, for close-up viewing.
 //!
-//! A game poses its first-person hands for its own camera: from there Metro's Kalash hand looks
+//! A game poses its first-person hands for its own camera: from there a rifle's hand looks
 //! perfect, but up close (VR) its trigger finger is hooked a little too far round the trigger (the
 //! pad 5 mm past the blade's far side) and the other fingertips sink half a centimetre into the
 //! far side of the grip, where the game's camera never looks. [`fit_hand`] keeps the game's pose and

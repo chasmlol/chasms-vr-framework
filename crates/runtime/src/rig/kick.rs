@@ -21,9 +21,9 @@ use rustvr_protocol::*;
 
 /// Shots this close together are one burst.
 const BURST_GAP: f32 = 0.25;
-/// A burst's shots from this one on take the long-burst kicks. Metro's configs mark kicks for the
-/// first shot, the next ones and long bursts but not where a long burst starts (our pick):
-/// half a second of AK fire.
+/// A burst's shots from this one on take the long-burst kicks (a game's kicks may be marked for
+/// the first shot, the next ones and long bursts, but not where a long burst starts): half a
+/// second of AK fire.
 const LONG_FROM: u32 = 6;
 /// Kicks playing at once (a long burst of a fast gun runs about a dozen of each layer).
 const MAX_ACTIVE: usize = 48;
@@ -166,7 +166,7 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
 
-    /// A Metro-like kick: `pitch` (deg) and `back` (m) at once, gone linearly by `len` seconds.
+    /// A kick: `pitch` (deg) and `back` (m) at once, gone linearly by `len` seconds.
     fn kick(layer: u32, when: u32, pitch: f32, back: f32, len: f32) -> KickDesc {
         let mut k = KickDesc::zeroed();
         k.object = 1;

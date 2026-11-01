@@ -1,5 +1,5 @@
 //! GPU side: skinned meshes, the bone palette, per-bone visibility, lighting (the game's own
-//! model, `metro.rs`, or the runtime's), the game-depth test and the ghost hands.
+//! model, `shading.rs`, or the runtime's), the game-depth test and the ghost hands.
 //!
 //! Each frame the rig is posed once per model and its skinning matrices go into a constant buffer
 //! (a palette of up to 256 bones as 3x4 rows, plus a visibility half-space per bone, and each
@@ -25,7 +25,7 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
 use crate::rig::{MAX_BONES, PoseInput, Posed, PosedFingers, Rig, Show};
-use crate::metro::{self, Class};
+use crate::shading::{self, Class};
 use crate::{AvatarFrame, DepthInput, GameShading, Source};
 
 /// Near and far planes of the avatar's own depth buffer; the near plane matches the compositor's,
@@ -74,7 +74,7 @@ cbuffer Material : register(b2) {
     float4 options;      // x: use_env, y: use_fresnel (the class's shader permutation)
     float4 extra;        // x: depth slack (metres)
 };
-// The game's lighting (metro.rs), when it publishes it.
+// The game's lighting (shading.rs), when it publishes it.
 cbuffer Lighting : register(b3) {
     float4x4 game_view;        // tracking space -> the game camera's view space
     float4 view_to_world[3];   // the game camera's view space -> the game's world (rows)
@@ -345,7 +345,7 @@ float3 finish(float3 hdr, float4 svpos) {
     // reflection and bloom read the last one), so one bad pixel would spread for good.
     if (atlas.w > 0) return m_bad(hdr) ? 0 : clamp(hdr, 0, 60000);
     // The game's bloom here: added before the tone curve, and an eighth of it after; and its lens's
-    // light (a visor's sheen) after it (Metro's final pass; docs/research/metro-viewmodel-lighting.md).
+    // light (a visor's sheen) after it, as a game's final pass adds them.
     float3 b = 0, after = 0;
     if (post.x > 0) {
         float2 uv = svpos.xy / target_size.xy;
@@ -357,8 +357,8 @@ float3 finish(float3 hdr, float4 svpos) {
     return m_display_to_linear(m_grade(tm, l, lit.w != 0));
 }
 
-// The game's fog at view-space point pv, as its combine fogs the world (docs/research/
-// metro-viewmodel-lighting.md §5.1). (In the game's own frame, it fogs the player itself.)
+// The game's fog at view-space point pv, as its combine fogs the world. (In the game's own frame,
+// it fogs the player itself.)
 float3 fogged(float3 c, float3 pv) {
     if (atlas.w > 0 || fog_fade.y == 0) return c;
     float d = length(pv);
@@ -433,12 +433,9 @@ float4 PSSheet(SheetOut i) : SV_Target {
     return t;
 }
 
-// A gun's laser, as Metro 2033 Redux draws its own (`weapons\attaches\weapon_laser`): the beam
-// is `static34\fx\fx_laser2_red`, two crossed planes 10 cm wide along it, texture `fx\fx_laser1`
-// (its first quarter across them) under `effects\fx_laser` (added light, faded where a plane is
-// seen edge on, the texture's dust sparkling in screen space, red from the mesh's colours); the
-// dot is the spotlight `spotlights\spot_laser2_npc_red`, its falloff `light\light_radial_falloff1`,
-// lying on what it hits. It ends at the first thing the game drew along it (the game's depth: a
+// A gun's laser: the beam is two crossed planes 10 cm wide along it, its texture's first quarter
+// across them (added light, faded where a plane is seen edge on, the texture's dust sparkling in
+// screen space, red); the dot is a spotlight with a radial falloff, lying on what it hits. It ends at the first thing the game drew along it (the game's depth: a
 // door, a monster, whatever is there), else where its collision or its range stops it.
 cbuffer Laser : register(b4) {
     float4 laser_a;      // xyz: its start (the laser's mount)
@@ -596,8 +593,8 @@ float4 PSLaser(LaserOut i) : SV_Target {
 // the game's combine pass writes it for its later passes; else opaque.
 float out_alpha(float view_z) { return atlas.w > 0 ? view_z : 1; }
 
-// The game's own shading of its first-person model (metro.rs), evaluated for this fragment.
-float4 PSMetro(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
+// The game's own shading of its first-person model (shading.rs), evaluated for this fragment.
+float4 PSDeferred(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
     float3 pv = mul(game_view, float4(i.world, 1)).xyz;
     float3 nv = mul((float3x3)game_view, i.normal);
     float3 dpx = ddx_coarse(pv), dpy = ddy_coarse(pv);
@@ -649,7 +646,7 @@ float4 PSMetro(VSOut i, bool front : SV_IsFrontFace) : SV_Target {
 }
 
 // The game's forward glass, blended over what's drawn.
-float4 PSMetroGlass(VSOut i) : SV_Target {
+float4 PSDeferredGlass(VSOut i) : SV_Target {
     if (i.vis < 0) discard;
     if (behind_game(i.pos, i.view_z)) discard;
     uint cls = (uint)material.z;
@@ -976,12 +973,10 @@ struct SheetCb {
     kind: [f32; 4],
 }
 
-/// The laser's light (HDR): Metro's red (the beam mesh's vertex colours are pure red).
+/// The laser's light (HDR): pure red.
 const LASER_RED: [f32; 3] = [1.6, 0.0, 0.0];
 /// The dot's radius (m) close up (the spotlight's spot), growing 1% a metre out.
 const LASER_DOT_RADIUS: f32 = 0.012;
-/// The game's textures for it (`metro-extract --extras`), in the asset cache's `metro2033`.
-const LASER_TEXTURES: [&str; 2] = ["fx__fx_laser1", "light__light_radial_falloff1"];
 
 /// The player's layer over the game's picture, through the game's lens: at each pixel, the layer
 /// where the lens takes the picture from (its warp: the bloom and lens textures' alphas).
@@ -1125,7 +1120,7 @@ struct GpuMesh {
     srv: Option<ID3D11ShaderResourceView>,
     material: ID3D11Buffer,
     /// How the game shades it, when that's known.
-    metro: Option<MetroMesh>,
+    game: Option<GameMesh>,
 }
 
 /// A mesh that bends between its own shape and another (a bow drawn: the game's morph of it at
@@ -1191,7 +1186,7 @@ impl Shaped {
 /// A mesh's game material on the GPU: its class and the views of t0 and t2..t4 (raw: the game's
 /// textures are UNORM, so their numbers are used as linear values), and a FaceGen head's two
 /// (t13, t14).
-struct MetroMesh {
+struct GameMesh {
     class: Class,
     base: ID3D11ShaderResourceView,
     bump: Option<ID3D11ShaderResourceView>,
@@ -1425,13 +1420,13 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
     let base = m.texture.as_ref().and_then(|t| upload(t, &m.name));
     // The game's own flag where it has one, else a guess from the texture.
     let cutout = base.is_some() && m.material.as_ref().map_or_else(|| m.texture.as_deref().is_some_and(is_cutout), |mat| mat.alpha_test);
-    let metro = match (&m.material, &base) {
+    let game = match (&m.material, &base) {
         (Some(mat), Some(base)) => {
             let mut get = |t: &Option<Arc<asset::Texture>>| t.as_ref().and_then(|t| upload(t, &m.name)).map(|t| t.linear);
             let (bump, detail, env) = (get(&mat.bump), get(&mat.detail), get(&mat.env));
             let (face, face_detail) = (get(&mat.face), get(&mat.face_detail));
             let (nb, nd, ne) = mat.class.needs();
-            ((!nb || bump.is_some()) && (!nd || detail.is_some()) && (!ne || env.is_some())).then(|| MetroMesh { class: mat.class, base: base.linear.clone(), bump, detail, env, face, face_detail })
+            ((!nb || bump.is_some()) && (!nd || detail.is_some()) && (!ne || env.is_some())).then(|| GameMesh { class: mat.class, base: base.linear.clone(), bump, detail, env, face, face_detail })
         }
         _ => None,
     };
@@ -1452,7 +1447,7 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
     });
     // (How far behind the game's surface it may be before it's hidden: a strap on the game's model.)
     let extra = [m.depth_slack.max(0.0), 0.0, 0.0, 0.0];
-    let class = metro.as_ref().map_or(0.0, |mm| mm.class as u32 as f32);
+    let class = game.as_ref().map_or(0.0, |mm| mm.class as u32 as f32);
     let material = MaterialCb {
         tint: [m.tint[0], m.tint[1], m.tint[2], 1.0],
         params: [base.is_some() as u32 as f32, cutout as u32 as f32, class, emissive],
@@ -1470,7 +1465,7 @@ fn gpu_mesh(gpu: &Gpu, m: &crate::SourceMesh, indices: &[u32], ranges: [(u32, u3
         ranges,
         srv,
         material: static_buffer(gpu, bytemuck::bytes_of(&material), D3D11_BIND_CONSTANT_BUFFER)?,
-        metro,
+        game,
     })
 }
 
@@ -1787,9 +1782,9 @@ fn small_mip_alpha(t: &asset::Texture) -> Option<Vec<u8>> {
 pub struct Renderer {
     opaque: Program,
     ghost: Program,
-    /// The game's shading (metro.rs): opaque classes and forward glass.
-    metro: Program,
-    metro_glass: Program,
+    /// The game's deferred shading (shading.rs): opaque classes and forward glass.
+    deferred: Program,
+    deferred_glass: Program,
     gamebryo: Program,
     /// The player's view depth ([`Renderer::draw_view_depth`]) and the game's own pixels of the
     /// player moved to where it is now ([`Renderer::draw_reprojected`]).
@@ -1823,10 +1818,8 @@ pub struct Renderer {
     /// The game's water near the player (`Avatar::set_water`).
     water: Option<crate::Water>,
     /// The held gun's laser ([`Renderer::set_laser`]), its pass and light added over what's there,
-    /// the game's textures for it (loaded with the first laser; None inside: not there), and the
-    /// clock its dust drifts by.
+    /// and the clock its dust drifts by.
     laser: Option<crate::LaserBeam>,
-    laser_textures: Option<Option<[ID3D11ShaderResourceView; 2]>>,
     laser_clock: std::time::Instant,
     laser_program: Program,
     laser_cb: ConstantBuffer<LaserCb>,
@@ -1860,13 +1853,13 @@ impl Renderer {
             element(b"COLOR\0", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 40),
             element(b"TEXCOORD\0", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 44),
         ];
-        let source = format!("{}{}{SHADER}", metro::HLSL, crate::gamebryo::HLSL);
+        let source = format!("{}{}{SHADER}", shading::HLSL, crate::gamebryo::HLSL);
         let (lut, lut_srv) = lut_texture(gpu)?;
         Ok(Renderer {
             opaque: Program::new(gpu, &source, "avatar", &layout)?,
             ghost: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSGhost", &layout)?,
-            metro: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSMetro", &layout)?,
-            metro_glass: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSMetroGlass", &layout)?,
+            deferred: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSDeferred", &layout)?,
+            deferred_glass: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSDeferredGlass", &layout)?,
             gamebryo: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSGamebryo", &layout)?,
             view_z: Program::with_entries(gpu, &source, "avatar", "VSMain", "PSViewZ", &layout)?,
             reproject: Program::with_entries(gpu, &source, "avatar", "VSReproject", "PSReproject", &layout)?,
@@ -1891,7 +1884,6 @@ impl Renderer {
             flat: None,
             water: None,
             laser: None,
-            laser_textures: None,
             laser_clock: std::time::Instant::now(),
             laser_program: Program::with_entries(gpu, &source, "avatar", "VSLaser", "PSLaser", &[])?,
             laser_cb: ConstantBuffer::new(gpu)?,
@@ -1903,7 +1895,7 @@ impl Renderer {
             through_lens: Program::new(gpu, THROUGH_LENS, "avatar_lens", &[])?,
             lens_cb: ConstantBuffer::new(gpu)?,
             premultiplied: pipeline::blend_state(gpu, Blend::Premultiplied)?,
-            gore: crate::gore::GoreGpu::new(gpu, &format!("{}{}{SHADER}{}", metro::HLSL, crate::gamebryo::HLSL, crate::gore::HLSL)).map_err(|e| tracing::warn!("avatar: no blood: {e:#}")).ok(),
+            gore: crate::gore::GoreGpu::new(gpu, &format!("{}{}{SHADER}{}", shading::HLSL, crate::gamebryo::HLSL, crate::gore::HLSL)).map_err(|e| tracing::warn!("avatar: no blood: {e:#}")).ok(),
             sheets: Vec::new(),
             sheet_program: Program::with_entries(gpu, &source, "avatar", "VSSheet", "PSSheet", &[])?,
             sheet_cb: ConstantBuffer::new(gpu)?,
@@ -1922,18 +1914,7 @@ impl Renderer {
     }
 
     /// The held gun's laser from now on (None: none): drawn with the player.
-    pub fn set_laser(&mut self, gpu: &Gpu, laser: Option<crate::LaserBeam>) {
-        if laser.is_some() && self.laser_textures.is_none() {
-            let dir = asset::default_root().join("metro2033");
-            let load = |k: &str| asset::load_texture(&dir, k).and_then(|t| Ok(upload_texture(gpu, &t)?.linear));
-            self.laser_textures = Some(match (load(LASER_TEXTURES[0]), load(LASER_TEXTURES[1])) {
-                (Ok(beam), Ok(dot)) => Some([beam, dot]),
-                (a, b) => {
-                    tracing::warn!("avatar: the laser's textures ({:?}, {:?}): drawn without them", a.err(), b.err());
-                    None
-                }
-            });
-        }
+    pub fn set_laser(&mut self, _gpu: &Gpu, laser: Option<crate::LaserBeam>) {
         self.laser = laser;
     }
 
@@ -1972,7 +1953,7 @@ impl Renderer {
             sh: l.sh,
             ambient: l.ambient,
             lit: [l.hemi, l.depth_squash, l.ssao, (l.lut_valid != 0) as u32 as f32],
-            envc: metro::envmap_color(l).extend(count as f32).to_array(),
+            envc: shading::envmap_color(l).extend(count as f32).to_array(),
             // m_iV[1]: the world's y in view space.
             up: to_world.row(1).extend(0.0).to_array(),
             atlas: [self.atlas.is_some() as u32 as f32, 1.0 / LIGHT_ATLAS_W as f32, 1.0 / LIGHT_ATLAS_H as f32, self.in_frame as u32 as f32],
@@ -2024,7 +2005,7 @@ impl Renderer {
         };
         let (rtv, srv) = self.layer_for(gpu, target, width, height)?;
         unsafe { gpu.ctx.ClearRenderTargetView(&rtv, &[0.0; 4]) };
-        // (The special draws, a collimator's lens, look through to what's behind them: the eye's
+        // (The special draws, a sight's lens, look through to what's behind them: the eye's
         // picture, once the player is laid over it.)
         let game_depth = depth.as_ref().map(|d| (d.srv.clone(), d.units_per_meter));
         self.draw_into(gpu, &rtv, width, height, eye, fov, frame, depth, body, arms, draw_body, held, None)?;
@@ -2046,7 +2027,7 @@ impl Renderer {
             ctx.OMSetRenderTargets(None, None);
         }
         // What the special draws take, over the eye's picture with the player on it, in the player's
-        // depth (the gun's body hides a collimator's lens where it's in front).
+        // depth (the gun's body hides a sight's lens where it's in front).
         if let Some(special) = special {
             let dsv = self.depth_for(gpu, width, height)?;
             unsafe { ctx.OMSetRenderTargets(Some(&[Some(target.clone())]), &dsv) };
@@ -2060,7 +2041,7 @@ impl Renderer {
         Ok(())
     }
 
-    /// The special draws of what the hands hold (a collimator's lens, `special`), into what's bound.
+    /// The special draws of what the hands hold (a sight's lens, `special`), into what's bound.
     #[allow(clippy::too_many_arguments)]
     fn specials(&self, gpu: &Gpu, held: &[crate::HeldDraw], special: &mut dyn FnMut(&crate::SpecialDraw), eye: &Pose, fov: &Fov, width: u32, height: u32, game_depth: Option<(&ID3D11ShaderResourceView, f32)>) {
         let view_proj = projection(fov) * view_matrix(eye);
@@ -2151,7 +2132,7 @@ impl Renderer {
         }
 
         // What the hands hold, in the same depth (fingers round a grip hide behind it and it behind
-        // them), shaded the same way; then the meshes a special draw takes (a collimator's lens).
+        // them), shaded the same way; then the meshes a special draw takes (a sight's lens).
         if let (Some((_, c)), false) = (self.flat, held.is_empty()) {
             cb.plain = [c[0], c[1], c[2], 2.0];
             self.frame_cb.update(ctx, &cb);
@@ -2232,8 +2213,8 @@ impl Renderer {
 
     /// The view depth (metres) of the player `frame` poses, with `held`, seen from `eye`, where it
     /// shows: into `target` (R32F, 0 where it doesn't), hidden behind the game's world (`depth`) as
-    /// the game's frame hid it. The game's forward glass and the special draws (a collimator's
-    /// lens) aren't in it: what shows there is what's behind them.
+    /// the game's frame hid it. The game's forward glass and the special draws (a sight's lens)
+    /// aren't in it: what shows there is what's behind them.
     pub fn draw_view_depth(
         &mut self,
         gpu: &Gpu,
@@ -2481,10 +2462,10 @@ impl Renderer {
     /// forward glass blended after everything opaque), else the runtime's own look.
     fn draw_shaded(&self, ctx: &ID3D11DeviceContext, meshes: &[&GpuMesh], range: usize) {
         let shading = self.shading;
-        fn metro_of(m: &GpuMesh, shading: bool) -> Option<&MetroMesh> {
-            m.metro.as_ref().filter(|_| shading)
+        fn game_of(m: &GpuMesh, shading: bool) -> Option<&GameMesh> {
+            m.game.as_ref().filter(|_| shading)
         }
-        // (0: the runtime's own look, 1: Metro's, 2: Gamebryo's.)
+        // (0: the runtime's own look, 1: the deferred model's, 2: Gamebryo's.)
         let mut bound: Option<u32> = None;
         // The front faces first, then the back faces a little further off: a game draws only front
         // faces, and makes a plate seen from both sides (Oblivion's pauldrons and tassets) two
@@ -2494,11 +2475,11 @@ impl Renderer {
         for state in [&self.cull_back, &self.back_faces] {
             unsafe { ctx.RSSetState(state) };
             for &m in meshes {
-                let metro = metro_of(m, shading);
-                if metro.is_some_and(|mm| mm.class.forward()) {
+                let game = game_of(m, shading);
+                if game.is_some_and(|mm| mm.class.forward()) {
                     continue;
                 }
-                let program = match metro {
+                let program = match game {
                     None => 0,
                     Some(mm) if mm.class.gamebryo() => 2,
                     Some(_) => 1,
@@ -2506,7 +2487,7 @@ impl Renderer {
                 if bound != Some(program) {
                     match program {
                         0 => self.opaque.bind(ctx),
-                        1 => self.metro.bind(ctx),
+                        1 => self.deferred.bind(ctx),
                         _ => self.gamebryo.bind(ctx),
                     }
                     bound = Some(program);
@@ -2515,14 +2496,14 @@ impl Renderer {
             }
         }
         unsafe { ctx.RSSetState(&self.two_sided) };
-        if meshes.iter().any(|m| metro_of(m, shading).is_some_and(|mm| mm.class.forward())) {
-            self.metro_glass.bind(ctx);
+        if meshes.iter().any(|m| game_of(m, shading).is_some_and(|mm| mm.class.forward())) {
+            self.deferred_glass.bind(ctx);
             unsafe {
                 ctx.OMSetBlendState(&self.alpha_blend, Some(&[0.0; 4]), 0xFFFF_FFFF);
                 ctx.OMSetDepthStencilState(&self.depth_test, 0);
                 ctx.RSSetState(&self.cull_back);
             }
-            for &m in meshes.iter().filter(|m| metro_of(m, shading).is_some_and(|mm| mm.class.forward())) {
+            for &m in meshes.iter().filter(|m| game_of(m, shading).is_some_and(|mm| mm.class.forward())) {
                 draw_mesh(ctx, m, range);
             }
             unsafe {
@@ -2559,7 +2540,8 @@ impl Renderer {
     fn draw_laser(&self, ctx: &ID3D11DeviceContext, eye: &Pose, fov: &Fov, width: u32, l: &crate::LaserBeam) {
         let pixel = (fov.right - fov.left) / width.max(1) as f32;
         let inv_vp = (projection(fov) * view_matrix(eye)).inverse().to_cols_array();
-        let textures = self.laser_textures.as_ref().and_then(|t| t.as_ref());
+        // (Untextured: the beam's and the dot's textures are optional, `mode.z`.)
+        let textures: Option<&[ID3D11ShaderResourceView; 2]> = None;
         self.laser_program.bind(ctx);
         unsafe {
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
@@ -2718,7 +2700,7 @@ fn draw_opaque(ctx: &ID3D11DeviceContext, main: &Character, range: usize, held: 
 
 /// Drawn as the game's forward glass (blended over the rest).
 fn forward(m: &GpuMesh) -> bool {
-    m.metro.as_ref().is_some_and(|mm| mm.class.forward())
+    m.game.as_ref().is_some_and(|mm| mm.class.forward())
 }
 
 fn show_of(frame: &AvatarFrame) -> Show {
@@ -2759,7 +2741,7 @@ fn draw_mesh(ctx: &ID3D11DeviceContext, m: &GpuMesh, range: usize) {
         ctx.IASetVertexBuffers(0, 1, Some(&Some(m.vb.clone())), Some(&stride), Some(&offset));
         ctx.IASetIndexBuffer(&m.ib, DXGI_FORMAT_R32_UINT, 0);
         ctx.PSSetConstantBuffers(2, Some(&[Some(m.material.clone())]));
-        match &m.metro {
+        match &m.game {
             // (The hair's highlight table is a flat texture: its own slot, not the environment cube's.)
             Some(mm) if mm.class == Class::GamebryoHair => {
                 ctx.PSSetShaderResources(0, Some(&[Some(mm.base.clone())]));
@@ -2902,8 +2884,8 @@ fn projection(fov: &Fov) -> Mat4 {
 mod tests {
     #[test]
     fn the_shader_compiles() {
-        let source = format!("{}{}{}", super::metro::HLSL, crate::gamebryo::HLSL, super::SHADER);
-        for (vs, ps) in [("VSMain", "PSMain"), ("VSMain", "PSMetro"), ("VSMain", "PSMetroGlass"), ("VSMain", "PSGamebryo"), ("VSMain", "PSGhost"), ("VSMain", "PSOverlay")] {
+        let source = format!("{}{}{}", super::shading::HLSL, crate::gamebryo::HLSL, super::SHADER);
+        for (vs, ps) in [("VSMain", "PSMain"), ("VSMain", "PSDeferred"), ("VSMain", "PSDeferredGlass"), ("VSMain", "PSGamebryo"), ("VSMain", "PSGhost"), ("VSMain", "PSOverlay")] {
             rustvr_gpu::shader::compile(&source, "avatar", vs, "vs_5_0").unwrap_or_else(|e| panic!("{vs}: {e:#}"));
             rustvr_gpu::shader::compile(&source, "avatar", ps, "ps_5_0").unwrap_or_else(|e| panic!("{ps}: {e:#}"));
         }

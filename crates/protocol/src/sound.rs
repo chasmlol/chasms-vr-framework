@@ -141,14 +141,14 @@ mod tests {
 
     #[test]
     fn a_pack_names_its_folder_and_objects() {
-        let mut p = SoundPack::new(r"X:\local_assets\metro2033\sounds");
-        assert_eq!(p.path(), r"X:\local_assets\metro2033\sounds");
-        assert!(p.add_object(3, "wpn_ak", SND_GAME_SHOTS));
-        assert!(p.add_object(4, "wpn_revolver", 0));
+        let mut p = SoundPack::new(r"X:\local_assets\mygame\sounds");
+        assert_eq!(p.path(), r"X:\local_assets\mygame\sounds");
+        assert!(p.add_object(3, "rifle", SND_GAME_SHOTS));
+        assert!(p.add_object(4, "revolver", 0));
         assert!(!p.add_object(0, "nothing", 0), "0 is never an object");
         assert!(!p.add_object(5, &"x".repeat(SOUND_SET_BYTES), 0), "too long a set name");
-        assert_eq!(p.object(3).map(|o| (o.set_name(), o.flags)), Some(("wpn_ak", SND_GAME_SHOTS)));
-        assert_eq!(p.object(4).map(ObjectSound::set_name), Some("wpn_revolver"));
+        assert_eq!(p.object(3).map(|o| (o.set_name(), o.flags)), Some(("rifle", SND_GAME_SHOTS)));
+        assert_eq!(p.object(4).map(ObjectSound::set_name), Some("revolver"));
         assert!(p.object(5).is_none() && p.object(0).is_none());
         assert!(!p.set_path(&"d".repeat(SOUND_PATH_BYTES)) && p.path().is_empty());
     }

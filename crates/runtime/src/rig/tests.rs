@@ -2143,7 +2143,7 @@ fn an_air_rifle_needs_pumping_and_shots_spend_the_pressure() {
     assert!((s.state(AIR).fuse - 0.65).abs() < 1e-4, "a shot spent a tenth");
 }
 
-/// A gun with the game's ammunition (`OBJF_GAME_AMMO`, as Metro's adapter registers its gun): it
+/// A gun with the game's ammunition (`OBJF_GAME_AMMO`, as a game's adapter registers its gun): it
 /// arrives (and comes back when the game respawns it) holding every round the game's gun does, one
 /// chambered and the rest in its magazine; and the pouch hands what the game's own reload would
 /// load, which the game rewrites in its template as its ammunition changes: no respawning, and
@@ -2209,12 +2209,12 @@ fn a_gun_with_the_games_ammo_takes_its_rounds_from_the_game() {
     assert_eq!(held(&s), (true, 17), "and the gun keeps what it has");
 }
 
-/// The magazine comes out of a gun set up as Metro's adapter registers it (the game's ammunition,
+/// The magazine comes out of a gun set up as a game's adapter registers it (the game's ammunition,
 /// drawn by the runtime, the table rewritten as the game's ammunition changes with every shot): A
 /// on the gun hand ejects it whatever the table does, the pouch's magazine seats in its place, and
-/// the gun fires from the new one. (The Metro run where A did nothing was the headset emulator's:
-/// the capture it saved at that moment held the frames up through the whole press, so no frame
-/// saw A. Its script clock now stops for captures.)
+/// the gun fires from the new one. (A run where A did nothing was the headset emulator's: the
+/// capture it saved at that moment held the frames up through the whole press, so no frame saw A.
+/// Its script clock now stops for captures.)
 #[test]
 fn a_game_ammo_gun_ejects_its_magazine_while_the_game_rewrites_the_table() {
     const GAME_RIFLE: u32 = 9;

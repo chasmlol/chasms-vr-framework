@@ -466,7 +466,7 @@ impl Rig {
             let p = override_hand.unwrap_or(input.joints[j as usize]);
             (p.valid != 0).then(|| (Vec3::from_array(p.pos), quat(p.rot)))
         };
-        // Roots that aren't body parts (Biped's `bip01`, Metro's locators) ride with the hips, or
+        // Roots that aren't body parts (Biped's `bip01`, a game's locators) ride with the hips, or
         // whichever mapped joint comes first.
         let anchor = ANCHORS.iter().find_map(|&j| Some((self.joint_bone[j as usize]?, joint(j)?, j)));
         // A forearm without twist bones turns part of the hand's roll itself (`FOREARM_ROLL`).

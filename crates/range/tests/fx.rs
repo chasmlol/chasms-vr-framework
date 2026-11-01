@@ -1,7 +1,7 @@
 //! The range's effects rendered offscreen, close up and from the side (where a headset view would
 //! see them end on), written to `captures/fx/` to look at, with checks that each one shows: a
 //! shot's flash and light, its tracer, the casing on the floor, holes in a plate, an explosion's
-//! flash, fire and smoke. Metro's sprites when they're extracted, the built-in ones otherwise.
+//! flash, fire and smoke.
 
 #![allow(dead_code, clippy::too_many_arguments)]
 
@@ -49,7 +49,7 @@ struct Scene {
 impl Scene {
     fn new() -> Scene {
         let gpu = Gpu::new().unwrap();
-        let mut renderer = Renderer::new(&gpu, rustvr_asset::default_root()).unwrap();
+        let mut renderer = Renderer::new(&gpu).unwrap();
         let (grid, plain) = content::room();
         let mut room = vec![renderer.upload(&gpu, &grid).unwrap(), renderer.upload(&gpu, &plain).unwrap()];
         for t in content::targets() {
@@ -66,8 +66,7 @@ impl Scene {
     }
 
     fn sprites(&mut self) -> Sprites {
-        let (gpu, renderer) = (&self.gpu, &mut self.renderer);
-        Sprites::load(|key, fallback| renderer.fx_texture(gpu, key, fallback))
+        Sprites::load(|name| self.renderer.fx_texture(name))
     }
 
     /// The room and `fx` from a camera: the image (RGBA8, sRGB).
@@ -118,7 +117,6 @@ fn gun() -> (Vec3, Quat) {
 fn gun_effects_show_from_the_side() {
     let mut s = Scene::new();
     let sprites = s.sprites();
-    eprintln!("sprites from the game: {}", sprites.flash.from_game);
     let side = look_at(Vec3::new(-1.6, 1.55, 1.2), Vec3::new(0.2, 1.4, 2.5));
     let base = s.shot("side_nothing", side, None);
     let mut fx = Effects::new(sprites);

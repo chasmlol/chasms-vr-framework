@@ -2125,7 +2125,6 @@ name = "rustvr-asset"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "glam 0.34.1",
  "postcard",
  "serde",
  "toml 1.1.8+spec-1.1.0",
@@ -2225,14 +2224,12 @@ dependencies = [
  "glam 0.34.1",
  "rapier3d",
  "rustvr-adapter",
- "rustvr-asset",
  "rustvr-avatar",
  "rustvr-gpu",
  "rustvr-guns",
  "rustvr-ik",
  "rustvr-melee",
  "rustvr-protocol",
- "rustvr-runtime",
  "tracing",
  "tracing-subscriber",
  "windows",

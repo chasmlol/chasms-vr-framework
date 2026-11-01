@@ -100,7 +100,7 @@ impl SimBackend {
     }
 }
 
-/// A Quest-3-like asymmetric frustum (from the Metro mod's simulated headset).
+/// A Quest-3-like asymmetric frustum.
 pub fn sim_fov(eye: usize) -> Fov {
     if eye == 0 {
         Fov { left: -1.30, right: 1.05, up: 1.10, down: -1.20 }

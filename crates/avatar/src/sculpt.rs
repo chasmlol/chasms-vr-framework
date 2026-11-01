@@ -36,7 +36,7 @@
 //! say costs least, so the rest of the face stays put and the part held stays as near the hand as it
 //! can.
 //!
-//! The figures were measured on the game's Nord head (docs/research/facesculpt.md): a 1 cm pull
+//! The figures were measured on the game's Nord head (docs/design/facesculpt.md): a 1 cm pull
 //! moves the part taken 0.64 cm on average (the nose tip all of it, the chin a tenth: FaceGen has no
 //! chin of its own), and the face more than 6 cm from it (and from its mirror image) 0.07 cm (rms),
 //! a third of what weighing the part held against all of the face moved.

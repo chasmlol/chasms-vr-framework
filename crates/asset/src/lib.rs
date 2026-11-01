@@ -1,6 +1,6 @@
 //! The cache format the test range loads its guns, hands and bodies from.
 //!
-//! Extractors (such as the Metro adapter's `metro-assets`) read a game's own archives and write
+//! Extractors (a game adapter's own tools) read a game's own archives and write
 //! these files into `local_assets/` at the repository root ([`repo_root`]). That folder is
 //! git-ignored: the files come from games the user owns and are only for local testing. They are
 //! never committed or redistributed.
@@ -66,8 +66,7 @@ pub struct Mesh {
 }
 
 /// How the game shades a surface: its shading model, the textures it binds beside the base
-/// colour, and its constants, all as the game's own shaders take them (Metro: the `surf_*`
-/// constants, see docs/design/metro-viewmodel-lighting.md section 2.4).
+/// colour, and its constants, all as the game's own shaders take them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Material {
     pub shader: Shader,
@@ -77,21 +76,21 @@ pub struct Material {
     pub bump: String,
     pub detail: String,
     pub env: String,
-    /// Metro's `surf_params`: (detail tiling u, v, normal weight, parallax/detail strength).
+    /// The surface's parameters: (detail tiling u, v, normal weight, parallax/detail strength).
     pub params: [f32; 4],
-    /// Metro's `surf_color`: albedo tint (rgb, applied ×2), w spare.
+    /// The surface's colour: albedo tint (rgb, applied ×2), w spare.
     pub color: [f32; 4],
     /// Alpha-tested: the pixel is discarded where the base texture's alpha falls under 0.5.
     pub alpha_test: bool,
     /// [`Shader::Emissive`] only: the shader's fixed multiplier on `base · dot(detail, 2/3)`.
     /// 0 otherwise.
     pub emissive: f32,
-    /// The game's grazing-angle term is on (Metro's `use_fresnel` permutations: the skin shader's
-    /// sheen, and on [`Shader::Plain`] the sky-tinted rim of `geometry\fresnel`).
+    /// The game's grazing-angle term is on (the skin shader's sheen, and on [`Shader::Plain`] a
+    /// sky-tinted rim).
     pub fresnel: bool,
 }
 
-/// A game's shading model for a surface (Metro's G-buffer pixel shaders).
+/// A game's shading model for a surface (a deferred renderer's G-buffer shaders, then Gamebryo's).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Shader {
     /// Not known: drawn with the base texture alone.
@@ -99,17 +98,17 @@ pub enum Shader {
     Unknown,
     /// Opaque, no environment term (or alpha-tested).
     Plain,
-    /// Metal with the environment reflection baked into the albedo (5622).
+    /// Metal with the environment reflection baked into the albedo.
     MetalEnv,
-    /// Cloth and skin: Lambert, the fake subsurface tint, grey specular (5608).
+    /// Cloth and skin: Lambert, the fake subsurface tint, grey specular.
     ClothSkin,
-    /// Glossy glass (5634).
+    /// Glossy glass.
     GlossyGlass,
-    /// Emissive, unlit (5696/5699/5751).
+    /// Emissive, unlit.
     Emissive,
-    /// Forward glass, tint only (5732).
+    /// Forward glass, tint only.
     GlassTint,
-    /// Forward glass with reflection (5734).
+    /// Forward glass with reflection.
     GlassReflect,
     // (Added after the others, so files written before them still load.)
     /// Forward 2× modulate: what's behind times 2·base.rgb (a reflex sight's lens pane).
@@ -117,11 +116,10 @@ pub enum Shader {
     /// Forward refraction: the screen-space offset the game's final pass samples the picture
     /// behind it with.
     Distort,
-    /// A collimator's reticle: a quad behind its lens pane ([`Shader::GlassMultiply`]) that the
-    /// game draws as forward tint (5732). `Material::params.x` is the distance (metres, along the
-    /// sight's axis) from the camera the game aims the sight with to the quad's plane, which sets
-    /// the reticle's angular size once it is collimated (0: unknown); `yzw` are 0. See
-    /// docs/design/metro-collimator.md.
+    /// A reflex sight's reticle: a quad behind its lens pane ([`Shader::GlassMultiply`]) that the
+    /// game draws as forward tint ([`Shader::GlassTint`]). `Material::params.x` is the distance
+    /// (metres, along the sight's axis) from the camera the game aims the sight with to the quad's
+    /// plane, which sets the reticle's angular size (0: unknown); `yzw` are 0.
     Reticle,
     /// Gamebryo's per-pixel lighting (Oblivion's `ShadowLightShader`): the base texture lit by the
     /// ambient and each light through the normal map ([`Material::bump`], tangent space, its alpha
@@ -149,9 +147,8 @@ pub struct Vertex {
     /// Indices into [`Model::bones`]; weights sum to 255. All zero weights: rigid, unskinned.
     pub bones: [u8; 4],
     pub weights: [u8; 4],
-    /// Baked ambient occlusion as the game stores it (Metro: the packed normal's top byte, which
-    /// its vertex shaders read as `NORMAL.a` of an `R8G8B8A8_UNORM` stream, i.e. `ao / 255`, and
-    /// multiply by the per-object hemi value). 255 = unoccluded, also where a game has none.
+    /// Baked ambient occlusion as the game stores it (its shaders take it as `ao / 255`, times the
+    /// object's hemisphere light). 255 = unoccluded, also where a game has none.
     pub ao: u8,
 }
 
@@ -662,8 +659,8 @@ mod tests {
 
     #[test]
     fn bone_signatures_ignore_order_and_case() {
-        assert_eq!(bone_signature(["Root", "kurok", "zatvor"]), bone_signature(["zatvor", "root", "KUROK"]));
-        assert_ne!(bone_signature(["root", "kurok"]), bone_signature(["root", "kurok", "zatvor"]));
+        assert_eq!(bone_signature(["Root", "trigger", "bolt"]), bone_signature(["bolt", "root", "TRIGGER"]));
+        assert_ne!(bone_signature(["root", "trigger"]), bone_signature(["root", "trigger", "bolt"]));
         assert_ne!(bone_signature(["ab", "c"]), bone_signature(["a", "bc"]));
     }
 
