@@ -740,11 +740,13 @@ impl Physics {
         let v = from_v(rb.linvel()) + w_now.cross(pivot_now - com) - was_v;
         let w = w_now - was_w;
         // The spring pulls the point held onto where the controller has it at the end of the step:
-        // m (v' - v) = dt (k (x - v' dt) + c (vt - v')), the force no more than the hand's.
+        // m (v' - v) = dt (k (x - v' dt) + c (vt - v')), the force no more than the hand's. As the
+        // speed it drives towards, m (v' - v) = dt c' (vd - v') with c' = c + k dt: no faster than
+        // the arms go.
         let to = target_pos + target_rot * j.pivot - pivot_c;
-        let k = j.spring;
-        let c = j.damper;
-        let free_v = (mass * v + dt * k * to + dt * c * j.target_vel) / (mass + c * dt + k * dt * dt);
+        let c1 = j.damper + j.spring * dt;
+        let vd = if c1 > 0.0 { ((j.spring * to + j.damper * j.target_vel) / c1).clamp_length_max(j.max_speed) } else { V3::ZERO };
+        let free_v = (mass * v + dt * c1 * vd) / (mass + c1 * dt);
         let force = (mass * (free_v - v) / dt).clamp_length_max(j.max_force);
         let v_next = v + force * dt / mass;
         // The hold pulls at the point held, so the weight and the hold's own pull turn the body
@@ -753,23 +755,21 @@ impl Physics {
         // grip that moves fast.
         let rb = &self.world.bodies[b];
         let gravity = from_v(self.world.gravity) * rb.gravity_scale();
-        let r = com - pivot_now;
-        // (As a whole, about its centre of mass: the hold's pull turns it, its weight doesn't.)
-        let (about, weight) = if j.whole { (com, -r.cross(force)) } else { (pivot_now, r.cross((gravity - (v_next - v) / dt) * mass)) };
+        let weight = (com - pivot_now).cross((gravity - (v_next - v) / dt) * mass);
         // Turning: the same about the point held, against the body's inertia about it each way
         // round (a long weapon's head far out is hard to swing round, but it twists about its own
         // handle easily: taken as one number for every way, the weight swinging it round would
         // spin it about its handle as if that were as hard to turn, and it flew off the hand).
         let dq = (target_rot * rot_c.inverse()).normalize();
         let angle = scaled_axis(dq);
-        let inertia = self.body_inertia_tensor_about(b, about) + glam::Mat3::from_diagonal(V3::splat(1e-6));
-        let (ka, ca) = (j.ang_spring, j.ang_damper);
-        let drive = glam::Mat3::from_diagonal(V3::splat(ca * dt + ka * dt * dt));
-        let free_w = (inertia + drive).inverse() * (inertia * w + dt * (ka * angle + ca * j.target_ang + weight));
+        let inertia = self.body_inertia_tensor_about(b, pivot_now) + glam::Mat3::from_diagonal(V3::splat(1e-6));
+        // (As the turn it drives towards, as the spring's speed above: no faster than the arms turn.)
+        let ca1 = j.ang_damper + j.ang_spring * dt;
+        let wd = if ca1 > 0.0 { ((j.ang_spring * angle + j.ang_damper * j.target_ang) / ca1).clamp_length_max(j.max_turn) } else { V3::ZERO };
+        let drive = glam::Mat3::from_diagonal(V3::splat(ca1 * dt));
+        let free_w = (inertia + drive).inverse() * (inertia * w + dt * (ca1 * wd + weight));
         let torque = j.turning(inertia * (free_w - w) / dt - weight);
         let w_next = (w + inertia.inverse() * (torque + weight) * dt).clamp_length_max(60.0);
-        // (As a whole, the centre of mass goes as the pull takes it, the point held about it.)
-        let v_next = if j.whole { v_next + (w - w_next).cross(r) } else { v_next };
         // 20 m/s is beyond any real hand; it only guards against tracking glitches.
         let v_next = v_next.clamp_length_max(20.0) + carry_v;
         let w_next = w_next + carry_w;
@@ -1005,11 +1005,11 @@ pub struct Joint {
     /// across it are driven and capped apart, each to `max_torque`. None: one cap on the whole turn
     /// (its `Slerp`).
     pub twist_axis: Option<V3>,
-    /// The body as a whole (a duel's hold): the hold's pull at the point held moves its centre of
-    /// mass and turns it about that, so a body turning faster or slower than the hold (swung round,
-    /// or carrying on past hands that stopped) pulls the point held, and the hands on it, along.
-    /// Otherwise the point held goes where the hold pulls it and the body turns about it.
-    pub whole: bool,
+    /// The fastest the hold drives the point held (m/s) and turns the body (rad/s): the arms' own
+    /// speed, past which they pull no faster however fast the controllers go (a duel's heavy blade
+    /// goes the hands' way at its own pace). Infinite: as fast as the spring pulls.
+    pub max_speed: f32,
+    pub max_turn: f32,
 }
 
 impl Joint {
@@ -1042,14 +1042,15 @@ impl Joint {
             ang_damper: HOLD_TURN_DAMPER * HANDLE_TURN_DAMPER * (strength * 0.5).max(1.0),
             max_torque: HOLD_MAX_TORQUE * strength,
             twist_axis: None,
-            whole: false,
+            max_speed: f32::INFINITY,
+            max_turn: f32::INFINITY,
         }
     }
 
-    /// In a world of `w` units a metre (a spring and a damper are the same per unit; a force grows
-    /// with the unit, a torque and a turning spring with its square).
+    /// In a world of `w` units a metre (a spring and a damper are the same per unit; a force and a
+    /// speed grow with the unit, a torque and a turning spring with its square).
     pub fn in_units(self, w: f32) -> Joint {
-        Joint { max_force: self.max_force * w, ang_spring: self.ang_spring * w * w, ang_damper: self.ang_damper * w * w, max_torque: self.max_torque * w * w, ..self }
+        Joint { max_force: self.max_force * w, ang_spring: self.ang_spring * w * w, ang_damper: self.ang_damper * w * w, max_torque: self.max_torque * w * w, max_speed: self.max_speed * w, ..self }
     }
 }
 

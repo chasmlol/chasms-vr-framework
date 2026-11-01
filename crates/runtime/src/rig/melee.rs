@@ -410,13 +410,17 @@ impl Rig {
         // The other hand on it pulls its own hold towards its controller: the turn it would have
         // (its hold lying towards that hand, about this one's) shares the target with this hand's
         // own, by how much of the turning is its pull (no filtering: the hands pull as they are).
+        let mut line_off = None;
         let target = match self.hands.as_ref().unwrap()[hand ^ 1].support.filter(|s| s.id == id) {
-            Some(sup) if lever > 0.0 => {
+            Some(sup) if lever > 0.0 || self.melee.duel.on => {
                 let (cp, cq) = self.hands.as_ref().unwrap()[hand ^ 1].target;
                 let pivot_w = target.0 + target.1 * pivot;
-                let cur = (target.1 * (sup.at - pivot)).normalize_or_zero();
-                let want = (cp + cq * sup.reach - pivot_w).normalize_or_zero();
-                if cur == Vec3::ZERO || want == Vec3::ZERO {
+                let (cur, want) = (target.1 * (sup.at - pivot), cp + cq * sup.reach - pivot_w);
+                // (In a duel, both hands steer it along the line between them: [`Rig::duel_lever`].)
+                let lever = self.duel_lever(id, lever, cur.length(), want.length());
+                let (cur, want) = (cur.normalize_or_zero(), want.normalize_or_zero());
+                line_off = debug_melee().then(|| (now_rot * (sup.at - pivot)).normalize_or_zero().angle_between(want).to_degrees());
+                if cur == Vec3::ZERO || want == Vec3::ZERO || lever <= 0.0 {
                     target
                 } else {
                     let rot = target.1.slerp((Quat::from_rotation_arc(cur, want) * target.1).normalize(), lever).normalize();
@@ -437,13 +441,14 @@ impl Rig {
             // (Behind and turned off as the world has it, each way: up is +y.)
             let turned = physics::scaled_axis((target.1 * now_rot.inverse()).normalize());
             tracing::info!(
-                "melee: {id:#x} in hand {hand}{}: {:.3} m behind its hold {:.3?}, turned {:.1} deg off {:.0?}, hand at {:.2} m/s",
+                "melee: {id:#x} in hand {hand}{}: {:.3} m behind its hold {:.3?}, turned {:.1} deg off {:.0?}, hand at {:.2} m/s{}",
                 if self.two_handed_melee(id) { " (two hands)" } else { "" },
                 lag.length() / w,
                 (lag / w).to_array(),
                 turned.length().to_degrees(),
                 (turned * 180.0 / std::f32::consts::PI).to_array(),
-                tv.length()
+                tv.length(),
+                line_off.map_or(String::new(), |a| format!(", its handle {a:.0} deg off the hands' line"))
             );
         }
         self.melee.held.entry(id).or_default().swing = Some(swing);

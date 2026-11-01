@@ -1,7 +1,8 @@
 //! The duel's side of holding a weapon (`crate::duel`, the numbers in `rustvr_melee::duel`): each
 //! hand's weapon held by plain physics (its own mass and inertia on a spring and damper from the
-//! controllers, no harder than the hands are strong, its weight the arms': it moves by its own
-//! momentum, trailing and carrying on; staggered the hands are weaker, in a riposte stronger),
+//! controllers, no harder than the hands are strong and no faster than the arms go, its weight the
+//! arms': it goes the hands' way at its own pace, trailing and carrying on; in two hands its handle
+//! lies along the line between them; staggered the hands are weaker, in a riposte stronger),
 //! resting on the player's body, sent off a clash as the duel judged it, and the creatures' weapons
 //! solid to nothing the hands hold (the blades meet only by the duel's rules: no passive block stops
 //! a swing).
@@ -90,10 +91,10 @@ impl Rig {
 
     /// The duel's hold of hand `hand` on weapon `id`, from the sandbox's (`joint`, metres): a spring
     /// and a damper settling it by its own mass and its inertia about the grip, no harder than the
-    /// hands are strong (two hands' when both are on its handles), times the player's `strength` and
-    /// the hand's share now (staggered, in a riposte), on the weapon as a whole body (its turn pulls
-    /// its grip, and the hands, along: [`Joint::whole`]). Its weight is the arms' while it's held
-    /// ([`Rig::duel_gravity`]).
+    /// hands are strong and no faster than the arms go (two hands' when both are on its handles), times
+    /// the player's `strength` and the hand's share now (staggered, in a riposte). The arms' speed is
+    /// so much energy: a heavy blade turns slower than a light one. Its weight is the arms' while it's
+    /// held ([`Rig::duel_gravity`]).
     pub(super) fn duel_joint(&self, id: u32, hand: usize, joint: Joint, strength: f32) -> Joint {
         let Some(o) = self.objects.get(&id) else { return joint };
         let w = self.map.world_per_meter;
@@ -105,7 +106,11 @@ impl Rig {
         let swing = (0.5 * (inertia.x_axis.x + inertia.y_axis.y + inertia.z_axis.z) / (w * w)).max(1e-3);
         let two = self.two_handed_melee(id);
         let share = self.melee.duel.drive[hand] * strength;
-        let (force, torque) = if two { (tune::HOLD_FORCE_TWO, tune::HOLD_TORQUE_TWO) } else { (tune::HOLD_FORCE_ONE, tune::HOLD_TORQUE_ONE) };
+        let (force, torque, run, turn) = if two {
+            (tune::HOLD_FORCE_TWO, tune::HOLD_TORQUE_TWO, tune::GRIP_ENERGY_TWO, tune::TURN_ENERGY_TWO)
+        } else {
+            (tune::HOLD_FORCE_ONE, tune::HOLD_TORQUE_ONE, tune::GRIP_ENERGY_ONE, tune::TURN_ENERGY_ONE)
+        };
         let (wg, ws) = (tune::GRIP_SETTLE, tune::SWING_SETTLE);
         Joint {
             spring: mass * wg * wg,
@@ -114,9 +119,19 @@ impl Rig {
             ang_spring: swing * ws * ws,
             ang_damper: 2.0 * tune::SWING_DAMPING * swing * ws,
             max_torque: torque * share,
-            whole: true,
+            max_speed: (2.0 * run * share / mass).sqrt(),
+            max_turn: (2.0 * turn * share / swing).sqrt(),
             ..joint
         }
+    }
+
+    /// How much of the hold's turn a second hand on weapon `id` steers (`lever`, the sandbox's: the
+    /// share its pull has of the turning stiffness): in a duel, all of it with both hands on its
+    /// handles (the handle lies along the line from one hand to the other, the first hand's wrist
+    /// only rolling it about that line), less as the hands come closer together than half their
+    /// hold's spread (`spread`, how far apart they hold it; `apart`, the controllers).
+    pub(super) fn duel_lever(&self, id: u32, lever: f32, spread: f32, apart: f32) -> f32 {
+        if self.melee.duel.on && self.two_handed_melee(id) && spread > 0.0 { (2.0 * apart / spread).min(1.0) } else { lever }
     }
 
     /// How much of its weight a held weapon carries itself: none in a duel (the arms bear it), all of

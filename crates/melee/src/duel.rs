@@ -44,30 +44,38 @@ pub const BEATEN: f32 = 2.0;
 /// Two blades meet once in this long (s): a clash isn't judged again while they stay together.
 pub const CLASH_COOLDOWN: f64 = 0.35;
 
-/// **The hold.** In a duel a held weapon is plain physics, as a whole body: its own mass and inertia,
-/// held by a spring and a damper from the controllers to its grip, and turned towards the
-/// controllers' turn by another (the arms' give). The pull moves its grip as stiffly as its mass
-/// settles at [`GRIP_SETTLE`] rad/s, damped to [`GRIP_DAMPING`] of critical, with at most
-/// [`HOLD_FORCE_ONE`] N ([`HOLD_FORCE_TWO`] in two hands); the turn as stiffly as it settles at
-/// [`SWING_SETTLE`] rad/s about its grip, damped to [`SWING_DAMPING`], with at most
-/// [`HOLD_TORQUE_ONE`] N m ([`HOLD_TORQUE_TWO`] in two hands): wrists firm against a small turn and
-/// only so strong against a big one. The arms bear its weight while it's held (it doesn't droop), and
-/// it rests on the player's body. So it moves by its own momentum: it trails hands that set off fast,
-/// and carries on past hands that stop, braked no harder than the wrists can, pulling the hands (and
-/// the arms and body drawn after them) along, a long heavy blade far more than a light one; then it
-/// comes back to them. The settings' *strength on a weapon* scales the most force and torque: less is
-/// heavier (more trail, more carry). Checked headless with the longsword in two hands, chopped from
-/// overhead (0.8 s, up to speed in 0.3 s) and the hands stopped dead: it trails 18 degrees and
-/// carries on 24 degrees past them, the hands pulled 13 cm on down, and is back with them 0.8 s later;
-/// chopped fast (0.3 s) it trails 87 degrees and carries on 32.
-pub const GRIP_SETTLE: f32 = 5.0;
-pub const GRIP_DAMPING: f32 = 0.45;
+/// **The hold.** In a duel a held weapon is plain physics: its own mass and inertia, held by a
+/// spring and a damper from the controllers to its grip, and turned towards the controllers' turn by
+/// another (the arms' give), no harder than the hands are strong and no faster than the arms go. The
+/// pull moves its grip as stiffly as its mass settles at [`GRIP_SETTLE`] rad/s, damped to
+/// [`GRIP_DAMPING`] of critical, with at most [`HOLD_FORCE_ONE`] N ([`HOLD_FORCE_TWO`] in two
+/// hands), and no faster than [`GRIP_ENERGY_ONE`] J of its motion ([`GRIP_ENERGY_TWO`]); the turn as
+/// stiffly as it settles at [`SWING_SETTLE`] rad/s about its grip, damped to [`SWING_DAMPING`], with
+/// at most [`HOLD_TORQUE_ONE`] N m ([`HOLD_TORQUE_TWO`]), and no faster than [`TURN_ENERGY_ONE`] J
+/// of its turn ([`TURN_ENERGY_TWO`]): its top turn rate, a heavy blade's slower than a light one's.
+/// So whatever the hands do, it goes their way at its own pace: hands slashing faster than it turns
+/// lead it, and it comes after them along their way; hands that stop carry it on past them, braked no
+/// harder than the wrists can, before it comes back. In two hands its handle lies along the line from
+/// one hand to the other. The arms bear its weight while it's held (it doesn't droop), and it rests
+/// on the player's body. The settings' *strength on a weapon* scales the force, the torque and the
+/// energies: less is heavier (slower, more carry). Checked headless with the longsword in two hands:
+/// it turns at most about 310 degrees a second (a half turn in 0.6 s); chopped from overhead faster
+/// than that (0.25 s) it falls 70 degrees behind the hands, then comes on after them along their
+/// way, carries on 10 degrees past where they stopped and is with them 0.5 s after they stopped;
+/// chopped slowly (0.6 s) it trails 8 degrees and carries on 11; the hands put sideways, its handle
+/// turns with them (14 degrees behind over a second's turn); laid on the shoulder it rests there.
+pub const GRIP_SETTLE: f32 = 10.0;
+pub const GRIP_DAMPING: f32 = 0.9;
 pub const SWING_SETTLE: f32 = 14.0;
-pub const SWING_DAMPING: f32 = 0.8;
-pub const HOLD_FORCE_ONE: f32 = 150.0;
-pub const HOLD_FORCE_TWO: f32 = 250.0;
-pub const HOLD_TORQUE_ONE: f32 = 2.5;
-pub const HOLD_TORQUE_TWO: f32 = 3.5;
+pub const SWING_DAMPING: f32 = 0.6;
+pub const HOLD_FORCE_ONE: f32 = 60.0;
+pub const HOLD_FORCE_TWO: f32 = 80.0;
+pub const HOLD_TORQUE_ONE: f32 = 4.0;
+pub const HOLD_TORQUE_TWO: f32 = 8.0;
+pub const GRIP_ENERGY_ONE: f32 = 4.0;
+pub const GRIP_ENERGY_TWO: f32 = 6.0;
+pub const TURN_ENERGY_ONE: f32 = 2.5;
+pub const TURN_ENERGY_TWO: f32 = 4.0;
 /// A held weapon stopped against something lets go further from the shoulders in a duel than the
 /// sandbox's reach (its swing has carried the hands on): this much further. A second hand on it lets
 /// go once it's this far from its controller (m: past the furthest a swing carries it).

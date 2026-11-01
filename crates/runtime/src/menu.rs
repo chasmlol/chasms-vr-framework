@@ -462,10 +462,11 @@ fn help(ui: &mut egui::Ui) {
         ("Hands tab", "where the quiver is, and a crosshair where the bow points"),
     ]);
     section(ui, "Duel melee (Controls tab: Melee)", &[
-        ("A sword drawn", "it's as heavy as it is: jerk it and the blade trails, stop a swing and it carries on, pulling your hands; you walk slower"),
+        ("A sword drawn", "it's heavy: it goes your hands' way at its own pace, slashing faster than it turns it comes after them, and it carries on a little past a stop; you walk slower"),
+        ("Both hands on its handle", "it lies along the line between your hands: move them sideways and it turns sideways"),
         ("Rest it on your shoulder", "it lies on your body rather than passing through it"),
         ("Controls tab: sword angle", "how far forward the blade leans in your fist"),
-        ("Controls tab: strength on a weapon", "less makes it heavier: more trail, more carry"),
+        ("Controls tab: strength on a weapon", "less makes it heavier: slower to turn, more carry"),
         ("Push your blade fast into their swing", "parry: your blade bounces off with the way for your counter"),
         ("Counter straight after a parry", "it lands before they can swing again: left, right, over or under"),
         ("Your swing parried", "your sword goes heavy and does nothing for a moment: parry their counter"),
@@ -607,7 +608,7 @@ fn controls(ui: &mut egui::Ui, s: &mut Settings) {
         ui.selectable_value(m, MeleeMode::Duel, "Duel (parry and counter)");
     });
     slider(ui, "Sword angle in the hand (forward; take it again to apply)", &mut s.melee.grip_angle, -20.0, 70.0, " deg", 0);
-    slider(ui, "Strength on a weapon (less: it's heavier, trailing a swing and carrying on past a stop)", &mut s.melee.strength, 0.3, 2.0, "x", 2);
+    slider(ui, "Strength on a weapon (less: it's heavier, slower to turn and carrying on past a stop)", &mut s.melee.strength, 0.3, 2.0, "x", 2);
     slider(ui, "Stick deadzone", &mut i.stick_deadzone, 0.0, 0.5, "", 2);
     ui.checkbox(&mut i.arm_swimming, "Swim with your arms (in the game's water)");
     if i.arm_swimming {
