@@ -721,9 +721,14 @@ impl Session {
         let hud_panel = if !menu_mode && shown_info.is_some_and(|i| i.flags & SLOT_HUD != 0) { hud_aspect } else { None };
         let head_pos = Vec3::from_array(frame.hmd.pos);
         let head_rot = quat(frame.hmd.rot);
+        // The menus stand where they would for the player standing: from the head at its upright
+        // height (`Mechanics`'s, the player's own eyes when they've said how tall they are), so sat
+        // or crouched they're over the head, and they stay put as the player stands up or sits down.
+        let upright = self.mech.debug.stand_h;
+        let menu_eye = if upright > 0.5 { Vec3::new(head_pos.x, head_pos.y.max(upright), head_pos.z) } else { head_pos };
         let pieces_were = self.menu_pieces.len();
         self.menu_pieces = match (grouped, hud_aspect) {
-            (true, Some(aspect)) => self.hud.place_groups(&self.settings.current, head_pos, head_rot, frame.dt, aspect, &self.hud_layout, self.map_now.as_ref()),
+            (true, Some(aspect)) => self.hud.place_groups(&self.settings.current, head_pos, menu_eye, head_rot, frame.dt, aspect, &self.hud_layout, self.map_now.as_ref()),
             _ => Vec::new(),
         };
         if self.menu_pieces.len() != pieces_were {
@@ -733,12 +738,13 @@ impl Session {
         }
         // (Placed again below if the picture taken this frame was drawn with a newer layout.)
         let place_again = |s: &mut Self, floating: bool| match (floating && s.hud_layout.group_count > 0, hud_aspect) {
-            (true, Some(aspect)) => s.hud.place_groups(&s.settings.current, head_pos, head_rot, 0.0, aspect, &s.hud_layout, s.map_now.as_ref()),
+            (true, Some(aspect)) => s.hud.place_groups(&s.settings.current, head_pos, menu_eye, head_rot, 0.0, aspect, &s.hud_layout, s.map_now.as_ref()),
             _ => Vec::new(),
         };
         let mut layout = self.layout.update(
             &self.settings.current,
             head_pos,
+            menu_eye,
             head_rot,
             frame.dt,
             menu_panel,
@@ -771,7 +777,7 @@ impl Session {
         }
         let menu_uv = self.game.as_ref().map(|g| g.menu_uv).filter(|uv| uv[2] > uv[0] && uv[3] > uv[1]).unwrap_or([0.0, 0.0, 1.0, 1.0]);
         if let (true, Some(g), Some(aspect)) = (menu_in_world, self.mirror.glass(), menu_panel) {
-            let p = crate::mirror::beside(&g, head_pos, aspect * (menu_uv[2] - menu_uv[0]) / (menu_uv[3] - menu_uv[1]));
+            let p = crate::mirror::beside(&g, menu_eye, aspect * (menu_uv[2] - menu_uv[0]) / (menu_uv[3] - menu_uv[1]));
             if !self.menu_beside_said {
                 self.menu_beside_said = true;
                 tracing::info!("mirror: the game's menu stands beside it at {:.2?}, {:.2} x {:.2} m, the part {menu_uv:.3?} of its picture", p.center, p.width, p.height);
@@ -783,19 +789,19 @@ impl Session {
         // The runtime's settings beside a game menu that floats in pieces: to the right of them, as
         // far away and as big to the eye as they'd be on their own, turned to it.
         if let (Some(rm), false) = (layout.runtime_menu.as_mut(), self.menu_pieces.is_empty()) {
-            let yaw_of = |p: Vec3| (p - head_pos).x.atan2((p - head_pos).z);
+            let yaw_of = |p: Vec3| (p - menu_eye).x.atan2((p - menu_eye).z);
             let fwd = head_rot * Vec3::Z;
             let ahead = fwd.x.atan2(fwd.z);
             let edges = self.menu_pieces.iter().map(|p| p.panel.center + p.panel.right * p.panel.width * 0.5);
             let (right, d) = edges.fold((f32::MIN, 1.0f32), |(r, d), e| {
                 let y = crate::wrap_angle(yaw_of(e) - ahead);
-                if y > r { (y, Vec3::new(e.x - head_pos.x, 0.0, e.z - head_pos.z).length()) } else { (r, d) }
+                if y > r { (y, Vec3::new(e.x - menu_eye.x, 0.0, e.z - menu_eye.z).length()) } else { (r, d) }
             });
             let scale = d / self.settings.current.ui.menu_distance.max(0.1);
             let (w, h) = (rm.width * scale, rm.height * scale);
             let yaw = ahead + right + (w * 0.5 / d).atan() + 3f32.to_radians();
             let pitch = 8f32.to_radians();
-            let c = head_pos + panels::Panel::dir(yaw, pitch) * d;
+            let c = menu_eye + panels::Panel::dir(yaw, pitch) * d;
             *rm = panels::Panel::facing(c, yaw, pitch, w, w / h.max(1e-4));
         }
         // The laser from the dominant hand, unless it's holding a menu (a book, the map): then from

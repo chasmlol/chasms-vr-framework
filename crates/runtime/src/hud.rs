@@ -233,8 +233,10 @@ impl HudPlacer {
 
     /// Places the menus' groups (the layout's pieces that have one) for this frame. `aspect`: the
     /// HUD texture's width / height; `map`: tracking -> the game's world, for the things groups go
-    /// beside.
-    pub fn place_groups(&mut self, s: &Settings, head_pos: Vec3, head_rot: Quat, dt: f32, aspect: f32, layout: &HudLayout, map: Option<&WorldMap>) -> Vec<HudPiece> {
+    /// beside. They're placed from `menu_eye`, the head at its upright height (sat or crouched,
+    /// they stand over the head as over a standing player's, and stay as the player stands up or
+    /// sits down); a pop-up where the head itself looks.
+    pub fn place_groups(&mut self, s: &Settings, head_pos: Vec3, menu_eye: Vec3, head_rot: Quat, dt: f32, aspect: f32, layout: &HudLayout, map: Option<&WorldMap>) -> Vec<HudPiece> {
         let groups = layout.group_entries();
         // (A title over a view is kept while another menu covers it, the options or the credits
         // over the main menu: back, it's where it was.)
@@ -246,6 +248,7 @@ impl HudPlacer {
         let mut out = Vec::new();
         for (i, g) in groups.iter().enumerate().filter(|(_, g)| g.anchor != ANCHOR_HELD) {
             let n = i as u32 + 1;
+            let eye = if g.anchor == ANCHOR_POPUP { head_pos } else { menu_eye };
             let Some(fp) = footprint(layout, n, aspect) else { continue };
             let thing = map.map(|m| m.inv_point(Vec3::from_array(g.at)));
             let slot = self.groups.iter().position(|(p, _)| p.id == g.id && p.anchor == g.anchor);
@@ -255,15 +258,15 @@ impl HudPlacer {
                 _ => Mat4::IDENTITY,
             };
             let stale = slot.map(|k| &self.groups[k].0).is_none_or(|p| match g.anchor {
-                ANCHOR_WORLD => thing.zip(p.thing).is_some_and(|(t, then)| t.distance(then) > 0.3) || head_pos.distance(p.eye) > 0.8,
-                ANCHOR_PLAYER => crate::wrap_angle(head_yaw - p.yaw).abs() > 65f32.to_radians() || head_pos.distance(p.eye) > 0.8,
+                ANCHOR_WORLD => thing.zip(p.thing).is_some_and(|(t, then)| t.distance(then) > 0.3) || eye.distance(p.eye) > 0.8,
+                ANCHOR_PLAYER => crate::wrap_angle(head_yaw - p.yaw).abs() > 65f32.to_radians() || eye.distance(p.eye) > 0.8,
                 // (A title over a view stays where it is in the world while the player looks round
                 // it: placed again only beside a new view, or once the player is well away.)
-                ANCHOR_VISTA => p.at.distance(Vec3::from_array(g.at)) > 1.0 || (p.world.is_none() && map.is_some()) || head_pos.distance(carried(p).transform_point3(p.eye)) > 1.5,
+                ANCHOR_VISTA => p.at.distance(Vec3::from_array(g.at)) > 1.0 || (p.world.is_none() && map.is_some()) || eye.distance(carried(p).transform_point3(p.eye)) > 1.5,
                 _ => false,
             });
             if stale {
-                let mut placed = place_group(g, fp, thing, head_pos, head_yaw, head_pitch, per_metre);
+                let mut placed = place_group(g, fp, thing, eye, head_yaw, head_pitch, per_metre);
                 if g.anchor == ANCHOR_VISTA {
                     placed.world = map.map(|m| m.matrix());
                 }
@@ -688,7 +691,7 @@ mod tests {
         l.push(HudElement::piece(g, [0.4, 0.70, 0.6, 0.76], [0.0, 0.04, 0.0], HUDE_POINT));
         l.push(HudElement::piece(g, [0.4, 0.78, 0.6, 0.84], [0.0, -0.04, 0.0], HUDE_POINT));
         let map = WorldMap::IDENTITY;
-        let first = h.place_groups(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, &l, Some(&map));
+        let first = h.place_groups(&s, head, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, &l, Some(&map));
         assert_eq!(first.len(), 2);
         for p in &first {
             let d = p.panel.center - head;
@@ -699,18 +702,18 @@ mod tests {
         }
         // The head looks round: it stays where it is.
         let turned = Quat::from_rotation_y(120f32.to_radians());
-        let after = h.place_groups(&s, head, turned, 0.011, 16.0 / 9.0, &l, Some(&map));
+        let after = h.place_groups(&s, head, head, turned, 0.011, 16.0 / 9.0, &l, Some(&map));
         assert!(after[0].panel.center.abs_diff_eq(first[0].panel.center, 1e-4));
         // The world turns round the player (the stick's turn): it's carried with the world, not
         // placed again where the head looks.
         let world_turned = WorldMap { body_yaw: 0.3, ..WorldMap::IDENTITY };
-        let carried = h.place_groups(&s, head, turned, 0.011, 16.0 / 9.0, &l, Some(&world_turned));
+        let carried = h.place_groups(&s, head, head, turned, 0.011, 16.0 / 9.0, &l, Some(&world_turned));
         let want = Quat::from_rotation_y(-0.3) * first[0].panel.center;
         assert!(carried[0].panel.center.abs_diff_eq(want, 1e-3), "{:?}, not {want:?}", carried[0].panel.center);
         // Another menu over it (the options), then back: where it was.
         let other = HudLayout::new(HUDL_ALPHA | HUDL_REST_HIDDEN, &[]);
-        h.place_groups(&s, head, turned, 0.011, 16.0 / 9.0, &other, Some(&world_turned));
-        let back = h.place_groups(&s, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, &l, Some(&world_turned));
+        h.place_groups(&s, head, head, turned, 0.011, 16.0 / 9.0, &other, Some(&world_turned));
+        let back = h.place_groups(&s, head, head, Quat::IDENTITY, 0.011, 16.0 / 9.0, &l, Some(&world_turned));
         assert!(back[0].panel.center.abs_diff_eq(want, 1e-3), "{:?}, not {want:?}", back[0].panel.center);
     }
 }

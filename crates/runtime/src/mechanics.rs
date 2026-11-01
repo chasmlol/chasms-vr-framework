@@ -467,6 +467,39 @@ impl Mechanics {
         (eye - self.stand_eye).clamp(-0.8, 0.6)
     }
 
+    /// The head's upright height when the player has said how tall they are and doesn't play
+    /// seated: their eyes standing, 11 cm under the top of their head (as a height measured
+    /// standing is set). Started sitting, or sat down since, the head is then under it: a crouch.
+    fn said_upright(c: &Settings) -> Option<f32> {
+        (!c.comfort.seated && c.body.height > 1.0).then(|| c.body.height - 0.11)
+    }
+
+    /// The head's upright height learned from the head `h` (seated play, or a height not said):
+    /// followed until it's been still at a `likely` height a while, then raised to a height held
+    /// higher a second or more, and settled slowly down by a slouch (under half of `thr`, a crouch).
+    fn learn_upright(&mut self, h: f32, likely: bool, thr: f32, now: f64, dt: f32) {
+        if !self.upright_settled {
+            self.upright_still = if likely && (h - self.stand_h).abs() < UPRIGHT_STILL { self.upright_still + dt } else { 0.0 };
+            self.stand_h = if self.stand_h == 0.0 { h } else { self.stand_h + (h - self.stand_h) * (dt / 0.25).min(1.0) };
+            self.upright_settled = self.upright_still >= UPRIGHT_SETTLE;
+            return;
+        }
+        // The head's lowest over the last second: held higher than upright that long, it's upright
+        // there now.
+        self.upright_window.push_back((now, h));
+        while self.upright_window.front().is_some_and(|(t, _)| now - t > UPRIGHT_HOLD as f64) {
+            self.upright_window.pop_front();
+        }
+        let held = self.upright_window.front().is_some_and(|(t, _)| now - t >= UPRIGHT_HOLD as f64 * 0.9);
+        let low = self.upright_window.iter().fold(f32::MAX, |m, (_, h)| m.min(*h));
+        if held && low > self.stand_h {
+            self.stand_h = (self.stand_h + UPRIGHT_SPEED * dt).min(low);
+        } else if h < self.stand_h && self.stand_h - h < thr * 0.5 && !self.phys_crouch {
+            // slouching
+            self.stand_h = (self.stand_h - UPRIGHT_SETTLE_SPEED * dt).max(h);
+        }
+    }
+
     /// The view's height is the head's over its upright height (standing, or sat up in a chair),
     /// the game's eyes there. The adapter puts the head at the game's eyes as the head was when the
     /// view was last recentred (its tracking origin); this takes that back off. Recentred with the
@@ -925,35 +958,24 @@ impl Mechanics {
             // that second: a moment higher, a stretch, on tiptoe, a tracking glitch, doesn't
             // count). Lower by a slouch (under half a crouch), it settles there slowly; lower than
             // that (a crouch, made however slowly, or held), it stays. A recentre takes the head's
-            // height as it is.
+            // height as it is. A player who has said how tall they are, standing, is upright at
+            // their own eyes' height whatever the head does (`said_upright`).
             let h = (hmd_pos + hmd_rot * NECK).y - NECK.y;
             let dt = inp.dt;
             let thr = c.input.stealth_crouch_amount.clamp(0.05, 0.4);
             let likely = (UPRIGHT_LOW..UPRIGHT_HIGH).contains(&h);
-            if std::mem::take(&mut self.recalibrate) && likely {
-                self.stand_h = h;
+            if let Some(said) = Self::said_upright(c) {
+                self.stand_h = said;
                 self.upright_settled = true;
+                self.recalibrate = false;
                 self.upright_window.clear();
-            }
-            if !self.upright_settled {
-                self.upright_still = if likely && (h - self.stand_h).abs() < UPRIGHT_STILL { self.upright_still + dt } else { 0.0 };
-                self.stand_h = if self.stand_h == 0.0 { h } else { self.stand_h + (h - self.stand_h) * (dt / 0.25).min(1.0) };
-                self.upright_settled = self.upright_still >= UPRIGHT_SETTLE;
             } else {
-                // The head's lowest over the last second: held higher than upright that long, it's
-                // upright there now.
-                self.upright_window.push_back((now, h));
-                while self.upright_window.front().is_some_and(|(t, _)| now - t > UPRIGHT_HOLD as f64) {
-                    self.upright_window.pop_front();
+                if std::mem::take(&mut self.recalibrate) && likely {
+                    self.stand_h = h;
+                    self.upright_settled = true;
+                    self.upright_window.clear();
                 }
-                let held = self.upright_window.front().is_some_and(|(t, _)| now - t >= UPRIGHT_HOLD as f64 * 0.9);
-                let low = self.upright_window.iter().fold(f32::MAX, |m, (_, h)| m.min(*h));
-                if held && low > self.stand_h {
-                    self.stand_h = (self.stand_h + UPRIGHT_SPEED * dt).min(low);
-                } else if h < self.stand_h && self.stand_h - h < thr * 0.5 && !self.phys_crouch {
-                    // slouching
-                    self.stand_h = (self.stand_h - UPRIGHT_SETTLE_SPEED * dt).max(h);
-                }
+                self.learn_upright(h, likely, thr, now, dt);
             }
             let was = self.phys_crouch;
             // (Not while the headset's still being put on: upright isn't known yet.)

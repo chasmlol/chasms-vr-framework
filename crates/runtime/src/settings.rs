@@ -824,7 +824,9 @@ impl Default for Sound {
 #[serde(default)]
 pub struct Body {
     pub visibility: BodyVisibility,
-    /// Metres, the player's real height (0 = measure it as you stand).
+    /// Metres, the player's real height (0 = measure it as you stand). Set, playing standing,
+    /// their eyes' height under it is upright: sat or ducked under that is a crouch, however the
+    /// game started.
     pub height: f32,
     /// Metres, controller grip to controller grip with the arms straight out (0 = automatic: an
     /// estimate from the height that grows whenever your real arms reach further).

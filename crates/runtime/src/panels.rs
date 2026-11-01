@@ -76,11 +76,13 @@ pub struct Frame {
 
 impl Layout {
     /// Places this frame's panels. `menu`: the game shows a menu; `hud`: it has a HUD layer;
-    /// `runtime_menu`: the runtime's settings panel is open.
+    /// `runtime_menu`: the runtime's settings panel is open. The menus stand before `menu_eye` (the
+    /// head at its upright height), the HUD before the head.
     pub fn update(
         &mut self,
         s: &Settings,
         head_pos: Vec3,
+        menu_eye: Vec3,
         head_rot: Quat,
         dt: f32,
         menu: Option<f32>,
@@ -100,7 +102,7 @@ impl Layout {
             };
             if re_anchor {
                 let d = s.ui.menu_distance;
-                self.menu_anchor = Some((head_pos + Vec3::new(yaw.sin() * d, 0.0, yaw.cos() * d), yaw));
+                self.menu_anchor = Some((menu_eye + Vec3::new(yaw.sin() * d, 0.0, yaw.cos() * d), yaw));
             }
             let (pos, a) = self.menu_anchor.unwrap();
             let right = Vec3::new(a.cos(), 0.0, -a.sin());
@@ -173,7 +175,7 @@ mod tests {
         let s = Settings::default();
         let mut l = Layout::default();
         let head = Vec3::new(0.0, 1.6, 0.0);
-        let f = l.update(&s, head, Quat::IDENTITY, 0.01, Some(16.0 / 9.0), None, None);
+        let f = l.update(&s, head, head, Quat::IDENTITY, 0.01, Some(16.0 / 9.0), None, None);
         let menu = f.game_menu.unwrap();
         assert!(menu.center.abs_diff_eq(Vec3::new(0.0, 1.6, 2.2), 1e-5));
         let (id, t, uv) = f.pick(head, Vec3::Z).unwrap();
@@ -190,10 +192,10 @@ mod tests {
         let s = Settings::default();
         let mut l = Layout::default();
         let head = Vec3::new(0.0, 1.6, 0.0);
-        let a = l.update(&s, head, Quat::IDENTITY, 0.01, Some(1.5), None, None).game_menu.unwrap();
-        let b = l.update(&s, head, Quat::from_rotation_y(0.5), 0.01, Some(1.5), None, None).game_menu.unwrap();
+        let a = l.update(&s, head, head, Quat::IDENTITY, 0.01, Some(1.5), None, None).game_menu.unwrap();
+        let b = l.update(&s, head, head, Quat::from_rotation_y(0.5), 0.01, Some(1.5), None, None).game_menu.unwrap();
         assert!(a.center.abs_diff_eq(b.center, 1e-5), "a small turn keeps it put");
-        let c = l.update(&s, head, Quat::from_rotation_y(1.6), 0.01, Some(1.5), None, None).game_menu.unwrap();
+        let c = l.update(&s, head, head, Quat::from_rotation_y(1.6), 0.01, Some(1.5), None, None).game_menu.unwrap();
         assert!(c.center.x > 2.0, "turning 90 degrees brings it round: {:?}", c.center);
     }
 
@@ -202,8 +204,8 @@ mod tests {
         let s = Settings::default();
         let mut l = Layout::default();
         let head = Vec3::new(0.0, 1.6, 0.0);
-        l.update(&s, head, Quat::IDENTITY, 0.01, None, Some(1.6), None);
-        let h = l.update(&s, head, Quat::from_rotation_y(1.0), 0.011, None, Some(1.6), None).hud.unwrap();
+        l.update(&s, head, head, Quat::IDENTITY, 0.01, None, Some(1.6), None);
+        let h = l.update(&s, head, head, Quat::from_rotation_y(1.0), 0.011, None, Some(1.6), None).hud.unwrap();
         let yaw = (h.center - head).x.atan2((h.center - head).z);
         assert!(yaw > 0.0 && yaw < 0.2, "follows smoothly, not instantly: {yaw}");
     }
