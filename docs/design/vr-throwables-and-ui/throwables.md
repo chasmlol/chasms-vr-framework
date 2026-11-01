@@ -1,7 +1,7 @@
 # VR throwables, grenades and throwing knives: research notes
 
 > A research snapshot (2026-10-21), not a description of the framework's code: what was built is in
-> `docs/`. The Metro adapter it mentions lives in its own repository now.
+> `docs/`.
 
 Researched 2026-10-21 for the RustVR runtime (game-agnostic, our own physics rig, OpenXR).
 Every fact has a source URL. **[src]** means I read the source code. **[snippet]** means the figure comes only from a
@@ -365,8 +365,7 @@ A clearly *visible and audible* countdown is the norm in both.
 
 ---
 
-## 9. Metro-specific note (game is the source of truth)
-- The user's Metro mod has throwing knives and grenades.
+## 9. The game is the source of truth
 - Per our framework principle, **fuse time, damage, bounce and projectile gravity come from the game's own grenade and knife data**. The runtime only supplies the release pose, velocity and spin, plus optional assist.
 - The fallback defaults in §10 apply only when the adapter can't read a value.
 - [inference] If the game's thrown projectile is a scripted ballistic entity with its own launch speed, the adapter should map our release velocity onto it, keeping our direction and a speed ratio clamped to the game's min/max. It should not override the game's physics constants.
@@ -422,7 +421,7 @@ A clearly *visible and audible* countdown is the norm in both.
     - Re-gripping after release doesn't stop the fuse.
   - **One-handed / accessibility:** the trigger on the holding hand arms (HL:A "priming button", Arizona Sunshine touchpad). The fuse starts at arming.
   - Never require both hands when the off hand is holding a weapon, unless the game design wants that vulnerability (Pavlov's stated intent).
-- **Armed feedback:** a progressive light ring or LED plus a beep whose rate rises in the last ~1.5 s (HL:A 5-light ring, HL2 chirp), plus the haptics in §8. Notify the game AI if the adapter supports it, since Metro humans flee lit grenades.
+- **Armed feedback:** a progressive light ring or LED plus a beep whose rate rises in the last ~1.5 s (HL:A 5-light ring, HL2 chirp), plus the haptics in §8. Notify the game AI if the adapter supports it, so creatures that flee lit grenades can.
 - **Catching:** with `catchingSpeedThreshold`-style logic, a live grenade caught mid-air attaches on grip *hold* (SteamVR). Keep its timer running (HL:A design allows return-throws thanks to long enemy fuses).
 
 **Throwing knives**

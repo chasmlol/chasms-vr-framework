@@ -1,7 +1,7 @@
-# VR UI/HUD placement: how great VR shooters and flat-to-VR conversions do it, and a placement spec for Metro 2033 Redux
+# VR UI/HUD placement: how great VR shooters and flat-to-VR conversions do it, and a placement spec for a flat game's UI
 
 > A research snapshot (2026-10-21), not a description of the framework's code: the HUD placement as
-> built is `crates/runtime/src/hud.rs`. The Metro adapter it mentions lives in its own repository now.
+> built is `crates/runtime/src/hud.rs`.
 
 Research notes, 2026-10-21. About 110 search/fetch calls plus direct reads of open-source code (UEVR, REFramework, Doom 3 BFG VR, MRTK, Unity XRI).
 
@@ -12,7 +12,7 @@ Legend:
 - **[inference]**: my design conclusion.
 - Angles are degrees of visual angle. "Below" means pitch below the head's forward direction unless I say "horizon".
 
-Context, as it was when this was written: the Metro adapter (then in this repository, `uitrace.rs`) redirected every UI draw after Redux's post-composite into one transparent UI texture. The runtime floated that whole texture as one panel, 1.5 m wide at 1.4 m (about 56°×34° [computed]). The panel lazily followed head yaw and pitch with a 0.25 s exponential time constant and no dead zone. Menus were world-locked, 2.6 m wide at 2.2 m (about 61°×37° [computed]), and re-anchored when you turned more than 70° away. Everything below is measured against that baseline. (Since then the runtime places the HUD piece by piece from the adapter's `HudLayout`, with a caption strip and a 20° dead zone among much of what §7 and §8 propose: `crates/runtime/src/hud.rs`.)
+Context, as it was when this was written: an adapter drew all of its game's UI into one transparent UI texture, after the game's own post-processing. The runtime floated that whole texture as one panel, 1.5 m wide at 1.4 m (about 56°×34° [computed]). The panel lazily followed head yaw and pitch with a 0.25 s exponential time constant and no dead zone. Menus were world-locked, 2.6 m wide at 2.2 m (about 61°×37° [computed]), and re-anchored when you turned more than 70° away. Everything below is measured against that baseline. (Since then the runtime places the HUD piece by piece from the adapter's `HudLayout`, with a caption strip and a 20° dead zone among much of what §7 and §8 propose: `crates/runtime/src/hud.rs`.)
 
 ---
 
@@ -25,7 +25,7 @@ Context, as it was when this was written: the Metro adapter (then in this reposi
    - Inventory goes on body slots or a backpack.
    - Text (subtitles, prompts) goes on a lazily-following or snapping strip low in view.
    - Menus go on a world-locked panel, or on a hand-held device such as Doom 3's PDA.
-2. **Metro is unusually well suited to this.** Its own fiction already has the readouts in the world: a wristwatch that shows the light/stealth indicator and the filter timer, a journal clipboard with a compass, a lighter, and a hand-crank charger. Ranger mode removes the HUD entirely because the game "expects" you to read the watch and the magazine. Metro Awakening, the official VR game, keeps exactly this watch and has "no on-screen UI".
+2. **A game whose own fiction already puts its readouts in the world suits this best:** a wristwatch that shows a stealth indicator and a timer, a journal with a compass, the rounds visible in a magazine. Metro Awakening has such a watch and "no on-screen UI" (§4).
 3. **Concrete defaults the sources support:**
    - Long-read text: at least 0.5 m away, about 1 m comfortable (Meta). Microsoft's comfort zone is 1.25–5 m.
    - Character height: about 1.2–1.4° for comfortable reading on current headsets, 0.75–0.9° minimum.
@@ -104,7 +104,7 @@ Alyx has **no conventional HUD**.
 - **ResetEra.** "it needs a laser sight… in VR, you cant do [crosshairs]". The Titan view's grid and centre "window" help motion sickness. — [ResetEra thread](https://www.resetera.com/threads/titanfall-2-vr-mod-is-now-available.1644223/)
 - **Reviews.** UploadVR's review (14 Oct 2026) calls it among the best VR mods, with moments that remind you it wasn't made for VR. Weapon swapping is "cumbersome", and small bolts are hard to grip. — [UploadVR review](https://www.uploadvr.com/titanfall-2-vr-mod-review-a-flatscreen-classic-trades-power-for-presence/). Road to VR (2 Oct 2026) covers controls and comfort, nothing on UI. — [Road to VR](https://roadtovr.com/titanfall-2-vr-mod-circuitlord/)
 
-### Lessons for Metro [inference]
+### Lessons for a conversion [inference]
 - Remap prompts to VR glyphs.
 - Give cutscenes and videos a 2D panel by default.
 - Cap the subtitle width to the comfortable FOV and expose distance, scale and height.
@@ -229,37 +229,17 @@ Alyx has **no conventional HUD**.
 
 ---
 
-## 4. Metro-specific: the series' diegetic UI and how VR handles it
+## 4. Metro Awakening: a native VR shooter's diegetic UI
 
 ### Takeaway
-Metro 2033 Redux keeps Artyom's watch: digital in Spartan mode, analogue in Survival mode. It carries the light indicator and the filter timer.
-- **Keys:**
-  - Watch check: Y.
-  - Journal: hold M, a clipboard with objectives and a compass that points at the objective. Tap M for the lighter, which can be held to read in the dark and burns cobwebs.
-  - Gas mask: tap G to wipe, T to change filters.
-  - Charger: hold F and pump LMB.
-  - Medkit: Q. Night vision: N.
-- **Damage** shows as red pulsing vision, with no health bar.
-- **The normal HUD is minimal:** ammo and items appear only when used.
-- **Ranger mode** strips the HUD, leaving the watch and the magazine. Opening the journal then shows your carried ammo.
-- **Metro Awakening (Vertigo, 2024, official VR)** keeps the watch, which shows light/dark, counts down the filter and beeps. There is "no on-screen UI":
-  - Magazines have cutouts so you count rounds.
-  - Two backpacks (over the left and right shoulders) hold gear and guns, with ammo counters and a small compass on the pack.
-  - A chest slot gives context items.
-  - Mask removal is a grab of the highlighted mask, with a tutorial text prompt.
-  - Reviewers criticise the lack of indicators for where body slots are.
+**Metro Awakening (Vertigo, 2024)** has a watch that shows light/dark, counts down the filter and beeps. There is "no on-screen UI":
+- Magazines have cutouts so you count rounds.
+- Two backpacks (over the left and right shoulders) hold gear and guns, with ammo counters and a small compass on the pack.
+- A chest slot gives context items.
+- Mask removal is a grab of the highlighted mask, with a tutorial text prompt.
+- Reviewers criticise the lack of indicators for where body slots are.
 
 ### Cited findings
-- **Original 2033 watch.** Three lights on top act as the light meter: green hidden, yellow partly visible, red fully visible. It shows system time and filter time as coloured bands (red ≤5 min, yellow ≤10, green >10). View it with Y or T. — [Ludo: light-meter watch](https://www.ludo.guide/guide/metro-2033/light-meter-watch)
-- **Redux watch styles.** Survivor mode uses the old analogue watch and Spartan the new digital one. — [Steam: Last Light Redux discussion](https://steamcommunity.com/app/287390/discussions/0/34096318824739694) (excerpt); [Ludo: Metro 2033 guide](https://www.ludo.guide/guide/metro-2033)
-- **Redux key changes** (as listed in the takeaway). — [Ludo: Metro 2033 guide](https://www.ludo.guide/guide/metro-2033)
-- **Last Light watch.** The redesign is digital, with a simple blue light when you are visible. — search excerpt citing [TheSixthAxis hands-on](https://www.thesixthaxis.com/2013/03/21/hands-on-metro-last-light/)
-- **No filter HUD.** There is no HUD indicator for filter life, only the watch timer. — search excerpt, [Metro Wiki: Filters](https://metrovideogame.fandom.com/wiki/Filters)
-- **Redux digital timer.** A reviewer describes "a nice, clear, digital display" of filter time. Damage makes vision pulse red. The UI gives no direction clues. — [Bobulous Metro Redux](https://bobulous.org.uk/imho/Metro-Redux.html)
-- **Journal compass.** It always points to the current objective. — [Ludo: journal/lighter](https://www.ludo.guide/guide/metro-2033/journal-lighter) (excerpt)
-- **Minimal HUD.** Usually nothing is on screen until you use a weapon or item. — [GiantBomb user review](https://giantbomb.com/user-reviews/id/72933/metro-2033-review) (excerpt)
-- **Ranger mode.** It strips the HUD so you rely on the watch and each weapon's magazine. — [GiantBomb: Metro Redux](https://www.giantbomb.com/games/3030-47329/) (excerpt). In Redux you can still view inventory via the clipboard. — [Steam](https://steamcommunity.com/app/286690/discussions/0/1694917906675225202) (excerpt)
-- **Metro Exodus.** Its "extremely minimalist" HUD feels "almost made with VR in mind": wrist filter timer, wrist radiation check, a mask-wipe button, backpack crafting. — [UploadVR](https://www.uploadvr.com/5-reasons-metro-exodus-vr/)
 - **Metro Awakening, watch and mask.** The watch shows light/dark and counts down the filter. The timer beeps a countdown. Fogged lenses are wiped by hand. There is "no on-screen UI". — [PlayStation Blog](https://blog.playstation.com/?p=397002); [Road to VR gameplay](https://www.roadtovr.com/?p=120197) (excerpt)
 - **Metro Awakening, Duuro review.** The watch shows the real time and a stealth light ("If it's on, enemies can see you"). Magazines have cutouts.
   - Left hand over the left shoulder opens the main backpack (ammo counters, a small compass).
@@ -268,10 +248,6 @@ Metro 2033 Redux keeps Artyom's watch: digital in Spartan mode, analogue in Surv
   — [Duuro](https://duuro.net/blog/metro-awakening-review)
 - **Metro Awakening, Road to VR review.** Reach-over-the-shoulder detection was consistent. Items show at true count. The context chest slot reduces cognitive load. With no indicators for where inventory lives, it is "a miss for a VR game of this scope". — [Road to VR review](https://roadtovr.com/metro-awakening-vr-review-quest-pc-vr-psvr-2/)
 - **Metro Awakening, mask removal.** A "Remove The Mask" tutorial prompt appears, but removal needs the mask highlighted first, and the prompt can appear too early. — [Steam](https://steamcommunity.com/app/2669410/discussions/0/4634860913217800201/)
-- **No Metro 2033/Redux VR mod exists** apart from vorpX-style injection. — search, Oct 2026 (negative result)
-
-### Gaps
-- **Unverified Redux HUD layout.** I found no source for the Redux 2D HUD layout (ammo position bottom-right, filter and medkit icons, hint and subtitle positions, crosshair) or for whether the gas-mask visor effects are 2D overlays or 3D viewmodel geometry. Verify with `uitrace.rs` captures.
 
 ---
 
@@ -416,10 +392,10 @@ Metro 2033 Redux keeps Artyom's watch: digital in Spartan mode, analogue in Surv
 ---
 
 ## 7. Implementation notes for a capture-based HUD (RustVR) [inference]
-1. **Split the captured UI layer into elements.** `uitrace` already intercepts every UI draw after the composite. Record each draw's screen-space bounding box (from VB positions or scissor) and texture/shader. Cluster the draws into known Redux elements by region and texture: subtitles (bottom-centre band), hints/prompts (centre-low), ammo block (bottom-right), item/filter icons, crosshair (exact centre, tiny), fades, and full-screen overlays. Render each cluster into its own atlas rect. Fall back to fixed-UV crops measured once from captures at 16:9, since Redux lays out at the screen aspect.
-2. **Let the game's own visibility drive ours** ("game is source of truth"). Show an element only while the game draws it, judged by its region's coverage or alpha. Redux's minimal HUD already fades ammo in and out on use, and Ranger mode yields an empty layer. Gaze gating is an extra filter on top, not a replacement.
+1. **Split the captured UI layer into elements.** Where the adapter sees each UI draw, record its screen-space bounding box (from VB positions or scissor) and texture/shader. Cluster the draws into the game's known elements by region and texture: subtitles (bottom-centre band), hints/prompts (centre-low), ammo block (bottom-right), item icons, crosshair (exact centre, tiny), fades, and full-screen overlays. Render each cluster into its own atlas rect. Fall back to fixed-UV crops measured once from captures at 16:9, for a game that lays out at the screen aspect.
+2. **Let the game's own visibility drive ours** ("game is source of truth"). Show an element only while the game draws it, judged by its region's coverage or alpha. A minimal HUD that fades its ammo in and out on use, or a no-HUD mode's empty layer, then comes through as the game has it. Gaze gating is an extra filter on top, not a replacement.
 3. **Prefer game data over pixels where we can.** Hooking the subtitle string, the use-target entity and the ammo counts lets us re-layout and wrap text at a legible size, and anchor prompts on the real object. Pixels are the fallback.
-4. **Prefer the game's own diegetic meshes.** Use the watch, journal, lighter and charger viewmodels, attached to the tracked hands, over textured quads. The watch already shows the light indicator and filter time in-engine.
+4. **Prefer the game's own diegetic meshes.** Use its first-person props (a watch, a journal, a lighter), attached to the tracked hands, over textured quads: they already show their readouts in-engine.
 5. **Rendering.**
    - Text strips and menus go on OpenXR quad or cylinder composition layers for sharpness.
    - Hand, wrist and weapon quads render in-scene with depth testing against the hands. Keep a small depth bias so world geometry doesn't eat them.
@@ -433,27 +409,27 @@ Metro 2033 Redux keeps Artyom's watch: digital in Spartan mode, analogue in Surv
 
 ---
 
-## 8. Recommendation table: Metro 2033 Redux HUD element → VR placement
+## 8. Recommendation table: a flat game's HUD element → VR placement
 
 Sizes are given in both metres and degrees [computed]. Defaults should be user-adjustable: scale 0.5–2×, distance ±50%, per-element hide, left-handed mirror.
 
 | # | Element (flat source) | VR placement / attach point | Distance from eye | Size | Follow behaviour | Visibility rules | Precedent |
 |---|---|---|---|---|---|---|---|
-| 1 | **Ammo counter** (mag + reserve + ammo type; bottom-right HUD crop or hooked counts) | Quad on the **weapon's left receiver side** (hand-side for left-handers), 2 cm proud of the surface, tilted 20° toward the eye when held at the chest. Optional: also on the back of the support hand. | 0.30–0.55 m (held at chest ≈0.45 m) | 6×3 cm → ≈7.6°×3.8° at 0.45 m. Digits ≈1.8 cm → ≈2.3°. | Rigid to the weapon | Shown while the game shows its ammo element, **or** when the panel is within **30°** of gaze centre **and** faces the eye within 70°. Always shown during reload and for **2.5 s** after the count changes. Fade in 0.15 s, out 0.4 s. Hidden in Ranger mode (follows the game). | Alyx, HL2VR, Doom 3 VR, Roboquest VR |
-| 2 | **Gas-mask filter timer** | **Left-wrist watch face**, the game's own watch mesh: digital in Spartan, analogue in Survival. Otherwise a 4 cm decal on the inner or outer wrist. | 0.30–0.40 m when raised | 4 cm face → ≈6.5° at 0.35 m. Digits ≥8 mm → ≥1.3°. | Rigid to the left hand or wrist | Always physically present. The readout and backlight come alive when the watch is **within 25° of gaze, the face normal is within 50° of the eye vector, held ≥0.15 s** (cf. MRTK palm cone 80° and head-gaze 0.2 m). Optionally trigger the game's own watch-check (Y) so its logic runs. Keep the game's beeps. | Metro 2033/Redux, Metro Awakening, Saints & Sinners, RE4 VR, LMU study |
-| 3 | **Light/stealth indicator** | Same watch: the game's lights or LED | as #2 | as #2 | Rigid | Always on (it's a light); visible in peripheral vision. **No head-locked copy.** Optional, off by default: a faint 2 mm LED-glow scale-up, or a haptic tick on the off-hand when the state changes. | Metro, Metro Awakening |
-| 4 | **Health** | **No HUD.** Keep the game's red pulse/vignette and breathing. If the vignette arrives in the 2D layer, draw it as a full-FOV, head-locked, soft-edged overlay at ≤70% of the game's alpha (the one legit head-locked layer). | n/a (head-locked; vignette at ∞ disparity) | full FOV, edges only | Head-locked | Exactly as the game. | Metro (no health bar), Alyx keeps health off-screen |
+| 1 | **Ammo counter** (mag + reserve + ammo type; bottom-right HUD crop or hooked counts) | Quad on the **weapon's left receiver side** (hand-side for left-handers), 2 cm proud of the surface, tilted 20° toward the eye when held at the chest. Optional: also on the back of the support hand. | 0.30–0.55 m (held at chest ≈0.45 m) | 6×3 cm → ≈7.6°×3.8° at 0.45 m. Digits ≈1.8 cm → ≈2.3°. | Rigid to the weapon | Shown while the game shows its ammo element, **or** when the panel is within **30°** of gaze centre **and** faces the eye within 70°. Always shown during reload and for **2.5 s** after the count changes. Fade in 0.15 s, out 0.4 s. Hidden while the game hides it (a no-HUD mode). | Alyx, HL2VR, Doom 3 VR, Roboquest VR |
+| 2 | **Timers** (a filter's or an air supply's time, the clock) | **Left-wrist watch face**, the game's own watch mesh where it has one. Otherwise a 4 cm decal on the inner or outer wrist. | 0.30–0.40 m when raised | 4 cm face → ≈6.5° at 0.35 m. Digits ≥8 mm → ≥1.3°. | Rigid to the left hand or wrist | Always physically present. The readout and backlight come alive when the watch is **within 25° of gaze, the face normal is within 50° of the eye vector, held ≥0.15 s** (cf. MRTK palm cone 80° and head-gaze 0.2 m). Optionally trigger the game's own watch check so its logic runs. Keep the game's beeps. | Metro Awakening, Saints & Sinners, RE4 VR, LMU study |
+| 3 | **Light/stealth indicator** | Same watch: the game's lights or LED | as #2 | as #2 | Rigid | Always on (it's a light); visible in peripheral vision. **No head-locked copy.** Optional, off by default: a faint 2 mm LED-glow scale-up, or a haptic tick on the off-hand when the state changes. | Metro Awakening |
+| 4 | **Health** shown as damage effects | **No HUD.** Keep the game's red pulse/vignette and breathing. If the vignette arrives in the 2D layer, draw it as a full-FOV, head-locked, soft-edged overlay at ≤70% of the game's alpha (the one legit head-locked layer). | n/a (head-locked; vignette at ∞ disparity) | full FOV, edges only | Head-locked | Exactly as the game. | Alyx keeps health off-screen |
 | 5 | **Subtitles** | **Caption strip**: curved (cylinder) or quad, centred **13° below head-forward**, never rolled | **1.5 m** default, adaptive 0.5–1.5 m per §7.6 | Glyph height target **1.3°** (≈3.4 cm at 1.5 m); min 0.9°. **Max width 40°** (≈1.1 m at 1.5 m). If a crop would exceed 40° at 1.3° glyphs, shrink toward a 0.9° floor; if hooked text, wrap to ≤2 lines. Dark 65% backing. | **Yaw-lazy**: dead zone **±20°**, then catch up with τ = **0.15 s**, or Alyx-style fade-snap (out 0.08 s, move, in 0.12 s). **Pitch-lazy**: dead zone ±15°. Position locked 1:1 to head translation. Snap-turn applies the yaw delta instantly. | Shown while the game draws subtitles. Speaker-direction arrow beside the line when the speaker is >40° off-gaze (needs the hooked source position; optional). | BBC, ImAc (always visible, bottom, arrows), Alyx (snap), TF2 VR #34 (cap width) |
 | 6 | **Hint / interaction prompts** ("Hold E to …", tutorial hints) | **On the use-target object** if the game exposes it: world-locked at the object, billboarded about yaw, constant angular size. Fallback: caption strip upper row at **6° below head-forward**. Remap key glyphs to VR controller glyphs (or attach a small controller-button icon to the relevant hand). | object depth clamped ≥0.5 m; fallback 1.5 m | Glyph **1.2°** constant (≈2.5 cm at 1.2 m) | World-locked to the object; fallback same lazy rules as #5 | While the game draws the prompt. Tutorial-type hints get a global toggle (cf. Alyx `sv_gameinstructor_disable`, TF2 VR #88 highlight toggle). | TF2 VR (VR glyphs praised), Metro Awakening (text + highlight), Alyx (game instructor) |
 | 7 | **Crosshair** | **Remove** the 2D crosshair from the capture. Offer: none (default with iron sights) / dot / laser, drawn **at the muzzle-ray hit depth**. | hit depth (≤30 m cap) | Dot **0.2°** constant angular size; laser 2 mm beam, dot at the end | Rigid to the weapon ray | Only while a weapon is held. Hide when ADS (sights aligned) if the user wants. | Meta reticle rule; Doom 3 VR laser default; TF2 VR laser complaint; existing `reticle` setting |
-| 8 | **Item counters** (medkits, filters, throwables) | **Backpack/belt:** count chips on the body slots where those items are grabbed. Interim: show them on the watch strap or the inner left forearm as small icons. | 0.35–0.6 m | Icons 1.5 cm (≈2–2.5°) | Rigid to body slot or wrist | While the game shows them (on use or pickup), or when gazing at the slot within 30°. | Metro Awakening (counters on backpack), Alyx (true-count items) |
-| 9 | **Weapon/inventory wheel** (Redux hold-inventory, D-pad directions) | On open, **freeze a world-locked panel** at the dominant hand's position (or 0.45 m in front along body yaw, 20° below horizon), facing the eye. Select with the thumbstick direction (passed to the game) or by pointing the hand. | ≈0.45 m | Ø 0.30 m → ≈37° | World-locked while open (no follow) | While the hold-key is held; close on release. Pause-free like the game. | Alyx quick-select on weapon hand, HL2VR radial menu, MRTK world-lock on grab |
-| 10 | **Journal / clipboard + compass + objectives** | **Held in the off hand**: the game's journal model, or the captured full-screen journal texture on a 0.28×0.20 m board in the left hand, tilted toward the face. The lighter is a left-hand prop when tapped. Option "fix in space" (Doom 3 `vr_PDAfixLocation`). | 0.35–0.45 m | 0.28×0.20 m → ≈39°×28° at 0.40 m | Rigid to the hand (or world-locked on option) | While the game's journal is open (hold M equivalent). The compass is live because it is the game's. | Metro (journal), Doom 3 VR (PDA in hand, touch GUI), Saints & Sinners (chest journal) |
+| 8 | **Item counters** (medkits, consumables, throwables) | **Backpack/belt:** count chips on the body slots where those items are grabbed. Interim: show them on the watch strap or the inner left forearm as small icons. | 0.35–0.6 m | Icons 1.5 cm (≈2–2.5°) | Rigid to body slot or wrist | While the game shows them (on use or pickup), or when gazing at the slot within 30°. | Metro Awakening (counters on backpack), Alyx (true-count items) |
+| 9 | **Weapon/inventory wheel** (a held inventory key, D-pad directions) | On open, **freeze a world-locked panel** at the dominant hand's position (or 0.45 m in front along body yaw, 20° below horizon), facing the eye. Select with the thumbstick direction (passed to the game) or by pointing the hand. | ≈0.45 m | Ø 0.30 m → ≈37° | World-locked while open (no follow) | While the hold-key is held; close on release. Paused only if the game pauses. | Alyx quick-select on weapon hand, HL2VR radial menu, MRTK world-lock on grab |
+| 10 | **Journal / clipboard + compass + objectives** | **Held in the off hand**: the game's journal model, or the captured full-screen journal texture on a 0.28×0.20 m board in the left hand, tilted toward the face. Option "fix in space" (Doom 3 `vr_PDAfixLocation`). | 0.35–0.45 m | 0.28×0.20 m → ≈39°×28° at 0.40 m | Rigid to the hand (or world-locked on option) | While the game's journal is open (its hold-to-open key). The compass is live because it is the game's. | Doom 3 VR (PDA in hand, touch GUI), Saints & Sinners (chest journal) |
 | 11 | **Pickup / notification icons** ("+ammo", save icon, objective updated) | Caption strip, right end (+15° yaw, −10°), or on the item's slot/weapon if ammo | 1.5 m | ≤1.2° glyphs, ≤8° wide | As #5 | While the game shows them (it times them). | Roboquest VR wrist, Doom 3 per-element toggles |
 | 12 | **Pause / main / options menu** | **World-locked curved panel** placed at the recentred yaw on open; centre at eye height, 3° below horizon. The 3D scene is dimmed 50% or blurred (keep the last frame), or a dark void in the main menu. | Cylinder radius **2.0 m** (1.2–3.0) | **65° wide** default (arc ≈2.27 m) × ≈35° tall at 16:9; user 45–90°. Rule: smallest menu glyph ≥1.0°. | World-locked; re-anchor only on reopen or if the user turns >70° (the runtime's rule when this was written) | When the game shows a menu. Laser from the dominant hand (trigger = click, stick = scroll, A = accept, B = back), aim blocked while pointing (UEVR). Runtime settings panel to the right, angled 20° in (existing). | UEVR (stage-anchored, laser, aim blocked), Alyx (laser + touch), Meta (blur behind, 1 m+), Skyrim VR (recentre complaint) |
 | 13 | **Loading screens, pre-rendered videos, credits** | Same world-locked panel in a dark void, but smaller: **50° wide** (≈2.33 m at 2.5 m) for video | 2.5 m | 50°×≈29° | World-locked | During loads and videos. | THX 36–40°, SMPTE ≥30°, TF2 VR 2D panel |
 | 14 | **Scripted first-person sequences** (camera-driven) | Default: keep head tracking and play the game camera's translation and yaw only. Option: a "comfort" 2D panel per TF2 VR. | n/a / 2.5 m | as #13 | n/a | per setting (existing `follow scripted camera animations`) | TF2 VR cutscene toggle |
-| 15 | **Gas-mask visor effects** (fog, cracks, wipe), **NVG tint** | If 3D viewmodel geometry: leave it, it renders in stereo. If 2D layer: head-locked full-FOV overlay at zero disparity, so it reads as "on the glass", with edges kept peripheral. | n/a | full FOV | Head-locked (it *is* on your head) | As the game | Metro Awakening (physical wipe), Meta (head-locked only if justified) [inference] |
+| 15 | **Visor effects** (a mask's fog, cracks, wipe), **night-vision tint** | If 3D viewmodel geometry: leave it, it renders in stereo. If 2D layer: head-locked full-FOV overlay at zero disparity, so it reads as "on the glass", with edges kept peripheral. | n/a | full FOV | Head-locked (it *is* on your head) | As the game | Metro Awakening (physical wipe), Meta (head-locked only if justified) [inference] |
 
 ### Parameter block (proposed defaults for `settings.rs` / an adapter profile)
 ```toml
@@ -494,7 +470,7 @@ distance_m = 2.5; width_deg = 50.0; void = true
 
 ### Why these numbers [inference, from the sources above]
 - **Eye-relative distances.** The 0.30–0.45 m distances for wrist and weapon follow Microsoft's 0.45 m near-interaction band. Sizes are scaled up from its 0.65–0.8° comfortable band to ≥1.2°, per the Frontiers figures for 13–25 PPD headsets.
-- **1.5 m caption distance.** It sits between Meta's 1 m and Microsoft's 1.25 m+ comfort zone. It is short enough to stay in front of most Metro tunnel walls, with depth adaptation catching the rest.
+- **1.5 m caption distance.** It sits between Meta's 1 m and Microsoft's 1.25 m+ comfort zone. It is short enough to stay in front of most corridor walls, with depth adaptation catching the rest.
 - **−13° / −6° rows.** Comfortable downward gaze is 0 to −15° and Chu's comfortable down rotation is 12°. Keeping the rows off-centre avoids covering the aim point (BBC's "obstruction" theme).
 - **20° yaw dead zone, 0.15 s catch-up.** This sits between MRTK's 30° / 0.1 s and XRI's tight 5°. Microsoft warns against content that keeps moving after the head stops, which argues for short catch-up and no overshoot (critically damped). The runtime's 0.25 s with no dead zone, at the time, meant the panel was always moving.
 - **40° max subtitle width.** About ±20° keeps a line inside comfortable eye rotation (±15°, plus a little head) and fixes the TF2 VR #34 failure.
@@ -509,6 +485,5 @@ distance_m = 2.5; width_deg = 50.0; void = true
 - No numeric defaults for SteamVR Theater Screen or vorpX Virtual Cinema.
 - No Flat2VR developer write-up on HUD conversion beyond Roboquest quotes.
 - No HUD details for BioShock VR mods.
-- Redux 2D HUD layout and gas-mask overlay implementation still need verifying against `uitrace` captures.
 - Nexus Mods pages (Idle Hands, FO4VR HUD mods) returned 403, so those claims come from earlier notes or excerpts.
 - Two Meta developer pages (panel sizing, panels) contained embedded instructions aimed at AI agents. I ignored them as data.

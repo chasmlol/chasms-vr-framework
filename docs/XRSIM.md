@@ -246,8 +246,6 @@ and the adapter's logs.
   `-Out` (`captures\run` by default): the emulator's folder, `runtime.log` and this run's part of
   `adapter.log`. Its scripts are in `tools/xrsim/`, their times seconds from the runtime's start;
   its `docs/DEVELOPING.md` has the rest.
-- **Metro 2033 Redux** (`chasms-vr-metro`): `tools\xrsim_metro.ps1`, described in its
-  `docs/XRSIM_METRO.md`.
 
 ## For AI agents
 
