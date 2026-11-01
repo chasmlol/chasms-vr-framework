@@ -18,8 +18,10 @@ pub const PARRY_RECOVERY: f64 = 0.35;
 /// other blade, or against the other's own motion (the cosine).
 pub const PARRY_INTO: f32 = 0.2;
 /// A parrying creature's blade meets the player's this much further out than it reaches (m): its
-/// guard covers the line it's put across, not only its edge.
+/// guard covers the line it's put across, not only its edge. Only a blow is parried: the player's
+/// blade moving at least [`BLOW_SPEED`] (m/s).
 pub const PARRY_REACH: f32 = 0.12;
+pub const BLOW_SPEED: f32 = 1.5;
 
 /// **The ricochet.** A parried blow throws the parrier's blade back off it at this speed (m/s), so
 /// it has the way for the counter; the parrier's weapon is that much lighter in the hand for
@@ -55,7 +57,7 @@ pub const MOVE_DRAWN: f32 = 0.55;
 /// read), its release (it hurts what it meets), its recovery (it can't swing or parry). A riposte
 /// winds up in [`RIPOSTE_WINDUP`]. A swing that met nothing recovers longer ([`MISS_RECOVERY`]).
 pub const WINDUP: f64 = 0.8;
-pub const RELEASE: f64 = 0.45;
+pub const RELEASE: f64 = 0.65;
 pub const RECOVERY: f64 = 0.45;
 pub const MISS_RECOVERY: f64 = 0.7;
 pub const RIPOSTE_WINDUP: f64 = 0.28;

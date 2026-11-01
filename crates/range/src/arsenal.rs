@@ -443,5 +443,9 @@ pub fn rack_places() -> Vec<(&'static str, Vec3, Quat)> {
         ("kit_dagger", Vec3::new(b.1.x - 0.12, b.1.y, b.0.z + 0.3), leftward),
         ("builtin_sword", Vec3::new(b.1.x - 0.13, b.1.y, b.0.z + 0.6), leftward),
         ("kit_mace", Vec3::new(b.1.x - 0.17, b.1.y, b.0.z + 0.9), leftward),
+        // The duel ring's table at your left: a sword and a longsword, blades away and handles
+        // towards you at its near edge.
+        ("builtin_sword", Vec3::new(crate::arenas::DUEL_TABLE.1.x - 0.12, crate::arenas::DUEL_TABLE.1.y, crate::arenas::DUEL_TABLE.0.z + 0.2), toward),
+        ("kit_longsword", Vec3::new(crate::arenas::DUEL_TABLE.1.x - 0.42, crate::arenas::DUEL_TABLE.1.y, crate::arenas::DUEL_TABLE.0.z + 0.3), toward),
     ]
 }

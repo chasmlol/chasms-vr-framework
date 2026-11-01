@@ -19,6 +19,7 @@ use rustvr_protocol::*;
 use crate::anim;
 use crate::arenas;
 use crate::brain::{self, Brain, Me, Mode, Sight, Stance, Threat, Tier};
+use crate::duel::{Drive, Duelist};
 use crate::ragdoll::{self, Balance, Dummies, Happened, ItemSpec};
 
 /// The training dummies' ids (as the game knows them) and where they stand.
@@ -30,6 +31,11 @@ pub const BENCH_ID: u32 = 7101;
 pub const FIGHTER_ID: u32 = 7201;
 /// The fighters' weapons' and shields' object ids.
 pub const NPC_ITEM_BASE: u32 = 0x9000;
+/// The duel ring's duelist (`crate::duel`), and how long it lies dead before another comes (s).
+pub const DUELIST_ID: u32 = 7301;
+const DUELIST_AGAIN: f64 = 4.0;
+/// Testing the duel (`--duel-test`), the duelist stands this far before the player's start (m).
+const DUEL_TEST_GAP: f32 = 1.45;
 
 /// Fighters keep this far apart (m).
 const SPACING: f32 = 0.9;
@@ -78,6 +84,13 @@ pub struct People {
     grappled: std::collections::HashMap<u32, f64>,
     /// `RUSTVR_DEBUG_BRAIN`: each fighter's state logged once a second, next then.
     debug: Option<f64>,
+    /// The duel ring's duelist, how it's driven, the next one's id, and since when it's lain dead;
+    /// a hand of the player's raised well over the head this frame (the tests' cue for its swing).
+    pub duelist: Option<Duelist>,
+    duel_drive: Drive,
+    next_duelist: u32,
+    duelist_dead: Option<f64>,
+    pub duel_cue: bool,
 }
 
 /// The arsenal's weapon of `key` as a held thing: its mass, its boxes, its grip and blade.
@@ -120,7 +133,121 @@ impl People {
         }
         let made = vec![None; pool.len()];
         let debug = std::env::var_os("RUSTVR_DEBUG_BRAIN").is_some().then_some(0.0);
-        People { dummies, fighters: Vec::new(), pool, made, wave: 0, next_wave: Some(0.0), next_id: FIGHTER_ID, said: Vec::new(), speaking: Default::default(), screaming: Default::default(), grappled: Default::default(), debug }
+        let mut people = People {
+            dummies,
+            fighters: Vec::new(),
+            pool,
+            made,
+            wave: 0,
+            next_wave: Some(0.0),
+            next_id: FIGHTER_ID,
+            said: Vec::new(),
+            speaking: Default::default(),
+            screaming: Default::default(),
+            grappled: Default::default(),
+            debug,
+            duelist: None,
+            duel_drive: Drive::Free,
+            next_duelist: DUELIST_ID,
+            duelist_dead: None,
+            duel_cue: false,
+        };
+        people.new_duelist();
+        people
+    }
+
+    /// The duelist driven so from now on (the tests' cue or guard): it's put back where it starts,
+    /// close before the player's start for a test.
+    pub fn drive_duelist(&mut self, drive: Drive) {
+        self.duel_drive = drive;
+        if let Some(d) = self.duelist.take() {
+            self.remove_people(vec![d.person]);
+        }
+        self.new_duelist();
+    }
+
+    /// A duelist in the ring with a sword, facing the player's start.
+    fn new_duelist(&mut self) {
+        let at = if self.duel_drive == Drive::Free { arenas::DUELIST_AT } else { arenas::DUEL_START + Vec3::Z * DUEL_TEST_GAP };
+        let id = self.next_duelist;
+        self.next_duelist += 1;
+        let person = self.dummies.spawn(id, at, Quat::from_rotation_y(std::f32::consts::PI), &[(anim::TORSO, MAT_LEATHER), (anim::PELVIS, MAT_LEATHER)]);
+        self.dummies.people[person].table = rustvr_melee::body::Table::Medium;
+        self.hand_out(person, 1, "builtin_sword");
+        self.duelist = Some(Duelist::new(person, id, self.duel_drive, self.dummies.time));
+        self.duelist_dead = None;
+        tracing::info!("range: the duelist {id:#x} stands in the ring ({:?})", self.duel_drive);
+    }
+
+    /// Whether `id` is the duelist.
+    pub fn is_duelist(&self, id: u32) -> bool {
+        self.duelist.as_ref().is_some_and(|d| d.id == id)
+    }
+
+    /// The runtime's word on the duel (`CE_BLOCK` with the duelist's sword, `CE_HIT` on it,
+    /// `CE_STRUCK` by it), for its brain.
+    pub fn duel_event(&mut self, ev: &CombatEvent) {
+        let now = self.dummies.time;
+        let Some(d) = self.duelist.as_mut().filter(|d| d.id == ev.actor) else { return };
+        match ev.kind {
+            CE_BLOCK => d.clashed(now, ev.flags & CEF_PARRIED != 0, ev.flags & CEF_PARRY != 0),
+            CE_HIT => d.hurt(now),
+            CE_STRUCK => d.struck(),
+            _ => {}
+        }
+    }
+
+    /// One frame of the duelist: what it sees, what it does with its body; dead a while, another
+    /// comes.
+    fn think_duel(&mut self, dt: f32, sight: &Sight) {
+        let now = self.dummies.time;
+        let Some(d) = self.duelist.as_mut() else { return };
+        let p = &self.dummies.people[d.person];
+        if !p.alive {
+            let person = d.person;
+            self.dummies.lead_item(person, 1, None);
+            let since = *self.duelist_dead.get_or_insert(now);
+            if now - since > DUELIST_AGAIN {
+                let person = d.person;
+                self.duelist = None;
+                self.remove_people(vec![person]);
+                self.new_duelist();
+            }
+            return;
+        }
+        if !matches!(p.balance, Balance::Standing | Balance::Rising(_)) || p.stun.is_some() {
+            d.sleep(now);
+            let person = d.person;
+            self.dummies.lead_item(person, 1, None);
+            return;
+        }
+        // Disarmed, it takes a sword up again.
+        if p.hands[1].is_none() {
+            let person = d.person;
+            self.hand_out(person, 1, "builtin_sword");
+            return;
+        }
+        let (at, face) = p.at;
+        // (It fights only someone in its ring; outside it, it stands in its guard.)
+        let near = arenas::in_duel(sight.feet) || d.drive != Drive::Free;
+        let seen = if near { sight.clone() } else { Sight { feet: at + face * Vec3::Z * 3.0, ..Default::default() } };
+        let t = d.think(now, dt, at, face, &seen, self.duel_cue);
+        // Its sword goes where its keys put it, its hand with it.
+        self.dummies.lead_item(d.person, 1, Some(&t.pose));
+        let p = &mut self.dummies.people[d.person];
+        p.pose = t.pose;
+        p.doing = if t.attacking { Doing::Attacking } else { Doing::Combat };
+        // Its sword arm firm in its guard and its parries, firmer swinging (the ragdoll's pins).
+        p.arms = [(1.0, 1.0, 1.0), if t.attacking { ragdoll::ATTACK_ARM } else { ragdoll::GUARD_ARM }];
+        let (lo, hi) = arenas::DUEL;
+        let mut at = at + face * t.walk * dt;
+        at.x = at.x.clamp(lo.x + 0.3, hi.x - 0.3);
+        at.z = at.z.clamp(lo.z + 0.3, hi.z - 0.3);
+        let face = match t.face_to.filter(|_| near) {
+            Some(dir) => face.slerp(Quat::from_rotation_y(dir.x.atan2(dir.z)), (dt * 4.0).min(1.0)).normalize(),
+            None => face,
+        };
+        p.at = (at, face);
     }
 
     /// The fighters' weapons as the game's objects, for the armory to register: (id, the arsenal
@@ -283,6 +410,7 @@ impl People {
         for (id, at) in shouts {
             self.say(id, VOICE_ATTACK, at, SHOUT);
         }
+        self.think_duel(dt, sight);
         // Gone: it ran out of the arena, and what it held is left.
         let gone: Vec<usize> = self.fighters.iter().filter(|f| f.brain.mode == Mode::Gone).map(|f| f.person).collect();
         self.remove_people(gone);
@@ -354,6 +482,12 @@ impl People {
                     f.person -= 1;
                 }
             }
+            if self.duelist.as_ref().is_some_and(|d| d.person == k) {
+                self.duelist = None;
+            }
+            if let Some(d) = self.duelist.as_mut().filter(|d| d.person > k) {
+                d.person -= 1;
+            }
         }
     }
 
@@ -367,10 +501,20 @@ impl People {
     pub fn items_for_runtime(&self) -> (ActorItems, Vec<(u32, Vec3, Quat)>) {
         let now = self.dummies.time;
         let fighter = |k: usize| self.fighters.iter().find(|f| f.person == k);
-        let attacking = |k: usize, h: usize| fighter(k).is_some_and(|f| f.brain.hurting(now)[h]);
+        let duelist = |k: usize, h: usize| self.duelist.as_ref().filter(|d| d.person == k && h == 1);
+        let attacking = |k: usize, h: usize| fighter(k).is_some_and(|f| f.brain.hurting(now)[h]) || duelist(k, h).is_some_and(|d| d.attacking());
         let blocking = |k: usize, h: usize| fighter(k).is_some_and(|f| f.guarding[h]);
         let feinting = |k: usize| fighter(k).is_some_and(|f| f.brain.feinting());
-        self.dummies.held_items(attacking, blocking, feinting)
+        let (mut items, poses) = self.dummies.held_items(attacking, blocking, feinting);
+        // The duelist's sword in its parry's window.
+        if let Some(d) = self.duelist.as_ref().filter(|d| d.parrying()) {
+            let id = d.id;
+            let n = (items.count as usize).min(MAX_ACTOR_ITEMS);
+            for i in items.items[..n].iter_mut().filter(|i| i.actor == id && i.hand == 1) {
+                i.flags |= AI_PARRYING;
+            }
+        }
+        (items, poses)
     }
 
     /// Person `id` says `voice` at `at`, a line `long` seconds long, unless it's saying something

@@ -12,6 +12,9 @@
 //!   a dagger.
 //! * `climb`: the far right corner: a block as tall as you to climb onto with the hands: grip its
 //!   top edge, pull yourself up, push down on it, and let go to step up onto it.
+//! * `duel`: the left side of the room before the bench: a ring with one duelist (`crate::duel`) to
+//!   fight by the duel's rules (the range asks for them while you're in it), and a table at your
+//!   left with a sword and a longsword.
 //!
 //! The areas are fixed in the room (clear of the firing lane and its rails, the targets and the
 //! crates), so the scenarios that shoot down the lane don't see them.
@@ -32,9 +35,22 @@ pub const ARENA_TABLE: (Vec3, Vec3) = (Vec3::new(4.6, 0.0, 11.0), Vec3::new(5.8,
 pub const BENCH_TABLE: (Vec3, Vec3) = (Vec3::new(-7.3, 0.0, 18.4), Vec3::new(-6.7, 0.85, 19.6));
 /// A wooden post on the bench, to chop and stab (min, max).
 pub const POST: (Vec3, Vec3) = (Vec3::new(-4.3, 0.0, 22.6), Vec3::new(-4.0, 1.9, 22.9));
+/// The duel ring's floor (min, max): left of the long table, clear of the shot at the left target.
+pub const DUEL: (Vec3, Vec3) = (Vec3::new(-9.3, 0.0, 3.4), Vec3::new(-5.3, 0.0, 9.8));
+/// Where the player starts in it, and where its duelist stands waiting (facing the player).
+pub const DUEL_START: Vec3 = Vec3::new(-7.3, 0.0, 4.3);
+pub const DUELIST_AT: Vec3 = Vec3::new(-7.3, 0.0, 8.0);
+/// A table of weapons at the ring's start, at your left hand (min, max).
+pub const DUEL_TABLE: (Vec3, Vec3) = (Vec3::new(-8.3, 0.0, 4.3), Vec3::new(-7.55, 0.85, 5.1));
+
+/// Whether `p` stands in the duel ring.
+pub fn in_duel(p: Vec3) -> bool {
+    let (lo, hi) = DUEL;
+    (lo.x..=hi.x).contains(&p.x) && (lo.z..=hi.z).contains(&p.z)
+}
 
 /// The areas: (name, where the player's feet start, which way they face (yaw, radians)).
-pub fn starts() -> [(&'static str, Vec3, f32); 5] {
+pub fn starts() -> [(&'static str, Vec3, f32); 6] {
     [
         ("range", Vec3::ZERO, 0.0),
         // At the melee rack, facing it.
@@ -44,6 +60,8 @@ pub fn starts() -> [(&'static str, Vec3, f32); 5] {
         // right), the bench's table at your left hand.
         ("bench", Vec3::new(-6.1, 0.0, 18.9), 0.0),
         ("climb", Vec3::new(8.6, 0.0, 20.95), 0.0),
+        // Facing the duelist across the ring, the table at your left hand.
+        ("duel", DUEL_START, 0.0),
     ]
 }
 
@@ -57,7 +75,7 @@ pub fn start(name: &str) -> Option<(Vec3, f32)> {
 pub fn furniture() -> Vec<(Vec3, Vec3, [u8; 4])> {
     let wood = [110, 85, 60, 255];
     let stone = [125, 122, 118, 255];
-    vec![(RACK.0, RACK.1, wood), (ARENA_TABLE.0, ARENA_TABLE.1, wood), (BENCH_TABLE.0, BENCH_TABLE.1, wood), (CLIMB_BLOCK.0, CLIMB_BLOCK.1, stone), (POST.0, POST.1, [140, 104, 66, 255])]
+    vec![(RACK.0, RACK.1, wood), (ARENA_TABLE.0, ARENA_TABLE.1, wood), (BENCH_TABLE.0, BENCH_TABLE.1, wood), (CLIMB_BLOCK.0, CLIMB_BLOCK.1, stone), (POST.0, POST.1, [140, 104, 66, 255]), (DUEL_TABLE.0, DUEL_TABLE.1, wood)]
 }
 
 /// The floor's height under `p` (the climbing block's top on it, else 0).

@@ -1591,6 +1591,7 @@ impl Combat {
                         }
                         self.sounds.push((Self::hit_cue(j.kind, MAT_FLESH, Stuff::Metal), p, rustvr_melee::intensity(j.speed), item.id));
                         events.push(ev);
+                        self.duel.landed(item.id, inp.now);
                         break 'blades;
                     }
                 }

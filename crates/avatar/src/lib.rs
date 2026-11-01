@@ -62,7 +62,7 @@ mod names;
 pub mod pose;
 mod procedural;
 mod render;
-mod rig;
+pub mod rig;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

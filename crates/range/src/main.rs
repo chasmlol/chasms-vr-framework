@@ -22,7 +22,10 @@
 //! your right hand (physical mode; the scenarios that handle a particular gun use it);
 //! `--runtime-draws` has the runtime draw Metro's guns and their magazines (`OBJF_RUNTIME_DRAWS`,
 //! from the same models, with the player's hands) instead of the range, as a game adapter does.
-//! `--arena <range|arena|bench|climb>` starts the player in one of the melee areas (`arenas`).
+//! `--arena <range|arena|bench|climb|duel>` starts the player in one of the melee areas (`arenas`).
+//! `--duel-test <cue:right|left|over|under|guard>` drives the duel ring's duelist for a test: it
+//! swings from that side only when the player raises a hand well over the head, or never but to
+//! riposte, standing close before the player's start (`duel`).
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
@@ -35,7 +38,9 @@ mod brain;
 mod combat;
 mod content;
 mod debris;
+mod duel;
 mod effects;
+mod figure;
 mod hits;
 mod physical;
 mod ragdoll;
@@ -100,6 +105,8 @@ struct Scene {
     fx: Vec<Mesh>,
     /// The valves' wheels (`content::valves` order).
     valves: Vec<Mesh>,
+    /// The duelist's figure's meshes (`figure`), posed every frame.
+    figure: Vec<Mesh>,
 }
 
 struct Game {
@@ -184,6 +191,11 @@ struct Game {
     /// The player's side of melee as the runtime last said (`RtMelee`), and the spell selected.
     rt_melee: RtMelee,
     spell: u32,
+    /// The melee asked of the runtime: the duel's while the player's in the duel ring (None: to be
+    /// written again).
+    duel_rules: Option<bool>,
+    /// The duelist drawn as Oblivion's figure, when the game's files are extracted.
+    figure: Option<figure::Figure>,
 }
 
 fn main() -> Result<()> {
@@ -198,6 +210,7 @@ fn main() -> Result<()> {
     let mut runtime_draws = false;
     let mut metro_hud = false;
     let mut arena = String::from("range");
+    let mut duel_test: Option<duel::Drive> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -207,6 +220,14 @@ fn main() -> Result<()> {
             "--runtime-draws" => runtime_draws = true,
             "--metro-hud" => metro_hud = true,
             "--arena" => arena = args.next().unwrap_or_default(),
+            "--duel-test" => {
+                let v = args.next().unwrap_or_default();
+                duel_test = Some(match v.strip_prefix("cue:").and_then(duel::Side::parse) {
+                    Some(side) => duel::Drive::Cue(side),
+                    None if v == "guard" => duel::Drive::Guard,
+                    None => anyhow::bail!("--duel-test takes cue:<right|left|over|under> or guard, not {v}"),
+                });
+            }
             "--table" => front = args.next().unwrap_or_default().split(',').filter(|k| !k.is_empty()).map(String::from).collect(),
             other => anyhow::bail!("unknown argument {other}"),
         }
@@ -218,6 +239,9 @@ fn main() -> Result<()> {
         anyhow::bail!("no area {arena}: {}", arenas::starts().map(|s| s.0).join(", "));
     };
     (game.feet, game.yaw) = (feet, yaw);
+    if let Some(drive) = duel_test {
+        game.people.drive_duelist(drive);
+    }
     // The melee areas play with the melee buttons (the gravity gloves stay: telekinesis is
     // the settings' to turn on, as in the gun range).
     game.melee = arena != "range";
@@ -277,6 +301,14 @@ impl Game {
             .chain(content::furniture().into_iter().chain(throwables::furniture()).chain(arenas::furniture()).map(|(lo, hi, _)| (lo, hi)))
             .collect();
         let people = arena::People::new(&solid);
+        // The duelist as Oblivion's figure, when its files are there.
+        let (figure, figure_meshes) = match figure::Figure::load(&assets.join("oblivion")) {
+            Ok((f, meshes)) => (Some(f), meshes.iter().map(|m| renderer.upload_dynamic(&gpu, m)).collect::<Result<Vec<_>>>()?),
+            Err(e) => {
+                tracing::info!("range: the duelist is drawn as its parts (no Oblivion figure: {e:#})");
+                (None, Vec::new())
+            }
+        };
         let mut npc_meshes = HashMap::new();
         let mut melee_kinds = HashMap::new();
         if let Some(a) = &mut armory {
@@ -353,7 +385,7 @@ impl Game {
             gpu,
             adapter,
             renderer,
-            scene: Scene { scenery, target_meshes, cube, hand_box, weapons, throwables: throw_meshes, fx: fx_meshes, valves: valve_meshes },
+            scene: Scene { scenery, target_meshes, cube, hand_box, weapons, throwables: throw_meshes, fx: fx_meshes, valves: valve_meshes, figure: figure_meshes },
             target_flash: vec![-10.0; targets.len()],
             targets,
             weapon,
@@ -404,6 +436,8 @@ impl Game {
             shoved: Vec3::ZERO,
             rt_melee: bytemuck::Zeroable::zeroed(),
             spell: combat::FIRE_BOLT,
+            duel_rules: None,
+            figure,
         })
     }
 
@@ -718,11 +752,8 @@ impl Game {
             self.melee_weapons.seq = self.melee_weapons.seq.wrapping_add(2);
             self.adapter.write_melee_weapons(&self.melee_weapons);
             self.adapter.write_spells(&combat::spells_with(self.spell));
-            if self.melee {
-                let mut rules: MeleeRules = bytemuck::Zeroable::zeroed();
-                rules.flags = RULES_KICK;
-                self.adapter.write_melee_rules(&rules);
-            }
+            // (The rules are written below, with the melee where the player is.)
+            self.duel_rules = None;
             let mut bloods = combat::bloods();
             bloods.seq = 2;
             self.adapter.write_bloods(&bloods);
@@ -784,7 +815,10 @@ impl Game {
             );
             match ev.kind {
                 CE_HIT => {
+                    // (A duelist's limbs stay on: a cut through one is a cut.)
+                    let ev = if self.people.is_duelist(ev.actor) { CombatEvent { flags: ev.flags & !CEF_SEVER, ..ev } } else { ev };
                     let bled = combat::hit(&mut self.people, &ev, &self.melee_weapons);
+                    self.people.duel_event(&ev);
                     // In from the blow (a cut 3 mm, a stab as deep as it went): what its spell does
                     // while it's in starts now.
                     if ev.flags & CEF_PENETRATED != 0 {
@@ -836,7 +870,10 @@ impl Game {
                     // (pushed by a heavy one, or a roll for a riposte, nothing or a recoil).
                     let blade = self.nearest_blade(f, ev.object, Vec3::from_array(ev.point));
                     let (key, mass) = self.melee_kinds.get(&ev.object).map_or(("", 1.0), |(k, m)| (k.as_str(), *m));
-                    if let Some(shove) = combat::block(&mut self.people, &ev, &self.melee_weapons, key, blade, mass) {
+                    // (The duelist's clashes are the duel's: its brain takes them.)
+                    if self.people.is_duelist(ev.actor) {
+                        self.people.duel_event(&ev);
+                    } else if let Some(shove) = combat::block(&mut self.people, &ev, &self.melee_weapons, key, blade, mass) {
                         self.shoved = shove;
                     }
                     if rustvr_melee::intensity(ev.speed) > rustvr_melee::SPARKS_FROM {
@@ -846,6 +883,7 @@ impl Game {
                 CE_STRUCK => {
                     // A fighter's blow on the player: by the part it met (the player's head x1.5,
                     // hands x0.5) and its weapon's tier, clamped to 5..15 of the player's 100.
+                    self.people.duel_event(&ev);
                     let tier = self.melee_weapons.get(ev.object).map_or(2, |w| w.tier);
                     let damage = rustvr_melee::body::player_damage(ev.damage * rustvr_melee::body::player_part(ev.part), tier);
                     self.player_health = (self.player_health - damage).max(0.0);
@@ -874,6 +912,18 @@ impl Game {
         }
         // The fighters see the player and their weapons.
         let sight = self.sight(f, dt);
+        // The duel's rules while the player's in its ring (the melee buttons in the melee areas).
+        let duel = arenas::in_duel(sight.feet);
+        if self.adapter.connected() && self.duel_rules != Some(duel) {
+            let mut rules: MeleeRules = bytemuck::Zeroable::zeroed();
+            rules.flags = if self.melee { RULES_KICK } else { 0 };
+            rules.mode = if duel { MELEE_DUEL } else { MELEE_PHYSICS };
+            self.adapter.write_melee_rules(&rules);
+            self.duel_rules = Some(duel);
+            tracing::info!("range: the player {} the duel ring: {} melee", if duel { "is in" } else { "is out of" }, if duel { "the duel's" } else { "the physics sandbox's" });
+        }
+        // (The tests' cue for the duelist's swing: a hand raised well over the head.)
+        self.people.duel_cue = f.hands.iter().any(|h| h.connected != 0 && h.grip.pos[1] > f.hmd.pos[1] + 0.25);
         self.people.think(dt, &sight);
         self.people.dummies.step(dt);
         // The player heals slowly while nothing strikes them.
@@ -1157,6 +1207,17 @@ impl Game {
         for i in 0..self.scene.scenery.len() {
             draws.push((SCENERY + i, Mat4::IDENTITY, [1.0; 4], 0.0, false));
         }
+        // The duelist as Oblivion's figure, posed as its body stands now (paler as it bleeds out).
+        self.people.dummies.figured.clear();
+        if let (Some(fig), Some(d)) = (&mut self.figure, &self.people.duelist) {
+            let p = &self.people.dummies.people[d.person];
+            self.people.dummies.figured.insert(p.id);
+            let k = if p.alive { 0.8 + 0.2 * (p.health / rustvr_melee::body::HEALTH).clamp(0.0, 1.0) } else { 0.6 };
+            for (i, verts) in fig.pose(&self.people.dummies, d.person).iter().enumerate() {
+                self.renderer.update(&self.gpu, &self.scene.figure[i], verts);
+                draws.push((40_000 + i, Mat4::IDENTITY, [k, k, k, 1.0], 0.0, true));
+            }
+        }
         // The people, part by part, and what they hold.
         for (m, tint) in self.people.dummies.draws() {
             draws.push((200, m, tint, 0.0, false));
@@ -1343,12 +1404,13 @@ impl Game {
         // ready in the spell hand.
         let r = self.rt_melee;
         let melee_line = format!(
-            "health {:.0}   focus {:.0}%{}{}   spell: {}",
+            "health {:.0}   focus {:.0}%{}{}   spell: {}{}",
             self.player_health,
             r.focus * 100.0,
             if r.flags & RTM_SLOW != 0 { " (slowed)" } else { "" },
             if r.stamina < 0.999 { format!("   stamina {:.0}%", r.stamina * 100.0) } else { String::new() },
-            if self.spell == combat::FIRE_BOLT { "fire" } else { "shock" }
+            if self.spell == combat::FIRE_BOLT { "fire" } else { "shock" },
+            if r.flags & RTM_STAGGERED != 0 { "   DUEL: staggered" } else if r.flags & RTM_DUEL != 0 { "   duel" } else { "" }
         );
         let mut out = ctx.run_ui(input, |ui| {
             let painter = ui.painter();
@@ -1394,7 +1456,8 @@ fn to_draws<'a>(scene: &'a Scene, weapon: usize, list: &[(usize, Mat4, [f32; 4],
     list.iter()
         .map(|(id, m, t, e, two)| {
             let mesh = match *id {
-                30_000.. => &scene.fx[id - 30_000],
+                40_000.. => &scene.figure[id - 40_000],
+                30_000..40_000 => &scene.fx[id - 30_000],
                 20_000..30_000 => &scene.throwables[(id - 20_000) / 100][(id - 20_000) % 100],
                 10_000..20_000 => &scene.weapons[(id - 10_000) / 100].parts[(id - 10_000) % 100],
                 0..100 => &scene.scenery[*id],

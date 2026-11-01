@@ -275,12 +275,38 @@ impl Renderer {
         })
     }
 
-    /// Loads a game texture from the asset cache (once); a missing one leaves the mesh untextured.
+    /// A mesh whose vertices change every frame (a figure skinned on the CPU, `crate::figure`):
+    /// [`Renderer::update`] gives it new ones, as many as it was made with.
+    pub fn upload_dynamic(&mut self, gpu: &Gpu, m: &MeshData) -> Result<Mesh> {
+        if let Some(t) = &m.texture {
+            self.ensure_texture(gpu, t);
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(&m.vertices);
+        let desc = D3D11_BUFFER_DESC { ByteWidth: bytes.len() as u32, Usage: D3D11_USAGE_DEFAULT, BindFlags: D3D11_BIND_VERTEX_BUFFER.0 as u32, ..Default::default() };
+        let init = D3D11_SUBRESOURCE_DATA { pSysMem: bytes.as_ptr().cast(), SysMemPitch: 0, SysMemSlicePitch: 0 };
+        let mut vb = None;
+        unsafe { gpu.device.CreateBuffer(&desc, Some(&init), Some(&mut vb))? };
+        Ok(Mesh {
+            vb: vb.unwrap(),
+            ib: static_buffer(gpu, bytemuck::cast_slice(&m.indices), D3D11_BIND_INDEX_BUFFER)?,
+            count: m.indices.len() as u32,
+            texture: m.texture.clone().filter(|t| self.textures.contains_key(t)),
+        })
+    }
+
+    /// New vertices for a mesh made by [`Renderer::upload_dynamic`] (exactly as many).
+    pub fn update(&self, gpu: &Gpu, mesh: &Mesh, vertices: &[Vertex]) {
+        unsafe { gpu.ctx.UpdateSubresource(&mesh.vb, 0, None, vertices.as_ptr().cast(), 0, 0) };
+    }
+
+    /// Loads a game texture from the asset cache (once): Metro's by its key, another game's as
+    /// `<game>/<key>`. A missing one leaves the mesh untextured.
     fn ensure_texture(&mut self, gpu: &Gpu, key: &str) {
         if self.textures.contains_key(key) {
             return;
         }
-        let tex = asset::load_texture(&self.asset_dir.join("metro2033"), key).and_then(|t| {
+        let (game, stem) = key.split_once('/').unwrap_or(("metro2033", key));
+        let tex = asset::load_texture(&self.asset_dir.join(game), stem).and_then(|t| {
             let format = match t.format {
                 asset::TexFormat::Rgba8 => DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
                 asset::TexFormat::Bc1 => DXGI_FORMAT_BC1_UNORM_SRGB,

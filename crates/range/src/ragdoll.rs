@@ -472,6 +472,8 @@ pub struct Dummies {
     /// slower it runs, the hands being that much quicker in it.
     pub time_scale: f32,
     pub happened: Vec<Happened>,
+    /// People drawn as a game's figure (`crate::figure`) rather than as their parts (by id).
+    pub figured: HashSet<u32>,
 }
 
 /// The turn `q` as a rotation vector, the short way round.
@@ -518,6 +520,7 @@ impl Dummies {
             time: 0.0,
             time_scale: 1.0,
             happened: Vec::new(),
+            figured: HashSet::new(),
         }
     }
 
@@ -703,6 +706,33 @@ impl Dummies {
                 rb.set_angvel(to_v(vel.1), true);
             }
             None => {}
+        }
+    }
+
+    /// The item in person `who`'s hand `hand` led to where `pose` (its animation, where it stands and
+    /// faces) puts that hand, the hand following it (the duel's duelist: its swings land where and
+    /// when they're keyed, not lagging on a soft hold); or (None) held by its hand's joint again.
+    pub fn lead_item(&mut self, who: usize, hand: usize, pose: Option<&Pose>) {
+        let Some(k) = self.people[who].hands[hand].filter(|&k| !self.items[k].players) else { return };
+        let body = self.items[k].body;
+        match pose {
+            Some(pose) => {
+                let p = &self.people[who];
+                let rest: [V3; PARTS] = std::array::from_fn(|i| p.parts[i].rest);
+                let (hp, hq) = pose.targets(p.at.0, p.at.1, &rest)[anim::HAND[hand]];
+                let grip = self.items[k].grip;
+                let rb = &mut self.world.bodies[body];
+                if rb.body_type() != RigidBodyType::KinematicPositionBased {
+                    rb.set_body_type(RigidBodyType::KinematicPositionBased, true);
+                }
+                rb.set_next_kinematic_position(to_pose(hp + hq * grip.0, (hq * grip.1).normalize()));
+            }
+            None => {
+                let rb = &mut self.world.bodies[body];
+                if rb.body_type() == RigidBodyType::KinematicPositionBased {
+                    rb.set_body_type(RigidBodyType::Dynamic, true);
+                }
+            }
         }
     }
 
@@ -1768,6 +1798,11 @@ impl Dummies {
     }
 
     /// Where person `k`'s part `part` is (world).
+    /// Part `part` of person `k`'s centre at rest (its own space, standing, facing +Z).
+    pub fn part_rest(&self, k: usize, part: usize) -> V3 {
+        self.people[k].parts[part].rest
+    }
+
     pub fn part_pose(&self, k: usize, part: usize) -> (V3, Q) {
         from_pose(self.world.bodies[self.people[k].parts[part].body].position())
     }
@@ -1902,7 +1937,7 @@ impl Dummies {
     /// wounds and its eyes: (model, tint).
     pub fn draws(&self) -> Vec<(Mat4, [f32; 4])> {
         let mut out = Vec::new();
-        for p in &self.people {
+        for p in self.people.iter().filter(|p| !self.figured.contains(&p.id)) {
             for (i, part) in p.parts.iter().enumerate() {
                 let (pos, rot) = from_pose(self.world.bodies[part.body].position());
                 let (a, b) = (pos + rot * part.a, pos + rot * part.b);

@@ -74,7 +74,8 @@ pub struct Duel {
     /// The duel's rules are played.
     pub on: bool,
     hands: [Hand; 2],
-    /// Creatures' weapons whose swing the player parried, until when (that swing lands nowhere).
+    /// Creatures' weapons whose swing the player parried or that has landed, until when (that swing
+    /// lands nowhere else).
     parried: HashMap<u32, f64>,
     /// A weapon of the player's and a creature's that met, until when they can meet again.
     met: HashMap<(u32, u32), f64>,
@@ -97,9 +98,16 @@ impl Duel {
         self.on && self.hands[hand].staggered.is_some_and(|s| now - s < tune::STAGGER)
     }
 
-    /// Creature weapon `item`'s swing was parried: its blows don't land.
+    /// Creature weapon `item`'s swing was parried, or has landed: it lands nowhere (else) now.
     pub fn swing_parried(&self, item: u32, now: f64) -> bool {
         self.on && self.parried.get(&item).is_some_and(|&t| t > now)
+    }
+
+    /// Creature weapon `item`'s swing struck the player: a blow lands once.
+    pub fn landed(&mut self, item: u32, now: f64) {
+        if self.on {
+            self.parried.insert(item, now + tune::RELEASE);
+        }
     }
 
     /// How strongly each hand holds its weapon, of the physics sandbox's hold (1 when the duel's off).
@@ -181,7 +189,14 @@ impl Duel {
                 continue;
             }
             let reach = if parrying { tune::PARRY_REACH * wpm } else { 0.0 };
-            let Some((p, q, vel)) = Self::meet(prev, now_at, radii, &t.blades, reach, wpm, dt) else { continue };
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let near = t.blades.iter().map(|&(a, b, _)| {
+                    let (s, u) = closest_segments(now_at[0][0], now_at[0][N - 1], a, b);
+                    now_at[0][0].lerp(now_at[0][N - 1], s).distance(a.lerp(b, u)) / wpm
+                });
+                tracing::debug!("duel: hand {hand}'s blade {:.2} m from {:#x}'s ({})", near.fold(f32::MAX, f32::min), item.id, if parrying { "parrying" } else { "swinging" });
+            }
+            let Some((p, q, vel)) = Self::meet(prev, now_at, radii, t, reach, wpm, dt) else { continue };
             let theirs_vel = Vec3::from_array(item.vel) + Vec3::from_array(item.ang_vel).cross(q - t.centre);
             let mine = vel / wpm;
             let toward = (q - p).normalize_or(mine.normalize_or_zero());
@@ -194,7 +209,10 @@ impl Duel {
             let h = &mut self.hands[hand];
             let mut ev = CombatEvent { kind: CE_BLOCK, actor: item.actor, object, what: item.id, hand: hand as u32, material: MAT_PLATE, strength: (relative / 6.0).min(1.5), speed: relative, point: p.to_array(), dir: mine.normalize_or_zero().to_array(), ..Default::default() };
             let loud = rustvr_melee::intensity(relative).max(0.3);
-            if parrying {
+            if parrying && mine.length() < tune::BLOW_SPEED {
+                // (A blade at rest isn't a blow to parry: it passes.)
+                continue;
+            } else if parrying {
                 // Its parry turns the blow away: knocked back off it, and staggered.
                 h.staggered = Some(now);
                 h.window = None;
@@ -246,26 +264,28 @@ impl Duel {
     }
 
     /// Where the player's blade (its damagers' points last frame and now) first meets one of a
-    /// creature's (`reach` further out than it is): the point on each, and how fast the player's
-    /// moves there (world units a second). Swept: a blade that passed through the other in a frame
-    /// met it.
-    fn meet<const N: usize>(prev: &[[Vec3; N]], now: &[[Vec3; N]], radii: &[f32], theirs: &[(Vec3, Vec3, f32)], reach: f32, wpm: f32, dt: f32) -> Option<(Vec3, Vec3, Vec3)> {
+    /// creature's (`reach` further out than it is; where it was a frame ago taken from how it moves,
+    /// about `centre`): the point on each, and how fast the player's moves there (world units a
+    /// second). Both are swept through the frame, so blades that crossed between frames met.
+    #[allow(clippy::too_many_arguments)]
+    fn meet<const N: usize>(prev: &[[Vec3; N]], now: &[[Vec3; N]], radii: &[f32], theirs: &Theirs, reach: f32, wpm: f32, dt: f32) -> Option<(Vec3, Vec3, Vec3)> {
+        let dt = dt.max(1e-4);
+        let (v, w) = (Vec3::from_array(theirs.item.vel), Vec3::from_array(theirs.item.ang_vel));
+        let back = |p: Vec3| p - (v + w.cross(p - theirs.centre)) * dt;
         for (di, (pd, nd)) in prev.iter().zip(now).enumerate() {
             let r = radii.get(di).copied().unwrap_or(0.0) * wpm;
-            for &(ta, tb, tr) in theirs {
-                let limit = tr + r + reach + 0.01;
-                // Now, and along the way its points went since last frame (its base, middle and tip).
-                let (s, t) = closest_segments(nd[0], nd[N - 1], ta, tb);
-                let (p, q) = (nd[0].lerp(nd[N - 1], s), ta.lerp(tb, t));
-                let k = ((s * (N - 1) as f32).round() as usize).min(N - 1);
-                if p.distance(q) <= limit {
-                    return Some((p, q, (nd[k] - pd[k]) / dt.max(1e-4)));
-                }
-                for k in [0, N / 2, N - 1] {
-                    let (s, t) = closest_segments(pd[k], nd[k], ta, tb);
-                    let (p, q) = (pd[k].lerp(nd[k], s), ta.lerp(tb, t));
+            for &(ta, tb, tr) in &theirs.blades {
+                let limit = tr + r + reach + 0.02 * wpm;
+                let (pa, pb) = (back(ta), back(tb));
+                for k in 0..=STEPS {
+                    let f = k as f32 / STEPS as f32;
+                    let (a, b) = (pd[0].lerp(nd[0], f), pd[N - 1].lerp(nd[N - 1], f));
+                    let (c, d) = (pa.lerp(ta, f), pb.lerp(tb, f));
+                    let (s, t) = closest_segments(a, b, c, d);
+                    let (p, q) = (a.lerp(b, s), c.lerp(d, t));
                     if p.distance(q) <= limit {
-                        return Some((p, q, (nd[k] - pd[k]) / dt.max(1e-4)));
+                        let i = ((s * (N - 1) as f32).round() as usize).min(N - 1);
+                        return Some((p, q, (nd[i] - pd[i]) / dt));
                     }
                 }
             }
@@ -273,6 +293,10 @@ impl Duel {
         None
     }
 }
+
+/// A frame's sweep of two blades is tried at this many steps (each blade moving a few centimetres
+/// a step at a swing's speed).
+const STEPS: usize = 8;
 
 /// What a frame's clashes give the game and the player: events, buzzes, sounds (as `Combat` keeps
 /// them).
