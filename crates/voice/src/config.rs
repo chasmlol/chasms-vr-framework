@@ -12,16 +12,47 @@ pub const DEFAULT: &str = r#"# The voice plugin: talk to the game's characters o
 # (RustVR's Voice setting turns it on). Each model is a server it calls.
 
 [llm]
-# An OpenAI-style /v1/chat/completions: a hosted API (its model, and the environment variable
-# holding its key: set it yourself, the key never goes in this file's repo or any other), or a
-# local server (llama.cpp's).
-url = "https://api.openai.com/v1/chat/completions"
-model = "gpt-4o-mini"
-api_key_env = "OPENAI_API_KEY"
+# The LLM that writes what they say. A preset fills in its URL and the environment variable its
+# key is in (set the variable yourself, in Windows' environment variables: the key never goes in
+# this file or anywhere else):
+#   "openrouter": hundreds of hosted models through one key (openrouter.ai), OPENROUTER_API_KEY.
+#   "openai": OpenAI's own, OPENAI_API_KEY.
+#   "local": llama.cpp's server on this machine (m8's start-chat.ps1), no key.
+# Or leave the preset out and set url (any OpenAI-style /v1/chat/completions) and api_key_env.
+# Either way, url or api_key_env set here wins over the preset's.
+preset = "openrouter"
+# The model: on OpenRouter, the id on its page at openrouter.ai/models ("anthropic/claude-haiku-5.5",
+# "openai/gpt-6-luna"; ":nitro" after one picks its fastest hosts). On OpenAI, its own name.
+model = "deepseek/deepseek-v4.1-flash"
 temperature = 1.0
 # The longest answer, in tokens.
 max_tokens = 300
-# Anything else the API takes in every request (DeepSeek: thinking = { type = "disabled" }).
+# How long a model that reasons thinks before it answers: "none" for the quickest first words
+# (most models), "minimal", "low", "medium", "high". Leave it out for the model's own default
+# (some think for seconds before they say a word). Only for models that reason: OpenAI's refuse it
+# on one that doesn't, OpenRouter leaves it out for them.
+reasoning = "none"
+
+[llm.openrouter]
+# Only with OpenRouter. Who's calling, shown with your use on OpenRouter (optional).
+app_title = "RustVR"
+app_url = "https://github.com/chasmlol/chasms-vr-oblivion"
+# Which of the hosts serving the model answers: "latency" (the quickest to its first words, best
+# for talking), "throughput" (the fastest writer) or "price" (the cheapest). Leave it out for
+# OpenRouter's own pick.
+sort = "latency"
+# Hosts to try first, in order, the only ones to use, and ones never to (OpenRouter's names for
+# them, as on the model's page: "deepinfra", "groq", "together"); and whether others may stand in
+# when those are down.
+# order = ["groq"]
+# only = []
+# ignore = []
+# allow_fallbacks = true
+# Only hosts that don't keep or train on what's sent; only those that keep nothing at all.
+deny_data_collection = false
+zdr = false
+
+# Anything else the API takes in every request (DeepSeek's own API: thinking = { type = "disabled" }).
 [llm.extra]
 
 [stt]
@@ -175,7 +206,8 @@ mod tests {
     fn the_written_default_reads_back() {
         let cfg: VoiceConfig = toml::from_str(DEFAULT).unwrap();
         assert!(!cfg.kev.enabled, "Kev is off unless the player turns him on");
-        assert_eq!(cfg.llm.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(cfg.llm.api_key_env(), Some("OPENROUTER_API_KEY"));
+        assert!(cfg.llm.is_openrouter() && cfg.llm.openrouter.sort.is_some());
         assert!(cfg.llm.api_key.is_none() && cfg.llm.extra.is_empty());
     }
 
