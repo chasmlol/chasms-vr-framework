@@ -33,8 +33,9 @@
 //!   the headset, casting at the creatures in front of them: mostly out of the palm. The aim is
 //!   smoothed over the last moment, a little longer for a harder spell (40 ms for the easiest, 120
 //!   ms for the hardest: enough to take out the trigger's jolt; Magic Improvements' own, up to half
-//!   a second, trails behind a quick point), and helped onto a creature in a gentle cone (Spell
-//!   Auto-Aim VR's missiles: 10 degrees up or down, 15 across), foes first for a harmful spell.
+//!   a second, trails behind a quick point). With `aim_assist` on (off by default: the player
+//!   wants none) it's helped onto a creature in a gentle cone (Spell Auto-Aim VR's missiles: 10
+//!   degrees up or down, 15 across), foes first for a harmful spell.
 //! * **Touch** spells go into the first creature the charged hand touches, at once; let go in the
 //!   air, the game's own touch takes what's within its reach along the aim. **Self** spells go off
 //!   wherever the hand is.

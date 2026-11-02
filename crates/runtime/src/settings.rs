@@ -189,7 +189,7 @@ pub struct Magic {
     /// onto a creature isn't in it).
     pub show_aim: bool,
     /// A target spell is helped onto a creature near where it's aimed (a gentle cone: 10 degrees up
-    /// or down, 15 across).
+    /// or down, 15 across). Off by default: the player wants none.
     pub aim_assist: bool,
     /// The aim is smoothed over the last moment (a little longer for a harder spell).
     pub aim_smoothing: bool,
@@ -201,7 +201,7 @@ impl Default for Magic {
     fn default() -> Self {
         // (The aim the player set in the headset against the Spells tab's line, casting at the
         // creatures in front of them: mostly out of the palm, the bolt starting well out of it.)
-        Magic { aim_down: 59.0, aim_out: -1.0, palm_tilt: 74.0, launch_ahead: 0.39, show_aim: false, aim_assist: true, aim_smoothing: true, charge_haptics: true }
+        Magic { aim_down: 59.0, aim_out: -1.0, palm_tilt: 74.0, launch_ahead: 0.39, show_aim: false, aim_assist: false, aim_smoothing: true, charge_haptics: true }
     }
 }
 
