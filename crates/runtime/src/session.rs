@@ -2322,6 +2322,18 @@ impl Session {
             let (radius, bright) = if c.state == CAST_READIED { (0.018, 0.35) } else { (0.03 + 0.06 * c.charge, 0.6 + 1.6 * c.charge) };
             layers.glows.push(Glow { at: c.at, radius: radius * flicker, color: color * bright });
         }
+        // The Spells tab's line: where each hand's spell would go, up to 30 m or the first thing in
+        // the game's collision (a dot there), for setting the aim.
+        if s.magic.show_aim {
+            for &(from, dir) in self.magic.aim_lines.iter().flatten() {
+                let hit = self.map_now.and_then(|map| self.rig.physics.ray_world(map.point(from), map.rot(Quat::IDENTITY) * dir, 30.0 * map.world_per_meter).map(|d| d / map.world_per_meter));
+                let to = from + dir * hit.unwrap_or(30.0);
+                layers.ribbons.push(crate::compositor::Ribbon { a: from, b: to, width: 0.004, color: glam::Vec4::new(1.0, 0.55, 0.2, 0.8) });
+                if hit.is_some() {
+                    layers.glows.push(Glow { at: to, radius: 0.06, color: Vec3::new(2.0, 1.0, 0.3) });
+                }
+            }
+        }
         // The spell wheel, and each hand's pointer on it (crate::spell_wheel).
         if let Some((panel, srv)) = self.magic.wheel.shown() {
             layers.panels.push(PanelLayer::whole(panel, srv));

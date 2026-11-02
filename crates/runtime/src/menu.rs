@@ -18,6 +18,7 @@ const PIXELS_PER_POINT: f32 = 2.0;
 enum Tab {
     Comfort,
     Hands,
+    Spells,
     Body,
     Controls,
     Weapon,
@@ -185,6 +186,7 @@ impl RuntimeMenu {
                         (Tab::Help, "Help"),
                         (Tab::Comfort, "Comfort"),
                         (Tab::Hands, "Hands"),
+                        (Tab::Spells, "Spells"),
                         (Tab::Body, "Body"),
                         (Tab::Controls, "Controls"),
                         (Tab::Weapon, "Weapon"),
@@ -203,6 +205,7 @@ impl RuntimeMenu {
                     match tab {
                     Tab::Comfort => comfort(ui, s, &mut rects),
                     Tab::Hands => hands(ui, s, &mut rects),
+                    Tab::Spells => spells(ui, s),
                     Tab::Body => measure = body(ui, s, status, &mut rects),
                     Tab::Help => help(ui),
                     Tab::Controls => controls(ui, s),
@@ -464,6 +467,7 @@ fn help(ui: &mut egui::Ui) {
         ("Pull back and let go", "loose it: the further drawn, the faster it flies"),
         ("Let go after a short pull", "the arrow stays on the string"),
         ("Hands tab", "where the quiver is, and a crosshair where the bow points"),
+        ("Spells tab", "how spells leave your hand, with a line where they'd go"),
     ]);
     section(ui, "Holsters", &[
         ("Let go of a gun at a hip", "holster it there"),
@@ -475,6 +479,22 @@ fn help(ui: &mut egui::Ui) {
         ("Measure my arms", "arms straight out to the sides for 3 seconds, then straight out in front for 3"),
         ("Hands tab", "physics hands, gloves, grip toggle, weight, laser, stock, the game's recoil, the quiver and the bow's crosshair"),
     ]);
+}
+
+fn spells(ui: &mut egui::Ui, s: &mut Settings) {
+    let m = &mut s.magic;
+    ui.label("How spells leave your hand. Turn on the line, hold a spell, point at something, and move these until the line goes where you point.");
+    ui.checkbox(&mut m.show_aim, "Show a line where a held spell would go (the help onto a creature isn't in it)");
+    slider(ui, "Down from where the controller points", &mut m.aim_down, -20.0, 70.0, " deg", 0);
+    slider(ui, "Out to the hand's side (minus: across you)", &mut m.aim_out, -30.0, 30.0, " deg", 0);
+    slider(ui, "Towards the palm (palm casting)", &mut m.palm_tilt, 0.0, 90.0, " deg", 0);
+    slider(ui, "Starts this far ahead of the palm", &mut m.launch_ahead, 0.0, 0.5, " m", 2);
+    ui.checkbox(&mut m.aim_assist, "Help a spell onto a creature near the aim");
+    ui.checkbox(&mut m.aim_smoothing, "Smooth the aim a touch");
+    ui.checkbox(&mut m.charge_haptics, "Feel the charge in the hand");
+    if ui.button("Back to the defaults").clicked() {
+        *m = Default::default();
+    }
 }
 
 fn hands(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::Rect)>) {

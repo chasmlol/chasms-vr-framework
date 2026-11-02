@@ -27,8 +27,10 @@
 //!   wrist both steering it: the controller's own pointing ray (its aim pose, the laser's) turned
 //!   down by the cock a casting hand's wrist rests at ([`WRIST_REST`]; held out at something, an
 //!   open hand's ray rides that far above it, and the spell went high), as Skyrim VR turns its own
-//!   (`fMagicRotationPitch`). Palm casting (Magic Improvements', which some Skyrim VR lists ship) is
-//!   a setting: `palm_tilt` degrees from that way towards the palm's face. The aim is
+//!   (`fMagicRotationPitch`). How far down, how far out to the hand's side, and how far ahead of the
+//!   palm a spell starts are settings, set in the menu's Spells tab against a line from the palm
+//!   (`show_aim`). Palm casting (Magic Improvements', which some Skyrim VR lists ship) is one too:
+//!   `palm_tilt` degrees from that way towards the palm's face. The aim is
 //!   smoothed over the last moment, a little longer for a harder spell (40 ms for the easiest, 120
 //!   ms for the hardest: enough to take out the trigger's jolt; Magic Improvements' own, up to half
 //!   a second, trails behind a quick point), and helped onto a creature in a gentle cone (Spell
@@ -68,7 +70,7 @@ pub const SHOWN: f64 = 30.0;
 pub const ART_REACH: f32 = 0.35;
 /// A casting hand held out at something rests with its wrist cocked up this far (degrees, the
 /// player's casts at a creature: 17 to 41, most about 25): the controller's ray rides this far above
-/// where the hand means, and a spell leaves this far below it.
+/// where the hand means, and a spell leaves this far below it (`aim_down`'s default).
 pub const WRIST_REST: f32 = 25.0;
 /// A casting time when the game gives none (seconds).
 const CAST_TIME: f32 = 0.5;
@@ -190,6 +192,9 @@ pub struct Magic {
     pub events: Vec<CombatEvent>,
     pub activate: bool,
     pub glows: Vec<Glow>,
+    /// Where each free hand's spell would go this frame, the help onto a creature aside (tracking
+    /// space: from, which way), for the line that sets the aim (`show_aim`).
+    pub aim_lines: [Option<(Vec3, Vec3)>; 2],
     pub debug: MagicDebug,
 }
 
@@ -206,6 +211,7 @@ impl Default for Magic {
             events: Vec::new(),
             activate: false,
             glows: Vec::new(),
+            aim_lines: [None; 2],
             debug: MagicDebug::default(),
         }
     }
@@ -241,15 +247,17 @@ pub fn palm_frame(rot: Quat, hand: usize) -> (Vec3, Vec3) {
 }
 
 /// The way a hand casts (tracking space): where it points, its controller's ray (`aim`: its aim
-/// pose, +Z where it points) turned [`WRIST_REST`] degrees down (towards the controller's -Y), so
-/// the arm and the wrist both steer it. Then turned `palm_tilt` degrees towards the palm's face (the
+/// pose, +Z where it points, +X to its right) turned `aim_down` degrees down (towards the
+/// controller's -Y; the wrist's rest, [`WRIST_REST`]) and `aim_out` out to the hand's side, so the
+/// arm and the wrist both steer it. Then turned `palm_tilt` degrees towards the palm's face (the
 /// grip's, [`palm_frame`]).
-pub fn hand_aim(aim: Quat, grip: Quat, hand: usize, palm_tilt: f32) -> Vec3 {
-    let rest = WRIST_REST.to_radians();
-    let point = (aim * Vec3::new(0.0, -rest.sin(), rest.cos())).normalize_or(Vec3::Z);
+pub fn hand_aim(aim: Quat, grip: Quat, hand: usize, s: &crate::settings::Magic) -> Vec3 {
+    let down = s.aim_down.to_radians();
+    let out = s.aim_out.to_radians() * if hand == 0 { -1.0 } else { 1.0 };
+    let point = (aim * Vec3::new(down.cos() * out.sin(), -down.sin(), down.cos() * out.cos())).normalize_or(Vec3::Z);
     let (face, _) = palm_frame(grip, hand);
     let side = (face - point * face.dot(point)).normalize_or_zero();
-    let a = palm_tilt.clamp(0.0, 90.0).to_radians();
+    let a = s.palm_tilt.clamp(0.0, 90.0).to_radians();
     (point * a.cos() + side * a.sin()).normalize_or(point)
 }
 
@@ -298,6 +306,7 @@ impl Magic {
         self.pulses.clear();
         self.events.clear();
         self.glows.clear();
+        self.aim_lines = [None; 2];
         self.activate = false;
         self.casting = Default::default();
         self.keep_hands(inp.dominant);
@@ -398,8 +407,10 @@ impl Magic {
                 // The art's +Z out of the palm, +Y along the fingers.
                 let rot = Quat::from_mat3(&Mat3::from_cols(fingers.cross(face), fingers, face)).normalize();
                 let pointing = Quat::from_array(inp.frame.hands[h].aim.rot);
-                let aim = inp.map.rot(Quat::IDENTITY) * hand_aim(pointing, hq, h, inp.settings.palm_tilt);
-                Some((palm, aim, Pose { pos: palm_t.to_array(), valid: 1, rot: rot.to_array() }))
+                let aim_t = hand_aim(pointing, hq, h, inp.settings);
+                // (Paused too: the line moves as the menu's sliders do.)
+                self.aim_lines[h] = Some((palm_t + aim_t * inp.settings.launch_ahead, aim_t));
+                Some((palm, inp.map.rot(Quat::IDENTITY) * aim_t, Pose { pos: palm_t.to_array(), valid: 1, rot: rot.to_array() }))
             }
             None => None,
         };
@@ -538,21 +549,29 @@ impl Magic {
         let speed = c.vel.length();
         out.flags |= CASTF_CAST;
         self.casting[h] = out;
+        // (A target spell from the palm starts `launch_ahead` along its way.)
+        let ahead = if matches!(source, Source::Spell(_)) && delivery == DELIVER_TARGET { inp.settings.launch_ahead * inp.map.world_per_meter } else { 0.0 };
+        let from = from + dir * ahead;
         let ev = CombatEvent { kind: CE_CAST, flags: touched_flag, actor, what: id, object: out.object, hand: h as u32, strength: 1.0, speed, point: from.to_array(), dir: dir.to_array(), ..Default::default() };
         self.debug.casts += 1;
         self.debug.last = Some(ev);
-        // (How far up it went, and the controller's own ray and the head: degrees.)
+        // (How far up it went, and the controller's own ray and the head: degrees; and the aim's
+        // settings it went by.)
         let up = |v: Vec3| v.normalize_or_zero().y.clamp(-1.0, 1.0).asin().to_degrees();
         let ray = Quat::from_array(inp.frame.hands[h].aim.rot) * Vec3::Z;
         let head = Quat::from_array(inp.frame.hmd.rot) * Vec3::Z;
         tracing::info!(
-            "magic: cast {name} from the {} hand{} at {from:.2?} towards {dir:.2?} (on {actor:#x}); up {:.0} deg, the controller's ray {:.0} ({:.0} off), the head {:.0}",
+            "magic: cast {name} from the {} hand{} at {from:.2?} towards {dir:.2?} (on {actor:#x}); up {:.0} deg, the controller's ray {:.0} ({:.0} off), the head {:.0}; set {:.0} deg down, {:.0} out, {:.0} to the palm, {:.2} m ahead",
             if h == 0 { "left" } else { "right" },
             if out.object != 0 { "'s staff" } else { "" },
             up(dir),
             up(ray),
             inp.map.rot(Quat::IDENTITY).mul_vec3(ray).normalize_or_zero().dot(dir.normalize_or_zero()).clamp(-1.0, 1.0).acos().to_degrees(),
             up(head),
+            inp.settings.aim_down,
+            inp.settings.aim_out,
+            inp.settings.palm_tilt,
+            inp.settings.launch_ahead,
         );
         self.pulses.push(Pulse { hand: h, ..RELEASE });
         self.events.push(ev);
@@ -629,14 +648,19 @@ mod tests {
     fn a_hand_casts_where_it_points_below_its_wrists_rest() {
         // Held out level, the wrist at its rest (the controller's ray cocked up): level. The wrist
         // bent 20 degrees down from there: 20 degrees down.
+        let s = crate::settings::Magic::default();
         let rest = Quat::from_rotation_x(-WRIST_REST.to_radians());
-        assert!((hand_aim(rest, rest, 1, 0.0) - Vec3::Z).length() < 1e-4);
+        assert!((hand_aim(rest, rest, 1, &s) - Vec3::Z).length() < 1e-4);
         let down = Quat::from_rotation_x((20.0 - WRIST_REST).to_radians());
-        let aim = hand_aim(down, down, 1, 0.0);
+        let aim = hand_aim(down, down, 1, &s);
         assert!((aim.y.asin().to_degrees() + 20.0).abs() < 0.1, "{aim:?}");
+        // Turned out: each hand to its own side (the left to -X, the right to +X).
+        let out = crate::settings::Magic { aim_out: 20.0, ..s.clone() };
+        assert!(hand_aim(rest, rest, 0, &out).x < -0.3 && hand_aim(rest, rest, 1, &out).x > 0.3);
         // Palm casting: turned towards the palm (the left hand's to its right, +X; the right's -X).
-        assert!(hand_aim(rest, rest, 0, 60.0).x > 0.8);
-        assert!(hand_aim(rest, rest, 1, 60.0).x < -0.8);
+        let palm = crate::settings::Magic { palm_tilt: 60.0, ..s };
+        assert!(hand_aim(rest, rest, 0, &palm).x > 0.8);
+        assert!(hand_aim(rest, rest, 1, &palm).x < -0.8);
     }
 
     #[test]

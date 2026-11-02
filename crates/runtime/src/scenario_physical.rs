@@ -1034,14 +1034,14 @@ pub fn all() -> Vec<Scenario> {
         },
         Scenario {
             name: "spell",
-            about: "physical: the off hand holds the fire bolt (the game's selected spell); its trigger charges it (the game's casting time) and it's let go with the hand pointed at the training dummy (the controller cocked up as a casting hand's wrist rests): one cast, the bolt strikes the dummy; let go too soon: nothing",
+            about: "physical: the off hand holds the fire bolt (the game's selected spell), the Spells tab's line showing where it would go; its trigger charges it (the game's casting time) and it's let go with the hand pointed at the training dummy (the controller cocked up as a casting hand's wrist rests): one cast, the bolt strikes the dummy; let go too soon: nothing",
             duration: 3.0,
             needs_game: true,
             lockstep: true,
             range_args: vec![],
             physical: true,
             start: Body::rest,
-            settings: |_| {},
+            settings: |s| s.magic.show_aim = true,
             input: || {
                 latched(|t, _, _| {
                     let mut b = Body::rest();
