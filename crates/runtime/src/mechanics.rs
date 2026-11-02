@@ -185,9 +185,13 @@ const LOOT_REPEAT: f64 = 0.12;
 /// How long a lone stick click waits for the other stick (both together: the framework view).
 const STICK_CHORD: f64 = 0.12;
 /// Heights a worn headset's at (metres over the real floor), sat or stood (not on a desk): seated
-/// play takes the head's height as upright only within them.
+/// play takes the head's height as upright only within them, once it's been held there (within
+/// this, metres) this long (s), never a lone frame's: a headset just put on, or one whose runtime
+/// has just started, can read far off.
 const UPRIGHT_LOW: f32 = 0.9;
 const UPRIGHT_HIGH: f32 = 2.3;
+const UPRIGHT_STILL: f32 = 0.05;
+const UPRIGHT_HELD: f32 = 1.0;
 /// Where a nod turns the head (its frame: x right, y up, z forward), metres: the top of the neck,
 /// under and behind the eyes. The head's height is measured there, as if the head were held level:
 /// looking down lowers the eyes 10 cm or more, but it isn't a crouch (nor, measured there, does it
@@ -369,9 +373,12 @@ pub struct Mechanics {
     two_held: bool,
     // physical crouch, and the view's height
     stand_h: f32,
-    /// Seated play has taken the head's height as upright (a recentre takes it again).
+    /// Seated play has taken the head's height as upright (a recentre takes it again). The height
+    /// the head's held at, and how long, till it's taken.
     seated_taken: bool,
     recalibrate: bool,
+    upright_at: f32,
+    upright_held: f32,
     phys_crouch: bool,
     crouch_by_phys: bool,
     crouch_pending: i32,
@@ -426,6 +433,8 @@ impl Default for Mechanics {
             stand_h: 0.0,
             seated_taken: false,
             recalibrate: false,
+            upright_at: 0.0,
+            upright_held: 0.0,
             phys_crouch: false,
             crouch_by_phys: false,
             crouch_pending: -1,
@@ -472,16 +481,28 @@ impl Mechanics {
     /// The head's upright height (over the real floor), the game's eyes there. Playing standing,
     /// the player's eyes standing (`standing_eyes`), whatever the head does: sat or ducked under
     /// it is a crouch. Playing seated, the head's height `h` when seated play was turned on (or
-    /// the game started with it on), taken again at each recentre.
-    fn update_upright(&mut self, c: &Settings, h: f32) {
+    /// the game started with it on), taken again at each recentre: once the head's been held at it
+    /// a moment, the headset showing this (`shown`: not its own menu).
+    fn update_upright(&mut self, c: &Settings, h: f32, dt: f32, shown: bool) {
         if !c.comfort.seated {
             self.stand_h = Self::standing_eyes(c);
             self.seated_taken = false;
             self.recalibrate = false;
-        } else if (!self.seated_taken || self.recalibrate) && (UPRIGHT_LOW..UPRIGHT_HIGH).contains(&h) {
-            self.stand_h = h;
-            self.seated_taken = true;
-            self.recalibrate = false;
+            self.upright_held = 0.0;
+        } else if !self.seated_taken || self.recalibrate {
+            let held = shown && (UPRIGHT_LOW..UPRIGHT_HIGH).contains(&h) && (h - self.upright_at).abs() < UPRIGHT_STILL;
+            if held {
+                self.upright_held += dt;
+            } else {
+                (self.upright_at, self.upright_held) = (h, 0.0);
+            }
+            if self.upright_held >= UPRIGHT_HELD {
+                tracing::info!("seated: upright is the head's height, {h:.2} m over the floor{}", if self.seated_taken { " (taken again)" } else { "" });
+                self.stand_h = h;
+                self.seated_taken = true;
+                self.recalibrate = false;
+                self.upright_held = 0.0;
+            }
         }
         self.debug.stand_h = self.stand_h;
     }
@@ -594,7 +615,11 @@ impl Mechanics {
         // (in menus too: a new game starts in the character creator, the body in its mirror hung
         // from the head by it).
         let head_h = (v3(f.hmd.pos) + q(f.hmd.rot) * NECK).y - NECK.y;
-        self.update_upright(c, head_h);
+        // (The headset's own floor moved: seated, the head's height is taken again.)
+        if f.space_changed {
+            self.recalibrate = true;
+        }
+        self.update_upright(c, head_h, f.dt, !f.dashboard);
         // A loading screen takes the menu controls too: its "press to continue" wants the menu's
         // accept (and nothing should fire or move while it's up).
         let loading = inp.game.is_some_and(|g| g.flags & GS_LOADING != 0);

@@ -100,6 +100,8 @@ pub struct OpenXrBackend {
     refresh_wanted: Option<f32>,
     running: bool,
     focused: bool,
+    /// The headset has said it moves its floor since the last frame ([`HmdFrame::space_changed`]).
+    space_changed: bool,
     frame_state: Option<xr::FrameState>,
     began: bool,
     index: u64,
@@ -293,6 +295,7 @@ impl OpenXrBackend {
                 refresh_wanted: None,
                 running: false,
                 focused: false,
+                space_changed: false,
                 frame_state: None,
                 began: false,
                 index: 0,
@@ -378,6 +381,10 @@ impl OpenXrBackend {
                     }
                 }
                 xr::Event::InstanceLossPending(_) => bail!("the OpenXR runtime is shutting down"),
+                xr::Event::ReferenceSpaceChangePending(e) => {
+                    tracing::info!("openxr: the headset moves its {:?} space", e.reference_space_type());
+                    self.space_changed = true;
+                }
                 xr::Event::DisplayRefreshRateChangedFB(e) => {
                     let (from, to) = (e.from_display_refresh_rate(), e.to_display_refresh_rate());
                     tracing::info!("openxr: refresh rate {from:.0} -> {to:.0} Hz");
@@ -493,6 +500,7 @@ impl Backend for OpenXrBackend {
             hmd: from_xr(&head.pose, valid),
             user_present: true,
             dashboard: !self.focused,
+            space_changed: std::mem::take(&mut self.space_changed),
             ..Default::default()
         };
         for e in 0..2 {

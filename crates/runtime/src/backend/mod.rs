@@ -29,6 +29,9 @@ pub struct HmdFrame {
     pub user_present: bool,
     /// The system dashboard (or another app) has the headset's focus.
     pub dashboard: bool,
+    /// The headset has moved its floor (its own recentre, or its room set up again) since the last
+    /// frame: the head's height over it changed without the head moving.
+    pub space_changed: bool,
     /// Each hand's fingers as the headset's cameras see them, when it tracks the hand itself (the
     /// controller put down): curls, thumb .. little, 0 straight to 1 closed.
     pub fingers: [Option<[f32; 5]>; 2],
