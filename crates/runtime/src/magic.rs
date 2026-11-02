@@ -23,14 +23,14 @@
 //!   cast now (too little magicka, a power used today) doesn't charge: a long dull pulse (PLANCK's
 //!   failure), and the game says why ([`CE_CAST_REFUSED`]). After a cast the hand waits out the rest
 //!   of the game's cast before it charges again.
-//! * **Aim with the hand**: a target spell leaves the palm where the hand points, the arm and the
+//! * **Aim with the hand**: a target spell leaves the palm the way the hand casts, the arm and the
 //!   wrist both steering it: the controller's own pointing ray (its aim pose, the laser's) turned
-//!   down by the cock a casting hand's wrist rests at ([`WRIST_REST`]; held out at something, an
-//!   open hand's ray rides that far above it, and the spell went high), as Skyrim VR turns its own
-//!   (`fMagicRotationPitch`). How far down, how far out to the hand's side, and how far ahead of the
-//!   palm a spell starts are settings, set in the menu's Spells tab against a line from the palm
-//!   (`show_aim`). Palm casting (Magic Improvements', which some Skyrim VR lists ship) is one too:
-//!   `palm_tilt` degrees from that way towards the palm's face. The aim is
+//!   down and out to the hand's side, then towards the palm's face (palm casting, Magic
+//!   Improvements', which some Skyrim VR lists ship), starting a way ahead of the palm. Raw, the
+//!   ray went high (an open casting hand's wrist is cocked up), as Skyrim VR's needs its own turned
+//!   (`fMagicRotationPitch`). All four are settings, set in the menu's Spells tab against a line
+//!   from the palm to where a spell would go (`show_aim`); the defaults are what the player set in
+//!   the headset, casting at the creatures in front of them: mostly out of the palm. The aim is
 //!   smoothed over the last moment, a little longer for a harder spell (40 ms for the easiest, 120
 //!   ms for the hardest: enough to take out the trigger's jolt; Magic Improvements' own, up to half
 //!   a second, trails behind a quick point), and helped onto a creature in a gentle cone (Spell
@@ -68,10 +68,6 @@ pub const SHOWN: f64 = 30.0;
 /// How far round a hand the game's own art for it reaches (m): its picture apart from the eye's
 /// (`TGT_ART`) is laid over the hands that far round each.
 pub const ART_REACH: f32 = 0.35;
-/// A casting hand held out at something rests with its wrist cocked up this far (degrees, the
-/// player's casts at a creature: 17 to 41, most about 25): the controller's ray rides this far above
-/// where the hand means, and a spell leaves this far below it (`aim_down`'s default).
-pub const WRIST_REST: f32 = 25.0;
 /// A casting time when the game gives none (seconds).
 const CAST_TIME: f32 = 0.5;
 /// ISPVR's charge: a pulse every `PULSE_SLOW` seconds at the start down to every `PULSE_FAST` when
@@ -248,8 +244,7 @@ pub fn palm_frame(rot: Quat, hand: usize) -> (Vec3, Vec3) {
 
 /// The way a hand casts (tracking space): where it points, its controller's ray (`aim`: its aim
 /// pose, +Z where it points, +X to its right) turned `aim_down` degrees down (towards the
-/// controller's -Y; the wrist's rest, [`WRIST_REST`]) and `aim_out` out to the hand's side, so the
-/// arm and the wrist both steer it. Then turned `palm_tilt` degrees towards the palm's face (the
+/// controller's -Y) and `aim_out` out to the hand's side, so the arm and the wrist both steer it. Then turned `palm_tilt` degrees towards the palm's face (the
 /// grip's, [`palm_frame`]).
 pub fn hand_aim(aim: Quat, grip: Quat, hand: usize, s: &crate::settings::Magic) -> Vec3 {
     let down = s.aim_down.to_radians();
@@ -645,13 +640,13 @@ mod tests {
     }
 
     #[test]
-    fn a_hand_casts_where_it_points_below_its_wrists_rest() {
-        // Held out level, the wrist at its rest (the controller's ray cocked up): level. The wrist
-        // bent 20 degrees down from there: 20 degrees down.
-        let s = crate::settings::Magic::default();
-        let rest = Quat::from_rotation_x(-WRIST_REST.to_radians());
+    fn a_hand_casts_the_way_its_settings_turn_its_ray() {
+        // 25 degrees down and nothing else: the controller's ray cocked 25 up casts level; the wrist
+        // bent 20 degrees down from there, 20 degrees down.
+        let s = crate::settings::Magic { aim_down: 25.0, aim_out: 0.0, palm_tilt: 0.0, ..Default::default() };
+        let rest = Quat::from_rotation_x(-25f32.to_radians());
         assert!((hand_aim(rest, rest, 1, &s) - Vec3::Z).length() < 1e-4);
-        let down = Quat::from_rotation_x((20.0 - WRIST_REST).to_radians());
+        let down = Quat::from_rotation_x(-5f32.to_radians());
         let aim = hand_aim(down, down, 1, &s);
         assert!((aim.y.asin().to_degrees() + 20.0).abs() < 0.1, "{aim:?}");
         // Turned out: each hand to its own side (the left to -X, the right to +X).
@@ -661,6 +656,10 @@ mod tests {
         let palm = crate::settings::Magic { palm_tilt: 60.0, ..s };
         assert!(hand_aim(rest, rest, 0, &palm).x > 0.8);
         assert!(hand_aim(rest, rest, 1, &palm).x < -0.8);
+        // The defaults: a left palm held out to the front, fingers up, casts out of it.
+        let palm_out = Quat::from_mat3(&Mat3::from_cols(Vec3::Z, Vec3::X, Vec3::Y));
+        let aim = hand_aim(palm_out, palm_out, 0, &crate::settings::Magic::default());
+        assert!(aim.z > 0.9, "{aim:?}");
     }
 
     #[test]

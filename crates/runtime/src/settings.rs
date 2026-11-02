@@ -174,8 +174,8 @@ impl Default for Mirror {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Magic {
-    /// Degrees a spell leaves below where the controller points: the cock a casting hand's wrist
-    /// rests at ([`crate::magic::WRIST_REST`]).
+    /// Degrees a spell leaves below where the controller points (raw, it goes high: an open casting
+    /// hand's wrist is cocked up).
     pub aim_down: f32,
     /// Degrees a spell turns out to its hand's side (negative: in, across the body).
     pub aim_out: f32,
@@ -199,7 +199,9 @@ pub struct Magic {
 
 impl Default for Magic {
     fn default() -> Self {
-        Magic { aim_down: crate::magic::WRIST_REST, aim_out: 0.0, palm_tilt: 0.0, launch_ahead: 0.0, show_aim: false, aim_assist: true, aim_smoothing: true, charge_haptics: true }
+        // (The aim the player set in the headset against the Spells tab's line, casting at the
+        // creatures in front of them: mostly out of the palm, the bolt starting well out of it.)
+        Magic { aim_down: 59.0, aim_out: -1.0, palm_tilt: 74.0, launch_ahead: 0.39, show_aim: false, aim_assist: true, aim_smoothing: true, charge_haptics: true }
     }
 }
 

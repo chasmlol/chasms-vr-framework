@@ -1034,7 +1034,7 @@ pub fn all() -> Vec<Scenario> {
         },
         Scenario {
             name: "spell",
-            about: "physical: the off hand holds the fire bolt (the game's selected spell), the Spells tab's line showing where it would go; its trigger charges it (the game's casting time) and it's let go with the hand pointed at the training dummy (the controller cocked up as a casting hand's wrist rests): one cast, the bolt strikes the dummy; let go too soon: nothing",
+            about: "physical: the off hand holds the fire bolt (the game's selected spell), the Spells tab's line showing where it would go; its trigger charges it (the game's casting time) and it's let go with the palm held out at the training dummy, fingers up (the default aim: mostly out of the palm): one cast, the bolt strikes the dummy; let go too soon: nothing",
             duration: 3.0,
             needs_game: true,
             lockstep: true,
@@ -1045,14 +1045,16 @@ pub fn all() -> Vec<Scenario> {
             input: || {
                 latched(|t, _, _| {
                     let mut b = Body::rest();
-                    // The arm held out from the left shoulder towards the dummy's chest, the
-                    // controller cocked up above it as a casting hand's wrist rests (the runtime
-                    // casts that far below its ray).
+                    // The arm held out from the left shoulder towards the dummy's chest, the palm to
+                    // it and the fingers up (by default a spell leaves mostly out of the palm),
+                    // turned the little that takes the default aim onto the chest.
                     let shoulder = Body::rest().head_pos + Vec3::new(-0.18, -0.22, -0.08);
                     let chest = Vec3::new(0.15, 1.25, 1.15);
                     let dir = (chest - shoulder).normalize();
                     let palm = shoulder + dir * 0.5;
-                    let rot = look_rot(dir) * Quat::from_rotation_x(-crate::magic::WRIST_REST.to_radians());
+                    let palm_out = Quat::from_mat3(&glam::Mat3::from_cols(Vec3::Z, Vec3::X, Vec3::Y));
+                    let casts = palm_out * crate::magic::hand_aim(Quat::IDENTITY, Quat::IDENTITY, 0, &crate::settings::Magic::default());
+                    let rot = Quat::from_rotation_arc(casts, dir) * palm_out;
                     let rest = Body::rest().hands[0].pos;
                     b.hands[0].pos = keys(t, &[(0.0, rest), (0.4, palm)]);
                     b.hands[0].rot = qkeys(t, &[(0.0, Quat::IDENTITY), (0.4, rot)]);
