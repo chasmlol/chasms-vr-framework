@@ -181,7 +181,8 @@ impl RuntimeMenu {
                     None => format!("No game connected · {}", status.backend),
                 });
                 ui.separator();
-                ui.horizontal(|ui| {
+                // (As many rows as the tabs need: one row of them runs off the menu's edge.)
+                ui.horizontal_wrapped(|ui| {
                     for (t, name) in [
                         (Tab::Help, "Help"),
                         (Tab::Comfort, "Comfort"),
@@ -198,7 +199,8 @@ impl RuntimeMenu {
                     }
                 });
                 ui.separator();
-                egui::ScrollArea::vertical().max_height(size.y - 190.0).show(ui, |ui| {
+                // (What's left below the tabs, less the buttons and the message under the page.)
+                egui::ScrollArea::vertical().max_height((ui.available_height() - 84.0).max(120.0)).show(ui, |ui| {
                     if scroll != 0.0 {
                         ui.scroll_with_delta_animation(egui::vec2(0.0, scroll), egui::style::ScrollAnimation::none());
                     }
