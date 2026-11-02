@@ -125,6 +125,11 @@ const KICK_RADIUS: f32 = 0.05;
 
 /// How thick a hand is to its Punch damager (m).
 const PUNCH_RADIUS: f32 = 0.045;
+
+/// An empty hand is a fist, meant to strike, while its trigger's pulled this far: it punches (and
+/// shoves, `rig`). Otherwise it only touches: walked into someone, or resting on them, it does them
+/// no harm.
+pub(crate) const FIST_TRIGGER: f32 = 0.6;
 /// The damagers' angle limits (degrees): a sword's, an axe's.
 const SLASH_ACROSS_DEG: f32 = 35.0;
 const PIERCE_DEG: f32 = 35.0;
@@ -761,9 +766,9 @@ impl Combat {
                     self.blocks(inp, h, id, &desc, &prev, &now, dt, &mut events);
                 }
                 seen.insert(id, now);
-            } else if held.is_none() && !inp.out.hand_busy[h] {
-                // An empty hand hits open or closed alike (a fist doesn't hit harder): its palm and
-                // fingers carry Punch.
+            } else if held.is_none() && !inp.out.hand_busy[h] && inp.frame.hands[h].trigger >= FIST_TRIGGER {
+                // An empty hand made a fist hits, its fingers curled or not (it doesn't hit
+                // harder for them): its palm and fingers carry Punch.
                 let hs = &inp.out.hands[h];
                 let (hp, hq) = (Vec3::from_array(hs.pose.pos), Quat::from_array(hs.pose.rot));
                 // Swept where the controller takes it (the hand meets things at the speed it was

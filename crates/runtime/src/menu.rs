@@ -422,7 +422,7 @@ fn help(ui: &mut egui::Ui) {
     ]);
     section(ui, "Hands", &[
         ("Grip", "grab what your hand is on (hold to keep holding)"),
-        ("Trigger, empty hand", "use"),
+        ("Trigger, empty hand", "use; held, a fist: it hits and shoves (else it only touches)"),
         ("Point your hand or palm at something far", "it glows (gravity gloves, up to 10 m)"),
         ("Hold grip on it", "it locks on and hops towards you"),
         ("Flick your wrist back (or yank)", "it flies to you: keep the grip to catch it"),

@@ -243,10 +243,12 @@ and body rules, shared by the runtime and the range.
 * **Tearing** (the range's tearing joints: the shoulders, the knees, the neck): two hands
   holding one body tear a part they hold, or its parent but the torso, past 3450 N; the part comes
   off, and it kills.
-* **Hands hit**: every empty hand carries a punch damager over its palm and fingers, open
-  or closed, judged by the same judge (the punch's curve, its table: 2 m/s on flesh at x0.5, any
-  way, never going in). It's swept where the controller takes it, not where the drawn hand stops on
-  what it hits. Shoves are the hands' own contact pushes.
+* **Hands hit** while they're fists: an empty hand with its trigger pulled (0.6) carries a punch
+  damager over its palm and fingers, judged by the same judge (the punch's curve, its table: 2 m/s
+  on flesh at x0.5, any way, never going in). It's swept where the controller takes it, not where
+  the drawn hand stops on what it hits. Shoves are the hands' own contact pushes, a fist's too;
+  a hand that isn't a fist never shoves, and presses a body at most 0.6 m/s (it gives, or moves
+  a little), so walking into people or resting a hand on them does them no harm.
 * **Kicks** (`kick.rs`), untracked: with the melee buttons (`RULES_KICK`) the movement
   stick's click, walking under 3 m/s, kicks at what the eyes see within 2 m (else straight ahead),
   with the foot on its side: folded up over 0.2 s, driven out 1.2 legs' lengths from the hip over

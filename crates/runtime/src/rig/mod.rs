@@ -734,6 +734,10 @@ const PUSH_MOVING: f32 = 0.2;
 /// A hand squeezing its grip less than this is open (it shoves; squeezing more, it's taking hold or
 /// a fist).
 const OPEN_HAND: f32 = 0.3;
+/// A hand that isn't a fist (`combat::FIST_TRIGGER`) never shoves a creature, and presses what it
+/// touches of one at most this fast (m/s): a body gives under it, or is moved a little, never
+/// thrown.
+const GENTLE_PUSH: f32 = 0.6;
 const LEASH: f32 = 0.7;
 /// How near (metres) a hand must be to a part that swings through the room to be pressing on it.
 const PRESS_GAP: f32 = 0.01;
@@ -2363,18 +2367,27 @@ impl Rig {
                 if hands.iter().zip(quiet).any(|(h, q)| h.collider == c && q == Some(actor)) {
                     continue;
                 }
-                // Who's pressing, and how far behind where it's driven it is (what it presses with).
-                // (Only an open hand shoves: one closing is taking hold, a fist punches, the game's
-                // own blow.)
+                // Who's pressing, how far behind where it's driven it is (what it presses with), and
+                // how hard it may.
+                // (Only an open hand with its trigger pulled shoves: one closing is taking hold, a
+                // fist punches, the game's own blow. Without its trigger, it touches gently.)
                 // (A blade stuck in it passes through it: it drags it as it's stuck, below.)
-                let pusher = hands.iter().find(|h| h.collider == c).map(|h| (h.body, h.target.0 - self.physics.pose(h.body).0, Some(if h.squeeze < OPEN_HAND { self.map.vel(h.vel_t) } else { Vec3::ZERO }))).or_else(|| {
-                    self.objects
-                        .iter()
-                        .find(|(_, o)| o.collider == c)
-                        .filter(|&(&id, _)| !self.embedded_in(id, actor) && !self.in_creatures.contains_key(&id))
-                        .map(|(_, o)| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None))
-                });
-                let Some((body, lag, controller)) = pusher else { continue };
+                let pusher = hands
+                    .iter()
+                    .find(|h| h.collider == c)
+                    .map(|h| {
+                        let striking = h.trigger >= crate::combat::FIST_TRIGGER;
+                        let shove = if h.squeeze < OPEN_HAND && striking { self.map.vel(h.vel_t) } else { Vec3::ZERO };
+                        (h.body, h.target.0 - self.physics.pose(h.body).0, Some(shove), if striking { PUSH_MAX } else { GENTLE_PUSH })
+                    })
+                    .or_else(|| {
+                        self.objects
+                            .iter()
+                            .find(|(_, o)| o.collider == c)
+                            .filter(|&(&id, _)| !self.embedded_in(id, actor) && !self.in_creatures.contains_key(&id))
+                            .map(|(_, o)| (o.body, if matches!(o.holder, Holder::Held(_)) { o.lag } else { Vec3::ZERO }, None, PUSH_MAX))
+                    });
+                let Some((body, lag, controller, most)) = pusher else { continue };
                 let Some((point, normal, depth)) = self.physics.overlap(c, proxy).or_else(|| {
                     // Resting against it: the nearest points.
                     let p = self.physics.closest_point(proxy, self.physics.pose(body).0);
@@ -2384,7 +2397,7 @@ impl Rig {
                     continue;
                 };
                 let vel = self.physics.velocity(body).0;
-                let speed = (vel.dot(normal).max(0.0) + lag.dot(normal).max(0.0) * PUSH_LAG + depth * PUSH_OUT).min(PUSH_MAX);
+                let speed = (vel.dot(normal).max(0.0) + lag.dot(normal).max(0.0) * PUSH_LAG + depth * PUSH_OUT).min(most);
                 // (A hand stopped on the body has lost its speed: its controller's is how hard it
                 // came.)
                 let moving = controller.unwrap_or(vel).dot(normal).max(0.0);
