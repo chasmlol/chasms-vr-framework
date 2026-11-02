@@ -2776,7 +2776,7 @@ impl Session {
                     tracing::warn!("desktop view: saving {}: {e:#}", path.display());
                 }
             }
-            w.present();
+            w.present(&self.gpu);
         }
         Ok(())
     }

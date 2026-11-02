@@ -219,6 +219,7 @@ mod win {
     use windows::Win32::Graphics::Dxgi::*;
     use windows::Win32::Graphics::Gdi::*;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::WaitForSingleObject;
     use windows::Win32::UI::Input::KeyboardAndMouse::VK_F11;
     use windows::Win32::UI::WindowsAndMessaging::*;
     use windows::core::{Interface, w};
@@ -256,6 +257,11 @@ mod win {
     pub struct Window {
         hwnd: HWND,
         swap: IDXGISwapChain1,
+        /// Signalled while the swap chain has room for another picture (the monitor showed the last).
+        ready: HANDLE,
+        /// The window's picture, drawn every frame: copied into the swap chain when it has room, so
+        /// the headset never waits on the monitor (drawn into the swap chain's own, the GPU would
+        /// wait for the monitor to let go of it, a 60 Hz monitor holding the headset to 60).
         target: Option<EyeTarget>,
         /// The window's place before fullscreen.
         windowed: Option<RECT>,
@@ -314,14 +320,18 @@ mod win {
                     BufferCount: 2,
                     Scaling: DXGI_SCALING_STRETCH,
                     SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                    Flags: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32,
                     ..Default::default()
                 };
                 let swap = factory.CreateSwapChainForHwnd(&gpu.device, hwnd, &desc, None, None).context("the desktop view's swap chain")?;
                 factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER)?;
+                let swap2: IDXGISwapChain2 = swap.cast()?;
+                swap2.SetMaximumFrameLatency(1)?;
+                let ready = swap2.GetFrameLatencyWaitableObject();
                 // Shown without taking focus from the game or the headset.
                 let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 CLOSED.store(false, Ordering::Relaxed);
-                let mut win = Window { hwnd, swap, target: None, windowed: None };
+                let mut win = Window { hwnd, swap, ready, target: None, windowed: None };
                 win.make_target(gpu)?;
                 if fullscreen && !hidden {
                     win.toggle_fullscreen();
@@ -336,19 +346,12 @@ mod win {
         }
 
         fn make_target(&mut self, gpu: &Gpu) -> Result<()> {
-            unsafe {
-                let tex: ID3D11Texture2D = self.swap.GetBuffer(0)?;
-                let mut d = D3D11_TEXTURE2D_DESC::default();
-                tex.GetDesc(&mut d);
-                let rd = D3D11_RENDER_TARGET_VIEW_DESC {
-                    Format: DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
-                    ViewDimension: D3D11_RTV_DIMENSION_TEXTURE2D,
-                    ..Default::default()
-                };
-                let mut rtv = None;
-                gpu.device.CreateRenderTargetView(&tex, Some(&rd), Some(&mut rtv))?;
-                self.target = Some(EyeTarget { tex, rtv: rtv.context("render target view")?, width: d.Width, height: d.Height });
-            }
+            let mut d = D3D11_TEXTURE2D_DESC::default();
+            unsafe { self.swap.GetBuffer::<ID3D11Texture2D>(0)?.GetDesc(&mut d) };
+            // (Typeless: drawn into as sRGB, copied into the swap chain's plain buffers.)
+            let desc = rustvr_gpu::TexDesc { width: d.Width, height: d.Height, format: DXGI_FORMAT_R8G8B8A8_TYPELESS, rtv: Some(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB), srv: None, dsv: None, mips: 1 };
+            let t = rustvr_gpu::Texture::new(gpu, &desc).context("the desktop view's picture")?;
+            self.target = Some(EyeTarget { tex: t.tex.clone(), rtv: t.rtv.clone().context("render target view")?, width: d.Width, height: d.Height });
             Ok(())
         }
 
@@ -376,7 +379,7 @@ mod win {
                 if w > 0 && h > 0 && self.target.as_ref().is_none_or(|t| (t.width, t.height) != (w, h)) {
                     self.target = None;
                     unsafe { gpu.ctx.OMSetRenderTargets(None, None) };
-                    let ok = unsafe { self.swap.ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0)) };
+                    let ok = unsafe { self.swap.ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) };
                     if let Err(e) = ok.map_err(anyhow::Error::from).and_then(|_| self.make_target(gpu)) {
                         tracing::warn!("desktop view: resizing to {w}x{h}: {e:#}");
                     }
@@ -437,10 +440,18 @@ mod win {
             }
         }
 
-        /// Shows the frame; never waits for the monitor (the headset sets the pace).
-        pub fn present(&self) {
+        /// Shows the frame if the monitor has shown the last one, else leaves it: never waits for
+        /// the monitor (the headset sets the pace).
+        pub fn present(&self, gpu: &Gpu) {
+            let Some(t) = self.target() else { return };
             unsafe {
-                let _ = self.swap.Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+                if WaitForSingleObject(self.ready, 0) != WAIT_OBJECT_0 {
+                    return;
+                }
+                if let Ok(back) = self.swap.GetBuffer::<ID3D11Texture2D>(0) {
+                    gpu.ctx.CopyResource(&back, &t.tex);
+                }
+                let _ = self.swap.Present(0, DXGI_PRESENT(0));
             }
         }
     }
@@ -448,6 +459,7 @@ mod win {
     impl Drop for Window {
         fn drop(&mut self) {
             unsafe {
+                let _ = CloseHandle(self.ready);
                 let _ = DestroyWindow(self.hwnd);
             }
         }

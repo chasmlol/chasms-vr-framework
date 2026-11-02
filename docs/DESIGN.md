@@ -574,7 +574,9 @@ Controls tab's "Swim with your arms" and its stroke strength).
 ## 6i. The desktop view
 
 A window on the monitor for recording and streaming, the same for every game
-(`crates/runtime/src/spectator.rs`); nothing in it ever reaches the headset.
+(`crates/runtime/src/spectator.rs`); nothing in it ever reaches the headset, and the headset never
+waits on it: its picture is drawn every frame into its own texture and copied to the window only
+when the monitor has shown the last one (a 60 Hz monitor shows two frames in three at 90 Hz).
 
 - **The camera** sits between the eyes, steadied as a flat game's would be (Half-Life: Alyx's
   spectator camera, LIV's smoothed first person): the head's turns eased (`smoothing`, a 0.1 s
