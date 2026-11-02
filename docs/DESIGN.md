@@ -676,7 +676,7 @@ each change as it's made.
 | `[riding]` | `turn` smooth (or steps of `turn_step` 30), `vignette` 0.5, `fade_on_off`, the reins' `rein_dead` 0.05, `rein_travel` 0.30 and `rein_pull` 0.15 m, `cruise` 0.7, `spur_fade` 8 s, `flick`, `coast` 2.5 s, `stride_haptics` |
 | `[mirror]` | `distance` 1.2, `width` 0.95, `height` 2, `lift` 0.02, `gesture` on, `game_world` on |
 | `[holsters]` | `mouth_time` 0.5, `read_time` 0.8, `coat_time` 0.3, `edit_hold` 1.5, and each game's slots as the player set them up (`[[holsters.games.<game>]]`) |
-| `[melee]` | `strength` 1, `stamina` off (`stamina_time` 12, `stamina_refill` 6), `slow_time` on, `telekinesis` off, `climbing` on, `easy_dismemberment` on |
+| `[melee]` | `strength` 1, `stamina` off (`stamina_time` 12, `stamina_refill` 6), `slow_time` on, `telekinesis` off, `climbing` on, `easy_dismemberment` on, `gore` off (blood and limbs cut off: the Comfort tab's "Blood and dismemberment", the game told by `RT_GORE`) |
 | `[voice]` | `enabled` off, `mic`, `volume` 2.5, `act_out`, `barge_in`, `pause` 0.3, `stream`, `commands` on (§6j) |
 | `[spectator]` | the desktop view: `enabled` on, `eye` right, `fov` 105, `aim_zoom` to `aim_fov` 65, `smoothing` 0.1, `max_lag` 8, `roll_lock`, 1600 x 900, `fullscreen` |
 | `[desktop_bob]` | `mode` game (or generic, off), `strength` 1 |

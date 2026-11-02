@@ -1283,6 +1283,7 @@ impl Session {
                 player: &player,
                 kick,
                 easy_dismemberment: self.settings.current.melee.easy_dismemberment,
+                gore: self.settings.current.melee.gore,
             });
             if self.combat.kicked {
                 self.foot_kicks.met(now);
@@ -1340,10 +1341,15 @@ impl Session {
                 self.link.push_combat_event(&ev);
             }
             // Gore: the blood the hits and the stumps spill, the limbs the game says were cut off.
+            // (Gore off: none, and what there was is gone.)
             let gore_events = self.gore.read(&self.link);
-            let stuck_events = self.rig.embed_events.clone();
-            let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, stuck_events: &stuck_events, combat: &self.combat, now, dt: world_dt, paused: rig_paused || menu_mode };
-            self.gore.update(&mut self.rig, &gore_input, &gore_events);
+            if self.settings.current.melee.gore {
+                let stuck_events = self.rig.embed_events.clone();
+                let gore_input = crate::gore::GoreInput { out: &self.rig_out, map: &rig_map, joints: &self.body.body.joints, hits: &combat, stuck_events: &stuck_events, combat: &self.combat, now, dt: world_dt, paused: rig_paused || menu_mode };
+                self.gore.update(&mut self.rig, &gore_input, &gore_events);
+            } else {
+                self.gore.clear();
+            }
             for p in &self.gore.pulses {
                 self.backend.haptic(p.hand, p.seconds, p.frequency, p.amplitude);
             }
@@ -1629,7 +1635,8 @@ impl Session {
                 | if frame.dashboard { RT_DASHBOARD } else { 0 }
                 | if menu_pointer.is_some() { RT_RUNTIME_MENU } else { 0 }
                 | if self.draws_body { RT_DRAWS_BODY } else { 0 }
-                | if self.settings.current.voice.commands { RT_VOICE_COMMANDS } else { 0 },
+                | if self.settings.current.voice.commands { RT_VOICE_COMMANDS } else { 0 }
+                | if self.settings.current.melee.gore { RT_GORE } else { 0 },
             frame_index: frame.index,
             display_time_ns: frame.display_time_ns,
             dt: frame.dt,

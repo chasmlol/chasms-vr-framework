@@ -1301,6 +1301,29 @@ impl Gore {
         }
     }
 
+    /// Gore turned off: every drop, mark and bleeding wound gone (the game's blood and its bodies
+    /// still read).
+    pub fn clear(&mut self) {
+        if self.drops.is_empty() && self.decals.is_empty() && self.runners.is_empty() && self.wounds.is_empty() && self.stumps.is_empty() && self.pieces.is_empty() && self.body_splats.is_empty() && self.held_splats.is_empty() {
+            return;
+        }
+        self.drops.clear();
+        self.decals.clear();
+        self.runners.clear();
+        self.wounds.clear();
+        self.pieces.clear();
+        self.stumps.clear();
+        self.body_splats.clear();
+        self.held_splats.clear();
+        self.painted.clear();
+        self.held_drip.clear();
+        self.pulses.clear();
+        self.out_drops.clear();
+        self.out_decals.clear();
+        self.out_caps.clear();
+        self.out_splats.clear();
+    }
+
     /// Anything to draw at all.
     pub fn active(&self) -> bool {
         !self.looks.is_empty() && (!self.out_drops.is_empty() || !self.out_decals.is_empty() || !self.out_caps.is_empty() || !self.out_splats.is_empty())

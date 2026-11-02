@@ -140,7 +140,7 @@ and body rules, shared by the runtime and the range.
   hand and a shin at their joints, a foot 3 cm up the shin, the head by its neck 2.8 cm up it; a
   thigh, the torso never). The event names the part taken off (`CEF_SEVER`); the game cuts it off,
   and it kills. The blade carries on through: it passes the creature until it's clear of it, and
-  doesn't go in again for a second. With easy dismemberment (the `easy_dismemberment`
+  doesn't go in again for a second (all of it only with `gore` on). With easy dismemberment (the `easy_dismemberment`
   setting, on unless it's turned off) neither the speed nor the place matters: a cutting edge that
   goes into a part that comes off takes it off (its parent and children still only at their
   joints), a stab never (see the calls).
@@ -318,7 +318,9 @@ and body rules, shared by the runtime and the range.
 
 `settings.toml`'s `[melee]`: `strength` (1: the standard player), `stamina` (off), `stamina_time`
 (12 s), `stamina_refill` (6 s), `slow_time` (on), `telekinesis` (off), `climbing` (on),
-`easy_dismemberment` (on); they're in the file only, not the in-headset menu. A game's
+`easy_dismemberment` (on), `gore` (off: no blood and nothing cut off; the Comfort tab's "Blood
+and dismemberment" turns it on, and the game hears it by `RT_GORE`); the rest are in the file
+only, not the in-headset menu. A game's
 `MeleeRules` override slowing time, climbing and telekinesis when they say (`RULES_SAYS_*`), turn on
 the melee buttons (`RULES_KICK`: the movement stick kicks, slowing time on the dominant B, the climb
 jump on the dominant stick), give their own slowing (`slow_scale`, `focus_time`, `focus_refill`),

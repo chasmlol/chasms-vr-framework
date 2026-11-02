@@ -434,6 +434,9 @@ pub const RT_DRAWS_BODY: u32 = 1 << 6;
 /// The player has simple voice commands on: the adapter listens for its game's own phrases (a
 /// menu's words, "what have you got for sale") with the system's speech recognition, no servers.
 pub const RT_VOICE_COMMANDS: u32 = 1 << 7;
+/// The player has gore on: the game cuts its creatures' limbs off ([`gore`]) and sprays its own
+/// blood from the stumps. Off, it cuts nothing (the runtime spills no blood either).
+pub const RT_GORE: u32 = 1 << 8;
 
 /// How the adapter maps tracking space into the game world. The mapping itself lives in the
 /// adapter SDK because it must use the game's *current* anchor every game frame.

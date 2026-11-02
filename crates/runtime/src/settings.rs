@@ -93,11 +93,15 @@ pub struct Melee {
     /// fast and wherever on it (without it a cut must be fast, 12 m/s for a sword, land within 4 cm
     /// of a joint and meet it square, and that proved too hard to land in play). A stab still sticks.
     pub easy_dismemberment: bool,
+    /// Gore: the blood the blows and the stumps spill, on the bodies, the world, the blades and the
+    /// hands, and limbs cut off (`crate::gore`, the game's `RT_GORE`). Off by default: no blood of
+    /// the runtime's and nothing cut off (the game's own small spray on a hit is the game's).
+    pub gore: bool,
 }
 
 impl Default for Melee {
     fn default() -> Self {
-        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true }
+        Melee { strength: 1.0, stamina: false, stamina_time: 12.0, stamina_refill: 6.0, slow_time: true, telekinesis: false, climbing: true, easy_dismemberment: true, gore: false }
     }
 }
 

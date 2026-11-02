@@ -311,6 +311,7 @@ fn comfort(ui: &mut egui::Ui, s: &mut Settings, rects: &mut Vec<(String, egui::R
     ui.checkbox(&mut s.comfort.head_bob, "Camera bob / shake");
     slider(ui, "Vignette while moving", &mut s.comfort.vignette, 0.0, 1.0, "", 2);
     ui.checkbox(&mut s.comfort.wall_fade, "Fade out when your head goes into a wall");
+    ui.checkbox(&mut s.melee.gore, "Blood and dismemberment");
     ui.checkbox(&mut s.comfort.seated, "Seated play (see the Body tab)");
     ui.separator();
     ui.heading("Riding");
